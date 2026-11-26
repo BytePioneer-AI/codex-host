@@ -1,12 +1,21 @@
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import path from "node:path";
 import { runInstallationCommand } from "@codexhost/harness-discovery";
 import {
+  harnessIdSchema,
+  type BillingSourceRef,
   type AccountCreditsSnapshot,
   type HarnessAccountSnapshot,
 } from "@codexhost/shared-contracts";
 import { resolveOmpExecutable } from "./command.js";
 import { activeOmpEntries, type OmpSessionHistory } from "./omp-history.js";
+import { listOmpBillingIdentities } from "./omp-billing-source-session.js";
 
 const CACHE_MS = 30_000;
+// The Host allows 12 s for inspection; the quota command already has its own 5 s budget.
+const IDENTITY_BUDGET_MS = 5_000;
+const ompHarnessId = harnessIdSchema.parse("omp");
 
 type Window = Omit<AccountCreditsSnapshot, "productUsage" | "resetCredits">;
 
@@ -127,39 +136,116 @@ function reportAccount(value: unknown): HarnessAccountSnapshot | null {
   };
 }
 
+export interface OmpNativeBillingIdentity {
+  provider: string;
+  credentialId: number;
+  identityKey: string;
+}
+
+export type OmpBillingTarget = OmpNativeBillingIdentity;
+
+interface AccountRead {
+  accounts: Map<string, HarnessAccountSnapshot>;
+  identities: Map<string, string>;
+}
+
 /** One cache per OMP launch context; credential IDs are local to its profile. */
 export class OmpAccountCredits {
-  #cached: { fetchedAt: number; accounts: Map<string, HarnessAccountSnapshot> } | undefined;
-  #pending: Promise<Map<string, HarnessAccountSnapshot>> | undefined;
+  #cached: { fetchedAt: number; identified: boolean; value: AccountRead } | undefined;
+  #pending: { identified: boolean; value: Promise<AccountRead> } | undefined;
+  readonly #identityShutdown = new AbortController();
+  readonly #identityProbes = new Set<Promise<readonly OmpNativeBillingIdentity[]>>();
   #probeSequence = 0;
 
-  constructor(private readonly load: () => Promise<string>) {}
+  constructor(
+    private readonly load: () => Promise<string>,
+    private readonly profile = "",
+    private readonly loadIdentities: (
+      signal: AbortSignal,
+    ) => Promise<readonly OmpNativeBillingIdentity[]> = async () => [],
+  ) {}
 
   async forAccount(key: string): Promise<AccountCreditsSnapshot | null> {
-    return (await this.#read()).get(key)?.credits ?? null;
+    return (await this.#read()).accounts.get(key)?.credits ?? null;
   }
 
   async inspectAccounts(): Promise<HarnessAccountSnapshot[]> {
     // The Host already caches settings reads and explicitly bypasses that cache on refresh.
-    return [...(await this.#read(true)).values()];
+    return [...(await this.#read(true, true)).accounts.values()];
   }
 
-  #read(refresh = false): Promise<Map<string, HarnessAccountSnapshot>> {
+  async resolve(ref: BillingSourceRef): Promise<OmpBillingTarget | null> {
+    if (ref.harnessId !== ompHarnessId) return null;
+    const { accounts, identities } = await this.#read(true, true);
+    for (const [key, account] of accounts) {
+      if (account.billingSourceRef?.id !== ref.id) continue;
+      const identityKey = identities.get(key);
+      if (!identityKey) return null;
+      const [provider, credentialId] = JSON.parse(key) as [string, number];
+      return { provider, credentialId, identityKey };
+    }
+    return null;
+  }
+
+  async close(): Promise<void> {
+    this.#identityShutdown.abort();
+    await Promise.allSettled(this.#identityProbes);
+  }
+
+  async #readIdentities(): Promise<readonly OmpNativeBillingIdentity[]> {
+    const shutdown = this.#identityShutdown.signal;
+    if (shutdown.aborted) return [];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IDENTITY_BUDGET_MS);
+    const signal = AbortSignal.any([shutdown, controller.signal]);
+    let probe: Promise<readonly OmpNativeBillingIdentity[]> | undefined;
+    try {
+      probe = this.loadIdentities(signal);
+      this.#identityProbes.add(probe);
+      const rows = await probe;
+      return signal.aborted ? [] : rows;
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timer);
+      if (probe) this.#identityProbes.delete(probe);
+    }
+  }
+
+  #read(refresh = false, identified = false): Promise<AccountRead> {
     if (!refresh) {
-      if (this.#pending) return this.#pending;
-      if (this.#cached && Date.now() - this.#cached.fetchedAt < CACHE_MS)
-        return Promise.resolve(this.#cached.accounts);
+      if (this.#pending && (this.#pending.identified || !identified)) return this.#pending.value;
+      if (
+        this.#cached &&
+        Date.now() - this.#cached.fetchedAt < CACHE_MS &&
+        (this.#cached.identified || !identified)
+      )
+        return Promise.resolve(this.#cached.value);
     }
     const sequence = ++this.#probeSequence;
-    this.#pending = (async () => {
+    const operation = (async (): Promise<AccountRead> => {
       const accounts = new Map<string, HarnessAccountSnapshot>();
+      const identities = new Map<string, string>();
       try {
         const data = object(JSON.parse(await this.load()));
+        const nativeIdentities = new Map<string, string | null>();
+        const uniqueIdentities = new Map<string, boolean>();
+        if (identified) {
+          for (const row of await this.#readIdentities()) {
+            const key = accountKey(row.provider, row.credentialId);
+            const identityKey = text(row.identityKey);
+            if (!key || !identityKey) continue;
+            nativeIdentities.set(key, nativeIdentities.has(key) ? null : identityKey);
+            const identity = JSON.stringify([row.provider, identityKey]);
+            uniqueIdentities.set(identity, !uniqueIdentities.has(identity));
+          }
+        }
         if (Array.isArray(data?.reports)) {
           const ambiguous = new Set<string>();
           for (const value of data.reports) {
             const report = object(value);
-            const key = accountKey(report?.provider, object(report?.metadata)?.credentialId);
+            const metadata = object(report?.metadata);
+            const key = accountKey(report?.provider, metadata?.credentialId);
             if (!key || ambiguous.has(key)) continue;
             if (accounts.has(key)) {
               accounts.delete(key);
@@ -167,18 +253,43 @@ export class OmpAccountCredits {
               continue;
             }
             const account = reportAccount(value);
-            if (account) accounts.set(key, account);
+            if (!account) continue;
+            const identityKey = nativeIdentities.get(key);
+            const reportedIdentity = text(metadata?.identityKey);
+            const provider = report?.provider;
+            let billingSourceRef: BillingSourceRef | undefined;
+            if (
+              identityKey &&
+              typeof provider === "string" &&
+              reportedIdentity === identityKey &&
+              uniqueIdentities.get(JSON.stringify([provider, identityKey]))
+            ) {
+              identities.set(key, identityKey);
+              const id = createHash("sha256")
+                .update(this.profile)
+                .update("\0")
+                .update(provider)
+                .update("\0")
+                .update(identityKey)
+                .digest("base64url");
+              billingSourceRef = { harnessId: ompHarnessId, id };
+            }
+            accounts.set(key, { ...account, ...(billingSourceRef ? { billingSourceRef } : {}) });
           }
         }
       } catch {
         // Old CLI, missing credentials, or a failed probe: no quota, never another account's.
       }
-      if (sequence === this.#probeSequence) this.#cached = { fetchedAt: Date.now(), accounts };
-      return accounts;
-    })().finally(() => {
+      const result = { accounts, identities };
+      if (sequence === this.#probeSequence)
+        this.#cached = { fetchedAt: Date.now(), identified, value: result };
+      return result;
+    })();
+    const value = operation.finally(() => {
       if (sequence === this.#probeSequence) this.#pending = undefined;
     });
-    return this.#pending;
+    this.#pending = { identified, value };
+    return value;
   }
 }
 
@@ -188,13 +299,30 @@ export function createOmpAccountCredits(
   cwd?: string,
 ) {
   const env = { ...environment, OMP_SKIP_VERSION_CHECK: "1", OMP_TELEMETRY: "0" };
-  return new OmpAccountCredits(() =>
-    runInstallationCommand(
-      resolveOmpExecutable({ ...(command ? { command } : {}), environment: env }),
-      ["usage", "--json", "--no-extensions"],
-      env,
-      5_000,
-      cwd,
-    ),
+  const home =
+    (process.platform === "win32" ? environment.USERPROFILE : environment.HOME) || homedir();
+  const profile = path.resolve(
+    cwd ?? process.cwd(),
+    environment.PI_CODING_AGENT_DIR || path.join(home, ".omp", "agent"),
+  );
+  return new OmpAccountCredits(
+    () =>
+      runInstallationCommand(
+        resolveOmpExecutable({ ...(command ? { command } : {}), environment: env }),
+        ["usage", "--json", "--no-extensions"],
+        env,
+        5_000,
+        cwd,
+      ),
+    profile,
+    (signal) =>
+      listOmpBillingIdentities(
+        {
+          cwd: cwd ?? process.cwd(),
+          environment: env,
+          ...(command ? { command } : {}),
+        },
+        signal,
+      ),
   );
 }

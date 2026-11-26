@@ -1126,7 +1126,7 @@ describe("mapping-store package", () => {
     await reopened.close();
   });
 
-  it("cleans a provisional create without Native identity on restart", async () => {
+  it("cleans ordinary provisional creates but retains unconfirmed Billing Source Threads on restart", async () => {
     const directory = await temporaryStoreDirectory();
     const first = new MappingStore({ directory });
     await first.initialize();
@@ -1143,11 +1143,28 @@ describe("mapping-store package", () => {
         hostTurnId: hostTurnIdSchema.parse("source-turn"),
       },
     });
+    const boundId = hostThreadIdSchema.parse("bound-thread");
+    const omp = harnessIdSchema.parse("omp");
+    const billingSourceRef = { harnessId: omp, id: "source-b" };
+    await first.createProvisional({
+      hostThreadId: boundId,
+      createRequestId: "pending-billing-source",
+      harnessId: omp,
+      billingSourceRef,
+      cwd: "/synthetic",
+      transportModelId: "codexhost/omp-native",
+      ephemeral: true,
+      historyMode: "legacy",
+    });
     await first.close();
 
     const second = new MappingStore({ directory });
     await second.initialize();
     await expect(second.getThread(threadId)).resolves.toBeNull();
+    await expect(second.getThread(boundId)).resolves.toMatchObject({
+      state: "creating",
+      billingSourceRef,
+    });
     await second.close();
   });
 

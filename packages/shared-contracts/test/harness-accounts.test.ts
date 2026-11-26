@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  billingSourceRefSchema,
   harnessAccountInspectParamsSchema,
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
@@ -18,9 +19,23 @@ describe("Harness account request contracts", () => {
       { balance: { amount: Number.NaN, currency: "USD" } },
       { balance: { amount: 1, currency: "" } },
       { balance, token: "private" },
+      { balance, billingSourceRef: { harnessId: "omp", id: "opaque", credential: "private" } },
     ]) {
       expect(harnessAccountSnapshotSchema.safeParse(value).success).toBe(false);
     }
+  });
+
+  it("preserves only an opaque Billing Source reference in quota telemetry", () => {
+    const billingSourceRef = billingSourceRefSchema.parse({ harnessId: "omp", id: "opaque-id" });
+    expect(
+      harnessAccountSnapshotSchema.parse({
+        billingSourceRef,
+        balance: { amount: 0, currency: "USD" },
+      }).billingSourceRef,
+    ).toEqual(billingSourceRef);
+    expect(
+      billingSourceRefSchema.safeParse({ harnessId: "omp", id: "somebody@example.test" }).success,
+    ).toBe(false);
   });
 
   it("supports optional forced refresh without accepting unrelated fields", () => {

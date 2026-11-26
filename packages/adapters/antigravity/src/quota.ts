@@ -6,6 +6,8 @@
  * carries one bucket per limit window.
  */
 
+import { createHash } from "node:crypto";
+
 import type { HarnessLocalizations } from "@codexhost/shared-contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,6 +54,7 @@ export interface ParsedBucket extends AntigravityQuotaBucket {
 export interface AntigravityQuotaReading {
   readonly buckets: readonly ParsedBucket[];
   readonly fetchedAt: string;
+  readonly loginIdentity?: string;
 }
 
 const USAGE_ARGUMENTS = ["--print=/usage", "--output-format", "stream-json"] as const;
@@ -174,6 +177,18 @@ function leadingBucket(buckets: readonly ParsedBucket[]): ParsedBucket | undefin
   })[0];
 }
 
+// A visible Google subject is an optional login-change signal, never the Profile key.
+function loginIdentityFromAccount(account: unknown): string | undefined {
+  if (
+    !isRecord(account) ||
+    account.provider !== "google" ||
+    typeof account.subject !== "string" ||
+    !/^[0-9]{20,24}$/u.test(account.subject)
+  )
+    return undefined;
+  return createHash("sha256").update(`antigravity:google:${account.subject}`).digest("hex");
+}
+
 /** Parses a `/usage` `command_result` payload into its quota buckets. */
 export function readAntigravityUsageCommand(
   command: unknown,
@@ -183,7 +198,9 @@ export function readAntigravityUsageCommand(
   const { groups } = command.data;
   if (!Array.isArray(groups)) return null;
   const buckets = parseBuckets(groups);
-  return buckets.length > 0 ? { buckets, fetchedAt } : null;
+  if (buckets.length === 0) return null;
+  const loginIdentity = loginIdentityFromAccount(command.data.account);
+  return { buckets, fetchedAt, ...(loginIdentity ? { loginIdentity } : {}) };
 }
 
 /**

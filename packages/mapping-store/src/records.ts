@@ -1,12 +1,14 @@
 import { usageMeasurementsSchema } from "@codexhost/shared-contracts";
 import {
   HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH,
+  billingSourceRefSchema,
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
+  type BillingSourceRef,
   type HarnessId,
   type HostThreadId,
   type HostTurnId,
@@ -53,6 +55,7 @@ const storedThreadCoreV1Shape = {
   hostThreadId: storedHostThreadIdSchema,
   createRequestId: nonBlankTextSchema.max(1_024),
   harnessId: harnessIdSchema,
+  billingSourceRef: billingSourceRefSchema.optional(),
   state: z.enum(["creating", "ready"]),
   nativeSessionRef: nativeSessionRefSchema.optional(),
   /** Original import identity, retained when preparation derives a different Native Session. */
@@ -181,6 +184,13 @@ function refineThreadRecord(
       code: "custom",
       path: ["nativeSessionRef", "harnessId"],
       message: "Native Session Harness must match the Thread Harness",
+    });
+  }
+  if (record.billingSourceRef && record.billingSourceRef.harnessId !== record.harnessId) {
+    context.addIssue({
+      code: "custom",
+      path: ["billingSourceRef", "harnessId"],
+      message: "Billing Source Harness must match the Thread Harness",
     });
   }
   if (record.importSourceRef && record.importSourceRef.harnessId !== record.harnessId) {
@@ -347,6 +357,7 @@ export interface CreateProvisionalThreadInput {
   hostThreadId: HostThreadId;
   createRequestId: string;
   harnessId: HarnessId;
+  billingSourceRef?: BillingSourceRef;
   importSourceRef?: NativeSessionRef;
   cwd: string;
   title?: string;

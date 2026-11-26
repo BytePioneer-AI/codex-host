@@ -308,6 +308,33 @@ describe("external Thread prewarm lifecycle", () => {
     }
   });
 
+  it("lists a submitted external draft after restart even when the creator set ephemeral", async () => {
+    const f = createFixture();
+    answerEmptyOfficialLists(f);
+    let threadId: string;
+    try {
+      threadId = await startExternalThread(f, "codexhost/pi-native", 1, {
+        codexhostPrewarm: true,
+        ephemeral: true,
+      });
+      expect(await list(f, 10)).toEqual([]);
+      await startPiTurn(f, threadId);
+      firstSession(f).succeedTurn();
+      await f.collector.waitFor((message) => message.method === "turn/completed");
+      expect(await list(f, 11)).toEqual([threadId]);
+    } finally {
+      await closeFixture(f);
+    }
+    const restarted = createFixture({ mappingStoreDirectory: f.mappingStoreDirectory });
+    answerEmptyOfficialLists(restarted);
+    try {
+      await restarted.ready;
+      expect(await list(restarted, 10)).toEqual([threadId]);
+    } finally {
+      await stopFixture(restarted);
+    }
+  });
+
   it("does not execute or publish a draft when committing its native identity fails", async () => {
     const f = createFixture();
     answerEmptyOfficialLists(f);

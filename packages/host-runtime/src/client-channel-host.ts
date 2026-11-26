@@ -4,6 +4,7 @@ import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhos
 import {
   CLIENT_CHANNEL_METHODS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  RETAINED_PREWARM_RUN_METHOD,
   threadArchiveConfirmParamsSchema,
   clientThreadSnapshotSchema,
   threadTitleInputSchema,
@@ -250,6 +251,14 @@ export class ClientChannelHost {
     if (method === "thread/start") {
       const route = classifyCreateRequestRoute(parsed.data);
       native = !route || route.selectedHarness === "codex";
+      if (native && Object.hasOwn(params, "billingSourceRef")) {
+        return {
+          error: {
+            code: -32602,
+            message: "Billing Source binding requires an explicit external Harness route",
+          },
+        };
+      }
       if (native && !this.#native)
         return {
           error: {
@@ -287,7 +296,9 @@ export class ClientChannelHost {
         await this.#host.submit(
           method,
           params,
-          harnessInstallationRequestTimeoutMs(method, params),
+          method === RETAINED_PREWARM_RUN_METHOD
+            ? 120_000
+            : harnessInstallationRequestTimeoutMs(method, params),
         ),
       );
     const nativeChannel = this.#native;

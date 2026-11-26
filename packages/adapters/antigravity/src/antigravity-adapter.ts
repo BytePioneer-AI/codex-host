@@ -61,6 +61,8 @@ import {
   type HostTurnId,
   type NativeSessionRef,
   type NativeTurnRef,
+  type RetainedPrewarmParams,
+  type RetainedPrewarmResult,
 } from "@codexhost/shared-contracts";
 import { AntigravityAcpTransport } from "./acp-transport.js";
 import {
@@ -92,6 +94,7 @@ import { resolveAntigravityExecutable } from "./command.js";
 import { antigravityDelegationInstructions } from "./delegation.js";
 import { forkAntigravitySession, nativeConversationDbPath, validNativeSessionRef } from "./fork.js";
 import {
+  findAntigravityAcpConfigOption,
   parseAntigravityModels,
   parseAntigravityAcpModelCatalog,
   readAcpEffectiveModelState,
@@ -116,6 +119,11 @@ import {
   type AntigravityQuotaSnapshot,
 } from "./quota.js";
 import { rollbackAntigravityLastTurn } from "./rollback.js";
+import {
+  antigravityProfileRef,
+  inspectAntigravityPrewarmSource,
+  runAntigravityRetainedPrewarm,
+} from "./retained-prewarm.js";
 import { AntigravitySessionImport } from "./session-import.js";
 import * as skillDiscovery from "./skill-discovery.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
@@ -148,6 +156,7 @@ export interface AntigravityAdapterOptions {
   toolOutputLimit?: number;
   subagentObservationTimeoutMs?: number;
   turnCleanupWaitMs?: number;
+  retainedPrewarmDirectory?: string;
   createTransport?: (options: AntigravityAcpTransportOptions) => AntigravityAcpTransportLike;
 }
 function ok<T>(value: T): HarnessResult<T> {
@@ -288,10 +297,9 @@ interface SessionOptions extends RequestedConfiguration {
   quota: SessionQuota;
   onClosed(session: AntigravitySession): void;
 }
-/** The Adapter's account-wide quota cache, projected for one Session's Model. */
+/** The Adapter's Profile quota cache, projected for one Session's Model. */
 interface SessionQuota {
-  read(modelId: string | undefined): AntigravityQuotaSnapshot | null;
-  refresh(): void;
+  read(modelId: string | undefined): Promise<AntigravityQuotaSnapshot | null>;
 }
 interface ActiveTurn {
   turnId: HostTurnId;
@@ -365,6 +373,8 @@ export class AntigravitySession implements HarnessSession {
   // any window streamed into that user Turn and must not be republished.
   readonly #promptWindows: Array<{ submittedAtMs: number; returnedAtMs: number }> = [];
   #toolOwners = new Map<string, ActiveTurn>();
+  // Late updates for tools settled by the last Turn are not background wakes.
+  readonly #finishedToolCallIds = new Set<string>();
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
   #usageWork: Promise<void> | undefined;
@@ -467,8 +477,7 @@ export class AntigravitySession implements HarnessSession {
   /** Leads with the quota group that bills this Session's current Model. */
   readAccountCredits(): Promise<AntigravityQuotaSnapshot | null> {
     if (this.#closed) return Promise.resolve(null);
-    this.#options.quota.refresh();
-    return Promise.resolve(this.#options.quota.read(this.#creditsModelId));
+    return this.#options.quota.read(this.#creditsModelId);
   }
 
   #delegationPrompt(): { systemPromptAppend?: string } {
@@ -706,22 +715,14 @@ export class AntigravitySession implements HarnessSession {
     };
     this.#syncUsageModel(true);
   }
-  #findConfigOption(category: "model" | "thinking"): AntigravityAcpConfigOption | undefined {
-    return this.#configOptions.find(
-      (entry) =>
-        entry.category === category ||
-        entry.id === category ||
-        (category === "thinking" && entry.id === "thought_level"),
-    );
-  }
   #hasConfigChoice(category: "model" | "thinking", value: string): boolean {
-    const option = this.#findConfigOption(category);
+    const option = findAntigravityAcpConfigOption(this.#configOptions, category);
     return !!option?.options.some((choice) => choice.value === value);
   }
   #resolveThinkingChoice(preferred?: string): string | undefined {
     if (preferred && this.#hasConfigChoice("thinking", preferred)) return preferred;
     if (!this.#state.effectiveThinkingOptionId) {
-      return this.#findConfigOption("thinking")?.options.at(-1)?.value;
+      return findAntigravityAcpConfigOption(this.#configOptions, "thinking")?.options.at(-1)?.value;
     }
     return undefined;
   }
@@ -729,7 +730,7 @@ export class AntigravitySession implements HarnessSession {
     requestedModelId: string,
     requestedThinking?: HarnessThinkingOptionId,
   ): Promise<{ impliedThinking?: HarnessThinkingOptionId; bakedInThinking: boolean }> {
-    const option = this.#findConfigOption("model");
+    const option = findAntigravityAcpConfigOption(this.#configOptions, "model");
     if (!option) {
       throw new AntigravityTransportError(
         "unsupported",
@@ -769,7 +770,7 @@ export class AntigravitySession implements HarnessSession {
     };
   }
   async #setConfig(category: "model" | "thinking", value: string): Promise<void> {
-    const option = this.#findConfigOption(category);
+    const option = findAntigravityAcpConfigOption(this.#configOptions, category);
     if (!option || !option.options.some((choice) => choice.value === value))
       throw new AntigravityTransportError(
         "unsupported",
@@ -793,6 +794,7 @@ export class AntigravitySession implements HarnessSession {
         this.#handleToolEvent(owner, event);
         return;
       }
+      if (event.type === "tool.update" && this.#finishedToolCallIds.has(event.toolCallId)) return;
     }
     if (
       ((event.type === "agent.text" || event.type === "agent.thought") && event.text.trim()) ||
@@ -1430,6 +1432,8 @@ export class AntigravitySession implements HarnessSession {
               // A repeated tool.call cannot claim an existing owner's ID.
               return;
             }
+            if (event.type === "tool.update" && this.#finishedToolCallIds.has(event.toolCallId))
+              return;
             if (!this.#isCurrent(turn) || turn.cancelled) return;
             turn.hasToolCalls = true;
             turn.firstOutputAtMs ??= Date.now();
@@ -1578,6 +1582,7 @@ export class AntigravitySession implements HarnessSession {
       (turn.ended && !turn.detachedToolCallIds.has(event.toolCallId))
     )
       return;
+    this.#finishedToolCallIds.delete(event.toolCallId);
     this.#toolOwners.set(event.toolCallId, turn);
     turn.hasToolCalls = true;
     if (event.status === "completed" || event.status === "failed")
@@ -1665,9 +1670,11 @@ export class AntigravitySession implements HarnessSession {
         : new Set();
     this.#closeInteractions("cancelled", turn, outcome.status === "succeeded");
     turn.tracker?.finishPending(outcome);
+    this.#finishedToolCallIds.clear();
     for (const [toolCallId, owner] of this.#toolOwners) {
-      if (owner === turn && !turn.detachedToolCallIds.has(toolCallId))
-        this.#toolOwners.delete(toolCallId);
+      if (owner !== turn || turn.detachedToolCallIds.has(toolCallId)) continue;
+      this.#finishedToolCallIds.add(toolCallId);
+      this.#toolOwners.delete(toolCallId);
     }
     turn.ended = true;
     this.#active = undefined;
@@ -1941,13 +1948,19 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly usageStatistics: ReturnType<typeof createAntigravityUsageStatistics>;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #sessions = new Set<AntigravitySession>();
+  readonly #retainedPrewarms = new Set<Promise<HarnessResult<RetainedPrewarmResult>>>();
   readonly #cache = new Map<string, HarnessInspection>();
   readonly #inflight = new Map<string, Promise<HarnessInspection>>();
   readonly #abort = new AbortController();
   #closed = false;
-  #quota: AntigravityQuotaReading | null = null;
-  #quotaFetchedAt = Number.NEGATIVE_INFINITY;
-  #quotaRefresh: Promise<AntigravityQuotaReading | null> | undefined;
+  readonly #quotaByProfile = new Map<
+    string,
+    {
+      reading: AntigravityQuotaReading | null;
+      fetchedAt: number;
+      pending?: Promise<AntigravityQuotaReading | null>;
+    }
+  >();
   #quotaCwd = process.cwd();
   constructor(readonly options: AntigravityAdapterOptions = {}) {
     this.#environment = options.environment ?? process.env;
@@ -2143,8 +2156,13 @@ export class AntigravityAdapter implements HarnessAdapter {
       unattended,
       adapter: this.options,
       quota: {
-        read: (modelId) => (this.#quota ? projectAntigravityQuota(this.#quota, modelId) : null),
-        refresh: () => void this.#refreshQuota().catch(() => undefined),
+        read: async (modelId) => {
+          const profile = await this.#currentProfile();
+          if (!profile) return null;
+          const quota = this.#quotaByProfile.get(profile.id)?.reading;
+          void this.#refreshQuota(profile.id).catch(() => undefined);
+          return quota ? projectAntigravityQuota(quota, modelId) : null;
+        },
       },
       onClosed: (closed) => this.#sessions.delete(closed),
     });
@@ -2187,51 +2205,79 @@ export class AntigravityAdapter implements HarnessAdapter {
       });
     },
   };
-  credits(): AntigravityQuotaSnapshot | null {
-    return this.#quota ? projectAntigravityQuota(this.#quota) : null;
+  #currentProfile() {
+    if (this.#closed) return Promise.resolve(undefined);
+    return antigravityProfileRef(this.#environment).catch(() => undefined);
   }
   async refreshCredits(): Promise<AntigravityQuotaSnapshot | null> {
-    const quota = await this.#refreshQuota();
+    const profile = await this.#currentProfile();
+    const quota = profile ? await this.#refreshQuota(profile.id) : null;
     return quota ? projectAntigravityQuota(quota) : null;
   }
-  #refreshQuota(force = false): Promise<AntigravityQuotaReading | null> {
+  async #fetchQuota(
+    signal: AbortSignal,
+    cwd = this.#quotaCwd,
+  ): Promise<AntigravityQuotaReading | null> {
+    const command = resolveAntigravityExecutable({
+      ...(this.options.command ? { command: this.options.command } : {}),
+      environment: this.#environment,
+    });
+    if (!command) return null;
+    return fetchAntigravityQuota((args) =>
+      runQuotaCli(
+        command,
+        args,
+        cwd,
+        this.#environment,
+        this.options.inspectTimeoutMs ?? 20_000,
+        signal,
+      ),
+    );
+  }
+  #refreshQuota(profileId: string, force = false): Promise<AntigravityQuotaReading | null> {
     if (this.#closed) return Promise.resolve(null);
-    if (
-      !force &&
-      !this.#quotaRefresh &&
-      Date.now() - this.#quotaFetchedAt < QUOTA_REFRESH_COOLDOWN_MS
-    ) {
-      return Promise.resolve(this.#quota);
+    let cached = this.#quotaByProfile.get(profileId);
+    if (!cached) {
+      cached = { reading: null, fetchedAt: Number.NEGATIVE_INFINITY };
+      this.#quotaByProfile.set(profileId, cached);
     }
-    return (this.#quotaRefresh ??= (async () => {
-      const command = resolveAntigravityExecutable({
-        ...(this.options.command ? { command: this.options.command } : {}),
-        environment: this.#environment,
+    if (cached.pending) return cached.pending;
+    if (!force && Date.now() - cached.fetchedAt < QUOTA_REFRESH_COOLDOWN_MS)
+      return Promise.resolve(cached.reading);
+
+    const entry = cached;
+    entry.pending = this.#fetchQuota(this.#abort.signal)
+      .then(async (quota) => {
+        const current = await this.#currentProfile();
+        if (this.#closed || current?.id !== profileId) return null;
+        entry.reading = quota;
+        entry.fetchedAt = Date.now();
+        return quota;
+      })
+      .finally(() => {
+        delete entry.pending;
       });
-      const quota = command
-        ? await fetchAntigravityQuota((args) =>
-            runQuotaCli(
-              command,
-              args,
-              this.#quotaCwd,
-              this.#environment,
-              this.options.inspectTimeoutMs ?? 20_000,
-              this.#abort.signal,
-            ),
-          )
-        : null;
-      if (!this.#closed) this.#quota = quota;
-      return this.#closed ? null : quota;
-    })().finally(() => {
-      if (!this.#closed) this.#quotaFetchedAt = Date.now();
-      this.#quotaRefresh = undefined;
-    }));
+    return entry.pending;
   }
   async inspectAccount() {
-    const quota = await this.#refreshQuota(true);
-    const credits = quota ? projectAntigravityQuota(quota) : null;
+    const profile = await this.#currentProfile();
+    if (!profile) return null;
+    const quota = await this.#refreshQuota(profile.id, true);
+    if (!quota) return null;
+    const credits = projectAntigravityQuota(quota);
     if (!credits) return null;
+    const retainedPrewarmDirectory = this.options.retainedPrewarmDirectory;
+    const retained = retainedPrewarmDirectory
+      ? await inspectAntigravityPrewarmSource(
+          this.#environment,
+          profile,
+          quota,
+          retainedPrewarmDirectory,
+        ).catch(() => undefined)
+      : undefined;
     return {
+      ...(retained ? { billingSourceRef: retained.ref } : {}),
+      ...(retained?.scopes.length ? { retainedPrewarmScopes: retained.scopes } : {}),
       credits: {
         usedPercent: credits.usedPercent,
         periodType: credits.periodType,
@@ -2242,14 +2288,42 @@ export class AntigravityAdapter implements HarnessAdapter {
       },
     };
   }
+  async runRetainedPrewarm(
+    input: RetainedPrewarmParams,
+  ): Promise<HarnessResult<RetainedPrewarmResult>> {
+    if (this.#closed) return err("invalidState", "Adapter is closed");
+    const { command, commandTimeoutMs, closeTimeoutMs, createTransport, retainedPrewarmDirectory } =
+      this.options;
+    if (!retainedPrewarmDirectory) return err("invalidState", "Retained prewarm is not configured");
+    const pending = runAntigravityRetainedPrewarm(input, retainedPrewarmDirectory, {
+      ...(command ? { command } : {}),
+      ...(commandTimeoutMs !== undefined ? { commandTimeoutMs } : {}),
+      ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
+      ...(createTransport ? { createTransport } : {}),
+      environment: this.#environment,
+      signal: this.#abort.signal,
+      readActiveQuota: (signal, cwd) => this.#fetchQuota(signal, cwd),
+    });
+    this.#retainedPrewarms.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.#retainedPrewarms.delete(pending);
+    }
+  }
   async close(): Promise<void> {
     this.#closed = true;
     this.#abort.abort();
     this.#cache.clear();
     this.#inflight.clear();
-    this.#quota = null;
-    this.#quotaFetchedAt = Number.NEGATIVE_INFINITY;
-    await Promise.all([...this.#sessions].map((session) => session.close()));
+    this.#quotaByProfile.clear();
+    const settled = await Promise.allSettled([
+      ...Array.from(this.#sessions, (session) => session.close()),
+      ...this.#retainedPrewarms,
+    ]);
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
     this.#sessions.clear();
   }
 }

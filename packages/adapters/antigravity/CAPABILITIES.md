@@ -65,6 +65,7 @@
 ## 受限与已知缺口
 
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
+- 配额预热以 Antigravity Profile 为固定边界，原生 `/usage` 缺少 email/accountId 等可靠登录信号时也允许该 Profile 的实用预热；不会读取令牌或切换登录。Gemini Models 使用 `gemini-3.8-flash`，Claude and GPT Models 使用 `claude-sonnet-5-5`，均要求 `low`。每个 Profile 和额度组复用独立的 Adapter 原生会话；失败或无法判定的请求不重放，也不删除历史。有可靠登录信号时以 `accountVerification: "verified"` 标识尽力核验，可检测换号才报告 `accountChanged` 并按当前账号复用旧会话；匿名时为 `"unverified"` 且不报告变化。任何一档都不宣称可靠的逐请求扣费归属。调用方最低要求 Host `0.26.0-rc.1`，并须确认 owner channel 支持 `codexhost/harness/retained-prewarm/run` 且账号快照公布目标 `retainedPrewarmScopes`；原生 CLI 仍要求 `agy >= 1.5.8` 及相应 ACP 模型能力。
 - Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此克隆 SQLite，按用户输入（`step_type = 14`）或已结算唤醒边界裁剪后调用 `session/resume`。回滚在活动 Turn 期间返回 `sessionBusy`；运行中 Fork 仅当目标是当前会话已确认完成、严格早于活动 Turn 的用户检查点、没有运行中的子代理、源库为 WAL 时放行。边界定位和克隆使用同一只读快照，不占用源会话，也不复制 `brain` 目录。裁剪时 `gen_metadata`、`executor_metadata`、`parent_references`、`battle_mode_infos` 按各自 protobuf 中的原生步骤索引保留前缀（行号不是步骤号），派生摘要由保留前缀重算。
 - 自主唤醒与后台等待：`agy 1.5.15+` 在存在非 daemon 后台任务（如一次性 `schedule` 定时器、后台命令、子代理）时保持 `session/prompt` 打开直至任务完成，运行中可直接通过 `turn.steer`（并发 `session/prompt`）插话而不取消后台任务；仅常驻 daemon 任务（`IsDaemon: true`）或旧版 CLI 的空闲态唤醒通过 SQLite 确认最终回答后独立发布为无输入 Turn。原生 SQLite 历史按原生运行边界回放（包含 `wake-*` 节点），Fork、回滚与委派读取均以原生边界为准。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
@@ -92,3 +93,5 @@
 | Host 集成 | 独立 `CODEXHOST_DATA_DIR` 下 `HostRuntime` 全链路隔离验收（预热草稿配置选择、多轮对话、文件 Diff 与审批、Host 重启冷恢复、跨目录 Fork、Rollback、会话导入、会话与全局用量计价） | 5 阶段全链路实测全部通过，退出后 `agy acp` 残留进程为 0 |
 | 真实原生验收 | `CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL=1 npx vitest run -c tests/vitest.config.js packages/host-runtime/test/antigravity-question.real.test.ts` | 1/1 通过（真实 `elicitation/create` 回答、中途取消 `interaction.closed` 顺序、`session/resume` 恢复） |
 | Desktop / 委派 | 向下委派（`CODEXHOST_*` 环境变量与 `_meta.antigravity.systemPrompt.append`）与无人值守接收委派（`unattended-full-access` + `session/resume`）单测及 Host 协议投影校验 | 通过（未改动用户正在运行的 Desktop 进程） |
+| 真实额度预热：Gemini Models | 历史真实环境验收记录，固定 `gemini-3.8-flash / low` 与 retained Session | 真实预热已完成 |
+| 真实额度预热：Claude and GPT Models | 历史真实环境验收记录，固定 `claude-sonnet-5-5 / low` 与 retained Session | 真实预热已完成 |

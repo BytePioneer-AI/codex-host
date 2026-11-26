@@ -540,7 +540,8 @@ describe("Antigravity live command skill filtering and readiness", () => {
       });
 
       // Update B arrives and finishes while update A NEVER resolves.
-      emitter.current?.({
+      if (!emitter.current) throw new Error("Session event handler was not registered");
+      emitter.current({
         type: "commands.update",
         commands: [{ name: "beta", description: "Fresh command B" }],
       });

@@ -299,6 +299,18 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 
 账号查询缓存归当前 Host 实例所有，按 Harness 隔离；普通 `accounts/inspect` / `accounts/list` 查询可复用 15 秒内的结果并合并同一 Harness 的在途查询。显式 `refresh: true` 跳过已完成缓存及既有在途查询，启动新的原生账号检查；被替代的查询仍可回应其原调用方，但不能覆盖新查询的缓存或清除其在途记录。
 
+### 指定 Billing Source 的一次性会话
+
+账号快照可返回稳定、非敏感的 `billingSourceRef: { harnessId, id }`，供同一 Harness 区分多个 Billing Source。引用不含 OAuth 凭据，Adapter 负责把它解析为当前原生账号；邮箱、显示顺序或 Harness ID 本身不是可执行身份。失效、歧义、跨配置目录或不支持的引用在创建 Thread 前拒绝，禁止改投其他账号。
+
+外部 `thread/start` 可显式携带该引用。实现 `openBillingSource` 的 Adapter 必须打开限定于该来源的 Session，并在创建回执及实际 Turn 归属中返回同一引用；未指定引用的既有 Thread 行为不变。此类一次性 Thread 需要明确工作目录，不进入草稿预热、空闲卸载或重开路径，原生 Session 关闭和清理结果未确认时保留映射及恢复证据。
+
+外部 `thread/delete` 在删除 Host 映射前调用 Session 的 `confirmNativeCleanup()`，分别报告 `nativeSession: "deleted" | "not-persisted"` 与 `hostMapping: "deleted"`。正常 Host 关闭也尝试同一终结事务，未结束的 Session 输出不阻塞 Adapter 关闭。当前进程中，未确认的清理会保留映射，并在有 Session 时允许重试；映射写入失败不丢失已确认的回执。重启后没有可信回执时，调用方可用已知 Thread ID 显式删除映射并得到 `nativeSession: "unknown"`，这不宣称原生清理成功。`creating` 记录不会出现在普通 `thread/list` 中。OMP 当前用隔离凭据绑定和内存 Session 实现该契约，公开引用只保存 Profile、Provider 与原生 `identityKey` 的哈希，账号解析、Session prepare 和 Turn 终态均核对同一身份。
+
+Antigravity 另有 `codexhost/harness/retained-prewarm/run`：按 Profile 引用与配额 scope 复用一个原生会话，Gemini 使用 `gemini-3.8-flash / low`，Claude/GPT 使用 `claude-sonnet-5-5 / low`，不创建 CodexHost Thread。Profile 指纹与 Session ID 用于重启恢复，匿名 Profile 也可预热；换号后优先复用旧对话并更新当前归属，原生拒绝恢复、返回不同 Session 或模型不符时停止且不创建替代会话。`accountVerification` 区分当前登录信号是否可核验，匿名时 `accountChanged` 省略；归属与模型核验均为尽力而为，不等同逐请求扣费回执。调用方要求 Host `>= 0.26.0-rc.1`，并以 owner-channel 方法及 `retainedPrewarmScopes` 做能力协商。常驻历史保留在 Antigravity 中，停用不删除。
+
+插件的私有持久化路径从工厂初始化时提供的 `HarnessPluginContext.dataDirectory` 派生；账号检查和预热请求不接收磁盘路径。Antigravity 在原生关闭得到确认后允许重试未提交 prompt 的瞬态失败；关闭未确认时不重新认领可能仍被占用的会话。
+
 ## 插件拥有的展示元数据
 
 权限模式和命令目录可提供 `localizations: { [locale]: { label?, description? } }`。公共 `localizeHarnessPresentation` 按精确 locale、语言、原文逐字段回退；不根据模式 ID、英文文案或 `/compact` 推断语义。插件拥有翻译、原生动态目录的已知文案映射及版本兼容，未知原生文案保留原样。元数据不允许覆盖 ID、危险标记、参数或执行行为，限制 locale 数量、键和文本长度。`atCreate` 的锁定提示属于通用能力说明，不点名某个 Harness。
@@ -309,7 +321,7 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 额度主窗口及 `productUsage` 可提供原生 `scope: { id, label, localizations? }`；每个附加窗口可提供自己的 `periodType`。客户端按 scope 的稳定 ID 分组，通过 `accountCreditsWindowLabel` 展示本地化范围与公共周期，不解析产品名称中的 `7-day` 等字符串。缺少新元数据的旧插件仍显示原文和数值，不猜周期；未知或自定义的主窗口标签不会被公共周期覆盖。Grok 账号概览由插件只提供共享套餐额度，产品细分仍保留在会话额度浮窗，不再由 Renderer 根据 Grok ID 过滤。
 
-`HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。
+`HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者按需异步读取或刷新，原生认证、有效期、并发合并及失效策略仍归插件。提供同步读取时，Host 在后台刷新；仅提供异步读取时，Host 等待其返回，以便插件先确认当前 Profile。Host 校验公开结构并隔离读取异常；私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。
 
 `HarnessSession.readAccountCredits?()` 是会话级可选接口，用于按当前 Session 实际归属账号读取额度。当 Session 实现该接口时，`thread/usage/inspect` 优先使用它而非 `Adapter.credits()`，不触发 `Adapter.refreshCredits()`，并将 `accountCreditsSupported` 标为 `true`。Session 可在 `outputs` 发出 `session.accountCredits.changed` 事件以失效额度投影而不改动 Token 用量；Host 收到后发出 `thread/usage/updated` 通知并广播客户端失效事件。
 

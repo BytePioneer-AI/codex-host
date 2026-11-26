@@ -1491,7 +1491,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(duplicate).resolves.toMatchObject({
       threadId: "native-child",
       turnId: "native-turn",
+      status: "completed",
     });
+    expect(fixture.collector.messages.some((message) => message.id === duplicateRead.id)).toBe(
+      false,
+    );
     expect(fixture.official.stdin.readableLength).toBe(0);
 
     const implicitPending = delegationApi.start({
@@ -1518,7 +1522,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
     });
     await answerOfficialParentCwd(fixture);
-    await expect(implicitDuplicate).resolves.toMatchObject({ threadId: "implicit-child" });
+    await expect(implicitDuplicate).resolves.toMatchObject({
+      threadId: "implicit-child",
+      turnId: "implicit-turn",
+      status: "running",
+    });
     expect(fixture.official.stdin.readableLength).toBe(0);
     await stopFixture(fixture);
   });
@@ -1589,6 +1597,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await answerOfficialParentCwd(fixture);
     const threadStart = await readJsonLine(fixture.official.stdin);
+    expect(threadStart).toMatchObject({ method: "thread/start" });
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
@@ -1599,6 +1608,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     fixture.official.stdout.write(`${JSON.stringify({ id: deletion.id, result: {} })}\n`);
     await expect(pending).rejects.toThrow("Synthetic Delegation write failure");
+    await expect(fixture.mappingStore.listDelegations()).resolves.toEqual([]);
+    expect(fixture.official.stdin.readableLength).toBe(0);
     await stopFixture(fixture);
   });
 
@@ -1743,11 +1754,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       }
     }
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const baseToken = "runtime-root-token";
     const fixture = createFixture({
       environment: {
         CODEXHOST_CLI_PATH: "/opt/codexhost",
         CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_RUNTIME_TOKEN: baseToken,
       },
       externalAdapters: new Map([["pi", adapter]]),
     });
@@ -1756,10 +1768,11 @@ describe("AppServerHost HarnessAdapter projection", () => {
       environment: {
         CODEXHOST_CLI_PATH: "/opt/codexhost",
         CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: boundDelegationToken("token", threadId),
+        CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(baseToken, threadId),
         CODEXHOST_THREAD_ID: threadId,
       },
     });
+    expect(Object.values(adapter.openedInputs[0]?.environment ?? {})).not.toContain(baseToken);
     await stopFixture(fixture);
   });
 

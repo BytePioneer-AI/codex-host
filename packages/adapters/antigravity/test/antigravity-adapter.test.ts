@@ -9,6 +9,7 @@ import { DatabaseSync, StatementSync } from "node:sqlite";
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
+  harnessAccountSnapshotSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -211,12 +212,30 @@ async function start(session: HarnessSession, transports: FakeTransport[], id = 
   await vi.waitFor(() => expect(transports.at(-1)?.handler).toBeDefined());
   return required(transports.at(-1));
 }
-async function completed(outputs: HarnessOutput[], id = "t1") {
-  await vi.waitFor(() =>
-    expect(
-      events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === id),
-    ).toHaveLength(1),
+async function completed(outputs: HarnessOutput[], id = "t1", options?: { timeout: number }) {
+  await vi.waitFor(
+    () =>
+      expect(
+        events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === id),
+      ).toHaveLength(1),
+    options,
   );
+}
+function nextRead() {
+  const get = StatementSync.prototype.get;
+  const firstRead = deferred<number>();
+  const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+    this: StatementSync,
+    ...params: Parameters<StatementSync["get"]>
+  ) {
+    const row = get.apply(this, params);
+    if (this.sourceSQL.includes("count(*) AS n FROM steps WHERE step_type = 14")) {
+      spy.mockRestore();
+      firstRead.resolve(Number(row?.n));
+    }
+    return row;
+  });
+  return firstRead.promise;
 }
 /** CortexStepMetadata field 1 is the step's native creation time. */
 function stampStep(db: DatabaseSync, idx: number, atMs: number) {
@@ -660,6 +679,7 @@ describe("Antigravity ACP Session", () => {
   it("forks a committed prefix without holding up the running or next source Turn", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-live-fork-"));
     directories.push(home);
+    const resumeStarted = deferred<undefined>();
     const resume = deferred<undefined>();
     const { adapter, transports } = fixture(
       { environment: { HOME: home, USERPROFILE: home } },
@@ -667,6 +687,7 @@ describe("Antigravity ACP Session", () => {
         if (index === 1) {
           const open = required(transport.openSession.getMockImplementation());
           transport.openSession.mockImplementation(async (input) => {
+            resumeStarted.resolve(undefined);
             await resume.promise;
             return open(input);
           });
@@ -720,7 +741,8 @@ describe("Antigravity ACP Session", () => {
       ).toMatchObject(busy);
 
       const forked = adapter.open(request);
-      await vi.waitFor(() => expect(transports).toHaveLength(2), { timeout: 10_000 });
+      expect(await Promise.race([resumeStarted.promise, forked])).toBeUndefined();
+      expect(transports).toHaveLength(2);
       expect(transport.cancel).not.toHaveBeenCalled();
       answerStep(db, 5, "source-only answer");
       transport.result.resolve({ stopReason: "end_turn" });
@@ -1660,6 +1682,95 @@ describe("Antigravity ACP Session", () => {
       db.close();
     }
   });
+  it.each(["gemini", "claude"])(
+    "reuses the selected %s Session and resumes its original identity in a new Adapter",
+    async (selected) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agy-retained-"));
+      directories.push(home);
+      const options = { environment: { HOME: home, USERPROFILE: home } };
+      const first = fixture(options);
+      const { session, outputs } = await sessionOf(
+        await first.adapter.open({ kind: "create", cwd: home, model: model(selected) }),
+      );
+      const initial = await start(session, first.transports);
+      const nativeRef = required(session.initialState.nativeRef);
+      const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+      try {
+        userStep(db, 0, "first warmup");
+        answerStep(db, 1, "OK");
+        initial.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs);
+
+        initial.result = deferred();
+        await start(session, first.transports, "t2");
+        await vi.waitFor(() => expect(initial.prompt).toHaveBeenCalledTimes(2));
+        userStep(db, 2, "second warmup");
+        answerStep(db, 3, "OK");
+        initial.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs, "t2");
+        expect(session.initialState).toMatchObject({ nativeRef, effectiveModel: model(selected) });
+        expect(initial.openSession).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ kind: "create", cwd: home }),
+        );
+
+        await first.adapter.close();
+        const restarted = fixture(options);
+        const { session: restored, outputs: restoredOutputs } = await sessionOf(
+          await restarted.adapter.open({
+            kind: "resume",
+            cwd: home,
+            nativeRef,
+            model: model(selected),
+          }),
+        );
+        expect(await restored.readSnapshot()).toMatchObject({
+          ok: true,
+          value: {
+            turns: [{ input: [{ text: "first warmup" }] }, { input: [{ text: "second warmup" }] }],
+          },
+        });
+        const writer = await start(restored, restarted.transports, "t3");
+        expect(writer.openSession).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ kind: "resume", sessionId: nativeRef.nativeSessionId }),
+        );
+        expect(restored.initialState).toMatchObject({ nativeRef, effectiveModel: model(selected) });
+        userStep(db, 4, "third warmup");
+        answerStep(db, 5, "OK");
+        writer.result.resolve({ stopReason: "end_turn" });
+        await completed(restoredOutputs, "t3");
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("does not prompt a restored Session when ACP confirms a different model group", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-model-rejected-"));
+    directories.push(home);
+    const { adapter, transports } = fixture(
+      { environment: { HOME: home, USERPROFILE: home } },
+      (transport) => transport.setConfigOption.mockResolvedValueOnce(config()),
+    );
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: home, nativeRef: ref(), model: model("claude") }),
+    );
+    expect(
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("t1"),
+        input: [{ type: "text", text: "synthetic" }],
+      }),
+    ).toMatchObject({ ok: true });
+    await completed(outputs);
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        outcome: { status: "failed", error: expect.objectContaining({ code: "protocolError" }) },
+      }),
+    );
+    expect(required(transports[0]).prompt).not.toHaveBeenCalled();
+  });
+
   it("closes an unopened restored Session without starting a process", async () => {
     const { adapter, transports } = fixture();
     const { session } = await sessionOf(
@@ -2164,76 +2275,126 @@ describe("ACP interaction round trips", () => {
 });
 
 describe("inspection and errors", () => {
-  it.skipIf(process.platform === "win32")(
-    "reads and refreshes native quota without a user Session or leaking fetchedAt",
-    async () => {
-      const home = await mkdtemp(path.join(os.tmpdir(), "agy-quota-"));
-      directories.push(home);
-      const command = path.join(home, "agy");
-      const quota = {
-        event: "command_result",
-        command: {
-          name: "usage",
-          data: {
-            groups: [
-              { name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 0.75 }] },
-              {
-                name: "Claude and GPT Models",
-                buckets: [{ window: "5h", remaining_fraction: 1 }],
-              },
-            ],
-          },
+  it("preserves both model pools and their reset windows on one public account without starting ACP", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-quota-"));
+    directories.push(home);
+    const windows = process.platform === "win32";
+    const command = path.join(home, windows ? "agy.cmd" : "agy");
+    const script = path.join(home, "usage.mjs");
+    const fiveHour = "2026-11-14T20:16:50Z";
+    const weekly = "2026-11-18T08:00:00Z";
+    const quota = {
+      event: "command_result",
+      command: {
+        name: "usage",
+        data: {
+          groups: [
+            {
+              name: "Gemini Models",
+              buckets: [
+                { window: "5h", remaining_fraction: 0.75, reset_time: fiveHour },
+                { window: "weekly", remaining_fraction: 0.6, reset_time: weekly },
+              ],
+            },
+            {
+              name: "Claude and GPT Models",
+              buckets: [
+                { window: "5h", remaining_fraction: 1, reset_time: fiveHour },
+                { window: "weekly", remaining_fraction: 0.8, reset_time: weekly },
+              ],
+            },
+          ],
         },
-      };
-      const writeQuota = async (script: string) => {
-        await writeFile(command, script);
-        await chmod(command, 0o755);
-      };
-      const quotaScript = `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`;
-      await writeQuota(quotaScript);
-      let now = 100_000;
-      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-      const { adapter, transports } = fixture({ command });
-      try {
-        expect(adapter.credits()).toBeNull();
-        expect(await adapter.refreshCredits()).toMatchObject({
-          usedPercent: 25,
-          periodType: "five_hour",
-        });
-        const account = await adapter.inspectAccount();
-        expect(account?.credits).toMatchObject({ usedPercent: 25 });
-        expect(account?.credits).not.toHaveProperty("fetchedAt");
+      },
+    };
+    await writeFile(
+      command,
+      windows
+        ? `@"${process.execPath}" "${script}" %*\r\n`
+        : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+      { encoding: "utf8", mode: 0o755 },
+    );
+    const quotaScript = `console.log("diagnostic"); console.log(JSON.stringify(${JSON.stringify(quota)}));`;
+    await writeFile(script, quotaScript, "utf8");
+    let now = 100_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { adapter, transports } = fixture({ command });
+    try {
+      expect(await adapter.refreshCredits()).toMatchObject({
+        usedPercent: 25,
+        periodType: "five_hour",
+      });
+      const account = harnessAccountSnapshotSchema.parse(await adapter.inspectAccount());
+      expect(account.credits).toMatchObject({
+        scope: { id: "Gemini Models" },
+        periodType: "five_hour",
+        usedPercent: 25,
+        resetsAt: fiveHour,
+        productUsage: [
+          {
+            scope: { id: "Gemini Models" },
+            periodType: "weekly",
+            usagePercent: 40,
+            resetsAt: weekly,
+          },
+          {
+            scope: { id: "Claude and GPT Models" },
+            periodType: "five_hour",
+            usagePercent: 0,
+            resetsAt: fiveHour,
+          },
+          {
+            scope: { id: "Claude and GPT Models" },
+            periodType: "weekly",
+            usagePercent: 20,
+            resetsAt: weekly,
+          },
+        ],
+      });
+      expect(account.credits).not.toHaveProperty("fetchedAt");
+      const openedSessions = [];
+      for (const [id, scope, usedPercent] of [
+        ["gemini-3-flash", "Gemini Models", 25],
+        ["claude-opus-4-6", "Claude and GPT Models", 0],
+        ["gpt-oss-120b", "Claude and GPT Models", 0],
+      ] as const) {
         const { session } = await sessionOf(
-          await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
+          await adapter.open({ kind: "create", cwd: home, model: model(id) }),
         );
-        await writeQuota("#!/bin/sh\nexit 1\n");
-        now = 110_000;
+        openedSessions.push({ session, scope, usedPercent });
         expect(await session.readAccountCredits?.()).toMatchObject({
-          scope: { id: "Claude and GPT Models" },
-          usedPercent: 0,
-          productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
+          scope: { id: scope },
+          usedPercent,
         });
-        expect(await adapter.refreshCredits()).toMatchObject({
-          usedPercent: 25,
-          periodType: "five_hour",
-        });
-        expect(transports).toHaveLength(0);
-        expect(await adapter.inspectAccount()).toBeNull();
-        expect(adapter.credits()).toBeNull();
-        await writeQuota(quotaScript);
-        now = 140_000;
-        expect(await adapter.refreshCredits()).toBeNull();
-        now = 170_000;
-        expect(await adapter.refreshCredits()).toMatchObject({
-          usedPercent: 25,
-          periodType: "five_hour",
-        });
-      } finally {
-        clock.mockRestore();
-        await adapter.close();
       }
-    },
-  );
+      expect(transports).toHaveLength(0);
+      await writeFile(script, "process.exitCode = 1;\n", "utf8");
+      now = 110_000;
+      for (const { session, scope, usedPercent } of openedSessions) {
+        expect(await session.readAccountCredits?.()).toMatchObject({
+          scope: { id: scope },
+          usedPercent,
+        });
+      }
+      expect(await adapter.refreshCredits()).toMatchObject({
+        usedPercent: 25,
+        periodType: "five_hour",
+      });
+      expect(await adapter.inspectAccount()).toBeNull();
+      expect(await adapter.refreshCredits()).toBeNull();
+      await writeFile(script, quotaScript, "utf8");
+      now = 140_000;
+      expect(await adapter.refreshCredits()).toBeNull();
+      now = 170_000;
+      expect(await adapter.refreshCredits()).toMatchObject({
+        usedPercent: 25,
+        periodType: "five_hour",
+      });
+    } finally {
+      clock.mockRestore();
+      await adapter.close();
+    }
+  });
   it("normalizes native faults and redacts diagnostics", () => {
     expect(
       normalizeAntigravityError(
@@ -2331,7 +2492,7 @@ describe("inspection and errors", () => {
       expect(account).toMatchObject({
         credits: { usedPercent: 25, periodType: "five_hour" },
       });
-      expect(adapter.credits()?.usedPercent).toBe(25);
+      expect((await adapter.refreshCredits())?.usedPercent).toBe(25);
       await adapter.close();
     },
   );
@@ -2357,23 +2518,6 @@ describe("Antigravity foreground native commits", () => {
     );
     const transport = await start(session, transports);
     return { adapter, home, nativeRef, session, outputs, transport, db };
-  }
-
-  function nextRead() {
-    const get = StatementSync.prototype.get;
-    const firstRead = deferred<number>();
-    const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
-      this: StatementSync,
-      ...params: Parameters<StatementSync["get"]>
-    ) {
-      const row = get.apply(this, params);
-      if (this.sourceSQL.includes("count(*) AS n FROM steps WHERE step_type = 14")) {
-        spy.mockRestore();
-        firstRead.resolve(Number(row?.n));
-      }
-      return row;
-    });
-    return firstRead.promise;
   }
 
   const terminal = (outputs: HarnessOutput[], id = "t1") => {
@@ -3262,6 +3406,7 @@ describe("Antigravity idle wake Turns", () => {
   it("waits for a delayed steered WAL commit and keeps prior foreground compaction checkpoints", async () => {
     const { session, outputs, transport, db } = await setup();
     try {
+      db.exec("PRAGMA journal_mode = WAL");
       db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
       stampStep(db, 0, Date.now());
       await moment();
@@ -3273,17 +3418,18 @@ describe("Antigravity idle wake Turns", () => {
         }),
       ).toEqual({ ok: true, value: { accepted: true } });
       const steerCreatedAtMs = Date.now();
+      db.exec("BEGIN IMMEDIATE");
+      userStep(db, 2, "delayed steer", "run-b");
+      stampStep(db, 2, steerCreatedAtMs);
+      checkpointStep(db, 3, { status: 3, run: "prompt", summary: "Late initial compaction" });
+      const firstRead = nextRead();
       transport.result.resolve({ stopReason: "end_turn" });
       required(transport.handler).onResponse?.();
       required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
-      // Commit steer's USER_INPUT after observeNativeTurnCount's initial 0ms read,
-      // along with a late compaction checkpoint belonging to the initial prompt's run.
-      setTimeout(() => {
-        userStep(db, 2, "delayed steer", "run-b");
-        stampStep(db, 2, steerCreatedAtMs);
-        checkpointStep(db, 3, { status: 3, run: "prompt", summary: "Late initial compaction" });
-      }, 40);
-      await completed(outputs, "t1");
+      // The first native read sees only the initial prompt, not the uncommitted steer.
+      expect(await firstRead).toBe(1);
+      db.exec("COMMIT");
+      await completed(outputs, "t1", { timeout: 5_000 });
       expect(
         events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
       ).toMatchObject({

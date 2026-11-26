@@ -96,12 +96,15 @@ function includesExternalRecord(
 ): boolean {
   const hasPendingInjection =
     record.state === "creating" && (record.pendingInjectedText?.length ?? 0) > 0;
-  if (
+  if (record.billingSourceRef) {
+    if (record.state === "creating") return false;
+  } else if (
     (record.state !== "ready" || !record.nativeSessionRef) &&
     !hasSubmittedTurn &&
     !hasPendingInjection
-  )
+  ) {
     return false;
+  }
   // Rollback retains old records for historical links, but only rebound children
   // belong to the parent's current Native Session (including nested children).
   let current = record;

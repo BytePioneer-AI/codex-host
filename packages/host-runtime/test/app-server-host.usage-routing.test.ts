@@ -5,6 +5,7 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { encodeExternalTransportSelection } from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
+  hostThreadIdSchema,
   IDLE_RELEASE_SETTINGS_METHOD,
   LOADED_SESSIONS_METHOD,
   type AccountCreditsSnapshot,
@@ -21,6 +22,7 @@ import {
   requestId,
   requiredMessageId,
   rollbackCapableAdapter,
+  startExternalThread,
   startPiThread,
   startPiTurn,
   stopFixture,
@@ -474,6 +476,26 @@ describe("Usage inspection request routing", () => {
     }
   });
 
+  it("reports asynchronous account credits without a synchronous Adapter cache", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const credits: AccountCreditsSnapshot = { usedPercent: 25, periodType: "five_hour" };
+    const fixture = createFixture({
+      externalAdapters: new Map([
+        ["pi", Object.assign(adapter, { refreshCredits: async () => credits })],
+      ]),
+    });
+    try {
+      const threadId = await startPiThread(fixture);
+      await expect(
+        fixture.host.handleClientRequest(usageMethod, { threadId }),
+      ).resolves.toMatchObject({
+        result: { threadId, accountCreditsSupported: true, accountCredits: credits },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each(["resolve", "reject"] as const)(
     "protects background refreshUsage() from idle release without extending lastActivity (%s)",
     async (outcome) => {
@@ -543,11 +565,24 @@ describe("Usage inspection request routing", () => {
     },
   );
 
-  it("resolves real history capabilities for cold Threads on first inspect without waking adapter.open()", async () => {
+  it("inspects cold Threads without opening them or mixing ordinary and Billing Source capabilities", async () => {
     const seed = createFixture();
+    const harnessId = harnessIdSchema.parse("pi");
+    const billingSourceRef = { harnessId, id: "cold-billing-source" };
+    const coldBillingId = hostThreadIdSchema.parse("cold-billing-thread");
     let externalId: string;
     try {
       externalId = await startPiThread(seed);
+      await seed.mappingStore.createProvisional({
+        hostThreadId: coldBillingId,
+        createRequestId: "cold-billing-create",
+        harnessId,
+        billingSourceRef,
+        cwd: "/synthetic",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: true,
+        historyMode: "legacy",
+      });
     } finally {
       await closeFixture(seed);
     }
@@ -555,9 +590,33 @@ describe("Usage inspection request routing", () => {
     const adapter = rollbackCapableAdapter();
     const open = vi.spyOn(adapter, "open");
     const inspect = vi.spyOn(adapter, "inspect");
+    const credits = vi.fn(() => ({ usedPercent: 25, periodType: "five_hour" as const }));
+    const boundAdapter = new FakeHarnessAdapter(harnessId, undefined, false);
     const fresh = createFixture({
       mappingStoreDirectory: seed.mappingStoreDirectory,
-      externalAdapters: new Map([["pi", adapter]]),
+      externalAdapters: new Map([
+        [
+          "pi",
+          Object.assign(adapter, {
+            credits,
+            async openBillingSource(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+              const opened = await boundAdapter.open(input);
+              const nativeCleanup = "not-persisted" as const;
+              if (!opened.ok) return { ...opened, nativeCleanup };
+              Object.defineProperty(opened.value, "initialState", {
+                value: { ...opened.value.initialState, nativeRef: undefined },
+              });
+              return {
+                ok: true as const,
+                value: Object.assign(opened.value, {
+                  billingSourceRef,
+                  confirmNativeCleanup: async () => ({ ok: true as const, value: nativeCleanup }),
+                }),
+              };
+            },
+          }),
+        ],
+      ]),
     });
     try {
       await fresh.ready;
@@ -576,6 +635,23 @@ describe("Usage inspection request routing", () => {
       });
       expect(open).not.toHaveBeenCalled();
       expect(inspect).toHaveBeenCalledTimes(1);
+
+      writeRequest(fresh.desktopInput, {
+        id: 303,
+        method: inspectMethod,
+        params: { threadId: coldBillingId },
+      });
+      expect(await fresh.collector.waitFor((message) => requestId(message, 303))).toMatchObject({
+        result: { history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false } },
+      });
+      const coldUsage = await fresh.host.handleClientRequest(usageMethod, {
+        threadId: coldBillingId,
+      });
+      expect(coldUsage).toMatchObject({ result: { accountCreditsSupported: false } });
+      expect(coldUsage).not.toHaveProperty("result.accountCredits");
+      expect(credits).not.toHaveBeenCalled();
+
+      await startExternalThread(fresh, "codexhost/pi-native", 304, { billingSourceRef });
 
       // Subsequent cold inspections reuse cached history capabilities without re-probing.
       writeRequest(fresh.desktopInput, {

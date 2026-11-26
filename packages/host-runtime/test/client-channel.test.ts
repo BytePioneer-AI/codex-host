@@ -5,12 +5,18 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostTurnSnapshot } from "@codexhost/harness-adapter";
+import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import {
   HostClientChannel,
   discoverHostClientChannel,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
 import {
+  RETAINED_PREWARM_RUN_METHOD,
+  harnessIdSchema,
+  harnessThinkingOptionIdSchema,
+  type RetainedPrewarmParams,
+  type RetainedPrewarmResult,
   THREAD_STEER_STRICT_TARGET_PARAM,
   clientThreadSnapshotSchema,
   hostTurnIdSchema,
@@ -77,6 +83,98 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
+  it("runs retained prewarm over the owner channel without an external Thread mapping", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "retained-prewarm-host-"));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const harnessId = harnessIdSchema.parse("antigravity");
+    const target = {
+      billingSourceRef: { harnessId, id: "active-account" },
+      scopeId: "Gemini Models",
+    };
+    const nativeSessionRef = {
+      harnessId,
+      nativeSessionId: "synthetic-session",
+      formatVersion: 1 as const,
+    };
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const storageDirectory = path.join(dir, "retained-prewarm", harnessId);
+    const inspectAccount = vi.fn(async () => ({
+      billingSourceRef: target.billingSourceRef,
+      retainedPrewarmScopes: [target.scopeId],
+      credits: { usedPercent: 40, periodType: "weekly" as const },
+    }));
+    const run = vi.fn(async (input: RetainedPrewarmParams) => {
+      const value: RetainedPrewarmResult = {
+        ...input,
+        harnessId,
+        model: "gemini-3.8-flash",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("medium"),
+        nativeSessionRef,
+        status: "succeeded",
+        modelVerification: "unavailable",
+        accountVerification: "verified",
+        accountChanged: true,
+      };
+      return { ok: true as const, value };
+    });
+    const { a, fixture } = await setup({
+      environment: { CODEXHOST_DATA_DIR: dir },
+      additionalAdapters: new Map([
+        ["antigravity", Object.assign(adapter, { inspectAccount, runRetainedPrewarm: run })],
+      ]),
+    });
+
+    const listed = await a.request("codexhost/harness/accounts/inspect", {
+      harnessId,
+      refresh: true,
+    });
+    expect(listed).toMatchObject({
+      account: {
+        billingSourceRef: target.billingSourceRef,
+        retainedPrewarmScopes: [target.scopeId],
+      },
+    });
+    expect(inspectAccount).toHaveBeenCalledWith();
+    expect(JSON.stringify(listed)).not.toContain(storageDirectory);
+    await expect(
+      a.request(RETAINED_PREWARM_RUN_METHOD, { ...target, nativeSessionRef }),
+    ).rejects.toMatchObject({ code: -32602 });
+    await expect(
+      a.request(RETAINED_PREWARM_RUN_METHOD, {
+        ...target,
+        billingSourceRef: { ...target.billingSourceRef, harnessId: harnessIdSchema.parse("pi") },
+      }),
+    ).rejects.toMatchObject({ code: -32070 });
+    await expect(a.request(RETAINED_PREWARM_RUN_METHOD, target)).resolves.toMatchObject({
+      ...target,
+      nativeSessionRef,
+      status: "succeeded",
+      thinkingOptionId: "medium",
+      modelVerification: "unavailable",
+      accountVerification: "verified",
+      accountChanged: true,
+    });
+    expect(run).toHaveBeenCalledWith(target);
+    run.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...target,
+        scopeId: "Claude and GPT Models",
+        harnessId,
+        nativeSessionRef,
+        model: "gemini-3.8-flash",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+        status: "succeeded",
+        modelVerification: "matched",
+        accountVerification: "verified",
+      },
+    });
+    await expect(a.request(RETAINED_PREWARM_RUN_METHOD, target)).rejects.toMatchObject({
+      code: -32081,
+    });
+    expect(await fixture.mappingStore.listThreads()).toEqual([]);
+  });
+
   it("rejects non-Codex draft command inspection before reading the Adapter catalog", async () => {
     const { fixture, a } = await setup();
     const readCatalog = vi.fn(() => ({ commands: [] }));

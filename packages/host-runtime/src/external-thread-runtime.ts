@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  BillingSourceSession,
   HarnessAdapter,
   HarnessModelRef,
   HarnessResult,
@@ -9,6 +10,7 @@ import type {
   HostThreadSnapshot,
   HostTurnSnapshot,
   HostUsage,
+  NativeCleanupReceipt,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
@@ -51,6 +53,7 @@ import { reconcileExternalTurnItemIds } from "./external-turn-item-ids.js";
 import {
   ExternalSessionReleaseError,
   ExternalThreadLifecycle,
+  withSessionReleaseTimeout,
 } from "./external-thread-lifecycle.js";
 import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 
@@ -278,6 +281,8 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
+  // A null owner means this process knows cleanup is unresolved, but has no Session to retry.
+  readonly #nativeCleanups = new Map<string, NativeCleanupReceipt | HarnessSession | null>();
   readonly #liveFailures = new Map<string, Map<string, LiveFailedTurn>>();
   // Only completed snapshots mutate this ledger; never hold this gate while
   // closing a Session (close drains its outputs).
@@ -315,6 +320,7 @@ export class ExternalThreadRuntime {
       queue: input.idleRelease?.queue ?? new DesktopRequestQueue(),
       canRelease: (thread) =>
         !thread.sessionUnavailable &&
+        !thread.record.billingSourceRef &&
         !this.#lifecycle.busy(thread.id) &&
         (input.idleRelease?.canRelease(thread) ?? false),
       onClosed: async (thread) => {
@@ -358,22 +364,116 @@ export class ExternalThreadRuntime {
     this.#steeredTurnIds.delete(threadId);
   }
 
+  async #confirmNativeCleanup(session: HarnessSession): Promise<NativeCleanupReceipt> {
+    const confirm = (session as Partial<BillingSourceSession>).confirmNativeCleanup;
+    const confirmed = await withSessionReleaseTimeout(
+      Promise.resolve().then(() => confirm?.call(session)),
+      "Native cleanup timed out",
+    );
+    if (!confirmed?.ok || (confirmed.value !== "deleted" && confirmed.value !== "not-persisted")) {
+      throw new Error("Adapter did not confirm native cleanup");
+    }
+    return confirmed.value;
+  }
+
+  async #closeBillingSourceAfterSetup(session: HarnessSession): Promise<NativeCleanupReceipt> {
+    try {
+      await withSessionReleaseTimeout(
+        this.#lifecycle.closeSession(session),
+        "Session shutdown timed out",
+      );
+    } catch {
+      // Cleanup proof is independent of transport shutdown.
+    }
+    return this.#confirmNativeCleanup(session);
+  }
+
+  async #removeMapping(
+    hostThreadId: StoredThreadRecordV1["hostThreadId"],
+    receipt: NativeCleanupReceipt | "unknown" | undefined,
+  ): Promise<void> {
+    if (receipt === "deleted" || receipt === "not-persisted") {
+      this.#nativeCleanups.set(hostThreadId, receipt);
+    }
+    this.remove(hostThreadId);
+    await this.#repository.removeThread(hostThreadId);
+    this.#nativeCleanups.delete(hostThreadId);
+  }
+
+  /** Keep recovery evidence even when setup fails before the Session can be registered. */
+  async rollbackBillingSource(
+    hostThreadId: StoredThreadRecordV1["hostThreadId"],
+    cleanup: NativeCleanupReceipt | HarnessSession | null,
+  ): Promise<boolean> {
+    this.#nativeCleanups.set(hostThreadId, cleanup);
+    const thread = this.#threads.get(hostThreadId);
+    if (thread) this.markSessionUnavailable(thread);
+    try {
+      if (cleanup === null) return false;
+      const receipt =
+        typeof cleanup === "string" ? cleanup : await this.#closeBillingSourceAfterSetup(cleanup);
+      await this.#removeMapping(hostThreadId, receipt);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Confirm release before forgetting either the Session owner or its persisted mapping. */
-  async deleteThread(hostThreadId: StoredThreadRecordV1["hostThreadId"]): Promise<void> {
-    await this.#withLifecycle(hostThreadId, async () => {
+  async deleteThread(
+    hostThreadId: StoredThreadRecordV1["hostThreadId"],
+  ): Promise<"deleted" | "not-persisted" | "unknown" | undefined> {
+    return this.#withLifecycle(hostThreadId, async () => {
       const thread = this.#threads.get(hostThreadId);
+      const record = thread?.record ?? (await this.#repository.find(hostThreadId));
+      const billingSourceRef = record?.billingSourceRef;
+      let nativeSession: NativeCleanupReceipt | "unknown" | undefined;
+      const cleanupUnconfirmed = (cause: unknown) =>
+        new ExternalSessionReleaseError(
+          cause,
+          "Billing Source native cleanup is unconfirmed; the Host mapping was retained",
+        );
+      const cleanup = this.#nativeCleanups.get(hostThreadId);
+      if (billingSourceRef) {
+        try {
+          if (cleanup === null) throw new Error("No native cleanup owner was returned");
+          if (typeof cleanup === "string") nativeSession = cleanup;
+          else if (!thread) {
+            // Without an owner from this process, explicit deletion only forgets the mapping.
+            nativeSession = cleanup ? await this.#closeBillingSourceAfterSetup(cleanup) : "unknown";
+          }
+        } catch (error) {
+          throw cleanupUnconfirmed(error);
+        }
+      }
+      let releaseError: unknown;
       if (thread) {
         thread.sessionUnavailable = true;
         thread.stateObserver.fault(new Error("External Thread is being deleted"));
-        await this.#lifecycle.release(hostThreadId, thread.session, thread.outputTask);
+        try {
+          await this.#lifecycle.release(hostThreadId, thread.session, thread.outputTask);
+        } catch (error) {
+          if (!billingSourceRef) throw error;
+          releaseError = error;
+        }
       }
-      this.remove(hostThreadId);
-      await this.#repository.removeThread(hostThreadId);
+      if (billingSourceRef && thread && nativeSession === undefined) {
+        try {
+          nativeSession = await this.#confirmNativeCleanup(thread.session);
+          this.#nativeCleanups.set(hostThreadId, nativeSession);
+        } catch (error) {
+          throw cleanupUnconfirmed(releaseError ?? error);
+        }
+      }
+      if (releaseError) throw releaseError;
+      await this.#removeMapping(hostThreadId, nativeSession);
+      return nativeSession;
     });
   }
 
   clear(): void {
     this.#liveFailures.clear();
+    this.#nativeCleanups.clear();
     this.#threads.clear();
     this.#steeredTurnIds.clear();
   }
@@ -423,6 +523,7 @@ export class ExternalThreadRuntime {
 
   /** Called without awaiting from the output consumer: release itself drains that consumer. */
   async discardUnavailableIdle(thread: ExternalThread): Promise<void> {
+    if (thread.record.billingSourceRef) return; // Keep the cleanup authority for explicit deletion.
     const session = thread.session;
     try {
       await this.#withLifecycle(thread.id, async () => {
@@ -521,7 +622,7 @@ export class ExternalThreadRuntime {
       sessionUnavailable: false,
       steeredTurnIds,
     };
-    if (!input.record.subagent) {
+    if (!input.record.subagent && !input.record.billingSourceRef) {
       this.#historyCapabilities.set(harnessId, input.session.capabilities.history);
     }
     this.#restoreUsageMeasurements(externalThread);
@@ -669,6 +770,7 @@ export class ExternalThreadRuntime {
       };
     }
     if (!record) return { kind: "official" };
+    if (record.billingSourceRef) return { kind: "external", record, thread: null };
     if (
       (record.state !== "ready" || !record.nativeSessionRef) &&
       !isDeferredPendingRecord(record)
@@ -687,6 +789,18 @@ export class ExternalThreadRuntime {
         // Read after admission, never act on a location captured before another recovery.
         const location = await this.#locate(threadId);
         if (location.kind !== "external") return location;
+        if (
+          location.record.billingSourceRef &&
+          (!location.thread || location.thread.sessionUnavailable)
+        ) {
+          return {
+            kind: "error",
+            error: {
+              code: -32079,
+              message: "Disposable Billing Source Session cannot be restored",
+            },
+          };
+        }
         if (location.thread) {
           if (location.thread.sessionUnavailable && this.#idleForRestore(location.thread)) {
             await this.#dropIdleSession(location.thread);

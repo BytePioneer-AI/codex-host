@@ -40,6 +40,9 @@ import {
   LOADED_SESSIONS_METHOD,
   RELEASE_ANNOUNCEMENT_GET_METHOD,
   RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RETAINED_PREWARM_RUN_METHOD,
+  retainedPrewarmParamsSchema,
+  retainedPrewarmResultSchema,
   USAGE_STATISTICS_METHOD,
   usageStatisticsParamsSchema,
   type HarnessModelCatalog,
@@ -385,6 +388,51 @@ export class DesktopControlRequests {
           accounts: inspections.flatMap((inspection) => listedHarnessAccounts(inspection)),
         });
         await this.#host.writeJson(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      });
+      return true;
+    }
+    if (method === RETAINED_PREWARM_RUN_METHOD) {
+      this.#host.dispatchReply(request, async () => {
+        const parsed = retainedPrewarmParamsSchema.safeParse(request.params);
+        if (!parsed.success) {
+          await this.#host.writeJson(rpcError(request, -32602, "Invalid retained prewarm target"));
+          return;
+        }
+        const target = parsed.data;
+        await this.#host.waitForPlugins();
+        const adapter = this.#host.externalAdapters.get(target.billingSourceRef.harnessId);
+        if (!adapter?.runRetainedPrewarm) {
+          await this.#host.writeJson(
+            rpcError(request, -32070, "Harness does not support retained prewarm"),
+          );
+          return;
+        }
+        const result = await adapter.runRetainedPrewarm(target);
+        if (!result.ok) {
+          const code =
+            result.error.code === "invalidRequest"
+              ? -32602
+              : result.error.code === "unsupported"
+                ? -32070
+                : -32081;
+          await this.#host.writeJson(rpcError(request, code, result.error.message));
+          return;
+        }
+        const receipt = retainedPrewarmResultSchema.safeParse(result.value);
+        if (
+          !receipt.success ||
+          receipt.data.harnessId !== adapter.harnessId ||
+          receipt.data.billingSourceRef.id !== target.billingSourceRef.id ||
+          receipt.data.scopeId !== target.scopeId
+        ) {
+          await this.#host.writeJson(
+            rpcError(request, -32081, "Retained prewarm outcome could not be confirmed"),
+          );
+          return;
+        }
+        await this.#host.writeJson(
+          rpcEnvelope(request, { result: jsonValueSchema.parse(receipt.data) }),
+        );
       });
       return true;
     }

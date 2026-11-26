@@ -380,7 +380,8 @@ export class MappingStore {
           record.state === "creating" &&
           !record.nativeSessionRef &&
           !record.importSourceRef &&
-          !hasPendingInjection
+          !hasPendingInjection &&
+          !record.billingSourceRef
         ) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
@@ -642,6 +643,7 @@ export class MappingStore {
         hostThreadId: input.hostThreadId,
         createRequestId: input.createRequestId,
         harnessId: input.harnessId,
+        ...(input.billingSourceRef ? { billingSourceRef: input.billingSourceRef } : {}),
         ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
         state: "creating",
         cwd: input.cwd,

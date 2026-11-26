@@ -455,6 +455,20 @@ export class DesktopThreadRouting {
       await this.#host.startExternalThread(request, createRoute.selectedHarness);
       return true;
     }
+    if (
+      request.method === "thread/start" &&
+      isRecord(request.params) &&
+      Object.hasOwn(request.params, "billingSourceRef")
+    ) {
+      await this.#host.writeJson(
+        rpcError(
+          request,
+          -32602,
+          "Billing Source binding requires an explicit external Harness route",
+        ),
+      );
+      return true;
+    }
     if (request.method === "thread/fork") {
       const params = isRecord(request.params) ? request.params : {};
       const resolution =

@@ -3,6 +3,7 @@ import type {
   HarnessAccountSnapshot,
   AccountBalanceSnapshot,
   AccountCreditsSnapshot,
+  BillingSourceRef,
   HarnessInstallationState,
   HarnessCommandCatalog,
   HarnessId,
@@ -22,6 +23,8 @@ import type {
   NativeCheckpointRef,
   NativeSessionRef,
   NativeTurnRef,
+  RetainedPrewarmParams,
+  RetainedPrewarmResult,
 } from "@codexhost/shared-contracts";
 
 import type { HostUsage, HostUsageRequest, HostUsageRequestTiming } from "./usage.js";
@@ -625,6 +628,8 @@ export interface TurnCompletedEvent {
   nativeTurnRef?: NativeTurnRef;
   /** Native operation completed without a history Turn; project without persisting an identity. */
   ephemeral?: true;
+  /** Actual native attribution, only when verified by the Adapter. */
+  billingSourceRef?: BillingSourceRef;
   outcome: TurnOutcome;
 }
 
@@ -711,6 +716,24 @@ export interface HarnessSession {
   close(): Promise<void>;
 }
 
+export type NativeCleanupReceipt = "deleted" | "not-persisted";
+
+export interface BillingSourceSession extends HarnessSession {
+  /** Confirmed before accepting a Turn; the Adapter must reject mismatched native usage. */
+  readonly billingSourceRef: BillingSourceRef;
+  /** Called after close; must not infer native cleanup from Host ownership removal. */
+  confirmNativeCleanup(): Promise<HarnessResult<NativeCleanupReceipt>>;
+}
+
+export type BillingSourceOpenResult =
+  | { ok: true; value: BillingSourceSession }
+  | {
+      ok: false;
+      error: HarnessError;
+      /** Setup either proved native cleanup or left an explicitly unknown result. */
+      nativeCleanup: NativeCleanupReceipt | "unknown";
+    };
+
 export interface HarnessSubagentCapability {
   readSnapshot(input: {
     parent: NativeSessionRef;
@@ -789,8 +812,8 @@ export interface HarnessAdapter {
    * authentication, freshness and invalidation remain Adapter-owned.
    */
   credits?(): AccountCreditsSnapshot | null;
-  /** Best-effort refresh of the same cache. Must not start a model Turn. Host
-   * observes a later read, does not await this call, and isolates rejection.
+  /** Optional async account-wide credit read; must not start a model Turn. When credits()
+   * is present, Host invokes this as a background refresh of that cache instead.
    */
   refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
   /** Optional cached prepaid balance for Harnesses whose Billing Source reports funds, not a
@@ -806,6 +829,14 @@ export interface HarnessAdapter {
    * this method and retains the first snapshot as the compatibility `account`.
    */
   inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
+
+  /** Open a disposable Session restricted to one Billing Source, without credential fallback. */
+  openBillingSource?(
+    input: CreateSessionInput & { billingSourceRef: BillingSourceRef },
+  ): Promise<BillingSourceOpenResult>;
+
+  /** Run a dedicated native Session owned by the Adapter, without creating a Host Thread. */
+  runRetainedPrewarm?(input: RetainedPrewarmParams): Promise<HarnessResult<RetainedPrewarmResult>>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   /**

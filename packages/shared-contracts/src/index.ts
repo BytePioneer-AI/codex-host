@@ -575,4 +575,4 @@ export {
   officialCodexModelSelection,
   normalizeOfficialCodexModelRef,
 } from "./official-codex-model-ref.js";
-export { desktopProjectDefinitions } from "./desktop-project-definitions.js";
+export { desktopProjectDefinitions, desktopProjectPathKey } from "./desktop-project-definitions.js";

@@ -19,6 +19,8 @@ import type {
 
 const ABORTED_TERMINALS = new Set(["aborted_streaming", "aborted_tools"]);
 const AUTHENTICATION_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed"]);
+/** Largest Unix timestamp (seconds) safely representable by JavaScript Date. */
+const MAX_SAFE_UNIX_SECONDS = 8_640_000_000_000;
 /** Tools whose native lifecycle is a Subagent, not a Host Tool Item. */
 export const CLAUDE_SUBAGENT_TOOLS = new Set(["Agent", "Task", "SendMessage"]);
 /** The native tool that launches a Workflow run; its agents are Subagents of the run. */
@@ -169,8 +171,21 @@ function includesAuthenticationFailure(errors: string[]): boolean {
   return errors.some((error) => AUTHENTICATION_ERRORS.has(error));
 }
 
-function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
-  return { status: "failed", kind };
+function failure(
+  kind: ClaudeTransportFailureKind,
+  resetsAtUnix?: number,
+): ClaudeTransportTurnResult {
+  return {
+    status: "failed",
+    kind,
+    ...(resetsAtUnix !== undefined ? { resetsAtUnix } : {}),
+  };
+}
+
+function validResetsAtUnix(value: unknown): number | undefined {
+  return safeNonNegativeInteger(value) && value > 0 && value <= MAX_SAFE_UNIX_SECONDS
+    ? value
+    : undefined;
 }
 
 function safeNonNegativeInteger(value: unknown): value is number {
@@ -519,6 +534,7 @@ export class ClaudeNativeTurnAccumulator {
   /** Native record UUIDs already published, across stream and request message IDs. */
   #publishedCheckpointIds = new Set<string>();
   #assistantErrors: string[] = [];
+  #rejectedRateLimit: { resetsAtUnix?: number } | null = null;
   #cancelRequested = false;
   #compactionState: "idle" | "active" | "settled" = "idle";
   #completed = false;
@@ -576,6 +592,18 @@ export class ClaudeNativeTurnAccumulator {
       this.#consumeToolProgress(message, events);
     }
 
+    if (message.type === "rate_limit_event" && isRecord(message.rate_limit_info)) {
+      const info = message.rate_limit_info;
+      if (info.status === "rejected") {
+        const resetsAtUnix =
+          validResetsAtUnix(info.resetsAt) ??
+          (info.overageStatus === "rejected" ? validResetsAtUnix(info.overageResetsAt) : undefined);
+        this.#rejectedRateLimit = resetsAtUnix !== undefined ? { resetsAtUnix } : {};
+      } else if (info.status === "allowed" || info.status === "allowed_warning") {
+        this.#rejectedRateLimit = null;
+      }
+    }
+
     if (!nested) {
       const error = assistantError(message);
       if (error !== null) this.#assistantErrors.push(error);
@@ -621,7 +649,19 @@ export class ClaudeNativeTurnAccumulator {
     } else if (nativeSuccess) {
       terminal = { status: "succeeded" };
     } else {
-      terminal = failure("native");
+      const lastError = this.#assistantErrors.at(-1);
+      if (lastError === "billing_error") {
+        terminal = failure("billing", this.#rejectedRateLimit?.resetsAtUnix);
+      } else if (
+        this.#rejectedRateLimit !== null &&
+        (lastError === undefined || lastError === "rate_limit")
+      ) {
+        terminal = failure("quotaExhausted", this.#rejectedRateLimit.resetsAtUnix);
+      } else if (lastError === "rate_limit") {
+        terminal = failure("rateLimited");
+      } else {
+        terminal = failure("native");
+      }
     }
     return { events, terminal };
   }

@@ -229,6 +229,8 @@ export const harnessErrorSchema = z
       "notInstalled",
       "unavailable",
       "authenticationRequired",
+      "rateLimited",
+      "quotaExhausted",
       "sessionNotFound",
       "sessionBusy",
       "checkpointNotFound",
@@ -242,6 +244,13 @@ export const harnessErrorSchema = z
     ]),
     message: z.string().max(65_536),
     retryable: z.boolean(),
+    retryAfterMs: z.number().finite().nonnegative().optional(),
+    resetsAt: z
+      .string()
+      .min(1)
+      .max(128)
+      .refine((value) => !Number.isNaN(Date.parse(value)), "resetsAt must be a valid timestamp")
+      .optional(),
     diagnostic: z.string().max(65_536).optional(),
     stage: z.string().max(1_024).optional(),
     durationMs: z.number().finite().nonnegative().optional(),

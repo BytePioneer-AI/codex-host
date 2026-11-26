@@ -149,6 +149,18 @@ describe("Codex thread/fork protocol boundary", () => {
         "create",
       ),
     ).toEqual({ code: -32077, message: "External Harness is unavailable" });
+    expect(
+      mapExternalThreadHarnessError(
+        { code: "rateLimited", message: "private rate-limit detail", retryable: true },
+        "turn",
+      ),
+    ).toEqual({ code: -32077, message: "External Harness rate limit reached" });
+    expect(
+      mapExternalThreadHarnessError(
+        { code: "quotaExhausted", message: "private quota detail", retryable: true },
+        "turn",
+      ),
+    ).toEqual({ code: -32077, message: "External Harness quota exhausted" });
   });
 
   it("explains a busy native resume without exposing diagnostics or changing active-Turn errors", () => {

@@ -9019,6 +9019,62 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("projects rate-limit, quota-exhausted (with resetsAt), and billing failures without faulting", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const cases = [
+      {
+        terminal: { status: "failed" as const, kind: "rateLimited" as const },
+        expected: {
+          code: "rateLimited",
+          message: "Claude Code rate limit reached",
+          retryable: true,
+        },
+      },
+      {
+        terminal: {
+          status: "failed" as const,
+          kind: "quotaExhausted" as const,
+          resetsAtUnix: 1_787_674_200,
+        },
+        expected: {
+          code: "quotaExhausted",
+          message: "Claude Code usage limit reached (resets at 2026-08-25T16:10:00.000Z)",
+          retryable: true,
+          resetsAt: "2026-08-25T16:10:00.000Z",
+        },
+      },
+      {
+        terminal: { status: "failed" as const, kind: "billing" as const },
+        expected: {
+          code: "quotaExhausted",
+          message: "Claude Code billing or credit limit reached",
+          retryable: false,
+        },
+      },
+    ];
+
+    for (const [index, entry] of cases.entries()) {
+      await session.execute(textTurn(`limit-${index}`));
+      if (index === 0) await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      transports[0]?.finish(entry.terminal);
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: { outcome: { status: "failed", error: entry.expected } },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "failed", error: entry.expected },
+      });
+    }
+    await expect(session.execute(textTurn("after-limits"))).resolves.toMatchObject({ ok: true });
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("finalizes an active Turn before a Query fault", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

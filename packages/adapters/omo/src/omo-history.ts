@@ -309,11 +309,15 @@ function toolOutput(value: unknown): HostToolOutput | undefined {
   return text.length > 0 ? { content: [{ type: "text", text }] } : undefined;
 }
 
-const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "exec", "terminal", "run"]);
+// Real 5.1.83 routes shell commands through the `eval` tool (task-9 trace);
+// history keeps the same routing so a Tool call projects identically live and
+// in snapshots.
+const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "exec", "terminal", "run", "eval"]);
 const SHELL_COMMAND_KEYS: readonly string[] = [
   "command",
   "cmd",
   "script",
+  "code",
   "commandLine",
   "command_line",
 ];

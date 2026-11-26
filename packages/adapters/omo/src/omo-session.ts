@@ -73,6 +73,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { unlink } from "node:fs/promises";
 
 import {
   HarnessOutputChannel,
@@ -192,11 +193,15 @@ const IDENTITY_MAX_PAGES = 5;
 /** Bound on events buffered between prompt admission and Turn publication. */
 const MAX_DEFERRED_FRAMES = 1_024;
 
-const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "exec", "terminal", "run"]);
+// Real 5.1.83 routes shell commands through the `eval` tool (bash, powershell
+// and grep run inside eval cells; task-9 trace), so it routes like a shell
+// and its args carry the executed snippet in `code`.
+const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "exec", "terminal", "run", "eval"]);
 const SHELL_COMMAND_KEYS: readonly string[] = [
   "command",
   "cmd",
   "script",
+  "code",
   "commandLine",
   "command_line",
 ];
@@ -278,6 +283,15 @@ export interface OmoHarnessSessionOptions {
   settleGraceMs?: number;
   commandTimeoutMs?: number;
   closeTurnTimeoutMs?: number;
+  /**
+   * Session file of a create-kind Session that has not accepted a Turn yet.
+   * Real 5.1.83 keeps an empty session file when a no-conversation Session
+   * closes (task-9 evidence), so this adapter removes it itself after the
+   * engine process exits: a prewarm create→close leaves no orphan file.
+   * Resume-kind Sessions never pass this, and any accepted Turn cancels it
+   * (with-conversation Sessions must persist).
+   */
+  prewarmSessionFile?: string;
 }
 
 /** A Session-protocol violation this module detected; never used for native refusals. */
@@ -589,6 +603,7 @@ export class OmoHarnessSession implements HarnessSession {
   readonly #settleGraceMs: number;
   readonly #commandTimeoutMs: number;
   readonly #closeTurnTimeoutMs: number;
+  readonly #prewarmSessionFile: string | null;
   readonly #state: HarnessSessionState;
   readonly #pump: Promise<void>;
   readonly #consumedUserEntryIds = new Set<string>();
@@ -598,6 +613,7 @@ export class OmoHarnessSession implements HarnessSession {
   #deferredFrames: OmoEventFrame[] = [];
   #phase: SessionPhase = "open";
   #closePromise: Promise<void> | null = null;
+  #turnAccepted = false;
 
   constructor(rpc: OmoRpcSession, options: OmoHarnessSessionOptions) {
     this.#rpc = rpc;
@@ -611,6 +627,7 @@ export class OmoHarnessSession implements HarnessSession {
     this.#settleGraceMs = options.settleGraceMs ?? DEFAULT_SETTLE_GRACE_MS;
     this.#commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     this.#closeTurnTimeoutMs = options.closeTurnTimeoutMs ?? DEFAULT_CLOSE_TURN_TIMEOUT_MS;
+    this.#prewarmSessionFile = options.prewarmSessionFile ?? null;
     this.outputs = this.#channel.outputs;
     this.#pump = this.#runEventPump();
     this.#cancelOrphanDialogs();
@@ -772,6 +789,7 @@ export class OmoHarnessSession implements HarnessSession {
       // A handled prompt (an extension command) finishes without a native Turn.
       if (readDisposition(response.data) === "handled") {
         this.#deferredFrames = [];
+        this.#turnAccepted = true;
         this.#event({ type: "turn.started", turnId: command.turnId });
         this.#event({
           type: "turn.completed",
@@ -782,6 +800,7 @@ export class OmoHarnessSession implements HarnessSession {
         return { ok: true, value: { turnId: command.turnId } };
       }
       this.#active = turn;
+      this.#turnAccepted = true;
       this.#event({ type: "turn.started", turnId: command.turnId });
       this.#accepting = null;
       const buffered = this.#deferredFrames;
@@ -1825,6 +1844,14 @@ export class OmoHarnessSession implements HarnessSession {
       await this.#rpc.close();
     } catch (error) {
       closeFailure = error;
+    }
+    if (closeFailure === undefined && this.#prewarmSessionFile !== null && !this.#turnAccepted) {
+      // The engine process has exited. A create-kind Session that never
+      // accepted a Turn is prewarm-only, and real 5.1.83 leaves its empty
+      // session file behind (task-9 evidence); remove it so close leaves no
+      // orphan. A locked file simply keeps the pre-fix state — never a failed
+      // close.
+      await unlink(this.#prewarmSessionFile).catch(() => undefined);
     }
     const stillActive = this.#active;
     if (stillActive) {

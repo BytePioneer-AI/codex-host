@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -1070,5 +1070,82 @@ describe("OmO Session close", () => {
       ok: false,
       error: { code: "invalidState" },
     });
+  });
+});
+
+describe("OmO Session prewarm session-file cleanup", () => {
+  it("removes the empty session file a prewarm create left behind", async () => {
+    const cwd = temporaryDirectory();
+    const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
+    const fixtureSession = await createSessionFixture(
+      "session",
+      { FAKE_OMO_SESSION_FILE: sessionFile },
+      { session: { prewarmSessionFile: sessionFile } },
+    );
+    // Real 5.1.83 writes the session file at Session start and keeps it after
+    // a no-conversation close; the fixture models that (task-9 evidence).
+    expect(existsSync(sessionFile)).toBe(true);
+
+    await fixtureSession.session.close();
+
+    expect(existsSync(sessionFile)).toBe(false);
+    expect(readdirSync(path.join(cwd, "sessions"))).toEqual([]);
+  });
+
+  it("keeps the session file once a Turn was accepted", async () => {
+    const cwd = temporaryDirectory();
+    const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
+    const fixtureSession = await createSessionFixture(
+      "session",
+      { FAKE_OMO_TURN_SCRIPT: "full", FAKE_OMO_SESSION_FILE: sessionFile },
+      { session: { prewarmSessionFile: sessionFile } },
+    );
+    const started = await fixtureSession.session.execute(turnStart("turn-1", "hello"));
+    expect(started.ok).toBe(true);
+    const { terminal } = await collectTurn(fixtureSession.queue, "turn-1");
+    expect(terminal.outcome.status).toBe("succeeded");
+
+    await fixtureSession.session.close();
+
+    // A with-conversation Session must persist.
+    expect(existsSync(sessionFile)).toBe(true);
+  });
+
+  it("never removes the session file of a resumed Session", async () => {
+    const cwd = temporaryDirectory();
+    const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
+    // Only create-kind Sessions carry the prewarm file; a resumed one never
+    // does, so its close must leave the persisted file alone.
+    const fixtureSession = await createSessionFixture("session", {
+      FAKE_OMO_TURN_SCRIPT: "full",
+      FAKE_OMO_SESSION_FILE: sessionFile,
+    });
+    const started = await fixtureSession.session.execute(turnStart("turn-1", "hello"));
+    expect(started.ok).toBe(true);
+    await collectTurn(fixtureSession.queue, "turn-1");
+
+    await fixtureSession.session.close();
+
+    expect(existsSync(sessionFile)).toBe(true);
+  });
+});
+
+describe("OmO Session eval shell routing", () => {
+  it("projects the real-shaped eval tool call as a command execution", async () => {
+    const fixtureSession = await createSessionFixture("session", {
+      FAKE_OMO_TURN_SCRIPT: "eval-shell",
+    });
+    const started = await fixtureSession.session.execute(turnStart("turn-1", "run the ping"));
+    expect(started.ok).toBe(true);
+    const { items } = await collectTurn(fixtureSession.queue, "turn-1");
+
+    const command = items.find((item) => item.item.type === "commandExecution");
+    expect(command?.item).toMatchObject({
+      type: "commandExecution",
+      command: 'const r = await tool.bash({ command: "ping -n 30 127.0.0.1", timeout: 120 });',
+      output: "Pinging 127.0.0.1 with 30 bytes of data",
+    });
+    expect(command?.outcome).toEqual({ status: "succeeded" });
+    expect(items.some((item) => item.item.type === "toolExecution")).toBe(false);
   });
 });

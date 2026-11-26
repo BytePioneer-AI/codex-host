@@ -28,9 +28,10 @@ import type { OmoRpcProcessAdapter, OmoRpcProcessOptions } from "../src/omo-rpc-
 /**
  * Synthetic `omo --mode rpc` peer written for this suite. It answers the
  * handshake and Session startup frames the adapter consumes, records the
- * environment it actually received, and models OmO's empty-Session cleanup:
- * the session file is written at startup and removed on stdin EOF when no
- * prompt arrived. No OmO source or documentation sample was copied.
+ * environment it actually received, and writes the session file at Session
+ * start. Like real 5.1.83 (task-9 evidence) it keeps that file after exit —
+ * a no-conversation close leaves it behind, and the Adapter owns prewarm
+ * cleanup. No OmO source or documentation sample was copied.
  */
 const FIXTURE_SOURCE = `import fs from "node:fs";
 import path from "node:path";
@@ -74,8 +75,6 @@ const state = {
   permissionPreset: "ask",
   effectivePermissionPreset: "ask",
 };
-
-let promptReceived = false;
 
 function write(value) {
   process.stdout.write(JSON.stringify(value) + "\\n");
@@ -124,7 +123,6 @@ function handle(command) {
       respond(command, { entries: [], hasMore: false });
       return;
     case "prompt":
-      promptReceived = true;
       fs.appendFileSync(path.join(stateDir, "prompts.log"), JSON.stringify(command) + "\\n");
       respond(command, { disposition: "started" });
       return;
@@ -155,7 +153,6 @@ if (scenario === "inspect-silent") {
     }
   });
   process.stdin.on("end", () => {
-    if (!promptReceived) fs.rmSync(reportedFile, { force: true });
     process.exit(0);
   });
 }
@@ -604,6 +601,9 @@ describe("OmO Adapter open", () => {
     expect(result.value.initialState.nativeRef).toEqual(nativeRef);
     expect(fixture.sessionSpawns[0]?.sessionFile).toBe(sessionFile);
     await result.value.close();
+    // Resume-kind Sessions never remove the persisted file, with or without a
+    // Turn (only create-kind prewarm Sessions clean up; task-9 fix round).
+    expect(existsSync(sessionFile)).toBe(true);
   });
 
   it("rejects a resume whose native Session identity differs and closes the process", async () => {

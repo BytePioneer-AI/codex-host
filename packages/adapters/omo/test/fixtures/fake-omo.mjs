@@ -2,6 +2,8 @@
 // Synthetic OmO classic stdio RPC peer for codexhost transport tests.
 // Written for this repository; no OmO source, documentation sample, or asset was
 // copied. It speaks only the frame shapes the transport layer consumes.
+import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 
 const scenario = process.env.FAKE_OMO_SCENARIO ?? "normal";
@@ -26,6 +28,16 @@ const state = {
 
 if (process.env.FAKE_OMO_PENDING_DIALOGS === "none") state.pendingDialogs = [];
 if (process.env.FAKE_OMO_STREAMING === "true") state.isStreaming = true;
+if (process.env.FAKE_OMO_SESSION_FILE) {
+  // Real 5.1.83 creates the session file at Session start, before any user
+  // message, and keeps it after a no-conversation close (task-9 evidence).
+  state.sessionFile = process.env.FAKE_OMO_SESSION_FILE;
+  fs.mkdirSync(path.dirname(state.sessionFile), { recursive: true });
+  fs.writeFileSync(
+    state.sessionFile,
+    JSON.stringify({ type: "session", id: state.sessionId }) + "\n",
+  );
+}
 
 let clientInfo = null;
 const withheld = [];
@@ -281,6 +293,61 @@ function runTurnScript(script, clientTurnId) {
         type: "agent_end",
         clientTurnId,
         messages: [assistantText("Done")],
+        willRetry: false,
+      });
+      write({ type: "agent_settled" });
+      return;
+    }
+    case "eval-shell": {
+      // Captured real 5.1.83 shape: shell commands run inside the `eval` tool
+      // with {language, code, summary} args (task-9 trace).
+      write({ type: "turn_start", clientTurnId });
+      events([
+        {
+          type: "tool_execution_start",
+          clientTurnId,
+          toolCallId: "call-eval-1",
+          toolName: "eval",
+          args: {
+            language: "js",
+            code: 'const r = await tool.bash({ command: "ping -n 30 127.0.0.1", timeout: 120 });',
+            summary: "Running a long shell command",
+          },
+        },
+        {
+          type: "tool_execution_update",
+          clientTurnId,
+          toolCallId: "call-eval-1",
+          toolName: "eval",
+          partialResult: { content: [{ type: "text", text: "Pinging 127.0.0.1" }] },
+        },
+        {
+          type: "tool_execution_end",
+          clientTurnId,
+          toolCallId: "call-eval-1",
+          toolName: "eval",
+          result: {
+            content: [{ type: "text", text: "Pinging 127.0.0.1 with 30 bytes of data" }],
+            details: {},
+          },
+          isError: false,
+        },
+      ]);
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "DONE" },
+      });
+      write({ type: "message_end", clientTurnId, message: assistantText("DONE") });
+      write({
+        type: "agent_end",
+        clientTurnId,
+        messages: [assistantText("DONE")],
         willRetry: false,
       });
       write({ type: "agent_settled" });

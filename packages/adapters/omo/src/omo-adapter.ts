@@ -270,6 +270,12 @@ export class OmoAdapter implements HarnessAdapter {
       }
       const session = new OmoHarnessSession(rpc, {
         initialState,
+        // Real 5.1.83 keeps an empty session file after a no-conversation close
+        // (task-9 evidence); only a create-kind Session this adapter opened may
+        // remove it, and only while no Turn was ever accepted.
+        ...(input.kind === "create" && state.sessionFile !== null
+          ? { prewarmSessionFile: state.sessionFile }
+          : {}),
         ...(this.#commandTimeoutMs === undefined
           ? {}
           : { commandTimeoutMs: this.#commandTimeoutMs }),

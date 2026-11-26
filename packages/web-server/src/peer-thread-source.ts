@@ -53,6 +53,7 @@ export interface PeerThreadSourceOptions {
   host: PeerChHostClient;
   onCatalogChanged(): unknown;
   onThreadChanged(threadId: string): unknown;
+  onThreadConfigurationChanged?: (threadId: string) => void;
   onUsageChanged?: (threadId: string) => void;
   onCatalogInspectionChanged?: () => void;
   onSkillsChanged?: () => void;
@@ -152,6 +153,9 @@ export class PeerThreadSource {
     this.stopCatalogInvalidation = options.host.realtime.subscribe((event) => {
       if (event.type === "harness-inspection-changed" || event.type === "hello") {
         options.onCatalogInspectionChanged?.();
+      }
+      if (event.type === "changed" && event.method === "codexhost/thread/configuration/updated") {
+        options.onThreadConfigurationChanged?.(event.threadId);
       }
       if (event.type === "hello") {
         this.skillsListUnavailable = false;

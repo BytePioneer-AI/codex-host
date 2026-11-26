@@ -1,6 +1,11 @@
 import type { HostApprovalInteraction, HostQuestionInteraction } from "@codexhost/harness-adapter";
 import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
+import {
+  decodeExternalTransportSelection,
+  jsonRpcRequestSchema,
+  type JsonObject,
+  type JsonValue,
+} from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
@@ -499,6 +504,10 @@ export class ClientChannelHost {
         })),
     ];
     const state = thread.stateObserver.state;
+    const saved = decodeExternalTransportSelection(thread.harnessId, thread.transportModelId);
+    const effectiveModel = state.effectiveModel ?? thread.requestedModel ?? saved?.model;
+    const effectiveThinkingOptionId = state.effectiveThinkingOptionId ?? saved?.thinkingOptionId;
+    const effectivePermissionModeId = state.effectivePermissionModeId ?? saved?.permissionModeId;
     const snapshot = clientThreadSnapshotSchema.parse(
       copyAsJson({
         cursor: this.clientEvents.cursor,
@@ -520,9 +529,9 @@ export class ClientChannelHost {
           itemsView: "full",
         }),
         configuration: {
-          effectiveModel: state.effectiveModel,
-          effectiveThinkingOptionId: state.effectiveThinkingOptionId,
-          effectivePermissionModeId: state.effectivePermissionModeId,
+          effectiveModel,
+          effectiveThinkingOptionId,
+          effectivePermissionModeId,
         },
         queue: this.#host.queueSnapshot(threadId),
         interactions,

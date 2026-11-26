@@ -10,9 +10,13 @@ import {
   discoverHostClientChannel,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
+import { decodeExternalTransportSelection } from "@codexhost/protocol-core";
 import {
   THREAD_STEER_STRICT_TARGET_PARAM,
   clientThreadSnapshotSchema,
+  harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
+  hostThreadIdSchema,
   hostTurnIdSchema,
   jsonObjectSchema,
   type ClientChannelEvent,
@@ -1055,6 +1059,67 @@ describe("public authenticated owner channel", () => {
     expect((await discoverHostClientChannel(directory))?.epoch).toBe(next.descriptor.epoch);
     expect(nextFixture.adapter.sessions).toHaveLength(0);
     expect(fixture.adapter.sessions).toHaveLength(0);
+  });
+
+  it("persists observed session.state.changed configuration and falls back to saved permissionModeId in snapshots", async () => {
+    const { fixture, a } = await setup();
+    const id = await startPiThread(fixture);
+    const threadId = hostThreadIdSchema.parse(id);
+    const session = current(fixture);
+
+    // Initially no permission mode was passed on create.
+    expect(
+      decodeExternalTransportSelection(
+        "pi",
+        (await fixture.mappingStore.getThread(threadId))?.transportModelId,
+      )?.permissionModeId,
+    ).toBeUndefined();
+
+    // Adapter lazily confirms native permission mode and thinking option via session.state.changed.
+    const confirmedMode = harnessPermissionModeIdSchema.parse("dangerously-skip-permissions");
+    const confirmedThinking = harnessThinkingOptionIdSchema.parse("xhigh");
+    session.emitEvent({
+      type: "session.state.changed",
+      state: {
+        ...session.initialState,
+        effectiveModel: { id: "pi/test-model" },
+        effectiveThinkingOptionId: confirmedThinking,
+        effectivePermissionModeId: confirmedMode,
+      },
+    });
+
+    await vi.waitFor(async () => {
+      const stored = await fixture.mappingStore.getThread(threadId);
+      expect(decodeExternalTransportSelection("pi", stored?.transportModelId)).toMatchObject({
+        model: { id: "pi/test-model" },
+        thinkingOptionId: "xhigh",
+        permissionModeId: "dangerously-skip-permissions",
+      });
+    });
+
+    const liveSnap = await a.snapshot(id);
+    expect(liveSnap.configuration.effectivePermissionModeId).toBe("dangerously-skip-permissions");
+    expect(liveSnap.configuration.effectiveThinkingOptionId).toBe("xhigh");
+
+    // If a loaded session's stateObserver omits effectivePermissionModeId (e.g., before lazy reconnect),
+    // clientSnapshot still falls back to the saved transport selection just like codexhost/thread/inspect.
+    session.emitEvent({
+      type: "session.state.changed",
+      state: {
+        nativeRef: session.initialState.nativeRef,
+        effectiveModel: { id: "pi/test-model" },
+      },
+    });
+    await vi.waitFor(async () => {
+      const snap = await a.snapshot(id);
+      expect(snap.configuration.effectivePermissionModeId).toBe("dangerously-skip-permissions");
+    });
+
+    const inspected = await a.request<{ effectivePermissionModeId?: string }>(
+      "codexhost/thread/inspect",
+      { threadId: id },
+    );
+    expect(inspected.effectivePermissionModeId).toBe("dangerously-skip-permissions");
   });
 });
 

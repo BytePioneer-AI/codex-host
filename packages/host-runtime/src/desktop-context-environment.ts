@@ -13,25 +13,24 @@ export const DESKTOP_BROWSER_ACCESS_ENV: readonly string[] = [
 ];
 
 export const DESKTOP_BROWSER_MCP_ARGUMENTS_ENV = "CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS";
-export const DESKTOP_TOOL_CONTEXT_ENV: readonly string[] = [
+export const DESKTOP_CONTEXT_ENV: readonly string[] = [
+  // Codex uses Desktop's own originator to generate native HTTP client identity.
+  // Losing it lets the shared Host's first management handshake set the originator.
+  "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
   DESKTOP_APP_TOOLS_PIPE_ENV,
   ...DESKTOP_BROWSER_ACCESS_ENV,
   DESKTOP_BROWSER_MCP_ARGUMENTS_ENV,
 ];
 
-export function withoutDesktopToolContext(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function withoutDesktopContext(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(environment).filter(([key]) => !DESKTOP_TOOL_CONTEXT_ENV.includes(key)),
+    Object.entries(environment).filter(([key]) => !DESKTOP_CONTEXT_ENV.includes(key)),
   );
 }
 
 /** Desktop variables the Independent Host accepts besides codexhost's own `CODEXHOST_*` context. */
 export function isDesktopContextVariable(key: string): boolean {
-  return (
-    key.startsWith("CODEXHOST_") ||
-    key === DESKTOP_APP_TOOLS_PIPE_ENV ||
-    DESKTOP_BROWSER_ACCESS_ENV.includes(key)
-  );
+  return key.startsWith("CODEXHOST_") || DESKTOP_CONTEXT_ENV.includes(key);
 }
 
 /** Ephemeral Desktop transport overrides are never written to native startup records. */

@@ -4,6 +4,9 @@ const UNORDERED_ITEM_PATTERN = /^[-*][ \t]+(.+?)\s*$/u;
 const CONTINUATION_PATTERN = /^[ \t]+(.+?)\s*$/u;
 const ORDERED_ITEM_PATTERN = /^\d+[.)][ \t]+(.+?)\s*$/u;
 const FENCE_PATTERN = /^```([\w+-]*)\s*$/u;
+const DETAILS_OPEN_PATTERN = /^<details(\s+open)?\s*>$/iu;
+const DETAILS_CLOSE_PATTERN = /^<\/details>\s*$/iu;
+const SUMMARY_LINE_PATTERN = /^<summary>(.*?)<\/summary>\s*$/iu;
 const THEMATIC_BREAK_PATTERN = /^(?:---|___|\*\*\*)[ \t]*$/u;
 const CJK_PATTERN = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u;
 const INLINE_PATTERN = /(`+)((?:(?!\1).)+)\1|\*\*(.+?)\*\*|\[([^\]]+)\]\(([^)\s]+)\)/gu;
@@ -38,6 +41,11 @@ function appendReleaseNotesBlocks(
       index = appendFencedCode(document, root, lines, index, fence[1] ?? "");
       continue;
     }
+    const detailsOpen = DETAILS_OPEN_PATTERN.exec(line.trim());
+    if (detailsOpen) {
+      index = appendDetails(document, root, lines, index, Boolean(detailsOpen[1]));
+      continue;
+    }
     const heading = HEADING_PATTERN.exec(line);
     if (heading?.[1] && heading[2]) {
       const tag = `h${heading[1].length}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
@@ -66,6 +74,62 @@ function appendReleaseNotesBlocks(
     }
     index = appendParagraph(document, root, lines, index);
   }
+}
+
+function appendDetails(
+  document: ReleaseNotesDocument,
+  root: HTMLElement,
+  lines: readonly string[],
+  start: number,
+  open: boolean,
+): number {
+  let depth = 1;
+  let index = start + 1;
+  const innerLines: string[] = [];
+  while (index < lines.length && depth > 0) {
+    const current = lines[index] ?? "";
+    const trimmed = current.trim();
+    if (DETAILS_OPEN_PATTERN.test(trimmed)) {
+      depth += 1;
+      innerLines.push(current);
+    } else if (DETAILS_CLOSE_PATTERN.test(trimmed)) {
+      depth -= 1;
+      if (depth > 0) innerLines.push(current);
+    } else {
+      innerLines.push(current);
+    }
+    index += 1;
+  }
+
+  let summaryText = "Details";
+  const bodyLines: string[] = [];
+  let foundSummary = false;
+  for (const innerLine of innerLines) {
+    if (!foundSummary && innerLine.trim().length === 0) continue;
+    if (!foundSummary) {
+      const summaryMatch = SUMMARY_LINE_PATTERN.exec(innerLine.trim());
+      if (summaryMatch) {
+        summaryText = summaryMatch[1]?.trim() || "Details";
+        foundSummary = true;
+        continue;
+      }
+      foundSummary = true;
+    }
+    bodyLines.push(innerLine);
+  }
+
+  const details = document.createElement("details");
+  if (open) details.setAttribute("open", "");
+  const summary = document.createElement("summary");
+  appendInline(document, summary, summaryText);
+  details.append(summary);
+
+  const body = document.createElement("div");
+  body.className = "settings-update-notes-details-body";
+  appendReleaseNotesBlocks(document, body, bodyLines.join("\n"));
+  details.append(body);
+  root.append(details);
+  return index;
 }
 
 function appendFencedCode(
@@ -162,6 +226,8 @@ function appendParagraph(
     if (
       current.trim().length === 0 ||
       FENCE_PATTERN.test(current) ||
+      DETAILS_OPEN_PATTERN.test(current.trim()) ||
+      DETAILS_CLOSE_PATTERN.test(current.trim()) ||
       HEADING_PATTERN.test(current) ||
       BLOCKQUOTE_PATTERN.test(current) ||
       THEMATIC_BREAK_PATTERN.test(current) ||

@@ -171,6 +171,8 @@ npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node
 
 `codexhost update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG、Windows 安装包和 Linux 压缩包。命令检查最新 Release，已是最新版本时成功退出。有可用 Host 时，验证它属于当前安装后复用 Host 的更新接口；不同安装或缺少安装身份的旧 Host 会被明确拒绝。终端显示请求已接受不代表安装已经完成，应查看重连后的更新状态和当前版本。
 
+下载期间，npm 显示已下载到缓存的包数，安装包显示已下载体积、总体积和百分比。缺少总体积时只显示已下载体积。下载完成后，后台 Updater 继续安装和重启。
+
 没有可用 Host 时，Console/CLI 使用独立更新流程，下载、准备后等待 Updater 校验进程身份并确认就绪，转移更新锁，再退出；Updater 等发起进程退出后安装。没有安装 Desktop 时恢复 Web，否则沿用 Desktop 启动方式。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或交接超时都会报告失败。源码构建不支持自更新。
 
 - Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时保留手动更新入口。

@@ -36,6 +36,7 @@ async function fixture(
   ) => Promise<string | undefined | { cwd?: string; title?: string }> = async () => undefined,
   environment: NodeJS.ProcessEnv = {},
   externalThreadBusy: (thread: ExternalThread) => boolean = (thread) => thread.running,
+  externalQueueWaiting: (thread: ExternalThread) => boolean = () => false,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
@@ -99,6 +100,7 @@ async function fixture(
     },
     activeOfficialParents: () => [],
     externalThreadBusy,
+    externalQueueWaiting,
     pendingQuestions: () => [...pending],
   });
   return {
@@ -1080,6 +1082,36 @@ describe("HarnessDelegationCoordinator", () => {
       await value.close();
     }
   });
+
+  it.each([{ interrupt: true }, { steer: true }])(
+    "leaves the next Turn to queued follow-ups unless the send overrides them (%o)",
+    async (override) => {
+      const value = await fixture(undefined, undefined, undefined, undefined, () => true);
+      try {
+        const started = await value.coordinator.start({
+          harnessId: "pi",
+          task: "first",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+        });
+        value.adapter.sessions[0]?.succeedTurn();
+        const thread = value.runtime.get(started.threadId);
+        if (!thread) throw new Error("Missing delegated Thread");
+        thread.running = false;
+        thread.activeTurnId = null;
+
+        await expect(
+          value.coordinator.send({ threadId: started.threadId, message: "agent note" }),
+        ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+        await expect(
+          value.coordinator.send({ threadId: started.threadId, message: "override", ...override }),
+        ).resolves.toMatchObject({ status: "running" });
+        expect(value.delivered).toEqual(["first", "override"]);
+      } finally {
+        await value.close();
+      }
+    },
+  );
 
   it("rolls back Session, Thread, and Delegation when initial task delivery fails", async () => {
     const value = await fixture(new FailingTurnAdapter(harnessIdSchema.parse("pi")));

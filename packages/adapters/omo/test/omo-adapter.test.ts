@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -23,7 +24,12 @@ import {
 
 import { OmoAdapter, type OmoAdapterOptions } from "../src/omo-adapter.js";
 import { createOmoInspectSession, omoInspectProcessCommand } from "../src/omo-inspect.js";
-import type { OmoRpcProcessAdapter, OmoRpcProcessOptions } from "../src/omo-rpc-session.js";
+import {
+  omoRpcProcessCommand,
+  OmoRpcSession,
+  type OmoRpcProcessAdapter,
+  type OmoRpcProcessOptions,
+} from "../src/omo-rpc-session.js";
 
 /**
  * Synthetic `omo --mode rpc` peer written for this suite. It answers the
@@ -40,12 +46,33 @@ const scenario = process.env.FAKE_OMO_SCENARIO ?? "inspect";
 const cwd = process.cwd();
 const stateDir = path.join(cwd, ".fake-omo");
 fs.mkdirSync(stateDir, { recursive: true });
+const argv = process.argv.slice(2);
+const forkFlag = argv.indexOf("--fork");
+const forkSource =
+  process.env.FAKE_OMO_FORK_SOURCE ?? (forkFlag >= 0 ? argv[forkFlag + 1] : undefined);
 const reportedFile =
-  process.env.FAKE_OMO_STATE_FILE ??
+  process.env.FAKE_OMO_REPORTED_FILE ??
   process.env.FAKE_OMO_SESSION ??
+  process.env.FAKE_OMO_STATE_FILE ??
   path.join(stateDir, "session-" + process.pid + ".jsonl");
 fs.mkdirSync(path.dirname(reportedFile), { recursive: true });
-fs.writeFileSync(reportedFile, JSON.stringify({ type: "session", startupBookkeeping: true }) + "\\n");
+const existingEntriesRaw = fs.existsSync(reportedFile)
+  ? fs
+      .readFileSync(reportedFile, "utf8")
+      .split("\\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line))
+  : null;
+const existingHeader =
+  existingEntriesRaw?.find((entry) => entry.type === "session") ?? null;
+const existingEntries =
+  existingEntriesRaw?.filter((entry) => entry.type !== "session") ?? [];
+if (existingEntriesRaw === null) {
+  fs.writeFileSync(
+    reportedFile,
+    JSON.stringify({ type: "session", startupBookkeeping: true }) + "\\n",
+  );
+}
 fs.writeFileSync(
   path.join(stateDir, "env.json"),
   JSON.stringify({
@@ -55,12 +82,18 @@ fs.writeFileSync(
     PI_OFFLINE: process.env.PI_OFFLINE ?? null,
   }),
 );
-fs.writeFileSync(path.join(stateDir, "argv.json"), JSON.stringify(process.argv.slice(2)));
+fs.writeFileSync(path.join(stateDir, "argv.json"), JSON.stringify(argv));
 
 const inspecting = scenario === "inspect" || scenario.startsWith("inspect-");
 const state = {
-  sessionId: inspecting ? null : (process.env.FAKE_OMO_STATE_ID ?? "session-alpha"),
+  sessionId: inspecting
+    ? null
+    : existingHeader?.id ??
+      (forkSource
+        ? (process.env.FAKE_OMO_FORK_STARTUP_ID ?? "session-fork-startup-" + process.pid)
+        : (process.env.FAKE_OMO_STATE_ID ?? "session-alpha")),
   sessionFile: inspecting ? null : reportedFile,
+  cwd,
   model: {
     provider: "synthetic-provider",
     id: "synthetic-model",
@@ -78,6 +111,30 @@ const state = {
   effectivePermissionPreset: "ask",
 };
 
+// Derivation surface: a --fork startup copies the synthetic source branch into
+// a new session file; the fork command cuts that copy back to the prefix before
+// the named user entry. Mirrors the observed 5.1.83 behaviour (task-12 gate).
+let sessionEntries = existingEntries;
+let derivedSeq = 0;
+if (!inspecting && forkSource && existingEntriesRaw === null) {
+  sessionEntries = fs
+    .readFileSync(forkSource, "utf8")
+    .split("\\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line))
+    .filter((entry) => entry.type !== "session");
+  writeSessionFile(reportedFile, state.sessionId, sessionEntries);
+  state.messageCount = sessionEntries.length;
+}
+
+function writeSessionFile(file, id, entries) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    [JSON.stringify({ type: "session", version: 3, id, cwd }), ...entries.map((entry) => JSON.stringify(entry))].join("\\n") + "\\n",
+  );
+}
+
 function write(value) {
   process.stdout.write(JSON.stringify(value) + "\\n");
 }
@@ -88,13 +145,38 @@ function respond(command, data) {
   write(response);
 }
 
+function respondError(command, errorCode, error) {
+  write({ id: command.id, type: "response", command: command.type, success: false, error, errorCode });
+}
+
+const catalog = [
+  {
+    provider: "synthetic-provider",
+    id: "synthetic-model",
+    name: "Synthetic Model",
+    reasoning: true,
+    supportedThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    contextWindow: 128000,
+    maxTokens: 8192,
+  },
+  {
+    provider: "synthetic-provider",
+    id: "other-model",
+    name: "Synthetic Other",
+    reasoning: true,
+    supportedThinkingLevels: ["off", "low", "medium", "high"],
+    contextWindow: 64000,
+    maxTokens: 4096,
+  },
+];
+
 function handle(command) {
   switch (command.type) {
     case "set_client_info":
       respond(command, { accepted: true });
       return;
     case "get_state":
-      respond(command, state);
+      respond(command, { ...state, messageCount: sessionEntries.length });
       return;
     case "set_permission_preset": {
       fs.appendFileSync(
@@ -130,30 +212,113 @@ function handle(command) {
       respond(command, {
         protocolVersion: scenario === "inspect-incompatible" ? 2 : 1,
         serverVersion: "5.1.83",
-        capabilities: ["multi_session"],
+        capabilities: ["multi_session", "session_model_scope", "effect_ledger"],
         mode: "classic",
       });
       return;
     case "get_available_models":
+      respond(command, { models: catalog });
+      return;
+    case "get_available_thinking_levels": {
+      const row = catalog.find(
+        (model) =>
+          state.model && model.provider === state.model.provider && model.id === state.model.id,
+      );
+      respond(command, { levels: row ? row.supportedThinkingLevels : ["off"] });
+      return;
+    }
+    case "set_model": {
+      const row = catalog.find(
+        (model) => model.provider === command.provider && model.id === command.modelId,
+      );
+      state.model = {
+        provider: command.provider,
+        id: command.modelId,
+        name: row ? row.name : "Unknown Synthetic Model",
+        reasoning: true,
+      };
+      const change = {
+        type: "model_change",
+        id: "m-" + (sessionEntries.length + 1),
+        parentId: sessionEntries.at(-1)?.id ?? null,
+        timestamp: new Date().toISOString(),
+        provider: command.provider,
+        modelId: command.modelId,
+      };
+      sessionEntries.push(change);
+      writeSessionFile(state.sessionFile, state.sessionId, sessionEntries);
+      write({ type: "model_changed", model: { provider: command.provider, id: command.modelId } });
+      respond(command, row ?? { provider: command.provider, id: command.modelId, name: "Unknown" });
+      return;
+    }
+    case "set_thinking_level": {
+      state.thinkingLevel = command.level;
+      const change = {
+        type: "thinking_level_change",
+        id: "th-" + (sessionEntries.length + 1),
+        parentId: sessionEntries.at(-1)?.id ?? null,
+        timestamp: new Date().toISOString(),
+        thinkingLevel: command.level,
+      };
+      sessionEntries.push(change);
+      writeSessionFile(state.sessionFile, state.sessionId, sessionEntries);
+      respond(command, {});
+      return;
+    }
+    case "get_tree":
       respond(command, {
-        models: [
-          {
-            provider: "synthetic-provider",
-            id: "synthetic-model",
-            name: "Synthetic Model",
-            reasoning: true,
-            contextWindow: 128000,
-            maxTokens: 8192,
-          },
-        ],
+        tree: sessionEntries.length === 0 ? [] : [{ entry: sessionEntries[0], children: [] }],
+        leafId: sessionEntries.at(-1)?.id ?? null,
       });
       return;
-    case "get_tree":
-      respond(command, { tree: [], leafId: null });
+    case "get_entries": {
+      const since = typeof command.since === "string" ? command.since : undefined;
+      const start = since === undefined ? 0 : sessionEntries.findIndex((e) => e.id === since) + 1;
+      const limit = typeof command.limit === "number" ? command.limit : sessionEntries.length;
+      const page = sessionEntries.slice(start, start + limit);
+      const hasMore = start + page.length < sessionEntries.length;
+      respond(command, {
+        entries: page,
+        hasMore,
+        ...(hasMore ? { nextSince: page.at(-1)?.id } : {}),
+      });
       return;
-    case "get_entries":
-      respond(command, { entries: [], hasMore: false });
+    }
+    case "fork": {
+      fs.appendFileSync(path.join(stateDir, "forks.log"), JSON.stringify(command) + "\\n");
+      const index = sessionEntries.findIndex(
+        (entry) => entry.id === command.entryId && entry.message?.role === "user",
+      );
+      if (index < 0) {
+        respondError(command, "not_found", "no such user entry");
+        return;
+      }
+      const text = JSON.stringify(sessionEntries[index].message.content);
+      if (process.env.FAKE_OMO_FORK_CANCELLED === "1") {
+        respond(command, { text, cancelled: true });
+        return;
+      }
+      if (process.env.FAKE_OMO_FORK_CONFIRM === "false") {
+        respond(command, { text, cancelled: false });
+        return;
+      }
+      derivedSeq += 1;
+      const derivedId =
+        process.env.FAKE_OMO_FORK_DERIVED_ID ?? "session-fork-derived-" + process.pid + "-" + derivedSeq;
+      const derivedFile = path.join(
+        path.dirname(state.sessionFile),
+        "derived-" + derivedSeq + ".jsonl",
+      );
+      sessionEntries = sessionEntries.slice(0, index);
+      const deferBlank =
+        process.env.FAKE_OMO_FORK_DEFER_EMPTY === "1" && sessionEntries.length === 0;
+      if (!deferBlank) writeSessionFile(derivedFile, derivedId, sessionEntries);
+      state.sessionId = derivedId;
+      state.sessionFile = derivedFile;
+      state.messageCount = sessionEntries.length;
+      respond(command, { text, cancelled: false });
       return;
+    }
     case "prompt":
       fs.appendFileSync(path.join(stateDir, "prompts.log"), JSON.stringify(command) + "\\n");
       respond(command, { disposition: "started" });
@@ -291,9 +456,12 @@ function createFixtureAdapter(
       return child;
     },
   };
+  let forkSequence = 0;
   const processAdapter: OmoRpcProcessAdapter = {
     spawn(spawnOptions) {
       sessionSpawns.push(spawnOptions);
+      const forked = spawnOptions.forkSessionFile !== undefined;
+      if (forked) forkSequence += 1;
       const child = spawnFixture({
         ...spawnOptions,
         environment: {
@@ -301,6 +469,19 @@ function createFixtureAdapter(
           ...(spawnOptions.sessionFile === undefined
             ? {}
             : { FAKE_OMO_SESSION: spawnOptions.sessionFile }),
+          ...(forked
+            ? {
+                FAKE_OMO_FORK_SOURCE: spawnOptions.forkSessionFile,
+                // Each startup copy is its own native Session file, exactly
+                // like `omo --mode rpc --fork <source>` on 5.1.83.
+                FAKE_OMO_STATE_FILE: path.join(
+                  spawnOptions.cwd,
+                  ".fake-omo",
+                  "derived",
+                  `startup-${forkSequence}.jsonl`,
+                ),
+              }
+            : {}),
         },
       });
       sessionChildren.push(child);
@@ -337,7 +518,7 @@ const sessionCapabilities = {
     selectPermissionMode: true,
     permissionModeScope: "live",
   },
-  history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+  history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
   steer: false,
 } as const;
 
@@ -368,6 +549,87 @@ function readPresetsLog(cwd: string): Array<Record<string, unknown>> {
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** Frames the fixture peer received for `fork`, in order. */
+function readForksLog(cwd: string): Array<Record<string, unknown>> {
+  const log = path.join(cwd, ".fake-omo", "forks.log");
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/**
+ * A synthetic source Session in the documented JSONL shape: a header plus
+ * user/assistant message pairs linked by id/parentId. Written for this suite;
+ * no OmO sample or asset was copied.
+ */
+function syntheticDerivationSource(
+  cwd: string,
+  sessionId: string,
+  turns: readonly string[],
+): string {
+  const file = path.join(cwd, "source", "session.jsonl");
+  mkdirSync(path.dirname(file), { recursive: true });
+  const start = Date.parse("2026-11-26T08:00:00.000Z");
+  const lines: Array<Record<string, unknown>> = [
+    { type: "session", version: 3, id: sessionId, timestamp: new Date(start).toISOString(), cwd },
+  ];
+  let parentId: string | null = null;
+  for (const [index, text] of turns.entries()) {
+    const userId = `u${index + 1}`;
+    const assistantId = `a${index + 1}`;
+    const at = start + index * 10_000;
+    lines.push({
+      type: "message",
+      id: userId,
+      parentId,
+      timestamp: new Date(at).toISOString(),
+      inputSource: "rpc",
+      message: { role: "user", content: [{ type: "text", text }], timestamp: at },
+    });
+    lines.push({
+      type: "message",
+      id: assistantId,
+      parentId: userId,
+      timestamp: new Date(at + 1_000).toISOString(),
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `answer ${index + 1}` }],
+        stopReason: "stop",
+        timestamp: at + 1_000,
+      },
+    });
+    parentId = assistantId;
+  }
+  writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n", "utf8");
+  return file;
+}
+
+function derivationRef(cwd: string, sessionFile: string, sessionId: string): NativeSessionRef {
+  return {
+    harnessId: "omo",
+    nativeSessionId: sessionId,
+    locator: { sessionPath: sessionFile, cwd },
+    formatVersion: 1,
+  };
+}
+
+function sessionPathOf(ref: NativeSessionRef | undefined): string {
+  const locator = ref?.locator;
+  if (typeof locator !== "object" || locator === null || Array.isArray(locator)) {
+    throw new Error("expected a Native Session Ref locator");
+  }
+  const value = (locator as Record<string, unknown>).sessionPath;
+  if (typeof value !== "string") throw new Error("expected a Native Session file path");
+  return value;
+}
+
+function derivedSessionFiles(cwd: string): string[] {
+  const directory = path.join(cwd, ".fake-omo", "derived");
+  return existsSync(directory) ? readdirSync(directory) : [];
 }
 
 describe("OmO Adapter inspect", () => {
@@ -688,7 +950,7 @@ describe("OmO Adapter open", () => {
     const cwd = temporaryDirectory();
     const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
     const otherFile = path.join(cwd, "sessions", "other.jsonl");
-    const fixture = sessionFixture(cwd, { FAKE_OMO_STATE_FILE: otherFile });
+    const fixture = sessionFixture(cwd, { FAKE_OMO_REPORTED_FILE: otherFile });
     const nativeRef: NativeSessionRef = {
       harnessId: "omo",
       nativeSessionId: "session-alpha",
@@ -747,32 +1009,375 @@ describe("OmO Adapter open", () => {
     expect(fixture.sessionSpawns).toHaveLength(0);
   });
 
-  it("refuses Fork and last-Turn rollback before spawning anything", async () => {
+  it("builds the derivation launch as --fork and refuses resume + Fork startup", () => {
+    const invocation = omoRpcProcessCommand(
+      {
+        cwd: os.tmpdir(),
+        command: "/fake/omo",
+        environment: { PATH: "" },
+        forkSessionFile: "/sessions/source.jsonl",
+      },
+      { platform: "linux", isExecutable: () => true },
+    );
+    expect(invocation.arguments).toEqual(["--mode", "rpc", "--fork", "/sessions/source.jsonl"]);
+    expect(() =>
+      omoRpcProcessCommand(
+        {
+          cwd: os.tmpdir(),
+          command: "/fake/omo",
+          environment: { PATH: "" },
+          sessionFile: "/sessions/source.jsonl",
+          forkSessionFile: "/sessions/source.jsonl",
+        },
+        { platform: "linux", isExecutable: () => true },
+      ),
+    ).toThrowError(/cannot combine/u);
+  });
+
+  it("starts the production --fork command and mints a distinct Session", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", ["only turn"]);
+    const rpc = new OmoRpcSession({
+      cwd,
+      command: createOmoCommandWrapper(),
+      environment: { ...process.env, FAKE_OMO_SCENARIO: "session" },
+      forkSessionFile: sourceFile,
+      commandTimeoutMs: 5_000,
+      startupTimeoutMs: 5_000,
+      closeTimeoutMs: 1_000,
+    });
+    try {
+      await rpc.start();
+      expect(rpc.state.sessionId).not.toBe("session-source");
+      const argv = JSON.parse(
+        readFileSync(path.join(cwd, ".fake-omo", "argv.json"), "utf8"),
+      ) as string[];
+      expect(argv).toEqual(["--mode", "rpc", "--fork", sourceFile]);
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("derives a last-Turn rollback with the exact prefix and leaves the source untouched", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", [
+      "first question",
+      "second question",
+    ]);
+    const sourceRef = derivationRef(cwd, sourceFile, "session-source");
+    const before = readFileSync(sourceFile);
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected a derived Session");
+    const session = result.value;
+    const derivedId = session.initialState.nativeRef?.nativeSessionId;
+    expect(derivedId).toBeDefined();
+    expect(derivedId).not.toBe("session-source");
+    expect(session.initialState.nativeRef?.locator).toMatchObject({ cwd });
+    // The production process boundary received --fork, never --session.
+    expect(fixture.sessionSpawns[0]?.forkSessionFile).toBe(sourceFile);
+    expect(fixture.sessionSpawns[0]?.sessionFile).toBeUndefined();
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot.ok).toBe(true);
+    if (!snapshot.ok) throw new Error("expected a derived snapshot");
+    expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn:u1",
+    ]);
+    expect(snapshot.value.turns[0]?.input).toEqual([{ type: "text", text: "first question" }]);
+    expect(readForksLog(cwd).map((frame) => frame.entryId)).toEqual(["u2"]);
+    // Two files exist: the startup copy and the derived prefix. The intermediate
+    // is the derived Session's native parent, so both stay; the source never moves.
+    expect(derivedSessionFiles(cwd)).toHaveLength(2);
+    expect(existsSync(sessionPathOf(session.initialState.nativeRef))).toBe(true);
+    expect(readFileSync(sourceFile)).toEqual(before);
+    await session.close();
+  });
+
+  it("derives a blank resumable Session when rolling back a one-Turn source", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", ["only question"]);
+    const sourceRef = derivationRef(cwd, sourceFile, "session-source");
+    const before = readFileSync(sourceFile);
+    // Real 5.1.83 never writes the blank fork file; the adapter must persist it.
+    const fixture = sessionFixture(cwd, { FAKE_OMO_FORK_DEFER_EMPTY: "1" });
+    const result = await fixture.adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+    if (!result.ok) throw new Error("expected a derived Session");
+    const session = result.value;
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({ ok: true, value: { turns: [] } });
+    expect(readForksLog(cwd).map((frame) => frame.entryId)).toEqual(["u1"]);
+    const derivedFile = sessionPathOf(session.initialState.nativeRef);
+    expect(existsSync(derivedFile)).toBe(true);
+    const derivedEntries = readFileSync(derivedFile, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { type?: string });
+    expect(derivedEntries.filter((entry) => entry.type === "message")).toEqual([]);
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("expected a derived Native Session Ref");
+    await session.close();
+    // The persisted identity resumes into the same blank Session.
+    const resumed = await fixture.adapter.open({ kind: "resume", nativeRef, cwd });
+    if (!resumed.ok) throw new Error("expected the blank Session to resume");
+    expect(resumed.value.initialState.nativeRef).toEqual(nativeRef);
+    await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [] },
+    });
+    await resumed.value.close();
+    expect(readFileSync(sourceFile)).toEqual(before);
+  });
+
+  it("forks at a middle Checkpoint and ends exactly at it", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", [
+      "first question",
+      "second question",
+      "third question",
+    ]);
+    const sourceRef = derivationRef(cwd, sourceFile, "session-source");
+    const before = readFileSync(sourceFile);
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "fork",
+      sourceRef,
+      checkpoint: {
+        harnessId: "omo",
+        nativeSessionId: "session-source",
+        checkpointId: "u2",
+        formatVersion: 1,
+      },
+      cwd,
+    });
+    if (!result.ok) throw new Error("expected a forked Session");
+    const session = result.value;
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error("expected a forked snapshot");
+    expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn:u1",
+      "turn:u2",
+    ]);
+    expect(snapshot.value.turns.at(-1)?.input).toEqual([{ type: "text", text: "second question" }]);
+    expect(readForksLog(cwd).map((frame) => frame.entryId)).toEqual(["u3"]);
+    expect(readFileSync(sourceFile)).toEqual(before);
+    await session.close();
+  });
+
+  it("forks at the branch tip from the startup copy without a second fork", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", [
+      "first question",
+      "second question",
+    ]);
+    const sourceRef = derivationRef(cwd, sourceFile, "session-source");
+    const before = readFileSync(sourceFile);
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "fork",
+      sourceRef,
+      checkpoint: {
+        harnessId: "omo",
+        nativeSessionId: "session-source",
+        checkpointId: "u2",
+        formatVersion: 1,
+      },
+      cwd,
+    });
+    if (!result.ok) throw new Error("expected a forked Session");
+    const session = result.value;
+    expect(session.initialState.nativeRef?.nativeSessionId).toMatch(/^session-fork-startup-/u);
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error("expected a forked snapshot");
+    expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn:u1",
+      "turn:u2",
+    ]);
+    expect(readForksLog(cwd)).toEqual([]);
+    expect(readFileSync(sourceFile)).toEqual(before);
+    await session.close();
+  });
+
+  it("rejects an unknown Checkpoint and removes the startup copy", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", ["first question"]);
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "fork",
+      sourceRef: derivationRef(cwd, sourceFile, "session-source"),
+      checkpoint: {
+        harnessId: "omo",
+        nativeSessionId: "session-source",
+        checkpointId: "missing",
+        formatVersion: 1,
+      },
+      cwd,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "checkpointNotFound", retryable: false },
+    });
+    expect(derivedSessionFiles(cwd)).toEqual([]);
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
+  it("rejects a startup copy that kept the source identity and cleans it up", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", ["first question"]);
+    const fixture = sessionFixture(cwd, { FAKE_OMO_FORK_STARTUP_ID: "session-source" });
+    const result = await fixture.adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: derivationRef(cwd, sourceFile, "session-source"),
+      cwd,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "protocolError", retryable: false },
+    });
+    expect(derivedSessionFiles(cwd)).toEqual([]);
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
+  it("rejects a cancelled fork instead of keeping the startup copy", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", [
+      "first question",
+      "second question",
+    ]);
+    const fixture = sessionFixture(cwd, { FAKE_OMO_FORK_CANCELLED: "1" });
+    const result = await fixture.adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: derivationRef(cwd, sourceFile, "session-source"),
+      cwd,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", retryable: false },
+    });
+    expect(derivedSessionFiles(cwd)).toEqual([]);
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
+  it("restores current Model, Thinking, and Permission hints on a rollback", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", [
+      "first question",
+      "second question",
+    ]);
+    const before = readFileSync(sourceFile);
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: derivationRef(cwd, sourceFile, "session-source"),
+      cwd,
+      model: { id: "synthetic-provider/other-model" },
+      thinkingOptionId: "high",
+      permissionModeId: harnessPermissionModeIdSchema.parse("read-only"),
+    });
+    if (!result.ok) throw new Error("expected a derived Session");
+    expect(result.value.initialState).toMatchObject({
+      effectiveModel: { id: "synthetic-provider/other-model" },
+      effectiveThinkingOptionId: "high",
+      effectivePermissionModeId: "read-only",
+    });
+    const snapshot = await result.value.readSnapshot();
+    if (!snapshot.ok) throw new Error("expected a derived snapshot");
+    expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn:u1",
+    ]);
+    expect(readPresetsLog(cwd).map((frame) => frame.permissionPreset)).toEqual(["read-only"]);
+    expect(readFileSync(sourceFile)).toEqual(before);
+    await result.value.close();
+  });
+
+  it("writes independently after a fork without touching the source", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", [
+      "first question",
+      "second question",
+    ]);
+    const before = readFileSync(sourceFile);
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "fork",
+      sourceRef: derivationRef(cwd, sourceFile, "session-source"),
+      checkpoint: {
+        harnessId: "omo",
+        nativeSessionId: "session-source",
+        checkpointId: "u1",
+        formatVersion: 1,
+      },
+      cwd,
+    });
+    if (!result.ok) throw new Error("expected a forked Session");
+    const derivedFile = sessionPathOf(result.value.initialState.nativeRef);
+    const derivedBefore = readFileSync(derivedFile);
+    await expect(
+      result.value.execute({
+        type: "model.select",
+        model: { id: "synthetic-provider/other-model" },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(readFileSync(derivedFile)).not.toEqual(derivedBefore);
+    expect(readFileSync(sourceFile)).toEqual(before);
+    await result.value.close();
+  });
+
+  it("rejects malformed derivation inputs before spawning anything", async () => {
     const cwd = temporaryDirectory();
     const fixture = sessionFixture(cwd);
-    const sourceRef: NativeSessionRef = {
+    const withoutLocator = {
       harnessId: "omo",
-      nativeSessionId: "session-alpha",
-      locator: { sessionPath: path.join(cwd, "sessions", "alpha.jsonl"), cwd },
+      nativeSessionId: "session-source",
       formatVersion: 1,
-    };
+    } as NativeSessionRef;
+    await expect(
+      fixture.adapter.open({ kind: "rollbackLastTurn", sourceRef: withoutLocator, cwd }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     await expect(
       fixture.adapter.open({
         kind: "fork",
-        sourceRef,
+        sourceRef: {
+          harnessId: "omo",
+          nativeSessionId: "session-source",
+          locator: { sessionPath: path.join(cwd, "source.jsonl"), cwd },
+          formatVersion: 1,
+        },
         checkpoint: {
           harnessId: "omo",
-          nativeSessionId: "session-alpha",
-          checkpointId: "turn-1",
+          nativeSessionId: "another-session",
+          checkpointId: "u1",
           formatVersion: 1,
         },
         cwd,
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
-    await expect(
-      fixture.adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
     expect(fixture.sessionSpawns).toHaveLength(0);
+  });
+
+  it("reports a typed failure when the source Session file cannot be read", async () => {
+    const cwd = temporaryDirectory();
+    const missingSource = path.join(cwd, "source", "missing.jsonl");
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: derivationRef(cwd, missingSource, "session-source"),
+      cwd,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "processExited", retryable: true },
+    });
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
   });
 
   it("applies unattended full access at create and confirms it applied", async () => {

@@ -12,6 +12,8 @@ import {
   OmoHistoryProtocolError,
   readOmoHistory,
   readOmoSnapshot,
+  resolveOmoForkBoundary,
+  resolveOmoLastTurnBoundary,
   type OmoHistoryChannel,
   type OmoHistoryState,
   type OmoSessionHistory,
@@ -863,5 +865,68 @@ describe("OmO readOmoSnapshot", () => {
   it("exposes a protocolError code for the session's error mapping", () => {
     const error = new OmoHistoryProtocolError("broken");
     expect(error.code).toBe("protocolError");
+  });
+});
+
+describe("OmO derivation boundaries", () => {
+  it("rolls back the last Turn of the effective branch and keeps the prefix", () => {
+    expect(resolveOmoLastTurnBoundary(branchedHistory)).toEqual({
+      boundaryEntryId: "u3",
+      retainedTurnKeys: ["turn:u1", "turn:u2"],
+    });
+    expect(resolveOmoLastTurnBoundary(linearHistory(1))).toEqual({
+      boundaryEntryId: "u0",
+      retainedTurnKeys: [],
+    });
+    expect(resolveOmoLastTurnBoundary({ entries: [], leafId: null })).toBeNull();
+  });
+
+  it("ignores abandoned branches when planning a rollback", () => {
+    // leafId a1 leaves only the first Turn active; ux and u2 are off-branch.
+    const history: OmoSessionHistory = {
+      entries: [
+        userEntry("u1", null, "first", 1),
+        assistantEntry("a1", "u1", [{ type: "text", text: "answer" }], {
+          stopReason: "stop",
+          timestamp: 2,
+        }),
+        userEntry("ux", "a1", "abandoned", 3),
+      ],
+      leafId: "a1",
+    };
+    expect(resolveOmoLastTurnBoundary(history)).toEqual({
+      boundaryEntryId: "u1",
+      retainedTurnKeys: [],
+    });
+  });
+
+  it("plans a Fork at a middle Checkpoint with the next user entry as boundary", () => {
+    expect(resolveOmoForkBoundary(branchedHistory, "u1")).toEqual({
+      targetTurnIndex: 0,
+      boundaryEntryId: "u2",
+      retainedTurnKeys: ["turn:u1"],
+    });
+    expect(resolveOmoForkBoundary(branchedHistory, "u2")).toEqual({
+      targetTurnIndex: 1,
+      boundaryEntryId: "u3",
+      retainedTurnKeys: ["turn:u1", "turn:u2"],
+    });
+  });
+
+  it("plans a tip Fork on the startup copy because no next user entry exists", () => {
+    expect(resolveOmoForkBoundary(branchedHistory, "u3")).toEqual({
+      targetTurnIndex: 2,
+      boundaryEntryId: null,
+      retainedTurnKeys: ["turn:u1", "turn:u2", "turn:u3"],
+    });
+  });
+
+  it("rejects a Checkpoint off the active branch", () => {
+    expect(() => resolveOmoForkBoundary(branchedHistory, "ux")).toThrowError(
+      /not on the Session's active branch/u,
+    );
+    expect(() => resolveOmoForkBoundary(branchedHistory, "missing")).toThrowError(
+      OmoHistoryProtocolError,
+    );
   });
 });

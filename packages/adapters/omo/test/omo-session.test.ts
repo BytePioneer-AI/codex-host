@@ -278,7 +278,7 @@ function textOf(snapshot: HostItemSnapshot | undefined): string | undefined {
 }
 
 describe("OmO Session capabilities and declaration", () => {
-  it("declares live configuration selections, no history derivation or steering", async () => {
+  it("declares live configuration selections and history derivation, no idle steering", async () => {
     const fixtureSession = await createSessionFixture("session");
     expect(fixtureSession.session.capabilities).toEqual({
       configuration: {
@@ -287,7 +287,7 @@ describe("OmO Session capabilities and declaration", () => {
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
       steer: false,
     });
     expect(fixtureSession.session.initialUsage).toBeNull();

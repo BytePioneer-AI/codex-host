@@ -158,14 +158,26 @@ import {
   type OmoRpcSession,
   type OmoRpcSessionState,
 } from "./omo-rpc-session.js";
+import {
+  admitOmoSteer,
+  OmoSteerRejectedError,
+  OmoSteerSettlementError,
+  OmoSteerTargetEndedError,
+  OmoSteerWindow,
+  reconcileOmoSteerSettlement,
+} from "./omo-steer.js";
 
 const omoHarnessId: HarnessId = harnessIdSchema.parse("omo");
 
 /**
- * Capabilities of this build. Model, Thinking, and Permission Mode selection
- * are live (omO presets apply from the next permission decision, including
- * mid-Turn). History derivation and steering are not announced yet; they
- * arrive with their own steps.
+ * Static declaration published by Adapter.inspect, which has no live Turn.
+ * Model, Thinking, and Permission Mode selection are live (omO presets apply
+ * from the next permission decision, including mid-Turn). History derivation is
+ * supported: Fork and last-Turn rollback derive a new Native Session and never
+ * mutate the source. Steering is a live-only capability
+ * (`capabilities.steer`), because it exists only while a native root-tool
+ * window is open; without a Turn there is nothing to steer, so the static
+ * declaration stays false, exactly like an Adapter with no native input.
  */
 export const OMO_SESSION_CAPABILITIES: HarnessSessionCapabilities = Object.freeze({
   configuration: Object.freeze({
@@ -174,7 +186,7 @@ export const OMO_SESSION_CAPABILITIES: HarnessSessionCapabilities = Object.freez
     selectPermissionMode: true,
     permissionModeScope: "live" as const,
   }),
-  history: Object.freeze({ fork: false, forkAcrossCwd: false, rollbackLastTurn: false }),
+  history: Object.freeze({ fork: true, forkAcrossCwd: false, rollbackLastTurn: true }),
   steer: false,
 });
 
@@ -265,6 +277,16 @@ interface ActiveTurn {
   cancellationRequested: boolean;
   settling: boolean;
   aborted: boolean;
+  /** Engine turn id of this Turn (`prompt` response `data.turnId`), for `expectedTurnId`. */
+  nativeTurnId: string | null;
+  /** Open root-tool window; `capabilities.steer` is true only inside it. */
+  readonly steerWindow: OmoSteerWindow;
+  /** Steers the engine accepted into this Turn; each adds one persisted user entry. */
+  acceptedSteerCount: number;
+  /** Admissions still in flight; settlement waits for every one of them. */
+  readonly pendingSteers: Set<Promise<void>>;
+  /** The target Turn settled before a steer answer arrived; close after publishing. */
+  steerTargetEnded: OmoSteerTargetEndedError | null;
   abortSource: string | null;
   agentFailure: Record<string, unknown> | null;
   lastAssistant: AssistantTerminal | null;
@@ -577,6 +599,9 @@ function sessionError(error: unknown, rpc: OmoRpcSession): HarnessError {
   if (error instanceof OmoHistoryProtocolError || error instanceof OmoSessionProtocolError) {
     return { code: "protocolError", message: error.message, retryable: false };
   }
+  if (error instanceof OmoSteerSettlementError) {
+    return { code: "protocolError", message: error.message, retryable: false };
+  }
   if (error instanceof HarnessSessionFault) return error.error;
   const stderrTail = rpc.stderrTail;
   return {
@@ -597,7 +622,7 @@ class HarnessSessionFault extends Error {
 
 export class OmoHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = omoHarnessId;
-  readonly capabilities: HarnessSessionCapabilities = OMO_SESSION_CAPABILITIES;
+  readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -637,6 +662,21 @@ export class OmoHarnessSession implements HarnessSession {
     this.#commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     this.#closeTurnTimeoutMs = options.closeTurnTimeoutMs ?? DEFAULT_CLOSE_TURN_TIMEOUT_MS;
     this.#prewarmSessionFile = options.prewarmSessionFile ?? null;
+    const canSteer = (): boolean => this.#canSteer();
+    this.capabilities = Object.freeze({
+      configuration: Object.freeze({
+        selectModel: true,
+        selectThinkingOption: true,
+        selectPermissionMode: true,
+        permissionModeScope: "live" as const,
+      }),
+      history: Object.freeze({ fork: true, forkAcrossCwd: false, rollbackLastTurn: true }),
+      // Live only: an open root-tool window in the active Turn. The Host reads
+      // this right before each submission and on every admitted steer.
+      get steer(): boolean {
+        return canSteer();
+      },
+    });
     this.outputs = this.#channel.outputs;
     this.#pump = this.#runEventPump();
     this.#cancelOrphanDialogs();
@@ -708,14 +748,7 @@ export class OmoHarnessSession implements HarnessSession {
       case "interaction.respond":
         return this.#respondToInteraction(command);
       case "turn.steer":
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message: "OmO Turn steering is not available in this build",
-            retryable: false,
-          },
-        };
+        return this.#steer(command);
       case "model.select":
         return this.#selectConfiguration((channel) =>
           selectOmoModel(channel, command.model, { timeoutMs: this.#commandTimeoutMs }),
@@ -814,6 +847,11 @@ export class OmoHarnessSession implements HarnessSession {
         cancellationRequested: false,
         settling: false,
         aborted: false,
+        nativeTurnId: null,
+        steerWindow: new OmoSteerWindow(),
+        acceptedSteerCount: 0,
+        pendingSteers: new Set(),
+        steerTargetEnded: null,
         abortSource: null,
         agentFailure: null,
         lastAssistant: null,
@@ -849,6 +887,7 @@ export class OmoHarnessSession implements HarnessSession {
         });
         return { ok: true, value: { turnId: command.turnId } };
       }
+      turn.nativeTurnId = readNativeTurnId(response.data);
       this.#active = turn;
       this.#turnAccepted = true;
       this.#event({ type: "turn.started", turnId: command.turnId });
@@ -914,6 +953,8 @@ export class OmoHarnessSession implements HarnessSession {
       return { ok: true, value: { cancellationRequested: true } };
     }
     active.cancellationRequested = true;
+    // A Turn being cancelled must not accept new same-Turn input.
+    active.steerWindow.close();
     this.#closeAllInteractions(active, "cancelled");
     try {
       await this.#rpc.send("abort", { clearQueue: true }, { timeoutMs: this.#abortTimeoutMs });
@@ -977,6 +1018,117 @@ export class OmoHarnessSession implements HarnessSession {
         retryable: true,
       }),
     );
+  }
+
+  // ---------------------------------------------------------------- turn steer
+
+  /**
+   * `capabilities.steer` for the current moment: the Session is open, its
+   * active Turn runs, no cancellation/settlement started, and a native root
+   * tool call is executing. Every `turn.steer` re-reads this instead of a
+   * cached decision.
+   */
+  #canSteer(): boolean {
+    const active = this.#active;
+    return (
+      this.#phase === "open" &&
+      active !== null &&
+      !active.settling &&
+      !active.cancellationRequested &&
+      active.steerWindow.isOpen
+    );
+  }
+
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    const inputs = Array.isArray(command.input) ? command.input : [];
+    const text = inputs.map((input) => input.text).join("\n");
+    if (text.trim().length === 0) {
+      return { ok: false, error: invalidRequest("OmO steer text must not be empty") };
+    }
+    const active = this.#active;
+    if (!active || !this.#canSteer()) {
+      // The Session does not offer same-Turn insertion at this moment (the
+      // window closed, or none is open). That is the capability being false,
+      // not a target the Host can retry against.
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "OmO Turn steering is not available now",
+          retryable: false,
+        },
+      };
+    }
+    if (active.command.turnId !== command.turnId) {
+      return {
+        ok: false,
+        error: invalidState("OmO Turn steer must reference the active Turn"),
+      };
+    }
+
+    let expectedTurnId = active.nativeTurnId;
+    if (expectedTurnId === null) {
+      // A queued/handled admission or an older host omitted `data.turnId`; the
+      // engine turn id is the only value the native `turn_conflict` guard
+      // accepts. Re-check the whole window after this await: the read is not a
+      // reservation.
+      try {
+        expectedTurnId = (await this.#rpc.refreshState({ timeoutMs: this.#commandTimeoutMs }))
+          .currentTurnId;
+      } catch (error) {
+        return { ok: false, error: sessionError(error, this.#rpc) };
+      }
+      if (expectedTurnId === null || this.#active !== active || !this.#canSteer()) {
+        return {
+          ok: false,
+          error: invalidState("OmO Turn is not accepting native input"),
+        };
+      }
+      active.nativeTurnId = expectedTurnId;
+    }
+
+    const admission = admitOmoSteer({
+      window: active.steerWindow,
+      text,
+      expectedTurnId,
+      clientTurnId: active.clientTurnId,
+      send: (payload) => this.#rpc.send("steer", payload, { timeoutMs: this.#commandTimeoutMs }),
+      // Read synchronously after the answer: frame order is the settlement order.
+      targetActive: () =>
+        this.#active === active && !active.settling && !active.cancellationRequested,
+    }).then(() => {
+      active.acceptedSteerCount += 1;
+    });
+    active.pendingSteers.add(admission);
+    try {
+      await admission;
+      return { ok: true, value: { accepted: true } };
+    } catch (error) {
+      if (error instanceof OmoSteerRejectedError) {
+        // Typed refusal: nothing was queued, so the Host may use its stop-and-resend path.
+        return { ok: false, error: this.#steerRefusal(error) };
+      }
+      if (error instanceof OmoSteerTargetEndedError) {
+        // The committed history must be read, then the process closed so the
+        // possibly queued text cannot run as a phantom Turn. Both happen after
+        // this Turn's terminal is published (#settleTurn).
+        active.steerTargetEnded = error;
+      }
+      // Every other outcome may already have consumed the input. Throw so the
+      // Host records an unknown delivery instead of blindly resending.
+      throw error;
+    } finally {
+      active.pendingSteers.delete(admission);
+    }
+  }
+
+  #steerRefusal(error: OmoSteerRejectedError): HarnessError {
+    const refusal = error.refusal;
+    if (refusal?.errorCode === "turn_conflict") {
+      return invalidState(`OmO refused the steer for another Turn: ${refusal.message}`);
+    }
+    if (refusal) return sessionError(refusal, this.#rpc);
+    return invalidState(error.message);
   }
 
   // -------------------------------------------------------------- interactions
@@ -1457,6 +1609,9 @@ export class OmoHarnessSession implements HarnessSession {
       outputText: "",
     });
     active.toolItemsByCallId.set(callId, item.itemId);
+    // A root tool call is the native safe boundary for same-Turn steering; the
+    // window closes on its end, cancellation, settlement, fault, or close.
+    active.steerWindow.toolStarted(callId);
     this.#event({ type: "item.started", turnId: active.command.turnId, item });
   }
 
@@ -1509,6 +1664,7 @@ export class OmoHarnessSession implements HarnessSession {
     const tool = callId ? active.tools.get(callId) : undefined;
     if (!callId || !tool) return;
     active.tools.delete(callId);
+    active.steerWindow.toolEnded(callId);
     const durationMs = Math.max(0, Date.now() - tool.startedAtMs);
     const result = frame.result;
     const output = boundedToolOutput(result, this.#toolOutputLimit);
@@ -1613,16 +1769,26 @@ export class OmoHarnessSession implements HarnessSession {
   #handleSettled(active: ActiveTurn): void {
     if (this.#active !== active || active.settling) return;
     active.settling = true;
+    // The terminal identity is being recorded; no new input joins this Turn.
+    active.steerWindow.close();
     void this.#settleTurn(active);
   }
 
   async #settleTurn(active: ActiveTurn): Promise<void> {
+    // Every steer the Session admitted is awaited before history is read: an
+    // answer still in flight decides whether it joined this Turn or ended with
+    // it, and the persisted user-entry count must include it.
+    await Promise.allSettled([...active.pendingSteers]);
+    if (this.#active !== active) return;
     let identity: { nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef } | null = null;
     let identityError: HarnessError | null = null;
+    let steerSettlementFailure = false;
     try {
       identity = await this.#turnIdentity(active);
     } catch (error) {
       identityError = sessionError(error, this.#rpc);
+      steerSettlementFailure =
+        active.acceptedSteerCount > 0 && error instanceof OmoSteerSettlementError;
     }
     if (this.#active !== active) return;
     this.#finishTurn(
@@ -1630,13 +1796,54 @@ export class OmoHarnessSession implements HarnessSession {
       this.#turnOutcome(active, identity, identityError),
       identity?.nativeTurnRef,
     );
+    if (this.#phase !== "open") return;
+    if (active.steerTargetEnded || steerSettlementFailure) {
+      // The engine may still hold the text natively (a steering queue can
+      // outlive the run and survive reopening). Remove it before faulting so a
+      // later resume cannot execute it as a phantom Turn; the returned text is
+      // discarded, never resent.
+      await this.#clearQueuedInput();
+      if (this.#phase !== "open") return;
+    }
+    if (active.steerTargetEnded) {
+      // Publish the Turn first (above), then fault: the Host resumes from the
+      // persisted history instead of holding a dead run open.
+      this.#fault(
+        new HarnessSessionFault({
+          code: "invalidState",
+          message: active.steerTargetEnded.message,
+          retryable: false,
+        }),
+      );
+      return;
+    }
+    if (steerSettlementFailure) {
+      // An accepted steer did not become exactly one persisted user entry. The
+      // native queue may still hold the text for a later Turn, so this process
+      // cannot be reused for one; close it and resume from history instead.
+      this.#fault(
+        new HarnessSessionFault({
+          code: "protocolError",
+          message: identityError?.message ?? "OmO steered Turn settlement is inconsistent",
+          retryable: false,
+        }),
+      );
+    }
+  }
+
+  /** Bounded native removal of queued steering/follow-up input; failure is ignored. */
+  async #clearQueuedInput(): Promise<void> {
+    if (this.#rpc.fault !== null) return;
+    await this.#rpc
+      .send("clear_queue", {}, { timeoutMs: this.#abortTimeoutMs })
+      .catch(() => undefined);
   }
 
   /**
-   * Resolves the Turn's persisted user-message entry id. The live
-   * `entry_appended` stream is the primary source (OmO emits it right after the
-   * persisted user message); the bounded `get_entries` walk covers an engine
-   * that does not stream entry identity.
+   * Resolves the Turn's persisted user-message entry ids, oldest first, from
+   * history: the prompt plus one entry per accepted steer. The live
+   * `entry_appended` stream is still the primary identity source, and the
+   * bounded `get_entries` walks cover engines that do not stream it.
    */
   async #turnIdentity(
     active: ActiveTurn,
@@ -1646,9 +1853,16 @@ export class OmoHarnessSession implements HarnessSession {
     if (!sessionId) {
       throw new OmoSessionProtocolError("OmO Turn has no persisted Session identity");
     }
-    const userEntryId = active.userEntryId ?? (await this.#readUserEntryId(active));
+    const userEntryIds = await this.#readTurnUserEntryIds(active);
+    const userEntryId = userEntryIds[0];
+    if (userEntryId === undefined) {
+      throw new OmoSessionProtocolError("OmO history has no User Entry for the settled Turn");
+    }
+    // Steered Turns persist one user entry per accepted insertion. A mismatch is
+    // never silently re-bound to the steer entry: the prompt stays the identity.
+    reconcileOmoSteerSettlement(userEntryIds, active.acceptedSteerCount);
     active.userEntryId = userEntryId;
-    this.#consumedUserEntryIds.add(userEntryId);
+    for (const id of userEntryIds) this.#consumedUserEntryIds.add(id);
     const nativeTurnKey = omoHistoryTurnKey(userEntryId);
     if (this.#emittedTurnKeys.has(nativeTurnKey)) {
       throw new OmoSessionProtocolError(
@@ -1672,9 +1886,16 @@ export class OmoHarnessSession implements HarnessSession {
     };
   }
 
-  async #readUserEntryId(active: ActiveTurn): Promise<string> {
-    if (active.baseline.kind === "entry" || active.baseline.kind === "empty") {
+  /**
+   * All user-message entries this Turn persisted, oldest first. With a
+   * pre-prompt cursor the forward walk is exact; without one (a failed tail
+   * read) the counted window starts at the Turn's known or newest-unseen user
+   * entry and walks backwards to it.
+   */
+  async #readTurnUserEntryIds(active: ActiveTurn): Promise<string[]> {
+    if (active.baseline.kind !== "unknown") {
       let since = active.baseline.kind === "entry" ? active.baseline.entryId : undefined;
+      const ids: string[] = [];
       for (let page = 0; page < IDENTITY_MAX_PAGES; page += 1) {
         const response = await this.#rpc.send(
           "get_entries",
@@ -1688,16 +1909,20 @@ export class OmoHarnessSession implements HarnessSession {
         const { entries, hasMore, next } = historyPage(response.data, "get_entries");
         for (const entry of entries) {
           const id = userMessageEntryId(entry);
-          if (id) return id;
+          if (id) ids.push(id);
         }
         if (!hasMore) break;
         if (next === undefined || next === since) break;
         since = next;
       }
-      throw new OmoSessionProtocolError("OmO history has no User Entry for the settled Turn");
+      return ids;
     }
-    // No usable pre-prompt cursor (a non-empty history whose tail read failed):
-    // walk back from the newest entries and take the newest unseen user entry.
+    const identity = active.userEntryId ?? (await this.#newestUnseenUserEntryId());
+    return [identity, ...(await this.#userEntriesAfter(identity))];
+  }
+
+  /** Newest user entry the Session has not consumed yet; the degraded fallback. */
+  async #newestUnseenUserEntryId(): Promise<string> {
     let before: string | undefined;
     for (let page = 0; page < IDENTITY_MAX_PAGES; page += 1) {
       const response = await this.#rpc.send(
@@ -1719,6 +1944,34 @@ export class OmoHarnessSession implements HarnessSession {
       before = next;
     }
     throw new OmoSessionProtocolError("OmO history has no new User Entry for the settled Turn");
+  }
+
+  /** User entries newer than `entryId`, oldest first; bounded by the page walk. */
+  async #userEntriesAfter(entryId: string): Promise<string[]> {
+    const ids: string[] = [];
+    let before: string | undefined;
+    for (let page = 0; page < IDENTITY_MAX_PAGES; page += 1) {
+      const response = await this.#rpc.send(
+        "get_entries",
+        {
+          tail: IDENTITY_PAGE_LIMIT,
+          maxBytes: IDENTITY_PAGE_BYTES,
+          ...(before === undefined ? {} : { before }),
+        },
+        { timeoutMs: this.#identityReadTimeoutMs() },
+      );
+      const { entries, hasMore, next } = historyPage(response.data, "get_entries");
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const id = userMessageEntryId(entries[index]);
+        if (!id) continue;
+        if (id === entryId) return ids.reverse();
+        ids.push(id);
+      }
+      if (!hasMore) break;
+      if (next === undefined || next === before) break;
+      before = next;
+    }
+    throw new OmoSessionProtocolError("OmO history does not contain this Turn's User Entry");
   }
 
   #identityReadTimeoutMs(): number {
@@ -1785,6 +2038,7 @@ export class OmoHarnessSession implements HarnessSession {
   #finishTurn(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (this.#active !== active) return;
     this.#active = null;
+    active.steerWindow.close();
     if (active.cancelGuard) {
       clearTimeout(active.cancelGuard);
       active.cancelGuard = null;
@@ -1935,6 +2189,15 @@ function readDisposition(data: unknown): "started" | "queued" | "handled" | "unk
   if (!isRecord(data)) return "unknown";
   const value = data.disposition;
   return value === "started" || value === "queued" || value === "handled" ? value : "unknown";
+}
+
+/**
+ * Engine turn id of a started prompt (`data.turnId`, same form as
+ * `get_state.currentTurnId`). Queued/handled admissions and older hosts omit
+ * it; the steer path then reads the id from `get_state` right before writing.
+ */
+function readNativeTurnId(data: unknown): string | null {
+  return isRecord(data) ? nonEmptyString(data.turnId) : null;
 }
 
 /** Reads a `get_entries` answer's entries and page cursor. */

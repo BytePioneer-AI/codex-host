@@ -48,6 +48,14 @@ function write(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+/** Commands the gate/tests must observe after the peer has already exited. */
+function controlLog(command) {
+  const file = process.env.FAKE_OMO_CONTROL_LOG;
+  if (!file) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${JSON.stringify(command)}\n`);
+}
+
 function respond(command, data) {
   const response = { id: command.id, type: "response", command: command.type, success: true };
   if (data !== undefined) response.data = data;
@@ -119,6 +127,8 @@ const sessionReceived = {
   prompts: [],
   aborts: [],
   uiResponses: [],
+  steers: [],
+  clearQueues: [],
   commands: [],
   setModels: [],
   setThinkingLevels: [],
@@ -141,6 +151,18 @@ const sessionControls = {
   confirmModel: process.env.FAKE_OMO_SET_MODEL_CONFIRM !== "false",
   confirmThinking: process.env.FAKE_OMO_SET_THINKING_CONFIRM !== "false",
   confirmPermission: process.env.FAKE_OMO_SET_PERMISSION_CONFIRM !== "false",
+  promptTurnId: process.env.FAKE_OMO_PROMPT_NO_TURN_ID !== "1",
+  steerMode: process.env.FAKE_OMO_STEER_MODE ?? "queue",
+};
+
+// Native same-Turn steering surface: a turn script parks inside an open root
+// tool call, the `steer` command answers per mode, and the continuation's user
+// entry is appended only when the engine actually consumes the input.
+const sessionSteer = {
+  toolOpen: false,
+  toolCallId: "call-steer-1",
+  toolCommand: "ping -n 20 127.0.0.1",
+  idleQueue: [],
 };
 
 // Configuration surface: the live catalog the peer offers, mirrored to the
@@ -217,6 +239,7 @@ function assistantText(text, extra = {}) {
 }
 
 function settle(clientTurnId, aborted = false) {
+  state.currentTurnId = null;
   if (aborted) {
     write({
       type: "agent_end",
@@ -231,6 +254,7 @@ function settle(clientTurnId, aborted = false) {
 }
 
 function finishInteractiveTurn(clientTurnId, text) {
+  state.currentTurnId = null;
   write({
     type: "message_start",
     clientTurnId,
@@ -246,8 +270,70 @@ function finishInteractiveTurn(clientTurnId, text) {
   write({ type: "agent_settled" });
 }
 
+/** Ends the parked steer tool call once; a second call is a no-op. */
+function endSteerTool(clientTurnId) {
+  if (!sessionSteer.toolOpen) return false;
+  sessionSteer.toolOpen = false;
+  write({
+    type: "tool_execution_end",
+    clientTurnId,
+    toolCallId: sessionSteer.toolCallId,
+    toolName: "bash",
+    result: { content: [{ type: "text", text: "hello" }], details: { exitCode: 0 } },
+    isError: false,
+  });
+  return true;
+}
+
+/** Publishes the steer continuation's answer and the Turn terminal. */
+function finishSteerTurn(text) {
+  const clientTurnId = sessionLastClientTurnId;
+  endSteerTool(clientTurnId);
+  finishInteractiveTurn(clientTurnId, text);
+}
+
 function runTurnScript(script, clientTurnId) {
   switch (script) {
+    case "steer-window": {
+      // Parks inside an open root tool call so a native steer has a live window.
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Running" },
+      });
+      write({
+        type: "message_end",
+        clientTurnId,
+        message: {
+          ...assistantText("Running"),
+          content: [
+            { type: "text", text: "Running" },
+            {
+              type: "toolCall",
+              id: sessionSteer.toolCallId,
+              name: "bash",
+              arguments: { command: sessionSteer.toolCommand },
+            },
+          ],
+          stopReason: "toolUse",
+        },
+      });
+      sessionSteer.toolOpen = true;
+      write({
+        type: "tool_execution_start",
+        clientTurnId,
+        toolCallId: sessionSteer.toolCallId,
+        toolName: "bash",
+        args: { command: sessionSteer.toolCommand },
+      });
+      return;
+    }
     case "full": {
       write({ type: "turn_start", clientTurnId });
       write({
@@ -738,7 +824,25 @@ function handleSession(command) {
       if ("confirmThinking" in command) sessionControls.confirmThinking = command.confirmThinking;
       if ("confirmPermission" in command)
         sessionControls.confirmPermission = command.confirmPermission;
+      if ("promptTurnId" in command) sessionControls.promptTurnId = command.promptTurnId;
+      if (typeof command.steerMode === "string") sessionControls.steerMode = command.steerMode;
       respond(command, { ...sessionControls });
+      return true;
+    }
+    case "steer.tool-end": {
+      const ended = endSteerTool(sessionLastClientTurnId);
+      respond(command, { ended });
+      return true;
+    }
+    case "steer.finish": {
+      finishSteerTurn("finished");
+      respond(command, { finished: true });
+      return true;
+    }
+    case "clear_queue": {
+      sessionReceived.clearQueues.push({ ...command });
+      controlLog({ type: "clear_queue" });
+      respond(command, { steering: sessionSteer.idleQueue.splice(0), followUp: [] });
       return true;
     }
     case "prompt": {
@@ -753,17 +857,61 @@ function handleSession(command) {
       }
       appendUserEntry(command.message);
       sessionTurnSeq += 1;
+      const nativeTurnId = `native-turn-${sessionTurnSeq}`;
       const script = sessionControls.turnScript;
       if (sessionControls.disposition === "handled") {
         respond(command, { disposition: "handled" });
         return true;
       }
+      state.currentTurnId = nativeTurnId;
       respond(command, {
         disposition: "started",
-        turnId: `native-turn-${sessionTurnSeq}`,
+        ...(sessionControls.promptTurnId ? { turnId: nativeTurnId } : {}),
         clientTurnId: command.clientTurnId ?? null,
       });
       queueMicrotask(() => runTurnScript(script, command.clientTurnId ?? null));
+      return true;
+    }
+    case "steer": {
+      sessionReceived.steers.push({ ...command });
+      const expected = command.expectedTurnId;
+      const mode = sessionControls.steerMode;
+      const targetRunning =
+        sessionSteer.toolOpen && state.currentTurnId !== null && expected === state.currentTurnId;
+      if (mode === "conflict" || !targetRunning) {
+        // The native `expectedTurnId` guard: nothing is queued for another turn.
+        respondError(command, "turn_conflict", "no running turn matches expectedTurnId");
+        if (sessionSteer.toolOpen) queueMicrotask(() => finishSteerTurn("conflict"));
+        return true;
+      }
+      if (mode === "handled") {
+        respond(command, { disposition: "handled" });
+        queueMicrotask(() => finishSteerTurn("handled"));
+        return true;
+      }
+      if (mode === "late-settle") {
+        // The target settles before the answer is written; the text only joins
+        // the idle queue and must be removable by clear_queue.
+        sessionSteer.idleQueue.push(command.message);
+        finishSteerTurn("settled first");
+        setTimeout(() => respond(command, { disposition: "queued" }), 25).unref?.();
+        return true;
+      }
+      if (mode === "withhold") {
+        setTimeout(() => finishSteerTurn("no answer"), 30).unref?.();
+        return true;
+      }
+      if (mode === "queue-silent") {
+        // Acknowledged admission with no persisted user entry: the settlement
+        // count proves the input never joined the Turn.
+        sessionSteer.idleQueue.push(command.message);
+        respond(command, { disposition: "queued" });
+        queueMicrotask(() => finishSteerTurn("silent"));
+        return true;
+      }
+      appendUserEntry(command.message);
+      respond(command, { disposition: "queued" });
+      queueMicrotask(() => finishSteerTurn("both"));
       return true;
     }
     case "abort": {

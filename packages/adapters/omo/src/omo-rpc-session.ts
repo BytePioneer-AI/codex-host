@@ -163,6 +163,14 @@ export class OmoRpcClosedError extends Error {
   }
 }
 
+/** An extension vetoed the requested Fork; no Session was switched. */
+export class OmoRpcForkCancelledError extends Error {
+  constructor(message = "OmO cancelled the requested Fork") {
+    super(message);
+    this.name = "OmoRpcForkCancelledError";
+  }
+}
+
 /** A closed session's process tree outlived both bounded shutdown stages. */
 export class OmoRpcCloseError extends Error {
   constructor(message: string) {
@@ -177,6 +185,8 @@ export interface OmoRpcSessionOptions {
   environment?: NodeJS.ProcessEnv;
   /** Resume one session file. Without it the engine creates a new Session. */
   sessionFile?: string;
+  /** Copy one session file into a new Session at startup (`--fork`). */
+  forkSessionFile?: string;
   /** Per-command response budget; default 30s. */
   commandTimeoutMs?: number;
   /** Spawn and first-state budget; default 60s because a cold engine is slow. */
@@ -192,6 +202,7 @@ export interface OmoRpcProcessOptions {
   readonly command?: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly sessionFile?: string;
+  readonly forkSessionFile?: string;
 }
 
 /** Injectable process boundary; the default adapter spawns the real CLI. */
@@ -218,6 +229,12 @@ export function omoRpcProcessCommand(
   options: OmoRpcProcessOptions,
   dependencies: Partial<OmoRpcProcessCommandDependencies> = {},
 ): CommandInvocation {
+  if (options.sessionFile && options.forkSessionFile) {
+    throw new OmoRpcFaultError(
+      "protocolError",
+      "OmO RPC cannot combine Session resume and Fork startup",
+    );
+  }
   const platform = dependencies.platform ?? process.platform;
   const command = resolveOmoExecutable(
     {
@@ -239,7 +256,11 @@ export function omoRpcProcessCommand(
   const arguments_ = [
     "--mode",
     "rpc",
-    ...(options.sessionFile ? ["--session", options.sessionFile] : []),
+    ...(options.forkSessionFile
+      ? ["--fork", options.forkSessionFile]
+      : options.sessionFile
+        ? ["--session", options.sessionFile]
+        : []),
   ];
   const extension = path.win32.extname(command).toLowerCase();
   if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
@@ -503,6 +524,9 @@ export class OmoRpcSession {
         cwd: this.#options.cwd,
         ...(this.#options.command ? { command: this.#options.command } : {}),
         ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
+        ...(this.#options.forkSessionFile
+          ? { forkSessionFile: this.#options.forkSessionFile }
+          : {}),
         environment: withNodeRuntimeOnPath({
           ...process.env,
           ...this.#options.environment,
@@ -600,6 +624,21 @@ export class OmoRpcSession {
         reject(error);
       });
     });
+  }
+
+  /**
+   * Forks the active branch before `entryId` into a new Session and returns
+   * the refreshed native state. The entry itself is excluded (rpc.md: the
+   * "fork" command copies the branch up to that user message). An extension
+   * veto surfaces as `OmoRpcForkCancelledError`, never as a silent no-op.
+   */
+  async fork(entryId: string): Promise<OmoRpcSessionState> {
+    if (entryId.length === 0) throw new Error("OmO Fork Entry ID must not be empty");
+    const response = await this.send("fork", { entryId });
+    const cancelled = isRecord(response.data) && response.data.cancelled === true;
+    const state = await this.refreshState();
+    if (cancelled) throw new OmoRpcForkCancelledError();
+    return state;
   }
 
   /**

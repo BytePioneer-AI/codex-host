@@ -35,6 +35,14 @@
  * - Checkpoint: the Turn's user-message entry id (`fork(entryId)` excludes the
  *   boundary entry itself, so a fork boundary is the next Turn's user id).
  *
+ * Derivation boundaries: `fork(entryId)` copies the active branch *before*
+ * the named user entry, so a plan that keeps Turns 1..N names Turn N+1's user
+ * entry as its boundary. A checkpoint at the branch tip has no next user
+ * entry: the `--fork` startup copy already holds exactly that prefix, which is
+ * the same state `clone` would produce (see pi-adapter.ts's fork branch).
+ * Last-Turn rollback names the removed Turn's own user entry, which keeps the
+ * whole prefix before it; on a one-Turn Session that leaves a blank Session.
+ *
  * Read consistency: `get_tree` is read first, the entry pages after. Entries
  * collected later include every ancestor of the earlier tree leaf, so a
  * concurrent append cannot orphan the walk. Reading in the other order could
@@ -233,6 +241,62 @@ export function activeOmoEntries(history: OmoSessionHistory): OmoEntry[] {
  */
 export function omoHistoryTurnKey(userEntryId: string): string {
   return `turn:${userEntryId}`;
+}
+
+function activeUserEntries(history: OmoSessionHistory): OmoEntry[] {
+  return activeOmoEntries(history).filter((entry) => messageRole(entry) === "user");
+}
+
+/**
+ * Boundary for a Fork at one Checkpoint. `boundaryEntryId` is the next Turn's
+ * user entry (the fork command excludes the named entry), or null when the
+ * Checkpoint is the branch tip and the startup copy is already the answer.
+ * `retainedTurnKeys` is the exact Turn prefix the derived Session must hold.
+ */
+export interface OmoForkBoundary {
+  targetTurnIndex: number;
+  boundaryEntryId: string | null;
+  retainedTurnKeys: string[];
+}
+
+/**
+ * Plans a Fork at `checkpointId` (a user-message entry id on the effective
+ * branch). An unknown or abandoned-branch id is a typed protocol error; the
+ * adapter maps it to `checkpointNotFound`.
+ */
+export function resolveOmoForkBoundary(
+  history: OmoSessionHistory,
+  checkpointId: string,
+): OmoForkBoundary {
+  const users = activeUserEntries(history);
+  const targetTurnIndex = users.findIndex((entry) => entry.id === checkpointId);
+  if (targetTurnIndex < 0) {
+    throw new OmoHistoryProtocolError("OmO Checkpoint is not on the Session's active branch");
+  }
+  return {
+    targetTurnIndex,
+    boundaryEntryId: users[targetTurnIndex + 1]?.id ?? null,
+    retainedTurnKeys: users
+      .slice(0, targetTurnIndex + 1)
+      .map((entry) => omoHistoryTurnKey(entry.id)),
+  };
+}
+
+/**
+ * Plans a last-Turn rollback: fork before the newest user entry on the
+ * effective branch, retaining every earlier Turn. Null when the Session has no
+ * Turn to remove.
+ */
+export function resolveOmoLastTurnBoundary(
+  history: OmoSessionHistory,
+): { boundaryEntryId: string; retainedTurnKeys: string[] } | null {
+  const users = activeUserEntries(history);
+  const last = users.at(-1);
+  if (!last) return null;
+  return {
+    boundaryEntryId: last.id,
+    retainedTurnKeys: users.slice(0, -1).map((entry) => omoHistoryTurnKey(entry.id)),
+  };
 }
 
 function message(entry: OmoEntry): Record<string, unknown> | null {

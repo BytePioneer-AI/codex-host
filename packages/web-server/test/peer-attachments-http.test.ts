@@ -321,10 +321,16 @@ it("serves verified images within workspace or Web storage and blocks escapes, n
 
   const outsidePng = join(outside, "secret.png");
   writeFileSync(outsidePng, PNG_BYTES);
+  const outsideTxt = join(outside, "notes.txt");
+  writeFileSync(outsideTxt, "not an image");
+  const outsideFakePng = join(outside, "fake.png");
+  writeFileSync(outsideFakePng, "<html><script>alert(1)</script></html>");
+  const outsideSymlinkPng = join(outside, "link.png");
 
   if (process.platform !== "win32") {
     symlinkSync(outsidePng, join(workspace, "escape-file.png"));
     symlinkSync(outside, join(workspace, "escape-dir"));
+    symlinkSync(outsidePng, outsideSymlinkPng);
   }
 
   // Upload one image into WebImages and one PNG + one TXT into WebFiles
@@ -398,18 +404,30 @@ it("serves verified images within workspace or Web storage and blocks escapes, n
   assert.equal(headRes.headers.get("content-length"), String(PNG_BYTES.length));
   assert.equal((await headRes.arrayBuffer()).byteLength, 0);
 
-  // 200 for WebImages & WebFiles PNG paths (including projectless known thread)
+  // 200 for WebImages, WebFiles, and outside-workspace absolute PNG paths (including projectless known thread)
   for (const [threadId, targetPath] of [
     ["thread-1", storedImage],
     ["projectless-1", storedImage],
     ["thread-1", uploadedFilePngPath],
+    ["thread-1", outsidePng],
+    ["projectless-1", outsidePng],
   ] as const) {
     const res = await fetch(
       `${srv.origin}/api/peer/v1/file?${new URLSearchParams({ threadId, path: targetPath })}`,
     );
     assert.equal(res.status, 200, `expected 200 for ${threadId} -> ${targetPath}`);
+    assert.equal(res.headers.get("content-type"), "image/png");
     assert.deepEqual(Buffer.from(await res.arrayBuffer()), PNG_BYTES);
   }
+
+  const outsideHeadRes = await fetch(
+    `${srv.origin}/api/peer/v1/file?${new URLSearchParams({ threadId: "thread-1", path: outsidePng })}`,
+    { method: "HEAD" },
+  );
+  assert.equal(outsideHeadRes.status, 200);
+  assert.equal(outsideHeadRes.headers.get("content-type"), "image/png");
+  assert.equal(outsideHeadRes.headers.get("content-length"), String(PNG_BYTES.length));
+  assert.equal((await outsideHeadRes.arrayBuffer()).byteLength, 0);
 
   // 413 for > 50 MiB file without echoing path
   const tooLarge = await fetch(
@@ -424,18 +442,23 @@ it("serves verified images within workspace or Web storage and blocks escapes, n
   const forbiddenCases: Array<[string, string]> = [
     ["unknown-thread", insidePng],
     ["unknown-thread", storedImage],
+    ["unknown-thread", outsidePng],
     ["projectless-1", "sub/diagram.png"],
-    ["thread-1", outsidePng],
     ["thread-1", join("..", "..", "etc", "passwd")],
+    ["thread-1", "../secret.png"],
+    ["thread-1", `${outside}/../secret.png`],
     ["thread-1", "sub/missing.png"],
     ["thread-1", insideTxt],
     ["thread-1", insideFakePng],
     ["thread-1", insideSvg],
+    ["thread-1", outsideTxt],
+    ["thread-1", outsideFakePng],
     ["thread-1", uploadedFileTxtPath],
     ...(process.platform !== "win32"
       ? ([
           ["thread-1", "escape-file.png"],
           ["thread-1", "escape-dir/secret.png"],
+          ["thread-1", outsideSymlinkPng],
         ] as Array<[string, string]>)
       : []),
   ];

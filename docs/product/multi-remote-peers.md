@@ -24,7 +24,7 @@
 - `POST | PATCH | DELETE /api/peer/v1/workspaces`：在远端节点新增、重命名或移除工作区注册，并返回最新 `manifest`。
 - `POST /api/peer/v1/uploads`：接收 `application/octet-stream` 原始字节流（`threadId` 归属已有远端会话，`scope` 为 UUID v4 供草稿上传暂存），委托远端 `ChSessions.uploadFile` / `WebFiles.upload` 返回上传凭据。
 - `POST /api/peer/v1/prompt`：接收带文件凭据的提交请求；携带 `scope` 时先幂等绑定凭据到目标 `threadId`，再转发远端 `session/prompt`。
-- `GET | HEAD /api/peer/v1/file?threadId=...&path=...`：校验路径位于该会话工作目录（固定根目录与无符号链接组件校验）或远端 Web 附件存储内，并校验图片字节与 50 MiB 上限后返回图片内容；拒绝越界或非图片请求且不回显宿主路径。
+- `GET | HEAD /api/peer/v1/file?threadId=...&path=...`：校验 `threadId` 为已知本机会话，放行该会话工作目录（固定根目录与无符号链接组件校验）、远端 Web 附件存储或工作区外绝对路径指向的常规位图文件（与本机 `/api/file` 及远端工作区常规文件预览语义一致），并校验图片字节与 50 MiB 上限后返回图片内容；拒绝未知会话、`..` 越界、UNC/控制字符、符号链接及非图片请求且不回显宿主路径。
 - `POST /api/peer/v1/workspace-files/rpc`：只读白名单端点，仅放行 `workspaceFiles/read`、`workspaceFiles/readBytes`、`workspaceFiles/stat`、`workspaceFiles/list` 与 `officeToPdf/render`；所有文件访问均经统一受限文件访问层（`O_NOFOLLOW`、`realpath` 与 `dev/ino` 二次校验）直接执行实际 I/O，拒绝工作区外路径、控制字符/NUL、UNC、`..` 越界与符号链接 TOCTOU 逃逸；`officeToPdf/render` 通过同一受限句柄读取字节（50 MiB 上限）送入本地 `OfficeToPdf` 转换引擎，不向 DSH 回传裸路径字符串；入口即绑定连接取消信号并透传至工作区解析、文件读取与 Office 转换。
 - `GET | HEAD /api/peer/v1/workspace-files/download?threadId=...&path=...`：经同一受限文件描述符访问层流式传输原文件（不受 `readBytes` 32 MiB 限制），客户端断开时立即关闭文件句柄。
 - `POST /api/peer/v1/delegation`：跨机委派白名单端点，仅接受 `read`、`send`、`cancel`、`answer`、`start`、`threadList`、`harnessList`、`harnessInspect` 及 `hopCount === 1` 请求，支持在远端本地创建 `--worktree` / `--base` 并结合 `requestId` 持久幂等与 worktree 归属核验；可通过 `CODEXHOST_DISABLE_PEER_DELEGATION=1` 关闭；`/api/ch/v1/rpc` 拒绝直接调用内部 `codexhost/peer/delegation` 方法。

@@ -1,5 +1,22 @@
 import { clientWorkspaceSnapshotSchema, type ClientWorkspaceSnapshot } from "./client-channel.js";
 
+/** Desktop sidebar identity for a local root path, independent of the Web server's platform. */
+export function desktopProjectPathKey(path: string): string {
+  const normalized = path
+    .replace(/^\\\\\?\\UNC\\/i, "//")
+    .replace(/^\\\\\?\\(?=[a-z]:[\\/])/i, "")
+    .replaceAll("\\", "/")
+    .toLowerCase();
+  const wsl = /^\/\/(?:wsl\$|wsl\.localhost)\/[^/]+(?:\/(.*))?$/.exec(normalized);
+  const drive = /^\/?([a-z]):(?:\/(.*))?$/.exec(normalized);
+  const key = wsl
+    ? "/" + (wsl[1] ?? "")
+    : drive
+      ? "/mnt/" + drive[1] + (drive[2] ? "/" + drive[2] : "")
+      : normalized;
+  return key.length > 1 ? key.replace(/\/+$/, "") || "/" : key;
+}
+
 /** Read only registered Desktop projects. Migrated local projects remain visible
  * even when the legacy sidebar order contains only remote or newer project IDs. */
 export function desktopProjectDefinitions(

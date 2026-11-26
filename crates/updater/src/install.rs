@@ -13,6 +13,7 @@ use codexhost_platform::configure_background_command;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::npm::{GlobalInstallation, global_installation};
 #[cfg(target_os = "linux")]
 use crate::request::validate_linux_archive_paths;
 use crate::request::validate_version;
@@ -95,31 +96,33 @@ fn run_checked(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>>
 }
 
 /// Checks, before anything stops, that this update can replace the installation that
-/// restart runs, and returns the npm package specs for an npm installation.
-pub(crate) fn preflight(request: &UpdateRequest) -> Result<Vec<String>, Box<dyn Error>> {
+/// restart runs, and returns its npm layout for an npm installation.
+pub(crate) fn preflight(
+    request: &UpdateRequest,
+) -> Result<Option<GlobalInstallation>, Box<dyn Error>> {
     let Installation::Npm(npm) = &request.installation else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    crate::npm::install_specs(
+    let layout = global_installation(
         &npm.node_path,
         &npm.npm_cli_path,
         &npm.npm_launcher_path,
         &npm.npm_package_root,
-        &request.version,
     )?
     .ok_or_else(|| {
         format!(
             "npm uses a different global installation than {}; update manually with the npm that installed codexhost",
             npm.npm_package_root.display()
         )
-        .into()
-    })
+    })?;
+    Ok(Some(layout))
 }
 
 fn install_npm(
-    request: &UpdateRequest,
-    npm: &NpmInstallation,
-    specs: &[String],
+    version: &str,
+    status_path: &Path,
+    npm: &mut NpmInstallation,
+    layout: &GlobalInstallation,
 ) -> Result<(), Box<dyn Error>> {
     // The installer runs this step itself for an EXE install. npm does not, so close
     // what still runs from the platform package (for example a Shim the stopped
@@ -139,30 +142,34 @@ fn install_npm(
             "--no-audit",
             "--no-fund",
         ])
-        .args(specs);
+        // npm can silently skip a failed optional dependency. Require the native
+        // payload explicitly so npm fails and restores the old packages if it cannot install it.
+        .args(layout.required_specs(version));
     configure_background_command(&mut command);
-    if let Some(log) = operation_log(request, "npm-install.log") {
+    if let Some(log) = operation_log(status_path, "npm-install.log") {
         command.stdout(log.try_clone()?).stderr(log);
     }
     run_checked(&mut command, "npm update")?;
-    // Restart runs the payload at npm_package_root, so it must be the requested version.
+    // A nested payload can move to a global sibling when npm installs it explicitly.
+    npm.npm_package_root = layout.resolved_platform_root().to_path_buf();
+    let package_root = &npm.npm_package_root;
     verify_distribution(
-        &npm.npm_package_root.join("app").join(DISTRIBUTION_FILE),
-        &request.version,
+        &package_root.join("app").join(DISTRIBUTION_FILE),
+        version,
         "npm",
     )
     .map_err(|error| {
         format!(
             "npm update did not replace the platform package at {}: {error}",
-            npm.npm_package_root.display()
+            package_root.display()
         )
-        .into()
-    })
+    })?;
+    Ok(())
 }
 
 /// A diagnostic log beside the operation status; updates proceed without it.
-fn operation_log(request: &UpdateRequest, name: &str) -> Option<File> {
-    File::create(request.status_path.parent()?.join(name)).ok()
+fn operation_log(status_path: &Path, name: &str) -> Option<File> {
+    File::create(status_path.parent()?.join(name)).ok()
 }
 
 #[cfg(target_os = "windows")]
@@ -405,10 +412,21 @@ fn install_linux(
     Err("Linux archive updates require Linux".into())
 }
 
-/// `npm_specs` comes from [`preflight`].
-pub(crate) fn install(request: &UpdateRequest, npm_specs: &[String]) -> Result<(), Box<dyn Error>> {
+/// `npm_layout` comes from [`preflight`].
+pub(crate) fn install(
+    request: &mut UpdateRequest,
+    npm_layout: Option<&GlobalInstallation>,
+) -> Result<(), Box<dyn Error>> {
+    if let Installation::Npm(npm) = &mut request.installation {
+        return install_npm(
+            &request.version,
+            &request.status_path,
+            npm,
+            npm_layout.ok_or("Missing npm update preflight layout")?,
+        );
+    }
     match &request.installation {
-        Installation::Npm(npm) => install_npm(request, npm, npm_specs),
+        Installation::Npm(_) => unreachable!(),
         Installation::WindowsInstaller(windows) => install_windows(request, windows),
         Installation::MacosDmg(macos) => install_macos(request, macos),
         Installation::LinuxArchive(linux) => install_linux(request, linux),
@@ -516,40 +534,61 @@ mod tests {
         let independent = modules.join("cli-fixture");
         let elsewhere = directory.join("other/node_modules/@codexhost/cli-fixture");
         let npm_cli = directory.join("npm.sh");
+        let unavailable = directory.join("platform-unavailable");
+        let mismatched = directory.join("platform-mismatched");
         fs::create_dir_all(&global_root).unwrap();
-        // Like npm: a named package is installed; the CLI brings only its nested payload.
+        // npm can skip a failed optional download, but rolls back if the package is required.
         fs::write(
             &npm_cli,
             format!(
                 r#"set -eu
 if [ "$1" = root ]; then echo '{}'; exit 0; fi
 shift 5
-for spec in "$@"; do
-  case "$spec" in
-    @codexhost/cli@*) root='{}' ;;
-    @codexhost/cli-fixture@*) root='{}' ;;
-  esac
-  mkdir -p "$root/app"
-  printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixture"}}' "${{spec##*@}}" > "$root/app/codexhost-distribution.json"
-done
+[ "$1" = '@codexhost/cli@1.1.0' ]
+if [ -f '{}' ]; then
+  if [ "$#" -gt 1 ]; then exit 1; fi
+  rm -rf '{}'
+  exit 0
+fi
+[ "$2" = '@codexhost/cli-fixture@1.1.0' ]
+rm -rf '{}'
+root='{}'
+mkdir -p "$root/app"
+version=${{2##*@}}
+printf '{{"version":"%s"}}' "$version" > "$root/package.json"
+if [ -f '{}' ]; then version=1.0.0; fi
+printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixture"}}' "$version" > "$root/app/codexhost-distribution.json"
 "#,
                 global_root.display(),
+                unavailable.display(),
                 nested.display(),
-                independent.display()
+                nested.display(),
+                independent.display(),
+                mismatched.display()
             ),
         )
         .unwrap();
-        for package_root in [&nested, &independent, &elsewhere] {
+        for (package_root, failure) in [
+            (&nested, Some(&unavailable)),
+            (&nested, Some(&mismatched)),
+            (&nested, None),
+            (&independent, None),
+            (&elsewhere, None),
+        ] {
             for root in [&nested, &independent, &elsewhere] {
                 let _ = fs::remove_dir_all(root);
-                fs::create_dir_all(root.join("app")).unwrap();
-                fs::write(
-                    root.join("app/codexhost-distribution.json"),
-                    r#"{"schemaVersion":1,"version":"1.0.0","distribution":"npm","target":"fixture"}"#,
-                )
-                .unwrap();
             }
-            let request = UpdateRequest {
+            fs::create_dir_all(package_root.join("app")).unwrap();
+            fs::write(package_root.join("package.json"), r#"{"version":"1.0.0"}"#).unwrap();
+            fs::write(
+                package_root.join("app/codexhost-distribution.json"),
+                r#"{"schemaVersion":1,"version":"1.0.0","distribution":"npm","target":"fixture"}"#,
+            )
+            .unwrap();
+            if let Some(marker) = failure {
+                fs::write(marker, "").unwrap();
+            }
+            let mut request = UpdateRequest {
                 schema_version: 1,
                 version: "1.1.0".into(),
                 wait_pid: 2,
@@ -567,18 +606,43 @@ done
                 }),
             };
 
-            let result =
-                super::preflight(&request).and_then(|specs| super::install(&request, &specs));
+            let result = super::preflight(&request)
+                .and_then(|layout| super::install(&mut request, layout.as_ref()));
 
+            if let Some(marker) = failure {
+                fs::remove_file(marker).unwrap();
+            }
+            if failure == Some(&unavailable) {
+                assert!(result.is_err());
+                assert_eq!(request.installation.resources_root(), *package_root);
+                let installed = super::distribution_metadata(
+                    &package_root.join("app/codexhost-distribution.json"),
+                )
+                .unwrap();
+                assert_eq!(installed.version, "1.0.0");
+                continue;
+            }
+            if failure == Some(&mismatched) {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("does not match npm 1.1.0"), "{error}");
+                assert_eq!(
+                    request.installation.launcher_path(),
+                    independent.canonicalize().unwrap().join("bin/codexhost")
+                );
+                continue;
+            }
             if package_root == &elsewhere {
                 let error = result.unwrap_err().to_string();
                 assert!(error.contains("different global installation"), "{error}");
                 continue;
             }
             result.unwrap();
-            let installed =
-                super::distribution_metadata(&package_root.join("app/codexhost-distribution.json"))
-                    .unwrap();
+            let installed_root = request.installation.resources_root();
+            assert_eq!(installed_root, independent.canonicalize().unwrap());
+            let installed = super::distribution_metadata(
+                &installed_root.join("app/codexhost-distribution.json"),
+            )
+            .unwrap();
             assert_eq!(installed.version, "1.1.0", "{}", package_root.display());
         }
         fs::remove_dir_all(&directory).unwrap();

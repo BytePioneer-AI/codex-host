@@ -22,6 +22,11 @@ export interface NpmCommandResult {
   stderr: string;
 }
 
+export interface NpmDownloadProgress {
+  completed: number;
+  total: number;
+}
+
 export type NpmCommandRunner = (
   target: NpmReleaseTarget,
   arguments_: readonly string[],
@@ -99,16 +104,21 @@ async function releaseInstallable(
 export async function prefetchNpmRelease(
   target: NpmReleaseTarget,
   run: NpmCommandRunner = runNpmCommand,
+  onProgress?: (progress: NpmDownloadProgress) => void | Promise<void>,
 ): Promise<void> {
-  const result = await run(
-    target,
-    ["cache", "add", ...npmReleasePackages(target.packageRoot, target.version)],
-    PREFETCH_TIMEOUT_MS,
-  );
-  if (result.code === 0) return;
-  if (missingFromRegistry(result))
-    throw new Error(`npm registry does not have codexhost ${target.version} yet; retry later`);
-  throw new Error(`npm could not download the update: ${firstErrorLine(result)}`);
+  const specs = npmReleasePackages(target.packageRoot, target.version);
+  const deadline = Date.now() + PREFETCH_TIMEOUT_MS;
+  await onProgress?.({ completed: 0, total: specs.length });
+  for (const [index, spec] of specs.entries()) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("npm update download timed out");
+    const result = await run(target, ["cache", "add", spec], remaining);
+    if (missingFromRegistry(result) && result.code !== 0)
+      throw new Error(`npm registry does not have codexhost ${target.version} yet; retry later`);
+    if (result.code !== 0)
+      throw new Error(`npm could not download the update: ${firstErrorLine(result)}`);
+    await onProgress?.({ completed: index + 1, total: specs.length });
+  }
 }
 
 export interface NpmReleaseAvailability {

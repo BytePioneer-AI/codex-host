@@ -9,6 +9,16 @@ import type { ModelSelection } from "@deepseek-ai/dsh-api-remotes/client";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { ModelDirectoryState } from "./directory.ts";
 
+/** Availability of cross-Harness context handoff for the current session. */
+export type HarnessHandoffStatus = "ready" | "pending" | "unsupported";
+
+/** Reactive session handoff trigger injected when Chat context handoff is available. */
+export interface HarnessHandoffControl {
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly getStatus: () => HarnessHandoffStatus;
+  readonly open: (targetHarnessId?: string) => void;
+}
+
 /** Injected business face of the composer model seat. */
 export interface ModelSelectInjected {
   /** Whether this session supports Agent-bound model inspection and selection. */
@@ -32,4 +42,6 @@ export interface ModelSelectInjected {
     readonly subscribe: (listener: () => void) => () => void;
     readonly getHostId: () => string | undefined;
   };
+  /** Cross-Harness context handoff launcher for bound local sessions. */
+  handoff?: HarnessHandoffControl;
 }

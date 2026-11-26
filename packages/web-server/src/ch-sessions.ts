@@ -12,6 +12,7 @@ import {
   WEB_HANDOFF_PROJECTION,
   clientThreadSectionsSchema,
   clientThreadSectionMoveSchema,
+  desktopProjectPathKey,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
@@ -32,7 +33,11 @@ import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
-import { insideProjectFolder, nativeProjectByCwd, projectGroupRoot } from "./ch-project-groups.ts";
+import {
+  insideProjectFolder,
+  nativeProjectRootOwners,
+  projectGroupRoot,
+} from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
@@ -379,7 +384,7 @@ export class ChSessions {
     const projects = await timing.measure("projects", () =>
       this.host.projects(candidates.map((row) => row.id)),
     );
-    const knownProjects = new Set(projects.projects.map((project) => project.id));
+    const projectFor = this.nativeProjectResolver(projects);
     const indexed = new Map(page.threads.map((row) => [row.id, row]));
     const ownership = catalogOwnership(page, indexed);
     const members = new Map<string, ChThread>();
@@ -388,8 +393,8 @@ export class ChSessions {
       const moved = this.refreshingProjectAssignments?.get(row.id);
       if (moved !== undefined) row.projectId = moved;
       if (target.projectId) {
-        if (!projects.nativeProjects || !knownProjects.has(target.projectId)) continue;
-        const projectId = this.nativeProjectFor(projects, knownProjects, row);
+        if (!projects.nativeProjects) continue;
+        const projectId = projectFor(row);
         if (projectId !== target.projectId) continue;
       } else {
         if (
@@ -428,12 +433,13 @@ export class ChSessions {
     }
     this.workspaces.addCatalogMembers(workspaceId, [...members.keys()]);
     const localArchives = new Set(this.workspaces.localArchivedSessionIds());
-    for (const id of members.keys()) {
+    const included = this.tree.withAncestors(members.keys());
+    for (const id of rows.keys()) {
+      if (!included.has(id)) continue;
       if (archiveChanges.get(id) ?? archived.has(id)) localArchives.add(id);
       else localArchives.delete(id);
     }
     this.workspaces.setReferenceArchives([...localArchives].sort());
-    const included = this.tree.withAncestors(members.keys());
     const workspaceItems = await timing.measure("summaries", () =>
       Promise.all(
         [...rows.values()]
@@ -577,12 +583,12 @@ export class ChSessions {
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
       if (projects.nativeProjects) {
-        const known = new Set(projects.projects.map((project) => project.id));
-        for (const row of this.rows.values())
-          groups.set(row.id, this.nativeProjectFor(projects, known, row));
+        const roots = nativeProjectRootOwners(projects.projects);
+        const projectFor = this.nativeProjectResolver(projects, roots);
+        for (const row of this.rows.values()) groups.set(row.id, projectFor(row));
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
-        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments);
+        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
         return;
       }
       if (this.workspaces.usesNativeProjects) return;
@@ -619,20 +625,20 @@ export class ChSessions {
       this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
     });
   }
-  private nativeProjectFor(
+  private nativeProjectResolver(
     projects: ChProjectSnapshot,
-    known: ReadonlySet<string>,
-    row: ChThread,
-  ): string | undefined {
-    const explicit = [row.projectId, projects.assignments[row.id]].find(
-      (id): id is string => typeof id === "string" && known.has(id),
-    );
-    return (
-      explicit ??
-      (row.cwd && row.workspaceKind !== "projectless"
-        ? nativeProjectByCwd(projects, row.id, row.cwd)
-        : undefined)
-    );
+    roots = nativeProjectRootOwners(projects.projects),
+  ): (row: ChThread) => string | undefined {
+    const known = new Set(projects.projects.map((project) => project.id));
+    const projectless = new Set(projects.projectless);
+    return (row) => {
+      const explicit = [row.projectId, projects.assignments[row.id]].find(
+        (id): id is string => typeof id === "string" && known.has(id),
+      );
+      if (explicit || !row.cwd || row.workspaceKind === "projectless" || projectless.has(row.id))
+        return explicit;
+      return roots.get(desktopProjectPathKey(row.cwd))?.projectId;
+    };
   }
   private archiveForkParent(
     row: ChThread,

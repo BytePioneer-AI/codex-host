@@ -289,6 +289,7 @@ export class Workspaces {
   private state: WorkspaceState;
   private nativeWorkspaces: WorkspaceView[] | undefined;
   private nativeRoots = new Map<string, string[]>();
+  private nativeRootOwners: ReadonlyMap<string, { path: string; projectId: string }> = new Map();
   private legacyAssignments: Readonly<Record<string, string>> = {};
   private readonly followers = new Set<StreamSink>();
   private referenceGroups: Map<string, string | undefined> | undefined;
@@ -498,6 +499,7 @@ export class Workspaces {
     projects: readonly { id: string; name: string; rootPaths: string[] }[],
     groups: ReadonlyMap<string, string | undefined>,
     legacyAssignments: Readonly<Record<string, string>>,
+    roots: ReadonlyMap<string, { path: string; projectId: string }>,
   ): void {
     const before = this.list();
     const previous = new Map(this.nativeWorkspaces?.map((item) => [item.projectId, item]));
@@ -510,6 +512,7 @@ export class Workspaces {
     }
     const now = new Date().toISOString();
     this.nativeRoots = new Map(projects.map((project) => [project.id, project.rootPaths]));
+    this.nativeRootOwners = roots;
     this.legacyAssignments = legacyAssignments;
     this.nativeWorkspaces = projects.map((project) => {
       const current = members.get(project.id) ?? [];
@@ -763,7 +766,10 @@ export class Workspaces {
         legacyThreadIds: Object.keys(this.legacyAssignments)
           .filter((id) => this.legacyAssignments[id] === workspace.projectId)
           .slice(0, 1024),
-        rootPaths: (this.nativeRoots.get(workspace.projectId) ?? []).slice(0, 1024),
+        rootPaths: [...this.nativeRootOwners.values()]
+          .filter((root) => root.projectId === workspace.projectId)
+          .slice(0, 1024)
+          .map((root) => root.path),
       };
     const excludeCwds = local.flatMap((item) => {
       const nested = relative(workspace.path, item.path);

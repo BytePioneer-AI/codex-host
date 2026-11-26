@@ -337,6 +337,7 @@ it("keeps cross-project ancestors in the scoped reply and publishes section disc
   child.cwd = root;
   child.projectId = "child";
   const { nextCursor } = await f.list();
+  const inclusiveCursor = (await f.list({ includeArchived: true })).nextCursor;
   const workspace = f.workspaces.byPath(root);
   assert.ok(workspace);
   f.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
@@ -349,6 +350,14 @@ it("keeps cross-project ancestors in the scoped reply and publishes section disc
   const project = await f.list({ cursor: nextCursor, workspaceId: workspace.workspaceId });
   assert.deepEqual(project.items.map((row) => row.sessionId).sort(), [child.id, parent.id]);
   assert.ok(!f.emitted.some((event) => event.event === "api-session/added"));
+  parent.archived = true;
+  const inclusive = await f.list({
+    cursor: inclusiveCursor,
+    workspaceId: workspace.workspaceId,
+    includeArchived: true,
+  });
+  assert.ok(inclusive.items.some((row) => row.sessionId === parent.id));
+  assert.ok(inclusive.archivedSessionIds.includes(parent.id));
   await f.list();
   assert.deepEqual(
     f.emitted.flatMap(({ event, args }) =>

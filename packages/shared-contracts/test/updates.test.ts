@@ -67,6 +67,17 @@ describe("update runtime contracts", () => {
     ).toBe(false);
   });
 
+  it("accepts npm package progress and rejects a count above the total", () => {
+    const downloading = { ...status, installation: "npm", phase: "downloading" };
+    expect(
+      updateStatusSchema.parse({ ...downloading, npmDownload: { completed: 1, total: 2 } }),
+    ).toMatchObject({ npmDownload: { completed: 1, total: 2 } });
+    expect(
+      updateStatusSchema.safeParse({ ...downloading, npmDownload: { completed: 3, total: 2 } })
+        .success,
+    ).toBe(false);
+  });
+
   it("requires empty strict params for every fixed operation", () => {
     expect(updateEmptyParamsSchema.parse({})).toEqual({});
     for (const privileged of [

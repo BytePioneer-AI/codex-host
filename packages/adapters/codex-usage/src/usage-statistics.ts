@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 
 import type {
@@ -46,15 +47,33 @@ const EVENT_OF_INTEREST =
  * but Codex also writes `session_meta` with sorted keys (`ordinal`, `payload`, `timestamp`,
  * `type`); its head then holds nested types such as `base_instructions.provenance.type`.
  */
-function rowKind(line: string): string | undefined {
-  const head = HEAD_TYPE.exec(line.slice(0, 1024))?.[1];
+function rowKindFromEdges(headSlice: string, tailSlice: string): string | undefined {
+  const head = HEAD_TYPE.exec(headSlice)?.[1];
   if (head && ROW_KINDS.has(head)) return head;
-  return TAIL_TYPE.exec(line.slice(-1024))?.[1] ?? head;
+  return TAIL_TYPE.exec(tailSlice)?.[1] ?? head;
+}
+
+function rowKind(line: string): string | undefined {
+  return rowKindFromEdges(line.slice(0, 1024), line.slice(-1024));
 }
 
 /** Whether a marker sits in the head, or at the tail once the row kind is already known. */
+function markerInEdges(pattern: RegExp, headSlice: string, tailSlice: string): boolean {
+  return pattern.test(headSlice) || pattern.test(tailSlice);
+}
+
 function markerIn(pattern: RegExp, line: string): boolean {
-  return pattern.test(line.slice(0, 1024)) || pattern.test(line.slice(-1024));
+  return markerInEdges(pattern, line.slice(0, 1024), line.slice(-1024));
+}
+
+function shouldDecodeUnboundedLine(headSlice: string, tailSlice: string): boolean {
+  const kind = rowKindFromEdges(headSlice, tailSlice);
+  // Keep lines with no recognized `type` so `onIncomplete` still observes malformed tails.
+  if (!kind) return true;
+  if (!ROW_KINDS.has(kind)) return false;
+  if (kind === "response_item") return markerInEdges(USER_ROLE, headSlice, tailSlice);
+  if (kind === "event_msg") return markerInEdges(EVENT_OF_INTEREST, headSlice, tailSlice);
+  return true;
 }
 async function stamp(file: string): Promise<string> {
   const s = await lstat(file, { bigint: true });
@@ -136,10 +155,16 @@ export async function readCodexRollouts(
     seen = 0,
     firstPrompt: string | undefined;
   let lastOrdinal = -1;
+  let yieldedAt = performance.now();
+  const filterEdges =
+    options.endOrdinalExclusive === undefined ? shouldDecodeUnboundedLine : undefined;
   reading: for (const file of files) {
-    for await (const line of rolloutLines(file, signal)) {
+    for await (const line of rolloutLines(file, signal, filterEdges)) {
       signal.throwIfAborted();
-      if (++seen % 128 === 0) await yieldToEventLoop(undefined, { signal });
+      if ((++seen & 511) === 0 && performance.now() - yieldedAt >= 12) {
+        await yieldToEventLoop(undefined, { signal });
+        yieldedAt = performance.now();
+      }
       if (options.endOrdinalExclusive !== undefined) {
         if (lastOrdinal >= options.endOrdinalExclusive - 1) break reading;
         const ordinal = object(JSON.parse(line))?.ordinal;
@@ -297,15 +322,37 @@ export function createCodexUsageStatistics(
     environment.CODEX_HOME ||
       path.join(environment.HOME || environment.USERPROFILE || os.homedir(), ".codex"),
   );
-  const groups = new Map<string, { thread: string; files: SourceFile[] }>();
+  const groups = new Map<
+    string,
+    { thread: string; files: SourceFile[]; named: string | undefined }
+  >();
   let names = new Map<string, string>();
   let namesStamp = "";
+  let namesLoading: {
+    stamp: string;
+    signal: AbortSignal;
+    promise: Promise<Map<string, string>>;
+  } | null = null;
   async function threadNames(signal: AbortSignal): Promise<Map<string, string>> {
     const current = await stamp(path.join(home, "session_index.jsonl")).catch(() => "-");
     if (namesStamp === current) return names;
-    names = await readThreadNames(home, signal);
-    namesStamp = current;
-    return names;
+    if (namesLoading?.stamp === current && namesLoading.signal === signal) {
+      return namesLoading.promise;
+    }
+    const promise = readThreadNames(home, signal).then((loaded) => {
+      if (namesLoading?.promise === promise) {
+        names = loaded;
+        namesStamp = current;
+      }
+      return loaded;
+    });
+    const entry = { stamp: current, signal, promise };
+    namesLoading = entry;
+    try {
+      return await promise;
+    } finally {
+      if (namesLoading === entry) namesLoading = null;
+    }
   }
   return {
     async listSources(signal): Promise<HarnessUsageSource[]> {
@@ -318,23 +365,35 @@ export function createCodexUsageStatistics(
             throw error;
           },
         );
-        for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-          signal.throwIfAborted();
+        entries.sort((a, b) => a.name.localeCompare(b.name));
+        const subdirectories: string[] = [];
+        const candidates: Array<{ thread: string; file: string }> = [];
+        for (const entry of entries) {
           const file = path.join(directory, entry.name);
-          if (entry.isDirectory() && depth < 4) await visit(file, depth + 1);
+          if (entry.isDirectory() && depth < 4) subdirectories.push(file);
           if (!entry.isFile()) continue;
           const thread = ROLLOUT.exec(entry.name)?.[1];
           if (!thread || (options.sessionId && thread !== options.sessionId)) continue;
+          candidates.push({ thread, file });
+        }
+        const stamped = await Promise.all(
+          candidates.map(async ({ thread, file }) => ({
+            thread,
+            file,
+            fingerprint: await stamp(file),
+          })),
+        );
+        signal.throwIfAborted();
+        for (const { thread, file, fingerprint: fileStamp } of stamped) {
           const list = found.get(thread) ?? [];
-          list.push({ file, fingerprint: await stamp(file) });
+          list.push({ file, fingerprint: fileStamp });
           found.set(thread, list);
         }
+        for (const subdirectory of subdirectories) await visit(subdirectory, depth + 1);
       }
       await visit(path.join(home, "sessions"), 0);
       await visit(path.join(home, "archived_sessions"), 0);
-      const indexStamp = options.sessionId
-        ? ""
-        : await stamp(path.join(home, "session_index.jsonl")).catch(() => "-");
+      const indexNames = options.sessionId ? undefined : await threadNames(signal);
       const result: HarnessUsageSource[] = [];
       groups.clear();
       for (const [thread, files] of found) {
@@ -343,9 +402,10 @@ export function createCodexUsageStatistics(
             path.basename(a.file).localeCompare(path.basename(b.file)) ||
             a.file.localeCompare(b.file),
         );
+        const named = indexNames?.get(thread);
         const id = path.join(home, `usage-thread-${thread}`);
-        groups.set(id, { thread, files });
-        result.push({ id, fingerprint: fingerprint(files, indexStamp) });
+        groups.set(id, { thread, files, named });
+        result.push({ id, fingerprint: fingerprint(files, named ?? "") });
       }
       return result;
     },
@@ -379,12 +439,20 @@ export function createCodexUsageStatistics(
         options,
       );
       // Do not cache a parse or prefix proof spanning an append/replacement.
-      for (const file of group.files)
-        if ((await stamp(file.file)) !== file.fingerprint)
+      const currentStamps = await Promise.all(group.files.map(({ file }) => stamp(file)));
+      for (let i = 0; i < group.files.length; i++) {
+        if (currentStamps[i] !== group.files[i]?.fingerprint) {
           throw new HarnessUsageSourceChangedError(
             "Codex rollout changed while reading; refresh to retry",
           );
+        }
+      }
       const named = options.sessionId ? undefined : (await threadNames(signal)).get(group.thread);
+      if (!options.sessionId && named !== group.named) {
+        throw new HarnessUsageSourceChangedError(
+          "Codex session index changed while reading; refresh to retry",
+        );
+      }
       return named
         ? entries.map((entry) =>
             withUsageSession(entry, {

@@ -751,6 +751,139 @@ describe("Claude Code Composer cache countdown", () => {
     }
   });
 
+  it("projects a session-scope model fallback notice without polluting the cache countdown or reading the transcript", async () => {
+    const { adapter, transports, dependencies } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const latestExpiry = () =>
+      outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1)?.expiresAtUnix;
+    try {
+      await session.execute(textTurn("fallback-notice"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const accumulator = new ClaudeNativeTurnAccumulator();
+      const emit = (nativeMessage: unknown, nowMs?: number) => {
+        const clock = nowMs !== undefined ? vi.spyOn(Date, "now").mockReturnValue(nowMs) : null;
+        try {
+          const { events, terminal } = accumulator.consume(nativeMessage);
+          for (const event of events) transport.event(event);
+          if (terminal) transport.finish(terminal);
+        } finally {
+          clock?.mockRestore();
+        }
+      };
+
+      // The refused request observes a 1h cache write at t0.
+      emit(
+        {
+          type: "assistant",
+          uuid: "fb-req-1",
+          message: {
+            id: "msg-fb-req-1",
+            model: "claude-opus-4-6",
+            content: [{ type: "text", text: "Before refusal" }],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 40,
+              cache_read_input_tokens: 0,
+              cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 40 },
+            },
+          },
+        },
+        1_800_000_000_000,
+      );
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_003_600));
+
+      // Session-scope fallback push (real wire shape) later in the turn.
+      emit(
+        {
+          type: "system",
+          subtype: "model_refusal_fallback",
+          trigger: "refusal",
+          direction: "retry",
+          scope: "session",
+          original_model: "claude-opus-4-6",
+          fallback_model: "claude-sonnet-4-6",
+          request_id: "req-fb-1",
+          uuid: "fb-sys-1",
+          session_id: "synthetic",
+        },
+        1_800_000_050_000,
+      );
+
+      // The retried response continues on the fallback model.
+      emit(
+        {
+          type: "assistant",
+          uuid: "fb-req-2",
+          message: {
+            id: "msg-fb-req-2",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "text", text: "After fallback" }],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 20,
+              cache_read_input_tokens: 0,
+              cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 0 },
+            },
+          },
+        },
+        1_800_000_100_000,
+      );
+      emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        terminal_reason: "completed",
+        usage: {
+          input_tokens: 30,
+          output_tokens: 10,
+          cache_creation_input_tokens: 60,
+          cache_read_input_tokens: 0,
+          cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 40 },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(true),
+      );
+
+      // The fallback notice is projected as its own chat text.
+      expect(
+        outputs.some(
+          (output) =>
+            output.kind === "event" &&
+            output.event.type === "item.completed" &&
+            output.event.snapshot.item.type === "agentMessage" &&
+            output.event.snapshot.item.text.includes("Model fallback: **claude-opus-4-6"),
+        ),
+      ).toBe(true);
+      // The notice never reset the countdown: it stayed anchored to the
+      // observed 1h cache write (t0 + 3600), then the retry's own 5m write.
+      expect(latestExpiry()).toBe(1_800_000_400);
+      // The synthetic/local notice never reads the session transcript.
+      expect(dependencies.readSessionMessages).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
   it("falls back to result.usage TTL only when no per-request TTL was observed in the turn", async () => {
     const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
     await adapter.inspectAccount();
@@ -9015,6 +9148,62 @@ describe("Claude Code HarnessAdapter", () => {
       outcome: { status: "failed", error: { code: "authenticationRequired" } },
     });
     await expect(session.execute(textTurn("retry"))).resolves.toMatchObject({ ok: true });
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("projects rate-limit, quota-exhausted (with resetsAt), and billing failures without faulting", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const cases = [
+      {
+        terminal: { status: "failed" as const, kind: "rateLimited" as const },
+        expected: {
+          code: "rateLimited",
+          message: "Claude Code rate limit reached",
+          retryable: true,
+        },
+      },
+      {
+        terminal: {
+          status: "failed" as const,
+          kind: "quotaExhausted" as const,
+          resetsAtUnix: 1_787_674_200,
+        },
+        expected: {
+          code: "quotaExhausted",
+          message: "Claude Code usage limit reached (resets at 2026-08-25T16:10:00.000Z)",
+          retryable: true,
+          resetsAt: "2026-08-25T16:10:00.000Z",
+        },
+      },
+      {
+        terminal: { status: "failed" as const, kind: "billing" as const },
+        expected: {
+          code: "quotaExhausted",
+          message: "Claude Code billing or credit limit reached",
+          retryable: false,
+        },
+      },
+    ];
+
+    for (const [index, entry] of cases.entries()) {
+      await session.execute(textTurn(`limit-${index}`));
+      if (index === 0) await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      transports[0]?.finish(entry.terminal);
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: { outcome: { status: "failed", error: entry.expected } },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "failed", error: entry.expected },
+      });
+    }
+    await expect(session.execute(textTurn("after-limits"))).resolves.toMatchObject({ ok: true });
     transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });

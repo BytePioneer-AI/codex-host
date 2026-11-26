@@ -33,11 +33,13 @@ Adapter 需要让某条结尾消息不作为最终回复时，显式设置 `phas
 
 ## 独立 Web 的折叠
 
-Web 直接消费 Host 已投影的消息阶段，不重新推断 `final_answer`，也不需要启动 Codex Desktop。Web 桥接在轮次结束时，将该消息的原生 Item ID 映射为显示用的 Step，通过 `turn/end.finalAssistantStep` 传递；`null` 表示 Host 未确认最终答复。没有此字段的 Session 来源仍按最后一个已结算、含回复且不含工具调用的 Step 判断。
+Web 通常直接消费 Host 已投影的消息阶段，无需启动 Codex Desktop。Web 桥接在轮次结束时，将最终答复的原生 Item ID 映射为显示用的 Step，通过 `turn/end.finalAssistantStep` 传递。`null` 表示没有已确认的最终答复。没有此字段的 Session 来源仍按最后一个已结算、含回复且不含工具调用的 Step 判断。
 
 最终答复正文按 Step 身份和正文分区保持可见，排序锚点只负责布局。附带推理和普通工具仍可折叠，包括最终答复之后到达的过程记录。Host 未确认最终答复时，整轮保持展开，与 Desktop 的折叠条件一致。
 
 不同 Agent 消息分别映射到不同 Step，避免阶段说明和最终答复合并。同一消息 ID 在轮次结束时补全阶段，不重复追加正文。
+
+旧版转换到原生 Codex 的外部会话使用 `external-import-turn-*` 回合 ID。Web 为已完成的此类回合恢复相邻且可明确配对的工具调用与结果，去除会话转换标记和用户消息中确定由 Host 追加的委托指令，并以结尾的答复恢复缺失的最终阶段。无法明确配对的条目保留原文。兼容逻辑只作用于 Web 展示。
 
 ## 工具通知与消息边界
 

@@ -19,6 +19,8 @@ import type {
 
 const ABORTED_TERMINALS = new Set(["aborted_streaming", "aborted_tools"]);
 const AUTHENTICATION_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed"]);
+/** Largest Unix timestamp (seconds) safely representable by JavaScript Date. */
+const MAX_SAFE_UNIX_SECONDS = 8_640_000_000_000;
 /** Tools whose native lifecycle is a Subagent, not a Host Tool Item. */
 export const CLAUDE_SUBAGENT_TOOLS = new Set(["Agent", "Task", "SendMessage"]);
 /** The native tool that launches a Workflow run; its agents are Subagents of the run. */
@@ -169,8 +171,39 @@ function includesAuthenticationFailure(errors: string[]): boolean {
   return errors.some((error) => AUTHENTICATION_ERRORS.has(error));
 }
 
-function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
-  return { status: "failed", kind };
+function failure(
+  kind: ClaudeTransportFailureKind,
+  resetsAtUnix?: number,
+): ClaudeTransportTurnResult {
+  return {
+    status: "failed",
+    kind,
+    ...(resetsAtUnix !== undefined ? { resetsAtUnix } : {}),
+  };
+}
+
+function validResetsAtUnix(value: unknown): number | undefined {
+  return safeNonNegativeInteger(value) && value > 0 && value <= MAX_SAFE_UNIX_SECONDS
+    ? value
+    : undefined;
+}
+
+function isOverageCoveringRateLimit(info: Record<string, unknown>): boolean {
+  return (
+    info.isUsingOverage === true ||
+    info.overageInUse === true ||
+    info.overageStatus === "allowed" ||
+    info.overageStatus === "allowed_warning"
+  );
+}
+
+function rejectedRateLimitResetUnix(info: Record<string, unknown>): number | undefined {
+  const primary = validResetsAtUnix(info.resetsAt);
+  const overage =
+    info.overageStatus === "rejected" ? validResetsAtUnix(info.overageResetsAt) : undefined;
+  if (info.rateLimitType === "overage") return overage ?? primary;
+  if (primary !== undefined && overage !== undefined) return Math.min(primary, overage);
+  return primary ?? overage;
 }
 
 function safeNonNegativeInteger(value: unknown): value is number {
@@ -519,6 +552,7 @@ export class ClaudeNativeTurnAccumulator {
   /** Native record UUIDs already published, across stream and request message IDs. */
   #publishedCheckpointIds = new Set<string>();
   #assistantErrors: string[] = [];
+  #rejectedRateLimit: { resetsAtUnix?: number } | null = null;
   #cancelRequested = false;
   #compactionState: "idle" | "active" | "settled" = "idle";
   #completed = false;
@@ -528,6 +562,8 @@ export class ClaudeNativeTurnAccumulator {
   #completedThinkingBlocks = new Set<string>();
   #protocolConflict = false;
   #textConflict = false;
+  /** Fallback notices already published, keyed by request id (or model pair). */
+  #fallbackNoticeKeys = new Set<string>();
   #tools = new Map<string, ActiveNativeTool>();
 
   constructor(options: { provider?: string; subagentIdsByName?: Map<string, string> } = {}) {
@@ -565,6 +601,7 @@ export class ClaudeNativeTurnAccumulator {
     if (!nested) {
       this.#consumeCompaction(message, events);
       this.#consumeLocalCommandOutput(message, events);
+      this.#consumeModelFallback(message, events);
     }
 
     if (message.type === "stream_event" && isRecord(message.event)) {
@@ -574,6 +611,20 @@ export class ClaudeNativeTurnAccumulator {
       }
     } else if (message.type === "tool_progress") {
       this.#consumeToolProgress(message, events);
+    }
+
+    if (message.type === "rate_limit_event" && isRecord(message.rate_limit_info)) {
+      const info = message.rate_limit_info;
+      if (info.status === "rejected" && !isOverageCoveringRateLimit(info)) {
+        const resetsAtUnix = rejectedRateLimitResetUnix(info);
+        this.#rejectedRateLimit = resetsAtUnix !== undefined ? { resetsAtUnix } : {};
+      } else if (
+        info.status === "allowed" ||
+        info.status === "allowed_warning" ||
+        (info.status === "rejected" && isOverageCoveringRateLimit(info))
+      ) {
+        this.#rejectedRateLimit = null;
+      }
     }
 
     if (!nested) {
@@ -621,7 +672,19 @@ export class ClaudeNativeTurnAccumulator {
     } else if (nativeSuccess) {
       terminal = { status: "succeeded" };
     } else {
-      terminal = failure("native");
+      const lastError = this.#assistantErrors.at(-1);
+      if (lastError === "billing_error") {
+        terminal = failure("billing");
+      } else if (
+        this.#rejectedRateLimit !== null &&
+        (lastError === undefined || lastError === "rate_limit")
+      ) {
+        terminal = failure("quotaExhausted", this.#rejectedRateLimit.resetsAtUnix);
+      } else if (lastError === "rate_limit") {
+        terminal = failure("rateLimited");
+      } else {
+        terminal = failure("native");
+      }
     }
     return { events, terminal };
   }
@@ -648,6 +711,46 @@ export class ClaudeNativeTurnAccumulator {
     if (this.#compactionState === "idle") events.push({ type: "compaction.started" });
     this.#compactionState = "settled";
     events.push({ type: "compaction.completed", outcome: "succeeded" });
+  }
+
+  /**
+   * Claude reports a primary-model refusal fallback (the turn retried on a
+   * fallback model) as a `model_refusal_fallback` system push. A `session`
+   * scope (or absent, on older CLIs) means the main thread fell back and the
+   * session model is swapped, so the user sees one non-blocking chat notice;
+   * a `local` scope is a subagent / side-question fallback and stays silent.
+   */
+  #consumeModelFallback(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (message.type !== "system" || message.subtype !== "model_refusal_fallback") return;
+    if (message.scope === "local") return;
+    // SDKModelRefusalFallbackMessage.direction: "retry" | "revert" | "sticky".
+    // "revert" means the session switched BACK to the configured model, so the
+    // "original → fallback" notice would misreport it. Older CLIs omit the
+    // field (retry semantics); unknown values fail closed.
+    if (
+      message.direction !== undefined &&
+      message.direction !== "retry" &&
+      message.direction !== "sticky"
+    )
+      return;
+    const original = typeof message.original_model === "string" ? message.original_model : "";
+    const fallback = typeof message.fallback_model === "string" ? message.fallback_model : "";
+    if (original.length === 0 || fallback.length === 0) return;
+    const key =
+      typeof message.request_id === "string" && message.request_id.length > 0
+        ? message.request_id
+        : `${original}\u0000${fallback}`;
+    if (this.#fallbackNoticeKeys.has(key)) return;
+    this.#fallbackNoticeKeys.add(key);
+    // Mirror local command output: prefer the wire uuid as the message id so
+    // the notice maps onto the transcript instead of a synthetic id, and mark
+    // it localCommand so the Adapter neither moves #lastAssistantResponseAtUnix
+    // (prompt-cache countdown) nor refreshes usage from a transcript read.
+    const checkpointId = nativeUuid(message);
+    const messageId = checkpointId ?? this.#nextMessageId();
+    const delta = `Model fallback: **${original} → ${fallback}**. The session continues on the fallback model; your configured model choice is unchanged.`;
+    events.push({ type: "text.delta", messageId, delta });
+    events.push({ type: "message.completed", messageId, localCommand: true });
   }
 
   #consumeLocalCommandOutput(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {

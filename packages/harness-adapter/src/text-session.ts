@@ -48,6 +48,8 @@ export type HarnessErrorCode =
   | "authenticationRequired"
   | "configurationRequired"
   | "credentialAccessRequired"
+  | "rateLimited"
+  | "quotaExhausted"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -63,6 +65,8 @@ export interface HarnessError {
   code: HarnessErrorCode;
   message: string;
   retryable: boolean;
+  /** Optional ISO-8601 timestamp when the blocking quota window is expected to reset. */
+  resetsAt?: string;
   diagnostic?: string;
   stage?: string;
   durationMs?: number;

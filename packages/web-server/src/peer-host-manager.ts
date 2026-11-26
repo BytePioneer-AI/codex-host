@@ -4,6 +4,7 @@ import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
 import { parseConnectionLink, type PeerHostStore, type PeerRecord } from "./peer-host-store.ts";
 import { PeerThreadSource, type PeerThreadProjector } from "./peer-thread-source.ts";
+import { translateContentTextParts, translateThreadLinksFromPeer } from "./peer-thread-links.ts";
 import { RpcError, type EventHub, type RpcRegistry } from "./transport.ts";
 import { requestOf } from "./store.ts";
 import type { RemoteSessionCall } from "./remote-session-delivery.ts";
@@ -11,6 +12,8 @@ import type { RemoteSessionCall } from "./remote-session-delivery.ts";
 export interface PeerHostManagerOptions {
   /** Allow loopback peer origins (used for local integration tests / explicit dev opt-in). */
   allowLoopback?: boolean;
+  /** Persistent stable nodeId identifying this web-server instance across restarts. */
+  localNodeId?: string;
   /** Override NDJSON event stream idle timeout in milliseconds. */
   streamIdleTimeoutMs?: number;
   /** Optional placeholder attachment/image projector for Peer thread views. */
@@ -21,6 +24,7 @@ export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
   private sources = new Map<string, PeerThreadSource>();
   private readonly allowLoopback: boolean;
+  private readonly localNodeId: string | undefined;
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   onChange?: (hostId?: string) => void;
@@ -39,6 +43,7 @@ export class PeerHostManager {
     options: PeerHostManagerOptions = {},
   ) {
     this.allowLoopback = options.allowLoopback === true;
+    this.localNodeId = options.localNodeId;
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
     this.projector = options.projector;
     for (const record of store.load()) this.install(record);
@@ -55,6 +60,7 @@ export class PeerHostManager {
         ? {}
         : { streamIdleTimeoutMs: this.streamIdleTimeoutMs }),
       ...(initialManifest === undefined ? {} : { initialManifest }),
+      ...(this.localNodeId === undefined ? {} : { rejectNodeId: this.localNodeId }),
     });
   }
 
@@ -71,6 +77,11 @@ export class PeerHostManager {
     this.clients.set(record.peerId, next);
     if (record.enabled) {
       const host = new PeerChHostClient(next.chTransport());
+      const translateInbound = (text: string) =>
+        translateThreadLinksFromPeer(text, {
+          sourcePeerNodes: next.manifest?.peerNodes,
+          hostIdForNodeId: (nodeId) => this.hostIdForNodeId(nodeId),
+        });
       const source = new PeerThreadSource({
         hostId: next.hostId,
         host,
@@ -81,12 +92,60 @@ export class PeerHostManager {
         onSkillsChanged: () => this.onSkillsChanged?.(next.hostId),
         onConnection: (online) => this.onConnection?.(next.hostId, online),
         onReset: (epoch, full) => this.onReset?.(next.hostId, epoch, full),
-        ...(this.projector ? { projector: this.projector } : {}),
+        projector: (threadId) => {
+          const base = this.projector?.(threadId);
+          return {
+            projectInput: (content: unknown[]) =>
+              translateContentTextParts(
+                base ? base.projectInput(content) : content,
+                translateInbound,
+              ),
+            projectImage: (path: string, projectionKey: string) =>
+              base ? base.projectImage(path, projectionKey) : undefined,
+            projectText: (text: string) =>
+              translateInbound(base?.projectText ? base.projectText(text) : text),
+          };
+        },
       });
       this.sources.set(record.peerId, source);
     }
     void next.start();
     return next;
+  }
+
+  selfNodeId(): string | undefined {
+    return this.localNodeId;
+  }
+
+  /** Anonymous `remote-peer:<peerId> -> nodeId` map for enabled Peers, preferring connected entries. */
+  peerNodes(): Record<string, string> {
+    const connected: Array<[string, string]> = [];
+    const other: Array<[string, string]> = [];
+    for (const client of this.clients.values()) {
+      if (!client.record.enabled || !client.manifest?.nodeId) continue;
+      const entry: [string, string] = [client.hostId, client.manifest.nodeId];
+      if (client.state === "connected") connected.push(entry);
+      else other.push(entry);
+    }
+    return Object.fromEntries([...connected, ...other].slice(0, 128));
+  }
+
+  nodeIdForHostId(hostId: string): string | undefined {
+    if (hostId === "local") return this.localNodeId;
+    const client = this.client(hostId);
+    return client?.record.enabled ? client.manifest?.nodeId : undefined;
+  }
+
+  hostIdForNodeId(nodeId: string): string | undefined {
+    if (!nodeId) return undefined;
+    if (this.localNodeId !== undefined && nodeId === this.localNodeId) return "local";
+    let fallback: string | undefined;
+    for (const client of this.clients.values()) {
+      if (!client.record.enabled || client.manifest?.nodeId !== nodeId) continue;
+      if (client.state === "connected") return client.hostId;
+      fallback ??= client.hostId;
+    }
+    return fallback;
   }
 
   client(hostId: string): PeerHostClient | undefined {
@@ -149,6 +208,7 @@ export class PeerHostManager {
       .filter((p) => p.record.enabled)
       .map((p) => ({
         hostId: c.remotePeerHostId(p.record.peerId),
+        ...(p.manifest?.nodeId !== undefined ? { nodeId: p.manifest.nodeId } : {}),
         displayName: p.record.name,
         online: p.state === "connected",
         state: p.state,
@@ -274,6 +334,27 @@ export class PeerHostManager {
             } else {
               delete record.color;
             }
+            let probedClient: PeerHostClient | undefined;
+            if (
+              this.localNodeId !== undefined &&
+              record.enabled &&
+              (conn.origin !== old.origin || conn.token !== old.token || !old.enabled)
+            ) {
+              const candidate = this.createClient(record);
+              try {
+                await candidate.probe();
+                probedClient = candidate;
+              } catch (e) {
+                candidate.close();
+                if (e instanceof Error && e.message === "Cannot pair this server with itself") {
+                  throw e;
+                }
+              }
+              if (this.clients.get(peerId) !== client) {
+                probedClient?.close();
+                throw Error("Peer changed");
+              }
+            }
             this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
             if (
               record.enabled === old.enabled &&
@@ -284,7 +365,7 @@ export class PeerHostManager {
               this.changed(client.hostId);
               return { peer: client.summary() };
             }
-            const next = this.install(record);
+            const next = this.install(record, probedClient);
             this.changed(next.hostId);
             return { peer: next.summary() };
           }

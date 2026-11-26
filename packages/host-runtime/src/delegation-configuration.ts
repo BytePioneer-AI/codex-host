@@ -18,7 +18,11 @@ export async function resolveDelegationConfiguration(input: {
   explicit: HarnessDelegationDefault;
   readDefault: () => Promise<HarnessDelegationDefault | undefined>;
   inspect: () => Promise<HarnessInspectResult>;
-}): Promise<{ model?: HarnessModelRef; thinkingOptionId?: HarnessThinkingOptionId }> {
+}): Promise<{
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  deferredThinkingValidation?: true;
+}> {
   const official = input.harnessId === "codex";
   const { model: explicitModel, thinkingOptionId: explicitThinking } = input.explicit;
   const saved =
@@ -80,21 +84,41 @@ export async function resolveDelegationConfiguration(input: {
     thinkingOptionId = explicitThinking;
   }
 
+  let deferredThinkingValidation = false;
   if (thinkingOptionId) {
-    const thinkingIdsFor = (ref: HarnessModelRef | undefined) =>
-      catalogModelForRef(catalog, ref ?? catalog.defaultModel)?.supportedThinkingOptionIds ?? [];
-    let validThinkingOptionIds = thinkingIdsFor(model);
+    const thinkingSupportFor = (ref: HarnessModelRef | undefined) => {
+      const entry = catalogModelForRef(catalog, ref ?? catalog.defaultModel);
+      return {
+        ids: entry?.supportedThinkingOptionIds,
+        deferred:
+          entry !== undefined &&
+          entry.supportedThinkingOptionIds === undefined &&
+          catalog.thinkingOptionsScope === "activeModel",
+      };
+    };
+    let support = thinkingSupportFor(model);
     // A saved model must not prevent trying an explicit Thinking option on the native default.
     if (
       model &&
       !explicitModel &&
       explicitThinking &&
-      (!configuration.selectThinkingOption || !validThinkingOptionIds.includes(explicitThinking))
+      (!configuration.selectThinkingOption || !(support.ids ?? []).includes(explicitThinking))
     ) {
-      model = undefined;
-      validThinkingOptionIds = thinkingIdsFor(model);
+      const nativeSupport = thinkingSupportFor(undefined);
+      if (
+        !support.deferred ||
+        (configuration.selectThinkingOption && (nativeSupport.ids ?? []).includes(explicitThinking))
+      ) {
+        model = undefined;
+        support = nativeSupport;
+      }
     }
-    if (!configuration.selectThinkingOption || !validThinkingOptionIds.includes(thinkingOptionId)) {
+    const deferToAdapter = Boolean(explicitThinking) && support.deferred;
+    const validThinkingOptionIds = support.ids ?? [];
+    if (
+      !deferToAdapter &&
+      (!configuration.selectThinkingOption || !validThinkingOptionIds.includes(thinkingOptionId))
+    ) {
       if (explicitThinking) {
         if (!official && !configuration.selectThinkingOption) {
           throw new DelegationControlError(
@@ -109,10 +133,13 @@ export async function resolveDelegationConfiguration(input: {
         );
       }
       thinkingOptionId = undefined;
+    } else if (deferToAdapter) {
+      deferredThinkingValidation = true;
     }
   }
   return {
     ...(model ? { model } : {}),
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
+    ...(deferredThinkingValidation ? { deferredThinkingValidation: true as const } : {}),
   };
 }

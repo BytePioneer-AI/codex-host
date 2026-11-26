@@ -338,7 +338,11 @@ export class HarnessDelegationCoordinator {
     }
     if (duplicate) return this.#existingResult(duplicate);
 
-    const selection = await this.#resolveConfiguration(startInput, modelForRequest, inspection);
+    const { deferredThinkingValidation, ...selection } = await this.#resolveConfiguration(
+      startInput,
+      modelForRequest,
+      inspection,
+    );
     const { model, thinkingOptionId } = selection;
     const transportModelId =
       model || thinkingOptionId
@@ -382,7 +386,15 @@ export class HarnessDelegationCoordinator {
           executionPolicy: "unattended-full-access",
           ...selection,
         });
-        if (!opened.ok) throw new DelegationControlError("DELEGATION_FAILED", opened.error.message);
+        if (!opened.ok) {
+          throw new DelegationControlError(
+            deferredThinkingValidation &&
+              (opened.error.code === "invalidRequest" || opened.error.code === "unsupported")
+              ? "INVALID_ARGUMENT"
+              : "DELEGATION_FAILED",
+            opened.error.message,
+          );
+        }
         session = opened.value;
         if (session.initialState.nativeRef) {
           record = await this.#repository.commitNative(

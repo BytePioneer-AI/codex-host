@@ -495,6 +495,11 @@ export class SessionManager {
     this.listInflight = null;
   }
 
+  /** Report whether a summary is already cached, even before the next frame flush. */
+  hasSummary(sessionId: SessionId): boolean {
+    return this.summaries.some((row) => row.sessionId === sessionId);
+  }
+
   /** Resolve a direct link without loading any preceding catalog pages. */
   async loadSummary(sessionId: SessionId): Promise<void> {
     if (this.summaries.some((row) => row.sessionId === sessionId)) return;

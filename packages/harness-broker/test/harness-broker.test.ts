@@ -1089,7 +1089,14 @@ describe("macOS Aqua Harness broker", () => {
       nativeSessionId: "cold-session-1",
       formatVersion: 1 as const,
     };
+    const createServer = vi.spyOn(net, "createServer");
     const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
+    const nativeServer = createServer.mock.results.at(-1)?.value as Server;
+    createServer.mockRestore();
+    let peer: Socket | undefined;
+    nativeServer.on("connection", (socket: Socket) => {
+      peer = socket;
+    });
     const adapter = new BrokeredHarnessAdapter({ descriptorPath });
     try {
       await expect(adapter.readSnapshot({ nativeRef, cwd: root })).resolves.toMatchObject({
@@ -1099,11 +1106,29 @@ describe("macOS Aqua Harness broker", () => {
       const snapshot = { turns: [] };
       const readSnapshot = vi.fn(async () => ({ ok: true as const, value: snapshot }));
       native.readSnapshot = readSnapshot;
+      await expect(
+        adapter.readSnapshot({
+          nativeRef,
+          cwd: root,
+          environment: { CODEXHOST_THREAD_ID: "cold-thread" },
+        }),
+      ).resolves.toEqual({
+        ok: true,
+        value: snapshot,
+      });
+      expect(readSnapshot).toHaveBeenCalledWith({
+        nativeRef,
+        cwd: root,
+        environment: { CODEXHOST_THREAD_ID: "cold-thread" },
+      });
+      readSnapshot.mockImplementationOnce(async () => {
+        peer?.destroy();
+        return { ok: true as const, value: snapshot };
+      });
       await expect(adapter.readSnapshot({ nativeRef, cwd: root })).resolves.toEqual({
         ok: true,
         value: snapshot,
       });
-      expect(readSnapshot).toHaveBeenCalledWith({ nativeRef, cwd: root });
       expect(open).not.toHaveBeenCalled();
     } finally {
       await adapter.close();

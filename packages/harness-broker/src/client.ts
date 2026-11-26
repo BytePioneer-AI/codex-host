@@ -745,10 +745,15 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   ): Promise<HarnessResult<HostThreadSnapshot>> {
     try {
       return parseHarnessResult<HostThreadSnapshot>(
-        await this.#request("adapter.readSnapshot", {
-          nativeRef: input.nativeRef,
-          cwd: input.cwd,
-        }),
+        await this.#request(
+          "adapter.readSnapshot",
+          {
+            nativeRef: input.nativeRef,
+            cwd: input.cwd,
+            environment: input.environment,
+          },
+          true,
+        ),
       );
     } catch (error) {
       return { ok: false, error: this.#error(error) };

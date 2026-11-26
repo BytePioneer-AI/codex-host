@@ -778,15 +778,11 @@ export class ExternalThreadRuntime {
           aligned.record.transportModelId,
         );
         const snapshotState = snapshot.value.state;
-        const effectiveModel = snapshotState
-          ? snapshotState.effectiveModel
-          : storedSelection?.model;
-        const effectiveThinkingOptionId = snapshotState
-          ? snapshotState.effectiveThinkingOptionId
-          : storedSelection?.thinkingOptionId;
-        const effectivePermissionModeId = snapshotState
-          ? snapshotState.effectivePermissionModeId
-          : storedSelection?.permissionModeId;
+        const effectiveModel = snapshotState?.effectiveModel ?? storedSelection?.model;
+        const effectiveThinkingOptionId =
+          snapshotState?.effectiveThinkingOptionId ?? storedSelection?.thinkingOptionId;
+        const effectivePermissionModeId =
+          snapshotState?.effectivePermissionModeId ?? storedSelection?.permissionModeId;
         const sessionId = await this.#repository.sessionTreeId(aligned.record);
         const turns = this.#mergeFailedTurns(aligned.record, aligned.turns);
         const thread = externalThreadValue({ record: aligned.record, turns, sessionId });

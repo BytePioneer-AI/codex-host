@@ -99,8 +99,11 @@ export async function readOmpSessionHeader(sessionFile: string): Promise<OmpSess
     if (newline < 0 && bytesRead === buffer.length) {
       throw new Error("Omp Session header exceeds the supported size");
     }
-    const contentsText = utf8Decoder.decode(contents);
-    for (const line of contentsText.split("\n")) {
+    for (let start = 0; start < contents.length;) {
+      const end = contents.indexOf(0x0a, start);
+      if (end < 0 && bytesRead === buffer.length) break;
+      const line = utf8Decoder.decode(contents.subarray(start, end < 0 ? contents.length : end));
+      start = end < 0 ? contents.length : end + 1;
       if (line.length === 0) continue;
       let parsed: unknown;
       try {

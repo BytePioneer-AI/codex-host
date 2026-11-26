@@ -67,6 +67,10 @@ const OWNED_TRAILING_SELECTORS = [
 
 export interface RendererHandoffControl {
   refresh(): void;
+  openForComposer(
+    composer: Element,
+    options?: { targetHarnessId?: string; anchor?: HTMLElement },
+  ): boolean;
   dispose(): void;
 }
 
@@ -76,6 +80,8 @@ export interface RendererHandoffControlOptions {
   resolveComposerThreadId?(composer: Element): HostThreadId | null;
   getLocale?(): RendererSettingsLocale;
   openThread?(threadId: HostThreadId, options?: { hostId?: string }): Promise<void>;
+  /** Mount a standalone swap button in the Composer toolbar (defaults to true; disabled when integrated into the Agent picker). */
+  mountTrigger?: boolean;
   document?: Document;
   window?: Window;
   reportError?(error: unknown): void;
@@ -208,9 +214,14 @@ export function installRendererHandoffControl(
   ) {
     return {
       refresh() {},
+      openForComposer() {
+        return false;
+      },
       dispose() {},
     };
   }
+
+  const mountTrigger = options.mountTrigger !== false;
 
   const resolveThreadId = options.resolveComposerThreadId ?? defaultResolveComposerThreadId;
   const openThread =
@@ -246,8 +257,10 @@ export function installRendererHandoffControl(
 
   interface OpenPopoverState {
     element: HTMLElement;
+    anchor: HTMLElement | null;
     threadId: HostThreadId;
     hostId: string | null;
+    explicitTargetHarness: boolean;
     selectedHarnessId: string;
     selectedModelId: string;
     selectedThinkingOptionId: string;
@@ -450,7 +463,12 @@ export function installRendererHandoffControl(
     const state = popoverState;
     if (!state) return;
     const harnesses = availableHarnesses(state.hostId);
-    if (!harnesses.some(({ id }) => id === state.selectedHarnessId) && harnesses[0]) {
+    const pluginsLoaded = pluginsByHost.has(hostScopeKey(state.hostId));
+    if (
+      (!state.explicitTargetHarness || pluginsLoaded) &&
+      !harnesses.some(({ id }) => id === state.selectedHarnessId) &&
+      harnesses[0]
+    ) {
       state.selectedHarnessId = harnesses[0].id;
     }
     const key = catalogCacheKey(state.hostId, state.selectedHarnessId);
@@ -491,24 +509,42 @@ export function installRendererHandoffControl(
       onConfirm: submitHandoff,
       onCancel: closePopover,
     });
-    if (triggerButton) {
-      positionPopover(state.element, triggerButton, ownerWindow, ownerDocument);
+    const anchor = state.anchor ?? triggerButton;
+    if (anchor) {
+      positionPopover(state.element, anchor, ownerWindow, ownerDocument);
     }
   };
 
-  const openPopover = (): void => {
-    if (disposed || !activeThreadId || !triggerButton) return;
+  const openPopoverFor = (params: {
+    threadId: HostThreadId;
+    hostId: string | null;
+    anchor: HTMLElement | null;
+    targetHarnessId?: string;
+    toggleIfSameAnchor?: boolean;
+  }): boolean => {
+    if (disposed || !params.anchor) return false;
     if (popoverState) {
+      const sameToggle =
+        params.toggleIfSameAnchor === true &&
+        popoverState.threadId === params.threadId &&
+        popoverState.anchor === params.anchor;
       closePopover();
-      return;
+      if (sameToggle) return true;
     }
-    const targetHostId = activeHostId;
+    const targetHostId = params.hostId;
     const client = clientForHost(targetHostId);
-    const currentKey = cacheKeyFor(targetHostId, activeThreadId);
+    const currentKey = cacheKeyFor(targetHostId, params.threadId);
     const currentOwner = threadOwnerHarness.get(currentKey);
     const harnesses = availableHarnesses(targetHostId);
+    const explicitTarget =
+      typeof params.targetHarnessId === "string" && params.targetHarnessId.trim().length > 0
+        ? params.targetHarnessId.trim()
+        : undefined;
     const defaultTarget =
-      harnesses.find(({ id }) => id !== currentOwner)?.id ?? harnesses[0]?.id ?? "codex";
+      explicitTarget ??
+      harnesses.find(({ id }) => id !== currentOwner)?.id ??
+      harnesses[0]?.id ??
+      "codex";
 
     const element = ownerDocument.createElement("div");
     element.setAttribute(HANDOFF_POPOVER_ATTRIBUTE, "true");
@@ -516,8 +552,10 @@ export function installRendererHandoffControl(
 
     popoverState = {
       element,
-      threadId: activeThreadId,
+      anchor: params.anchor,
+      threadId: params.threadId,
       hostId: targetHostId,
+      explicitTargetHarness: explicitTarget !== undefined,
       selectedHarnessId: defaultTarget,
       selectedModelId: "",
       selectedThinkingOptionId: "",
@@ -525,14 +563,17 @@ export function installRendererHandoffControl(
       errorMessage: null,
       createdThreadId: null,
     };
-    triggerButton.setAttribute("aria-expanded", "true");
-    triggerButton.setAttribute("data-state", "open");
+    if (params.anchor === triggerButton && triggerButton) {
+      triggerButton.setAttribute("aria-expanded", "true");
+      triggerButton.setAttribute("data-state", "open");
+    }
     renderPopover();
     if (client) {
       void loadPlugins(client, targetHostId).then(() => {
         if (!disposed && popoverState && popoverState.hostId === targetHostId) {
           const updatedHarnesses = availableHarnesses(targetHostId);
           if (
+            !popoverState.explicitTargetHarness &&
             popoverState.selectedHarnessId === currentOwner &&
             updatedHarnesses.some(({ id }) => id !== currentOwner)
           ) {
@@ -546,9 +587,44 @@ export function installRendererHandoffControl(
       });
     }
     loadHarnessCatalog(targetHostId, defaultTarget);
+    return true;
+  };
+
+  const openPopover = (): void => {
+    if (!activeThreadId || !triggerButton) return;
+    openPopoverFor({
+      threadId: activeThreadId,
+      hostId: activeHostId,
+      anchor: triggerButton,
+      toggleIfSameAnchor: true,
+    });
+  };
+
+  const openForComposer = (
+    composer: Element,
+    openOptions?: { targetHarnessId?: string; anchor?: HTMLElement },
+  ): boolean => {
+    if (disposed || isOrbitComposer(composer) || hasNativeComposerRequest(composer)) return false;
+    const threadId = resolveThreadId(composer);
+    if (!threadId) return false;
+    const hostId = options.getHostId?.(composer) ?? null;
+    const anchor = openOptions?.anchor ?? triggerButton;
+    if (!anchor) return false;
+    return openPopoverFor({
+      threadId,
+      hostId,
+      anchor,
+      ...(openOptions?.targetHarnessId === undefined
+        ? {}
+        : { targetHarnessId: openOptions.targetHarnessId }),
+    });
   };
 
   const ensureTriggerMounted = (composer: Element): void => {
+    if (!mountTrigger) {
+      unmountTrigger();
+      return;
+    }
     const anchor = findTriggerAnchor(composer);
     if (!anchor) {
       unmountTrigger();
@@ -748,14 +824,16 @@ export function installRendererHandoffControl(
 
   const onDocumentKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && popoverState && !popoverState.submitting) {
+      const returnFocus = popoverState.anchor ?? triggerButton;
       closePopover();
-      triggerButton?.focus();
+      returnFocus?.focus();
     }
   };
 
   const onWindowResize = (): void => {
-    if (popoverState && triggerButton) {
-      positionPopover(popoverState.element, triggerButton, ownerWindow, ownerDocument);
+    const anchor = popoverState?.anchor ?? triggerButton;
+    if (popoverState && anchor) {
+      positionPopover(popoverState.element, anchor, ownerWindow, ownerDocument);
     }
   };
 
@@ -806,6 +884,7 @@ export function installRendererHandoffControl(
 
   return {
     refresh,
+    openForComposer,
     dispose() {
       if (disposed) return;
       disposed = true;

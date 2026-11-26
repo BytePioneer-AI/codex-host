@@ -340,6 +340,12 @@ type ApplyAdapterAgent = (
   composer?: Element,
 ) => boolean;
 
+type OpenAdapterHandoff = (
+  composer: Element,
+  targetHarnessId?: string,
+  anchor?: HTMLElement,
+) => boolean;
+
 export interface RendererBindingProbeApi {
   remoteConnections(request: unknown): Promise<unknown>;
   status(): RendererBindingProbeStatus;
@@ -350,6 +356,7 @@ export interface RendererBindingProbeApi {
     dispose?: () => void,
     applyAgent?: ApplyAdapterAgent,
     modelControl?: RendererModelClient | null,
+    openHandoff?: OpenAdapterHandoff,
   ): void;
   dispose(): void;
 }
@@ -871,6 +878,7 @@ export function installRendererBindingProbe(
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
+  let openAdapterHandoff: OpenAdapterHandoff | null = null;
   let modelControl: RendererModelClient | null = null;
   const activeModelHostId = (composer?: Element): string | null => {
     if (!modelControl) return null;
@@ -1246,6 +1254,7 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
       mounted.accountBalance,
+      Boolean(openAdapterHandoff && threadIdFromComposerModelTarget(mounted.modelTarget)),
     );
     const nativeTargetResolved =
       mounted.modelTarget?.[0] === "default" || mounted.modelTarget?.[0] === "conversation";
@@ -3499,6 +3508,10 @@ export function installRendererBindingProbe(
         const mounted = mountedByComposer.get(composer);
         if (mounted) void refreshExternalModels(mounted);
       },
+      (agent, anchor) => {
+        if (!composer.isConnected) return;
+        openAdapterHandoff?.(composer, agent, anchor);
+      },
     );
     if (!pendingDefaultPreferences.has(state.composerId)) {
       pendingDefaultPreferences.set(
@@ -4199,11 +4212,12 @@ export function installRendererBindingProbe(
         ...(permissionModeId ? { permissionModeId } : {}),
       };
     },
-    setAdapter(status, dispose, applyAgent, nextModelControl) {
+    setAdapter(status, dispose, applyAgent, nextModelControl, nextOpenHandoff) {
       usageNotificationDispose();
       adapterDispose?.();
       adapterDispose = dispose ?? null;
       applyAdapterAgent = applyAgent ?? null;
+      openAdapterHandoff = nextOpenHandoff ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
       widgets.refresh();
@@ -4270,6 +4284,7 @@ export function installRendererBindingProbe(
       adapterDispose?.();
       adapterDispose = null;
       applyAdapterAgent = null;
+      openAdapterHandoff = null;
       modelControl = null;
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();

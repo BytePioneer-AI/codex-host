@@ -593,4 +593,36 @@ describe("installRendererHandoffControl", () => {
       }),
     ).toBe("Carried 3 of 5 turns (2 omitted, up to turn 4)");
   });
+
+  it("supports agent-picker integration with mountTrigger=false and explicit target preselection", async () => {
+    const dom = createConversationDom("thread-picker-handoff", { externalControls: true });
+    const client = createMockClient({
+      listHarnessPlugins: vi.fn(async () => ({
+        plugins: [claudePlugin, antigravityPlugin],
+      })),
+    });
+    const control = installRendererHandoffControl({
+      getClient: () => client,
+      getLocale: () => "zh-CN",
+      mountTrigger: false,
+    });
+    try {
+      expect(document.querySelector(`[${HANDOFF_CONTROL_ATTRIBUTE}]`)).toBeNull();
+      const anchor = document.createElement("button");
+      document.body.append(anchor);
+      const opened = control.openForComposer(dom.composer, {
+        targetHarnessId: "antigravity",
+        anchor,
+      });
+      expect(opened).toBe(true);
+      await vi.waitFor(() => {
+        const selected = document.querySelector(
+          `[${HANDOFF_POPOVER_ATTRIBUTE}] [role="radio"][aria-checked="true"]`,
+        );
+        expect(selected?.getAttribute("data-harness-id")).toBe("antigravity");
+      });
+    } finally {
+      control.dispose();
+    }
+  });
 });

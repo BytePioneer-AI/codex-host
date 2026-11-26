@@ -35,20 +35,34 @@ export function withHarnessDisplayOrder<
   T extends {
     groups: Array<{ id: string; name: string }>;
     failures: Array<{ id: string; name: string }>;
+    notInstalled?: Array<{ id: string; name: string; installUrl?: string }>;
   },
 >(catalog: T, entries: HarnessDisplayEntries = []) {
+  const notInstalled = catalog.notInstalled ?? [];
+  const notInstalledIds = new Set(notInstalled.map((item) => item.id));
+  const sectionByAgent = new Map(entries.map((entry) => [entry.agent, entry.section]));
   const ordered = leadingFirst(
-    orderHarnessDisplay([...catalog.groups, ...catalog.failures], entries),
+    orderHarnessDisplay([...catalog.groups, ...catalog.failures, ...notInstalled], entries),
   );
   const rank = new Map(ordered.map((item, index) => [item.id, index]));
+  const moreHarnesses = ordered
+    .filter((item) => {
+      if (item.id === WEB_LEADING_HARNESS) return false;
+      const section = sectionByAgent.get(item.id);
+      return section && section !== "auto" ? section === "more" : notInstalledIds.has(item.id);
+    })
+    .sort((a, b) => Number(notInstalledIds.has(a.id)) - Number(notInstalledIds.has(b.id)))
+    .map((item) => item.id);
+  const byRank = (a: { id: string }, b: { id: string }) =>
+    (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity);
   return {
     ...catalog,
-    groups: [...catalog.groups].sort(
-      (a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity),
-    ) as T["groups"],
-    failures: [...catalog.failures].sort(
-      (a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity),
-    ) as T["failures"],
+    groups: [...catalog.groups].sort(byRank) as T["groups"],
+    failures: [...catalog.failures].sort(byRank) as T["failures"],
+    ...(catalog.notInstalled === undefined
+      ? {}
+      : { notInstalled: [...notInstalled].sort(byRank) as T["notInstalled"] }),
     harnessOrder: ordered.map((item) => item.id),
+    moreHarnesses,
   };
 }

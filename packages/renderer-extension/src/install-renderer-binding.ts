@@ -12,7 +12,13 @@ export function installRendererBinding(
   const binding = installRendererBindingProbe({ ...(enabledAgents ? { enabledAgents } : {}) });
   try {
     const adapter = installCurrentRendererAdapter();
-    binding.setAdapter(adapter.status, adapter.dispose, adapter.applyAgent, adapter.modelControl);
+    binding.setAdapter(
+      adapter.status,
+      adapter.dispose,
+      adapter.applyAgent,
+      adapter.modelControl,
+      adapter.openHandoff,
+    );
   } catch (error) {
     console.error(
       "codexhost Renderer Adapter installation failed",

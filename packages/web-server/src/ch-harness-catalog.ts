@@ -287,9 +287,10 @@ export class ChHarnessCatalog {
     const shouldRefresh = (id: string) => refresh && (harnessId === undefined || harnessId === id);
     const plugins = await this.list();
     const pluginValues = await Promise.all(
-      plugins.map(async ({ id, name }) => ({
+      plugins.map(async ({ id, name, links }) => ({
         id,
         name,
+        links,
         inspection: await this.inspectForModels(
           id,
           name,
@@ -303,13 +304,19 @@ export class ChHarnessCatalog {
       ): value is {
         id: HarnessPluginDescriptor["id"];
         name: string;
+        links: HarnessPluginDescriptor["links"];
         inspection: HarnessInspection;
       } => value.inspection !== undefined,
     );
     if (this.restrictTo === undefined || this.restrictTo.has("codex")) {
       const inspection = await this.inspectForModels("codex", "Codex", shouldRefresh("codex"));
       if (inspection)
-        values.unshift({ id: harnessIdSchema.parse("codex"), name: "Codex", inspection });
+        values.unshift({
+          id: harnessIdSchema.parse("codex"),
+          name: "Codex",
+          links: undefined,
+          inspection,
+        });
     }
     const groups = values.flatMap(({ id, name, inspection }) =>
       inspection.status === "ready"
@@ -333,6 +340,11 @@ export class ChHarnessCatalog {
           ]
         : [],
     );
+    const notInstalled = values.flatMap(({ id, name, links, inspection }) => {
+      if (inspection.status !== "notInstalled") return [];
+      const installUrl = links?.installation ?? links?.documentation ?? links?.website;
+      return [{ id, name, ...(installUrl ? { installUrl } : {}) }];
+    });
     let selection: ModelSelection | undefined;
     if (first?.inspection.status === "ready") {
       const { defaultModel, models } = first.inspection.catalog;
@@ -348,6 +360,7 @@ export class ChHarnessCatalog {
         groups,
         routableProviders: groups.map((group) => group.id),
         failures,
+        notInstalled,
       },
       await this.displayEntries(),
     );

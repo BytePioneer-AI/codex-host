@@ -718,6 +718,7 @@ export function installCurrentRendererAdapter(): {
     permissionModeId?: HarnessPermissionModeId,
     composer?: Element,
   ): boolean;
+  openHandoff(composer: Element, targetHarnessId?: string, anchor?: HTMLElement): boolean;
   dispose(): void;
 } {
   let disposed = false;
@@ -941,6 +942,7 @@ export function installCurrentRendererAdapter(): {
     getHostId: (composer) => modelControl.currentHostId?.(composer) ?? null,
     resolveComposerThreadId: (composer) =>
       threadIdFromComposerModelTarget(findComposerModelTarget(composer)),
+    mountTrigger: false,
     reportError: (error) => {
       console.error(
         "codexhost Thread Handoff failed",
@@ -1026,6 +1028,11 @@ export function installCurrentRendererAdapter(): {
     status: liveStatus,
     modelControl,
     applyAgent,
+    openHandoff: (composer: Element, targetHarnessId?: string, anchor?: HTMLElement) =>
+      handoffControl.openForComposer(composer, {
+        ...(targetHarnessId === undefined ? {} : { targetHarnessId }),
+        ...(anchor === undefined ? {} : { anchor }),
+      }),
     dispose() {
       if (disposed) return;
       disposed = true;

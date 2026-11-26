@@ -233,7 +233,9 @@ for (const nativeProjects of [false, true]) {
       if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, params);
       assert.deepEqual(params, { threadId: row.id, projectId: null });
       writes++;
-      delete host.projectSnapshot.assignments[row.id];
+      host.projectSnapshot.assignments = Object.fromEntries(
+        Object.entries(host.projectSnapshot.assignments).filter(([id]) => id !== row.id),
+      );
       host.projectSnapshot.projectless.push(row.id);
       return { status: "unknown" } as T;
     };

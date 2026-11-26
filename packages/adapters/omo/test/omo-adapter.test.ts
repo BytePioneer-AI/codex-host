@@ -756,6 +756,19 @@ describe("OmO Adapter inspect", () => {
     const fixture = createFixtureAdapter({ scenario: "inspect" });
     const availability = await fixture.adapter.inspect({ cwd, purpose: "availability" });
     expect(availability).toMatchObject({ status: "ready", catalog: { models: [] } });
+    // The Host schema-validates every inspection result, availability included,
+    // so the light path must carry the frozen Permission Mode catalog that
+    // `selectPermissionMode: true` promises (the same refine as the full path).
+    const parsedAvailability = harnessInspectionSchema.parse(availability);
+    expect(parsedAvailability.permissionModes?.modes.map((mode) => mode.id)).toEqual([
+      "full-access",
+      "workspace",
+      "read-only",
+      "ask",
+      "accept-edits",
+      "auto",
+    ]);
+    expect(parsedAvailability.permissionModes?.defaultModeId).toBe("full-access");
     expect(fixture.inspectSpawns).toHaveLength(0);
     expect(fixture.versionReads).toEqual(["fake-omo"]);
     await fixture.adapter.inspect({ cwd });

@@ -568,6 +568,10 @@ export class OmoAdapter implements HarnessAdapter {
     return {
       status: "ready",
       catalog: availabilityCatalog,
+      // The light path stays schema-valid: `selectPermissionMode` is true, so
+      // the frozen preset catalog ships with it. It is a constant, so this
+      // adds no process spawn to the availability check.
+      permissionModes: OMO_PERMISSION_MODE_CATALOG,
       capabilities: OMO_SESSION_CAPABILITIES,
     };
   }

@@ -274,9 +274,14 @@ fn help_prints_usage_to_stdout_and_succeeds() {
         assert!(output.stderr.is_empty(), "{argument}");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.starts_with("usage:\n"), "{argument}");
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line == "  codexhost app [--onboarding | --session <id>]"),
+            "{argument}: missing exact app usage"
+        );
         for command in [
             "codexhost --version",
-            "codexhost app [--onboarding]",
             "codexhost launch-prefs get --json",
             "codexhost desktop-screenshot",
             "codexhost host info|list ...",

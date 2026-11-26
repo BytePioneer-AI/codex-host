@@ -16,7 +16,7 @@ use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use url::Url;
 
-use instance::{Activation, Claim, PrimaryInstance};
+use instance::{Activation, ActivationDelivery, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
 use readiness::{ShellReady, WebEvent, WebReady};
@@ -90,16 +90,20 @@ struct View {
     page: Page,
     last_login: Option<Url>,
     pending_target: Option<MainTarget>,
+    live_session_generation: u64,
 }
 
 impl View {
-    fn open_target(&mut self, target: MainTarget) -> Result<Option<Url>, String> {
+    fn open_target(&mut self, target: Option<MainTarget>) -> Result<Option<Url>, String> {
+        let Some(target) = target else {
+            return Ok(None);
+        };
         if matches!(self.page, Page::Web) {
             let mut url = self
                 .last_login
                 .clone()
                 .ok_or("Desktop Web login URL is unavailable")?;
-            // Use the login navigation to load a fresh document for the deep link.
+            self.pending_target = None;
             target.apply(&mut url);
             Ok(Some(url))
         } else {
@@ -117,9 +121,16 @@ impl View {
         login
     }
 
-    fn finish_live_session(&mut self, id: &str, opened: bool) -> Option<Url> {
+    fn queue_live_session(&mut self, session_id: String) -> u64 {
+        self.live_session_generation = self.live_session_generation.wrapping_add(1);
+        self.pending_target = Some(MainTarget::Session(session_id));
+        self.live_session_generation
+    }
+
+    fn finish_live_session(&mut self, generation: u64, opened: bool) -> Option<Url> {
         if !matches!(self.page, Page::Web)
-            || !matches!(&self.pending_target, Some(MainTarget::Session(pending)) if pending == id)
+            || self.live_session_generation != generation
+            || !matches!(self.pending_target, Some(MainTarget::Session(_)))
         {
             return None;
         }
@@ -163,12 +174,15 @@ fn permission_response(page: &Page, kind: PermissionKind) -> PermissionResponse 
     }
 }
 
-fn navigate(app: &AppHandle, url: Url) {
-    if let Some(window) = app.get_webview_window(MAIN)
-        && window.navigate(url).is_err()
-    {
+fn navigate(app: &AppHandle, url: Url) -> bool {
+    let Some(window) = app.get_webview_window(MAIN) else {
+        return false;
+    };
+    if window.navigate(url).is_err() {
         eprintln!("CodexHost: could not navigate the desktop window");
+        return false;
     }
+    true
 }
 
 fn navigate_loading(app: &AppHandle, status: Status) {
@@ -382,10 +396,7 @@ fn prepare_main_target(
     let mut view = shell.view.lock().unwrap();
     let begin = matches!(view.page, Page::Dormant)
         || (matches!(view.page, Page::Onboarding) && target.is_some());
-    let url = match target {
-        Some(target) => view.open_target(target)?,
-        None => None,
-    };
+    let url = view.open_target(target)?;
     drop(view);
     if begin {
         begin_web(app, true);
@@ -412,62 +423,61 @@ fn session_script(origin: &str, session_id: &str) -> String {
     )
 }
 
-fn finish_live_session(app: &AppHandle, session_id: &str, opened: bool) {
+fn finish_live_session(app: &AppHandle, generation: u64, opened: bool) -> bool {
     let shell = app.state::<Shell>();
     let target = shell
         .view
         .lock()
         .unwrap()
-        .finish_live_session(session_id, opened);
-    if let Some(url) = target {
-        navigate(app, url);
-    }
+        .finish_live_session(generation, opened);
+    target.is_some_and(|url| navigate(app, url))
 }
 
-fn show_session(app: &AppHandle, session_id: String) {
+fn show_session(app: &AppHandle, session_id: String) -> bool {
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
-        return;
+        return false;
     }
-    let _ = set_visible(app, true);
-    let origin = {
-        let mut view = shell.view.lock().unwrap();
-        let origin = view
-            .last_login
-            .as_ref()
-            .filter(|_| matches!(view.page, Page::Web))
-            .map(|url| url.origin().ascii_serialization());
-        if origin.is_some() {
-            // Keep the target until the live page accepts it or a reconnect consumes it.
-            view.pending_target = Some(MainTarget::Session(session_id.clone()));
-        }
-        origin
+    let Some(window) = app.get_webview_window(MAIN) else {
+        return false;
     };
-    let Some(origin) = origin else {
-        if let Ok(Some(url)) =
-            prepare_main_target(app, &shell, Some(MainTarget::Session(session_id)))
-        {
-            navigate(app, url);
+    let live_request = {
+        let mut view = shell.view.lock().unwrap();
+        if matches!(view.page, Page::Web) {
+            let Some(login) = view.last_login.as_ref() else {
+                return false;
+            };
+            let origin = login.origin().ascii_serialization();
+            // Keep the target until the live page accepts it or a reconnect consumes it.
+            let generation = view.queue_live_session(session_id.clone());
+            Some((origin, generation))
+        } else {
+            None
         }
-        return;
+    };
+    let Some((origin, generation)) = live_request else {
+        let accepted = prepare_main_target(app, &shell, Some(MainTarget::Session(session_id)))
+            .is_ok_and(|target| target.is_none_or(|url| navigate(app, url)));
+        if accepted {
+            let _ = set_visible(app, true);
+        }
+        return accepted;
     };
     let script = session_script(&origin, &session_id);
     let callback_app = app.clone();
-    let callback_session = session_id.clone();
-    if let Some(window) = app.get_webview_window(MAIN)
-        && window
-            .eval_with_callback(script, move |result| {
-                let app = callback_app.clone();
-                let session = callback_session.clone();
-                let _ = callback_app.run_on_main_thread(move || {
-                    finish_live_session(&app, &session, result == "true");
-                });
-            })
-            .is_ok()
-    {
-        return;
+    let scheduled = window
+        .eval_with_callback(script, move |result| {
+            let app = callback_app.clone();
+            let _ = callback_app.run_on_main_thread(move || {
+                finish_live_session(&app, generation, result == "true");
+            });
+        })
+        .is_ok();
+    if scheduled || finish_live_session(app, generation, false) {
+        let _ = set_visible(app, true);
+        return true;
     }
-    finish_live_session(app, &session_id, false);
+    false
 }
 
 pub(crate) fn show_onboarding(app: &AppHandle) {
@@ -740,10 +750,13 @@ async fn window_zoom_set(
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = Options::from_env().inspect_err(|_| {
         if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--session")) {
-            reply_to_session_launch(b"no\n");
+            SessionLaunchReply::new(io::stdout()).send(SessionLaunchOutcome::Rejected);
         }
     })?;
-    let session_launch = options.session_id.is_some();
+    let session_reply = options
+        .session_id
+        .is_some()
+        .then(|| Arc::new(SessionLaunchReply::new(io::stdout())));
     let activation = if let Some(id) = &options.session_id {
         Activation::ShowSession(id.clone())
     } else if options.onboarding {
@@ -752,8 +765,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         Activation::Show
     };
     let claim = instance::claim(&options.data_dir, activation).inspect_err(|_| {
-        if session_launch {
-            reply_to_session_launch(b"no\n");
+        if let Some(reply) = &session_reply {
+            reply.send(SessionLaunchOutcome::Rejected);
         }
     })?;
     let (instance, activations) = match claim {
@@ -761,17 +774,30 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             instance,
             activations,
         } => (instance, activations),
-        Claim::Forwarded | Claim::DeliveryUnknown => {
-            if session_launch {
-                reply_to_session_launch(b"ok\n");
+        Claim::Forwarded => {
+            if let Some(reply) = &session_reply {
+                reply.send(SessionLaunchOutcome::Accepted);
+            }
+            return Ok(());
+        }
+        Claim::DeliveryUnknown => {
+            if let Some(reply) = &session_reply {
+                reply.send(SessionLaunchOutcome::DeliveryUnknown);
             }
             return Ok(());
         }
     };
+    let _reject_if_unready = RejectUnfinishedSessionLaunch(session_reply.clone());
+    run_primary(options, instance, activations, session_reply)
+}
+
+fn run_primary(
+    options: Options,
+    instance: PrimaryInstance,
+    activations: mpsc::Receiver<ActivationDelivery>,
+    session_reply: Option<Arc<SessionLaunchReply>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let initial_target = options.session_id.map(MainTarget::Session);
-    if session_launch {
-        reply_to_session_launch(b"ok\n");
-    }
     let launcher = Arc::new(Launcher::new(
         &std::env::current_exe()?,
         options.data_dir,
@@ -789,6 +815,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en".into());
     let (ensure_web, requests) = mpsc::channel();
     let onboarding = options.onboarding;
+    let setup_reply = session_reply.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(instance)
@@ -802,6 +829,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 last_login: None,
                 pending_target: initial_target,
+                live_session_generation: 0,
             }),
             ensure_web,
             locale: locale.clone(),
@@ -872,6 +900,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .setup(move |app| {
+            // Tauri panics when the setup hook returns Err.
+            let mut reject_on_failure = RejectUnfinishedSessionLaunch(setup_reply);
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -955,6 +985,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !onboarding {
                 begin_web(&app_handle, false);
             }
+            reject_on_failure.0 = None;
             Ok(())
         })
         .build(tauri::generate_context!())?;
@@ -962,21 +993,42 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::Builder::new()
         .name("instance-activations".into())
         .spawn(move || {
-            while let Ok(activation) = activations.recv() {
+            while let Ok(ActivationDelivery {
+                action,
+                session_reply,
+            }) = activations.recv()
+            {
                 let handle = activation_app.clone();
-                let delivered = activation_app.run_on_main_thread(move || match activation {
+                let schedule_failure = session_reply.clone();
+                let delivered = activation_app.run_on_main_thread(move || match action {
                     Activation::Onboarding => show_onboarding(&handle),
                     Activation::Show => show_main(&handle, None),
-                    Activation::ShowSession(id) => show_session(&handle, id),
+                    Activation::ShowSession(id) => {
+                        let accepted = show_session(&handle, id);
+                        if let Some(reply) = session_reply {
+                            let _ = reply.send(accepted);
+                        }
+                    }
                 });
                 if delivered.is_err() {
+                    if let Some(reply) = schedule_failure {
+                        let _ = reply.send(false);
+                    }
                     eprintln!("CodexHost: could not deliver a desktop window activation");
                     break;
                 }
             }
         })?;
-    app.run(|app, event| match event {
+    app.run(move |app, event| match event {
+        RunEvent::Ready => {
+            if let Some(reply) = &session_reply {
+                reply.send(SessionLaunchOutcome::Accepted);
+            }
+        }
         RunEvent::Exit => {
+            if let Some(reply) = &session_reply {
+                reply.send(SessionLaunchOutcome::Rejected);
+            }
             if let Some(shell) = app.try_state::<Shell>() {
                 // Flush any queued or in-flight zoom update before exiting (no-op if unchanged).
                 persist_latest_zoom(&shell.zoom, &shell.zoom_persist, &shell.launcher.data_dir);
@@ -995,17 +1047,108 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn reply_to_session_launch(reply: &[u8]) {
-    let mut stdout = io::stdout().lock();
-    let _ = stdout.write_all(reply).and_then(|()| stdout.flush());
+enum SessionLaunchOutcome {
+    Accepted,
+    Rejected,
+    DeliveryUnknown,
+}
+
+struct SessionLaunchReply<W = io::Stdout>(Mutex<Option<W>>);
+
+impl<W: Write> SessionLaunchReply<W> {
+    fn new(output: W) -> Self {
+        Self(Mutex::new(Some(output)))
+    }
+
+    fn send(&self, outcome: SessionLaunchOutcome) {
+        let Some(mut output) = self.0.lock().unwrap().take() else {
+            return;
+        };
+        let line: &[u8] = match outcome {
+            SessionLaunchOutcome::Accepted => b"ok\n",
+            SessionLaunchOutcome::Rejected => b"no\n",
+            SessionLaunchOutcome::DeliveryUnknown => b"unknown\n",
+        };
+        let _ = output.write_all(line).and_then(|()| output.flush());
+    }
+}
+
+struct RejectUnfinishedSessionLaunch<W: Write = io::Stdout>(Option<Arc<SessionLaunchReply<W>>>);
+
+impl<W: Write> Drop for RejectUnfinishedSessionLaunch<W> {
+    fn drop(&mut self) {
+        if let Some(reply) = &self.0 {
+            reply.send(SessionLaunchOutcome::Rejected);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use tauri::webview::{PermissionKind, PermissionResponse};
+    use std::sync::Arc;
 
-    use super::{MainTarget, Page, Status, View, permission_response, session_script};
+    use tauri::webview::{PermissionKind, PermissionResponse};
     use url::Url;
+
+    use super::{
+        MainTarget, Page, RejectUnfinishedSessionLaunch, SessionLaunchOutcome, SessionLaunchReply,
+        Status, View, permission_response, session_script,
+    };
+
+    #[test]
+    fn primary_session_launch_emits_one_terminal_reply_across_startup_phases() {
+        for (scenario, setup, ready, expected) in [
+            ("build failed", None, false, b"no\n"),
+            ("setup failed", Some(false), false, b"no\n"),
+            ("failed after setup", Some(true), false, b"no\n"),
+            ("reached Ready", Some(true), true, b"ok\n"),
+        ] {
+            let output = tempfile::NamedTempFile::new().unwrap();
+            let reply = Arc::new(SessionLaunchReply::new(output.reopen().unwrap()));
+            {
+                let _primary = RejectUnfinishedSessionLaunch(Some(reply.clone()));
+                if let Some(succeeded) = setup {
+                    {
+                        let mut setup = RejectUnfinishedSessionLaunch(Some(reply.clone()));
+                        if succeeded {
+                            setup.0 = None;
+                        }
+                    }
+                    let after_setup: &[u8] = if succeeded { b"" } else { b"no\n" };
+                    assert_eq!(
+                        std::fs::read(output.path()).unwrap(),
+                        after_setup,
+                        "{scenario}: before the primary guard drops"
+                    );
+                }
+                if ready {
+                    assert!(std::fs::read(output.path()).unwrap().is_empty());
+                    reply.send(SessionLaunchOutcome::Accepted);
+                    reply.send(SessionLaunchOutcome::Accepted);
+                    reply.send(SessionLaunchOutcome::Rejected);
+                }
+            }
+            assert_eq!(
+                std::fs::read(output.path()).unwrap(),
+                expected.as_slice(),
+                "{scenario}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_forwarded_session_emits_one_terminal_reply() {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let reply = Arc::new(SessionLaunchReply::new(output.reopen().unwrap()));
+        {
+            let _reject_if_unready = RejectUnfinishedSessionLaunch(Some(reply.clone()));
+            reply.send(SessionLaunchOutcome::DeliveryUnknown);
+        }
+        assert_eq!(
+            std::fs::read(output.path()).unwrap().as_slice(),
+            b"unknown\n"
+        );
+    }
 
     #[test]
     fn notification_session_uses_the_live_login_and_survives_reconnect() {
@@ -1016,6 +1159,7 @@ mod tests {
             page: Page::Loading(Status::Starting, None),
             last_login: None,
             pending_target: Some(session()),
+            live_session_generation: 0,
         };
         let live = view.connect(old_login);
         assert_eq!(
@@ -1024,32 +1168,56 @@ mod tests {
         );
 
         assert!(view.pending_target.is_none());
-        view.pending_target = Some(MainTarget::Session("earlier".into()));
+        let earlier = view.queue_live_session("earlier".into());
         view.page = Page::Loading(Status::Reconnecting, None);
-        assert_eq!(view.open_target(session()).unwrap(), None);
-        assert_eq!(view.finish_live_session("earlier", false), None);
-        assert_eq!(view.finish_live_session("thread/一?x=#", true), None);
+        assert_eq!(view.open_target(Some(session())).unwrap(), None);
+        assert_eq!(view.finish_live_session(earlier, false), None);
         let reconnected = view.connect(new_login.clone());
         assert_eq!(
             reconnected.as_str(),
             "http://127.0.0.1:4401/?token=new&session=thread%2F%E4%B8%80%3Fx%3D%23"
         );
         assert_eq!(view.connect(new_login.clone()), new_login);
-        view.pending_target = Some(session());
+        let request = view.queue_live_session("thread/一?x=#".into());
         assert_eq!(
-            view.finish_live_session("thread/一?x=#", false).unwrap(),
+            view.finish_live_session(request, false).unwrap(),
             reconnected
         );
-        view.pending_target = Some(session());
-        assert_eq!(view.finish_live_session("thread/一?x=#", true), None);
+        let request = view.queue_live_session("thread/一?x=#".into());
+        assert_eq!(view.finish_live_session(request, true), None);
         assert!(view.pending_target.is_none());
+    }
+
+    #[test]
+    fn tray_route_supersedes_live_fallback_even_if_the_same_session_is_requested_again() {
+        let login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
+        let mut view = View {
+            page: Page::Web,
+            last_login: Some(login),
+            pending_target: None,
+            live_session_generation: 0,
+        };
+        let earlier = view.queue_live_session("thread".into());
         let settings = view
-            .open_target(MainTarget::Route("connect-devices"))
+            .open_target(Some(MainTarget::Route("connect-devices")))
             .unwrap()
             .unwrap();
         assert_eq!(
             settings.as_str(),
             "http://127.0.0.1:4401/?token=new#connect-devices"
+        );
+        assert_eq!(view.finish_live_session(earlier, false), None);
+
+        let latest = view.queue_live_session("thread".into());
+        assert_eq!(
+            view.open_target(None).unwrap(),
+            None,
+            "show the current page"
+        );
+        assert_eq!(view.finish_live_session(earlier, false), None);
+        assert_eq!(
+            view.finish_live_session(latest, false).unwrap().as_str(),
+            "http://127.0.0.1:4401/?token=new&session=thread"
         );
     }
 

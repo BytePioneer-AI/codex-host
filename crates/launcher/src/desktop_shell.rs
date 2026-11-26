@@ -1,5 +1,6 @@
 //! Launch and stop the independent native desktop shell.
 use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,24 @@ const READY: &str = "desktop-shell-ready.json";
 const STOP_GRACE: Duration = Duration::from_secs(3);
 const STOP_POLL: Duration = Duration::from_millis(25);
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+pub struct SessionDeliveryUnknown;
+
+impl fmt::Display for SessionDeliveryUnknown {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("The desktop shell session activation outcome is unknown")
+    }
+}
+
+impl Error for SessionDeliveryUnknown {}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShellReply {
+    Accepted,
+    Rejected,
+    Unknown,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AppActivation<'a> {
@@ -90,23 +109,28 @@ pub fn activate_session(shell: &Path, data: &Path, session_id: &str) -> Result<(
         .stdout(Stdio::piped())
         .spawn()?;
     let Some(stdout) = child.stdout.take() else {
-        return Ok(());
+        return Err(SessionDeliveryUnknown.into());
     };
-    if shell_explicitly_rejected(stdout, ACTIVATION_TIMEOUT) {
-        return Err("The desktop shell rejected the session activation".into());
+    match shell_reply(stdout, ACTIVATION_TIMEOUT) {
+        ShellReply::Accepted => Ok(()),
+        ShellReply::Rejected => Err("The desktop shell rejected the session activation".into()),
+        ShellReply::Unknown => Err(SessionDeliveryUnknown.into()),
     }
-    Ok(())
 }
 
-fn shell_explicitly_rejected(mut stdout: impl Read + Send + 'static, timeout: Duration) -> bool {
+fn shell_reply(mut stdout: impl Read + Send + 'static, timeout: Duration) -> ShellReply {
     let (send, receive) = mpsc::channel();
     let _ = thread::Builder::new().spawn(move || {
         let mut reply = [0; 3];
-        let rejected = stdout.read_exact(&mut reply).is_ok() && &reply == b"no\n";
-        let _ = send.send(rejected);
+        let result = match stdout.read_exact(&mut reply) {
+            Ok(()) if &reply == b"ok\n" => ShellReply::Accepted,
+            Ok(()) if &reply == b"no\n" => ShellReply::Rejected,
+            _ => ShellReply::Unknown,
+        };
+        let _ = send.send(result);
     });
     // Once spawned, a lost reply leaves acceptance unknown.
-    matches!(receive.recv_timeout(timeout), Ok(true))
+    receive.recv_timeout(timeout).unwrap_or(ShellReply::Unknown)
 }
 
 fn wait_for_exit(owner: ProcessIdentity, timeout: Duration) -> bool {
@@ -188,10 +212,17 @@ mod tests {
     }
 
     #[test]
-    fn shell_reply_only_reports_a_complete_explicit_rejection() {
-        assert!(shell_explicitly_rejected(&b"no\n"[..], ACTIVATION_TIMEOUT));
-        for reply in [&b"ok\n"[..], b"", b"no", b"???"] {
-            assert!(!shell_explicitly_rejected(reply, ACTIVATION_TIMEOUT));
+    fn shell_reply_requires_a_complete_known_reply() {
+        assert_eq!(
+            shell_reply(&b"ok\n"[..], ACTIVATION_TIMEOUT),
+            ShellReply::Accepted
+        );
+        assert_eq!(
+            shell_reply(&b"no\n"[..], ACTIVATION_TIMEOUT),
+            ShellReply::Rejected
+        );
+        for reply in [&b"unknown\n"[..], b"", b"ok", b"no", b"???"] {
+            assert_eq!(shell_reply(reply, ACTIVATION_TIMEOUT), ShellReply::Unknown);
         }
 
         struct DelayedReply(mpsc::Receiver<()>);
@@ -202,10 +233,10 @@ mod tests {
             }
         }
         let (release, reply) = mpsc::channel();
-        assert!(!shell_explicitly_rejected(
-            DelayedReply(reply),
-            Duration::ZERO,
-        ));
+        assert_eq!(
+            shell_reply(DelayedReply(reply), Duration::ZERO),
+            ShellReply::Unknown
+        );
         drop(release);
     }
 

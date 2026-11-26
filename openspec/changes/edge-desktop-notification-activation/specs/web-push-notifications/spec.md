@@ -2,7 +2,7 @@
 
 ### Requirement: 本机 Edge 通知可以激活运行中的原生客户端
 
-系统 SHALL 保留 Edge 的 Web Push 订阅和通知展示，并允许本机通知点击通过认证 RPC 将 sessionId 交给运行中的 CodexHost 原生壳。原生壳未运行或激活未被接受时 SHALL 使用既有 Web 点击回退。
+系统 SHALL 保留 Edge 的 Web Push 订阅和通知展示，并允许本机通知点击通过认证 RPC 将 sessionId 交给运行中的 CodexHost 原生壳。原生壳未运行或明确未接管激活时 SHALL 使用既有 Web 点击回退。
 
 #### Scenario: 本机 Edge 点击且原生壳运行
 
@@ -12,16 +12,17 @@
 - **AND** Web 服务 SHALL 以固定 argv 调用 `codexhost app --session <id>`
 - **AND** 原生壳 SHALL 显示窗口并打开目标会话
 
-#### Scenario: 原生壳未运行或激活失败
+#### Scenario: 原生壳未运行或明确未接管
 
-- **WHEN** 原生壳 ready 记录不存在、进程已退出或 Launcher 未接受激活
-- **THEN** 激活 RPC SHALL 返回未激活或错误
+- **WHEN** 原生壳 ready 记录不存在、进程已退出或 Launcher 可确认原生壳未接管激活
+- **THEN** 激活 RPC SHALL 返回 `activated: false`
 - **AND** Service Worker SHALL 保持既有 Web client 与 openWindow 回退
 
 #### Scenario: 激活结果未知
 
 - **WHEN** 单实例请求可能已入队但回执丢失，或 HTTP 响应在激活后丢失
 - **THEN** Service Worker SHALL 使用同一 requestId 有限重试且 Web 服务不得重复调用 Launcher
+- **AND** 未知的原生激活结果 SHALL NOT 被保存或返回为确定成功
 - **AND** 结果仍未知时 SHALL NOT 打开 Web 回退，避免原生客户端与浏览器双开
 
 #### Scenario: ready 记录不完整

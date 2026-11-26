@@ -7,7 +7,7 @@
 - 保留 Edge 的 Web Push 订阅、Service Worker `showNotification` 和系统弹窗，不引入原生 Toast、WebView2 仿旧样式或自定义协议主链路。
 - Edge `notificationclick` 优先调用同源 `codexhost/desktopSessionActivate`；Web 服务验证本机直连、订阅归属和运行中的原生壳后，通过固定 argv 调用 `codexhost app --session <id>`。
 - Launcher 与原生壳的单实例协议增加会话激活，已有窗口显示并定位会话；启动竞态下保存目标并在 Web ready 后打开。
-- 原生壳不创建或自动续订 WebView2 推送订阅，通知管理引导到 Edge。无运行中的原生壳、远程请求、订阅不匹配或激活失败时保留现有 Web 点击回退。
+- 原生壳不创建或自动续订 WebView2 推送订阅，通知管理引导到 Edge。无运行中的原生壳、远程请求、订阅不匹配或明确拒绝激活时保留 Web 点击回退。使用相同 requestId 查询后仍无法确认是否接管时，不打开 Web；这次点击可能没有可见结果。
 - 移除此前未部署的 WebView2 长驻 port/ACK 回跳候选，避免维护两套通知来源与激活协议。
 
 ## Impact

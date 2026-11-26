@@ -5,9 +5,9 @@
 1. Edge 继续保存现有 PushSubscription 并显示原通知。每次点击生成 requestId，Service Worker 通过现有 `pushRequest()` 发送 requestId、`endpoint` 和 `sessionId`，请求 `codexhost/desktopSessionActivate`。
 2. Web 服务只接受 `context.auth.local === true` 的请求，并要求 endpoint 已登记且其 `owner` 与当前认证 credential 一致。`--no-auth`、relay、远程设备及不匹配的订阅不触发本机激活。
 3. 服务读取完整的 `desktop-shell-ready.json`（PID、启动时间、可执行文件、版本）并检查 PID 存活；Launcher 再用 PID + 启动时间核验实际实例。不完整记录不得触发激活。原生壳未运行时返回 `activated: false`，Service Worker 执行原有 `clients.matchAll/focus/postMessage/openWindow`。
-4. 原生壳运行时，服务用 `execFile(launcher, ["app", "--session", sessionId])` 和显式 `CODEXHOST_DATA_DIR` 调用 Launcher，不经过 shell、不接受 executable/URL/dataDir 参数。服务以有界内存表按 requestId 合并重复激活，网络重试不得重复调用 Launcher。`activated: true` 仅表示 Launcher 已接受、转发或结果未知，不声称窗口已前置；成功后不再打开浏览器。
-5. Launcher 复用现有 nonce 单实例通道发送 `ShowSession`。已有实例在主线程消费会话目标；冷启动或记录检查与调用之间的退出竞态由 `app --session` 的首实例 pending target 承接。Web ready 前保存目标，ready 后用当次 login URL 打开，live 页面优先使用现有 `face.openSession()` 与 Cookie。
-6. 明确未接受激活时才允许 Web 回退。回执丢失、单实例已入队但 ok 丢失或 HTTP 响应丢失均为结果未知：Service Worker 以同一 requestId 有限重试，仍未知则保持本次点击不再打开 Web，避免双开。
+4. 原生壳运行时，服务用 `execFile(launcher, ["app", "--session", sessionId])` 和显式 `CODEXHOST_DATA_DIR` 调用 Launcher，不经过 shell、不接受 executable/URL/dataDir 参数。Launcher 退出码 `0` 表示壳已接管目标，`1` 表示明确未接管，`2` 表示结果未知；Web 分别返回 `activated: true`、`false`、`null`。服务以有界内存表按 requestId 记录或复用结果，重试不再次调用 Launcher。已接管不等于窗口已前置。
+5. Launcher 复用现有 nonce 单实例通道发送 `ShowSession`。已有实例由主线程决定是否接管；退出中明确拒绝未接管的请求。启动竞态由 `app --session` 的首实例接手，在建窗并保存待打开目标后才确认。Web ready 前保存目标，ready 后用当次可信 login URL 打开，已就绪页面优先用现有 `face.openSession()` 与 Cookie。
+6. 明确未接管激活时才允许 Web 回退。若原生回执丢失或 HTTP 响应丢失，Service Worker 以同一 requestId 查询一次；仍未知则不打开 Web，避免双开。
 
 ### 通知来源与设置
 

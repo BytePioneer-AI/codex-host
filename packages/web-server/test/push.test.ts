@@ -242,16 +242,19 @@ it("reconciles a lost HTTP activation response without launching the session aga
   hostData.writeJson(readyFile, runningShell);
   const rpc = new RpcRegistry();
   const launches: string[] = [];
-  const launchStarted = Promise.withResolvers<void>();
-  const finishLaunch = Promise.withResolvers<void>();
+  const launchStarted = Promise.withResolvers<undefined>();
+  const finishLaunch = Promise.withResolvers<undefined>();
+  let deliveryUnknown = false;
   push.register(rpc, {
     launcher: hostData.path("codexhost-test"),
     hostDataDirectory: hostData.root,
     launch: async (_launcher, [, , id]) => {
       assert.ok(id);
       launches.push(id);
-      launchStarted.resolve();
+      launchStarted.resolve(undefined);
       await finishLaunch.promise;
+      if (deliveryUnknown)
+        throw Object.assign(new Error("Activation outcome unknown"), { code: 2 });
     },
   });
   const auth = (credential: string) => ({ local: true, credential, release() {} });
@@ -283,7 +286,7 @@ it("reconciles a lost HTTP activation response without launching the session aga
     lostResponse.then(() => assert.fail("Activation did not reach the Launcher")),
   ]);
   const concurrentRetry = send({ retry: true });
-  finishLaunch.resolve();
+  finishLaunch.resolve(undefined);
   // Ignore the first result as if the caller's connection dropped after the request.
   await lostResponse;
   assert.deepEqual(await concurrentRetry, accepted);
@@ -304,6 +307,13 @@ it("reconciles a lost HTTP activation response without launching the session aga
     },
   });
   assert.deepEqual(launches, [args.sessionId]);
+
+  deliveryUnknown = true;
+  const uncertainRequest = { requestId: randomUUID() };
+  const unknown = { ok: true, value: { activated: null } };
+  assert.deepEqual(await send(uncertainRequest, "other"), unknown);
+  assert.deepEqual(await send({ ...uncertainRequest, retry: true }, "other"), unknown);
+  assert.deepEqual(launches, [args.sessionId, args.sessionId]);
 });
 
 for (const [name, environment, expected] of [

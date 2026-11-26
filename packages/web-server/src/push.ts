@@ -51,7 +51,7 @@ interface DesktopActivation {
   sessionId: string;
   credential: string;
   expiresAt: number;
-  result: Promise<{ activated: boolean }>;
+  result: Promise<{ activated: boolean | null }>;
 }
 
 function isLiveDesktopShell(hostDataDirectory: string): boolean {
@@ -253,7 +253,7 @@ export class PushNotifier {
             const declined =
               failure?.signal == null &&
               (code === 1 || code === "ENOENT" || code === "EACCES" || code === "EPERM");
-            return { activated: !declined };
+            return { activated: declined ? false : null };
           } finally {
             entry.expiresAt = Date.now() + DESKTOP_ACTIVATION_TTL;
           }

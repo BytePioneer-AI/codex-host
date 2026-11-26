@@ -16,6 +16,7 @@ const RECORD_FILE: &str = "desktop-shell-instance.json";
 const MAX_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_REQUEST_BYTES: u64 = 4 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
+const SESSION_REPLY_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +26,12 @@ pub(crate) enum Activation {
     Show,
     #[serde(rename = "showSession")]
     ShowSession(String),
+}
+
+#[derive(Debug)]
+pub(crate) struct ActivationDelivery {
+    pub action: Activation,
+    pub session_reply: Option<mpsc::Sender<bool>>,
 }
 
 pub(crate) fn valid_session_id(id: &str) -> bool {
@@ -79,7 +86,7 @@ impl Default for RetryPolicy {
 pub(crate) enum Claim {
     Primary {
         instance: PrimaryInstance,
-        activations: Receiver<Activation>,
+        activations: Receiver<ActivationDelivery>,
     },
     Forwarded,
     DeliveryUnknown,
@@ -169,7 +176,7 @@ fn claim_with_lock(
         let last_problem = match read_live_record(&data_dir) {
             RecordState::Live(record) => match activate(&record, &activation) {
                 Ok(()) => return Ok(Claim::Forwarded),
-                // The listener may already have queued this session if its response was lost.
+                // The main thread may have accepted this session before the reply was lost.
                 Err(ActivationFailure::AfterRequest(_))
                     if matches!(activation, Activation::ShowSession(_)) =>
                 {
@@ -232,7 +239,7 @@ fn try_lock(lock: &File) -> Result<bool, String> {
 fn start_primary(
     data_dir: PathBuf,
     lock: File,
-) -> Result<(PrimaryInstance, Receiver<Activation>), String> {
+) -> Result<(PrimaryInstance, Receiver<ActivationDelivery>), String> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(|error| format!("Cannot start the desktop shell activation listener: {error}"))?;
     let address = listener
@@ -396,8 +403,14 @@ fn activate(record: &InstanceRecord, action: &Activation) -> Result<(), Activati
             "Cannot contact the existing desktop shell: {error}"
         ))
     })?;
+    let session = matches!(action, Activation::ShowSession(_));
+    let read_timeout = if session {
+        SESSION_REPLY_TIMEOUT + IO_TIMEOUT
+    } else {
+        IO_TIMEOUT
+    };
     stream
-        .set_read_timeout(Some(IO_TIMEOUT))
+        .set_read_timeout(Some(read_timeout))
         .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
         .map_err(|error| {
             BeforeRequest(format!(
@@ -431,7 +444,8 @@ fn activate(record: &InstanceRecord, action: &Activation) -> Result<(), Activati
         "denied\n" => Err(Rejected(
             "The existing desktop shell rejected the activation request".into(),
         )),
-        _ if response.trim() == "ok" => Ok(()),
+        "ok\n" => Ok(()),
+        _ if !session && response.trim() == "ok" => Ok(()),
         _ => Err(AfterRequest(
             "The existing desktop shell did not acknowledge the activation request".into(),
         )),
@@ -453,7 +467,7 @@ fn allow_forwarded_window_activation(process_id: u32) {
 fn serve(
     listener: TcpListener,
     nonce: String,
-    activations: mpsc::Sender<Activation>,
+    activations: mpsc::Sender<ActivationDelivery>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Acquire) {
@@ -470,7 +484,7 @@ fn serve(
 fn handle_activation(
     mut stream: TcpStream,
     nonce: &str,
-    activations: &mpsc::Sender<Activation>,
+    activations: &mpsc::Sender<ActivationDelivery>,
     stop: &AtomicBool,
 ) -> Result<(), String> {
     stream
@@ -479,18 +493,63 @@ fn handle_activation(
     let Some(request) = read_activation_request(&mut stream, stop)? else {
         return Ok(());
     };
-    let accepted = request.len() as u64 <= MAX_REQUEST_BYTES
-        && serde_json::from_str::<ActivationRequest>(&request)
-            .ok()
-            .filter(|request| request.nonce == nonce)
-            .filter(|request| match &request.action {
-                Activation::ShowSession(id) => valid_session_id(id),
-                _ => true,
-            })
-            .is_some_and(|request| activations.send(request.action).is_ok());
+    let request = serde_json::from_str::<ActivationRequest>(&request)
+        .ok()
+        .filter(|parsed| request.len() as u64 <= MAX_REQUEST_BYTES && parsed.nonce == nonce);
+    let response: &[u8] = match request.map(|request| request.action) {
+        Some(Activation::ShowSession(id)) => {
+            if !valid_session_id(&id) {
+                b"denied\n"
+            } else {
+                let (reply, acceptance) = mpsc::channel();
+                if activations
+                    .send(ActivationDelivery {
+                        action: Activation::ShowSession(id),
+                        session_reply: Some(reply),
+                    })
+                    .is_err()
+                {
+                    b"denied\n"
+                } else {
+                    match wait_for_session_reply(acceptance, stop) {
+                        Some(true) => b"ok\n",
+                        Some(false) => b"denied\n",
+                        None => b"unknown\n",
+                    }
+                }
+            }
+        }
+        Some(action) => {
+            if activations
+                .send(ActivationDelivery {
+                    action,
+                    session_reply: None,
+                })
+                .is_ok()
+            {
+                b"ok\n"
+            } else {
+                b"denied\n"
+            }
+        }
+        None => b"denied\n",
+    };
     stream
-        .write_all(if accepted { b"ok\n" } else { b"denied\n" })
+        .write_all(response)
         .map_err(|error| format!("Cannot write the activation response: {error}"))
+}
+
+fn wait_for_session_reply(acceptance: Receiver<bool>, stop: &AtomicBool) -> Option<bool> {
+    let deadline = Instant::now() + SESSION_REPLY_TIMEOUT;
+    while !stop.load(Ordering::Acquire) {
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        match acceptance.recv_timeout(remaining.min(READ_POLL_INTERVAL)) {
+            Ok(accepted) => return Some(accepted),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    None
 }
 
 fn read_activation_request(
@@ -668,7 +727,10 @@ mod tests {
             Claim::Forwarded
         ));
         assert_eq!(
-            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
+            activations
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .action,
             Activation::Onboarding
         );
         assert!(matches!(
@@ -676,18 +738,31 @@ mod tests {
             Claim::Forwarded
         ));
         assert_eq!(
-            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
+            activations
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .action,
             Activation::Show
         );
         let session = Activation::ShowSession("a quoted \"会话\"".into());
-        assert!(matches!(
-            claim_with(&canonical_data, session.clone(), test_retry(), || {}).unwrap(),
-            Claim::Forwarded
-        ));
-        assert_eq!(
-            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
-            session
-        );
+        for accepted in [true, false] {
+            thread::scope(|scope| {
+                let secondary = scope.spawn(|| {
+                    claim_with(&canonical_data, session.clone(), test_retry(), || {
+                        panic!("a delivered session must not be retried");
+                    })
+                });
+                let delivery = activations.recv_timeout(IO_TIMEOUT).unwrap();
+                assert_eq!(delivery.action, session);
+                delivery.session_reply.unwrap().send(accepted).unwrap();
+                let result = secondary.join().unwrap();
+                if accepted {
+                    assert!(matches!(result, Ok(Claim::Forwarded)));
+                } else {
+                    assert!(matches!(result, Err(error) if error.contains("rejected")));
+                }
+            });
+        }
         let result = claim_with(
             &canonical_data,
             Activation::ShowSession("bad\nID".into()),
@@ -707,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn session_activation_is_not_retried_when_the_listener_queued_it_but_the_reply_was_lost() {
+    fn session_activation_is_not_retried_when_the_main_thread_reply_was_lost() {
         let temp = aliased_temp_dir();
         let data_dir = temp.canonical.join("data");
         let Claim::Primary {
@@ -731,23 +806,67 @@ mod tests {
             let mut request = String::new();
             BufReader::new(&client).read_line(&mut request).unwrap();
             let mut primary = TcpStream::connect_timeout(&address, IO_TIMEOUT).unwrap();
-            primary.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+            primary
+                .set_read_timeout(Some(SESSION_REPLY_TIMEOUT + IO_TIMEOUT))
+                .unwrap();
             primary.write_all(request.as_bytes()).unwrap();
             let mut reply = String::new();
             BufReader::new(primary).read_line(&mut reply).unwrap();
-            assert_eq!(reply, "ok\n", "the real listener queued the request");
+            assert_eq!(reply, "ok\n", "the real listener received acceptance");
             drop(client);
             proxy
         });
 
         let activation = Activation::ShowSession("thread".into());
-        let result = claim_with(&data_dir, activation.clone(), test_retry(), || {});
+        thread::scope(|scope| {
+            let secondary =
+                scope.spawn(|| claim_with(&data_dir, activation.clone(), test_retry(), || {}));
+            let delivery = activations.recv_timeout(IO_TIMEOUT).unwrap();
+            assert_eq!(delivery.action, activation);
+            delivery.session_reply.unwrap().send(true).unwrap();
+            assert!(matches!(
+                secondary.join().unwrap(),
+                Ok(Claim::DeliveryUnknown)
+            ));
+        });
         let proxy = proxy.join().unwrap();
-        assert!(matches!(result, Ok(Claim::DeliveryUnknown)));
-        assert_eq!(activations.recv_timeout(IO_TIMEOUT).unwrap(), activation);
-        assert_eq!(activations.try_recv(), Err(TryRecvError::Empty));
+        assert!(matches!(activations.try_recv(), Err(TryRecvError::Empty)));
         proxy.set_nonblocking(true).unwrap();
         assert!(matches!(proxy.accept(), Err(error) if error.kind() == ErrorKind::WouldBlock));
+    }
+
+    #[test]
+    fn shutdown_does_not_wait_for_a_session_decision_on_the_main_thread() {
+        let temp = aliased_temp_dir();
+        let data_dir = temp.canonical.join("data");
+        let Claim::Primary {
+            instance,
+            activations,
+        } = claim_with(&data_dir, Activation::Show, test_retry(), || {}).unwrap()
+        else {
+            panic!("the first claim must own the data directory");
+        };
+        thread::scope(|scope| {
+            let secondary = scope.spawn(|| {
+                claim_with(
+                    &data_dir,
+                    Activation::ShowSession("thread".into()),
+                    test_retry(),
+                    || {
+                        panic!("a delivered session must not be retried");
+                    },
+                )
+            });
+            let delivery = activations.recv_timeout(IO_TIMEOUT).unwrap();
+            let started = Instant::now();
+            instance.shutdown();
+            assert!(started.elapsed() < SESSION_REPLY_TIMEOUT / 2);
+            assert!(matches!(
+                secondary.join().unwrap(),
+                Ok(Claim::DeliveryUnknown)
+            ));
+            drop(delivery);
+        });
     }
 
     #[test]
@@ -798,7 +917,8 @@ mod tests {
         assert_eq!(
             first_activations
                 .recv_timeout(Duration::from_secs(1))
-                .unwrap(),
+                .unwrap()
+                .action,
             Activation::Onboarding
         );
         assert!(matches!(
@@ -840,7 +960,10 @@ mod tests {
             Claim::Forwarded
         ));
         assert_eq!(
-            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
+            activations
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .action,
             Activation::Show
         );
         drop(instance);
@@ -965,7 +1088,10 @@ mod tests {
             "slow-drip client blocked subsequent activation for {elapsed:?}"
         );
         assert_eq!(
-            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
+            activations
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .action,
             Activation::Onboarding
         );
         instance.shutdown();

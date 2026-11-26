@@ -1979,6 +1979,7 @@ fn main() -> ExitCode {
     }
     match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.is::<desktop_shell::SessionDeliveryUnknown>() => ExitCode::from(2),
         Err(error) => {
             let message = format!("codexhost launcher: {error}");
             eprintln!("{message}");

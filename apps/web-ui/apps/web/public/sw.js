@@ -247,6 +247,7 @@ async function activateDesktopSession(sessionId) {
         retry ? { ...args, retry } : args,
         AbortSignal.timeout(10_000),
       );
+      // An unknown outcome (activated: null) can only be reconciled, not retried as a new launch.
       if (typeof result?.activated === "boolean") return result.activated;
     } catch (error) {
       if (!retry && error instanceof PushHttpError && [401, 403, 429].includes(error.status)) {

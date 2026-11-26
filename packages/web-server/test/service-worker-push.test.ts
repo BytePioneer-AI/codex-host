@@ -195,6 +195,7 @@ const clickCases = [
   "response-lost",
   "cached-decline",
   "activation-unknown",
+  "launcher-unknown",
   "retry-denied",
   "unauthorized",
   "forbidden",
@@ -228,6 +229,7 @@ for (const scenario of clickCases) {
       "response-lost",
       "cached-decline",
       "activation-unknown",
+      "launcher-unknown",
       "retry-denied",
     ].includes(scenario);
     const shouldUseWeb = [
@@ -255,7 +257,10 @@ for (const scenario of clickCases) {
       crypto: webcrypto,
       fetch: async (url: string, init: RequestInit) => {
         requests.push({ url, init });
-        if (retries && (requests.length === 1 || scenario === "activation-unknown")) {
+        if (
+          (retries && scenario !== "launcher-unknown" && requests.length === 1) ||
+          scenario === "activation-unknown"
+        ) {
           throw new Error("Failed to receive the gateway response");
         }
         const status = rejectionStatuses[scenario] ?? (scenario === "retry-denied" ? 401 : 200);
@@ -265,7 +270,12 @@ for (const scenario of clickCases) {
           json: async () => ({
             result: {
               ok: true,
-              value: { activated: ["accepted", "response-lost"].includes(scenario) },
+              value: {
+                activated:
+                  scenario === "launcher-unknown"
+                    ? null
+                    : ["accepted", "response-lost"].includes(scenario),
+              },
             },
           }),
         };

@@ -19,7 +19,7 @@
 所有端点受 `web-server` 既有认证（Bearer Token / Session Cookie）与同源校验保护；异常统一映射为安全的客户端错误信息，不透传宿主绝对路径或内部错误栈：
 
 - `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机持久化稳定节点标识 `nodeId`（保存在数据目录 `node-identity-v1.json`，权限 `0600`）、本机已启用 Peer 的匿名节点映射 `peerNodes`（`remote-peer:<peerId> -> nodeId`，最多 128 项，不含名称、URL 或 Token；与旧版无此字段的 Peer 向后兼容）、本机工作区清单，以及按实际可用性声明的 `capabilities`（如 `attachments: 1`、`workspaceFiles: 1`、`officePreview: 1`、`delegation: 1`、`peerPairing: 1`；其中 `delegation: 1` 仅在底层 Host Runtime 支持且未设置 `CODEXHOST_DISABLE_PEER_DELEGATION=1` 时声明，`peerPairing: 1` 在未设置 `CODEXHOST_DISABLE_PEER_PAIRING=1` 时声明）。探测到对方 `nodeId` 与本机相同时拒绝自我配对。
-- `POST /api/peer/v1/peers`：远端互配引入端点，接收已认证 Hub 推送的对端连接信息（`origin`、`token`、`name` 及可选 `color`、`expectedNodeId`），执行 SSRF 防护、回连探测、防自配对与 `expectedNodeId` 一致性校验后，按稳定 `nodeId` 或规范化 `origin` 幂等写入/更新为本机常规可见的远端主机（返回 `added` / `updated` / `existing`）；可通过 `CODEXHOST_DISABLE_PEER_PAIRING=1` 关闭（返回 `503`）。
+- `POST /api/peer/v1/peers`：远端互配引入端点，接收已认证 Hub 推送的对端连接信息（`origin`、`token`、`name` 及可选 `color`、`expectedNodeId`），执行含 DNS 解析地址校验与固定 IP 连接的 SSRF 防护、回连探测、防自配对与 `expectedNodeId` 一致性校验后，按稳定 `nodeId` 或规范化 `origin` 幂等写入或按同地址同凭据重新启用（返回 `added` / `updated` / `existing`；若已有记录存在但 `origin`、`token` 或 `nodeId` 冲突则返回 `409` 拒绝静默替换）；可通过 `CODEXHOST_DISABLE_PEER_PAIRING=1` 关闭（返回 `503`）。
 - `GET /api/peer/v1/dirs?path=...`：列出远端目录子文件夹（保留目录名中的空格；空参数回退到远端主目录）。
 - `POST /api/peer/v1/dirs`：在指定父目录下创建新子目录。
 - `POST | PATCH | DELETE /api/peer/v1/workspaces`：在远端节点新增、重命名或移除工作区注册，并返回最新 `manifest`。

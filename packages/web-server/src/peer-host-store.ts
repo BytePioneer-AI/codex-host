@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { readFileSync } from "node:fs";
-import { isIPv4 } from "node:net";
+import { isIP, isIPv4 } from "node:net";
 import { z } from "zod";
 import type { DataDir } from "./store.ts";
 import {
@@ -44,10 +45,28 @@ export interface ParseConnectionLinkOptions {
   skipHostPolicy?: boolean;
 }
 
+export interface PeerResolvedAddress {
+  address: string;
+  family: 4 | 6;
+}
+
+export type PeerDnsLookup = (hostname: string) => Promise<readonly PeerResolvedAddress[]>;
+
+/** Raised when a peer URL or its DNS-resolved IP violates SSRF / loopback policy. */
+export class PeerHostPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PeerHostPolicyError";
+  }
+}
+
 function unbracket(hostname: string): string {
-  return hostname.startsWith("[") && hostname.endsWith("]")
-    ? hostname.slice(1, -1).toLowerCase()
-    : hostname.toLowerCase().replace(/\.$/u, "");
+  const raw =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname.replace(/\.$/u, "");
+  const zoneIndex = raw.indexOf("%");
+  return (zoneIndex >= 0 ? raw.slice(0, zoneIndex) : raw).toLowerCase();
 }
 
 function decodeIpv4MappedIpv6(bare: string): string | undefined {
@@ -65,7 +84,14 @@ function decodeIpv4MappedIpv6(bare: string): string | undefined {
 
 function isLoopbackHost(hostname: string): boolean {
   const bare = unbracket(hostname);
-  if (bare === "localhost" || bare.endsWith(".localhost") || bare === "::1") return true;
+  if (
+    bare === "localhost" ||
+    bare.endsWith(".localhost") ||
+    bare === "::1" ||
+    bare === "0:0:0:0:0:0:0:1"
+  ) {
+    return true;
+  }
   const ipv4 = decodeIpv4MappedIpv6(bare) ?? (isIPv4(bare) ? bare : undefined);
   return ipv4 !== undefined && ipv4.startsWith("127.");
 }
@@ -90,6 +116,54 @@ function isBlockedMetadataOrUnspecifiedHost(hostname: string): boolean {
     if (ipv4.startsWith("0.") || ipv4.startsWith("169.254.")) return true;
   }
   return false;
+}
+
+export function assertAllowedPeerHost(
+  hostname: string,
+  options: Pick<ParseConnectionLinkOptions, "allowLoopback"> = {},
+): void {
+  if (isBlockedMetadataOrUnspecifiedHost(hostname))
+    throw new PeerHostPolicyError("Peer host address is not allowed");
+  if (!options.allowLoopback && isLoopbackHost(hostname))
+    throw new PeerHostPolicyError("Loopback peer addresses are not allowed");
+}
+
+/** Resolve non-IP hostnames via DNS and validate every returned address against the host policy. */
+export async function resolveAndValidatePeerHost(
+  url: URL,
+  options: Pick<ParseConnectionLinkOptions, "allowLoopback"> & {
+    dnsLookup?: PeerDnsLookup | undefined;
+  } = {},
+): Promise<PeerResolvedAddress[]> {
+  assertAllowedPeerHost(url.hostname, options);
+  const bare = unbracket(url.hostname);
+  const literalFamily = isIP(bare);
+  if (literalFamily === 4 || literalFamily === 6) {
+    return [{ address: bare, family: literalFamily }];
+  }
+  const lookup =
+    options.dnsLookup ??
+    (async (host: string) => {
+      const entries = await dnsLookup(host, { all: true, verbatim: true });
+      return entries.map((entry) => ({
+        address: entry.address,
+        family: entry.family === 6 ? (6 as const) : (4 as const),
+      }));
+    });
+  const resolved = await lookup(bare);
+  if (resolved.length === 0) {
+    throw Error("Peer host address could not be resolved");
+  }
+  const verified: PeerResolvedAddress[] = [];
+  for (const entry of resolved) {
+    const family = typeof entry?.address === "string" ? isIP(entry.address) : 0;
+    if (family !== 4 && family !== 6) {
+      throw new PeerHostPolicyError("Peer host address is not allowed");
+    }
+    assertAllowedPeerHost(entry.address, options);
+    verified.push({ address: entry.address, family });
+  }
+  return verified;
 }
 
 export function classifyPeerTransport(origin: string): {
@@ -120,10 +194,7 @@ export function parsePeerUrl(raw: string, options: ParseConnectionLinkOptions = 
   if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password)
     throw Error("Invalid peer URL");
   if (!options.skipHostPolicy) {
-    if (isBlockedMetadataOrUnspecifiedHost(url.hostname))
-      throw Error("Peer host address is not allowed");
-    if (!options.allowLoopback && isLoopbackHost(url.hostname))
-      throw Error("Loopback peer addresses are not allowed");
+    assertAllowedPeerHost(url.hostname, options);
   }
   return url;
 }

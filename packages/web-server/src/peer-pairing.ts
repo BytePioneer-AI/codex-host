@@ -61,6 +61,30 @@ function unavailable(target: PeerHostClient): string | undefined {
   return undefined;
 }
 
+const PAIRING_REDACTED_ERROR = "Peer pairing failed (details redacted)";
+const SENSITIVE_ERROR_PATTERNS = [
+  /\bbearer\s+\S+/iu,
+  /[#?&]token=[^&\s#]+/iu,
+  /\bhttps?:\/\/[^/\s@]+:[^/\s@]+@/iu,
+];
+
+function sanitizePairingError(error: string, secrets: ReadonlySet<string>): string {
+  if (SENSITIVE_ERROR_PATTERNS.some((pattern) => pattern.test(error))) {
+    return PAIRING_REDACTED_ERROR;
+  }
+  for (const token of secrets) {
+    if (!token) continue;
+    if (
+      error.includes(token) ||
+      error.includes(encodeURIComponent(token)) ||
+      error.includes(new URLSearchParams({ token }).toString().slice(6))
+    ) {
+      return PAIRING_REDACTED_ERROR;
+    }
+  }
+  return error.slice(0, 1000);
+}
+
 export async function syncPeerMesh(options: {
   targets: PeerHostClient[];
   /** On add, only form links involving the new peer; never re-pair existing peers to each other. */
@@ -70,6 +94,7 @@ export async function syncPeerMesh(options: {
   selfOrigin: string | undefined;
   localNodeId: string | undefined;
   resolveSelfShare: ResolvePeerSelfShare | undefined;
+  isActivePeer: (peer: PeerHostClient) => boolean;
   peerTokens: () => string[];
   changed: (target: PeerHostClient) => void;
 }): Promise<c.RemotePeerPairingReport> {
@@ -87,7 +112,9 @@ export async function syncPeerMesh(options: {
 
   const secrets = new Set(options.peerTokens());
   let selfShare: Awaited<ReturnType<ResolvePeerSelfShare>> | undefined;
-  if (selfTargets.some((target) => unavailable(target) === undefined)) {
+  if (
+    selfTargets.some((target) => options.isActivePeer(target) && unavailable(target) === undefined)
+  ) {
     try {
       selfShare = await options.resolveSelfShare?.(options.selfOrigin);
     } catch {
@@ -101,24 +128,46 @@ export async function syncPeerMesh(options: {
   await inBatches(
     jobs.map((job, i) => ({ ...job, i })),
     async ({ target, introduced, i }) => {
-      const record = introduced === "local" ? undefined : introduced.record;
-      const share = introduced === "local" ? selfShare : record;
+      const introducedRecord = introduced === "local" ? undefined : introduced.record;
       const step = {
         targetPeerId: target.record.peerId,
         targetName: target.record.name,
-        introducedHost: record?.peerId ?? "local",
-        introducedName: share && "name" in share ? share.name : "Local Host",
+        introducedHost: introducedRecord?.peerId ?? "local",
+        introducedName:
+          introduced === "local"
+            ? selfShare && "name" in selfShare
+              ? selfShare.name
+              : "Local Host"
+            : introducedRecord!.name,
       };
+      if (!options.isActivePeer(target)) {
+        results[i] = { ...step, status: "skipped", error: "Remote peer is no longer available" };
+        return;
+      }
       const reason = unavailable(target);
       if (reason !== undefined) {
         results[i] = { ...step, status: "skipped", error: reason };
         return;
       }
+      if (introduced !== "local") {
+        if (!options.isActivePeer(introduced) || !introduced.record.token) {
+          results[i] = {
+            ...step,
+            status: "skipped",
+            error: "Introduced peer is no longer available",
+          };
+          return;
+        }
+      }
+      const share = introduced === "local" ? selfShare : introduced.record;
       if (!share || "error" in share) {
         results[i] = {
           ...step,
           status: "failed",
-          error: share?.error ?? "This Host has no shareable connection",
+          error: sanitizePairingError(
+            share?.error ?? "This Host has no shareable connection",
+            secrets,
+          ),
         };
         return;
       }
@@ -127,43 +176,40 @@ export async function syncPeerMesh(options: {
       const nodeId =
         introduced === "local"
           ? options.localNodeId
-          : (introduced.manifest?.nodeId ?? record?.nodeId);
+          : (introduced.manifest?.nodeId ?? introduced.record.nodeId);
+      const color = introduced === "local" ? undefined : introduced.record.color;
       try {
         const { status } = await target.introduce({
           origin: share.origin,
           token: share.token,
           name: share.name,
-          ...(record?.color !== undefined ? { color: record.color } : {}),
+          ...(color !== undefined ? { color } : {}),
           ...(nodeId !== undefined ? { expectedNodeId: nodeId } : {}),
         });
         results[i] = { ...step, status };
         refreshed.add(target);
       } catch (error) {
+        const message = error instanceof Error ? error.message : "Peer pairing failed";
         results[i] = {
           ...step,
           status: "failed",
-          error: error instanceof Error ? error.message : "Peer pairing failed",
+          error: sanitizePairingError(message, secrets),
         };
       }
     },
   );
 
   await inBatches([...refreshed], async (target) => {
+    if (!options.isActivePeer(target)) return;
     await target.probe().catch(() => undefined);
     options.changed(target);
   });
 
   for (const token of options.peerTokens()) secrets.add(token);
-  // Do not echo errors containing credentials, including URL-encoded forms.
-  const sensitive = [...secrets]
-    .filter(Boolean)
-    .flatMap((token) => [token, new URLSearchParams({ token }).toString().slice(6)]);
   for (const result of results) {
-    const error = result.error;
-    if (error === undefined) continue;
-    result.error = sensitive.some((value) => error.includes(value))
-      ? "Peer pairing failed (details redacted)"
-      : error.slice(0, 1000);
+    if (result.error !== undefined) {
+      result.error = sanitizePairingError(result.error, secrets);
+    }
   }
   return { results };
 }

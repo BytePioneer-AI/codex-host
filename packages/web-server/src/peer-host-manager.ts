@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import * as c from "@codexhost/shared-contracts";
 import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
-import { parseConnectionLink, type PeerHostStore, type PeerRecord } from "./peer-host-store.ts";
+import {
+  parseConnectionLink,
+  PeerHostPolicyError,
+  type PeerDnsLookup,
+  type PeerHostStore,
+  type PeerRecord,
+} from "./peer-host-store.ts";
 import { PeerEndpointError } from "./peer-manifest.ts";
 import { syncPeerMesh, type ResolvePeerSelfShare } from "./peer-pairing.ts";
 import { PeerThreadSource, type PeerThreadProjector } from "./peer-thread-source.ts";
@@ -21,7 +27,11 @@ export interface PeerHostManagerOptions {
   /** Optional placeholder attachment/image projector for Peer thread views. */
   projector?: (threadId: string) => PeerThreadProjector;
   resolveSelfShare?: ResolvePeerSelfShare;
+  /** Optional DNS resolver override for peer probe host validation (used in tests). */
+  dnsLookup?: PeerDnsLookup;
 }
+
+const MAX_LINKED_PEER_IDS = 128;
 
 export interface PeerHostRegisterOptions {
   localHostname?: string;
@@ -37,6 +47,7 @@ export class PeerHostManager {
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   private readonly resolveSelfShare: ResolvePeerSelfShare | undefined;
+  private readonly dnsLookup: PeerDnsLookup | undefined;
   onChange?: (hostId?: string) => void;
   onPeerRemoved?: (hostId: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
@@ -58,6 +69,7 @@ export class PeerHostManager {
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
     this.projector = options.projector;
     this.resolveSelfShare = options.resolveSelfShare;
+    this.dnsLookup = options.dnsLookup;
     for (const record of store.load()) this.install(record);
   }
 
@@ -68,6 +80,8 @@ export class PeerHostManager {
 
   private createClient(record: PeerRecord, initialManifest?: c.RemotePeerManifest) {
     return new PeerHostClient(record, this.changed, {
+      allowLoopback: this.allowLoopback,
+      ...(this.dnsLookup === undefined ? {} : { dnsLookup: this.dnsLookup }),
       ...(this.streamIdleTimeoutMs === undefined
         ? {}
         : { streamIdleTimeoutMs: this.streamIdleTimeoutMs }),
@@ -194,6 +208,7 @@ export class PeerHostManager {
     const remoteNodeIds = new Set(Object.values(peerNodes));
     const linkedPeerIds: string[] = [];
     for (const other of this.clients.values()) {
+      if (linkedPeerIds.length >= MAX_LINKED_PEER_IDS) break;
       if (other.record.peerId === client.record.peerId) continue;
       const otherNodeId = other.manifest?.nodeId ?? other.record.nodeId;
       if (otherNodeId !== undefined && remoteNodeIds.has(otherNodeId)) {
@@ -252,7 +267,10 @@ export class PeerHostManager {
       try {
         await candidate.probe();
       } catch (error) {
-        if (error instanceof Error && error.message === "Cannot pair this server with itself") {
+        if (
+          error instanceof PeerHostPolicyError ||
+          (error instanceof Error && error.message === "Cannot pair this server with itself")
+        ) {
           throw new PeerEndpointError(400, error.message);
         }
         throw new PeerEndpointError(422, "Could not verify the introduced peer connection");
@@ -263,43 +281,71 @@ export class PeerHostManager {
         throw new PeerEndpointError(409, "Introduced peer did not match the expected nodeId");
       }
       const clients = [...this.clients.values()];
-      const existing =
-        (nodeId === undefined
+      const clientNodeId = (client: PeerHostClient) =>
+        client.manifest ? client.manifest.nodeId : client.record.nodeId;
+      const clientOrigin = (client: PeerHostClient) =>
+        URL.parse(client.record.origin)?.origin ?? client.record.origin;
+      const exactMatch = clients.find(
+        (client) =>
+          clientOrigin(client) === conn.origin &&
+          client.record.token === conn.token &&
+          (nodeId === undefined ||
+            clientNodeId(client) === undefined ||
+            clientNodeId(client) === nodeId),
+      );
+      const existingByNodeId =
+        nodeId === undefined
           ? undefined
-          : clients.find(
-              (client) =>
-                (client.manifest ? client.manifest.nodeId : client.record.nodeId) === nodeId,
-            )) ?? clients.find((client) => URL.parse(client.record.origin)?.origin === conn.origin);
+          : clients.find((client) => clientNodeId(client) === nodeId);
+      const existingByOrigin = clients.find((client) => clientOrigin(client) === conn.origin);
+      const existing = exactMatch ?? existingByNodeId ?? existingByOrigin;
       const old = existing?.record;
       const result = {
         peerId: old?.peerId ?? record.peerId,
         hostId: c.remotePeerHostId(old?.peerId ?? record.peerId),
         ...(nodeId === undefined ? {} : { nodeId }),
       };
-      if (existing && old?.enabled && old.origin === conn.origin && old.token === conn.token) {
-        // Keep the running client, but publish a freshly verified identity if it was not known.
-        if (manifest && existing.manifest?.nodeId !== nodeId) {
-          existing.manifest = manifest;
-          this.changed(existing.hostId);
+      if (existing && old) {
+        const existingNodeId = clientNodeId(existing);
+        const sameBinding =
+          clientOrigin(existing) === conn.origin &&
+          old.token === conn.token &&
+          (nodeId === undefined || existingNodeId === undefined || existingNodeId === nodeId);
+        if (!sameBinding) {
+          throw new PeerEndpointError(
+            409,
+            "An existing peer already uses this identity or origin with different connection details; update it locally instead",
+          );
         }
-        return { status: "existing", ...result };
+        if (old.enabled) {
+          // Keep the running client, but publish a freshly verified identity if it was not known.
+          if (manifest && existing.manifest?.nodeId !== nodeId) {
+            existing.manifest = manifest;
+            this.changed(existing.hostId);
+          }
+          return { status: "existing", ...result };
+        }
+        candidate.record = {
+          ...old,
+          enabled: true,
+          updatedAt: now,
+          ...(nodeId === undefined ? {} : { nodeId }),
+        };
+        const records = this.records();
+        this.store.save(records.map((r) => (r.peerId === old.peerId ? candidate.record : r)));
+        this.install(candidate.record, candidate);
+        this.changed(candidate.hostId);
+        return { status: "updated", ...result };
       }
-      candidate.record = old
-        ? { ...old, origin: conn.origin, token: conn.token, enabled: true, updatedAt: now, nodeId }
-        : {
-            ...record,
-            name: input.name ?? (manifest?.hostname.trim().slice(0, 120) || record.name),
-            nodeId,
-          };
-      const records = this.records();
-      this.store.save(
-        old
-          ? records.map((r) => (r.peerId === old.peerId ? candidate.record : r))
-          : [...records, candidate.record],
-      );
+      candidate.record = {
+        ...record,
+        name: input.name ?? (manifest?.hostname.trim().slice(0, 120) || record.name),
+        nodeId,
+      };
+      this.store.save([...this.records(), candidate.record]);
       this.install(candidate.record, candidate);
       this.changed(candidate.hostId);
-      return { status: old ? "updated" : "added", ...result };
+      return { status: "added", ...result };
     } finally {
       if (this.clients.get(candidate.record.peerId) !== candidate) candidate.close();
     }
@@ -320,6 +366,10 @@ export class PeerHostManager {
       selfOrigin: params.selfOrigin,
       localNodeId: this.localNodeId,
       resolveSelfShare: this.resolveSelfShare,
+      isActivePeer: (client) =>
+        this.clients.get(client.record.peerId) === client &&
+        client.record.enabled &&
+        !client.closed,
       peerTokens: () => this.peerTokens(),
       changed: (client) => {
         if (this.clients.get(client.record.peerId) === client) this.changed(client.hostId);

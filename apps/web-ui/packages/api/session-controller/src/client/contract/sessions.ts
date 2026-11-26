@@ -119,7 +119,7 @@ export interface ISessions {
    * @param workspaceId - read on until the page reaches a Session of this Workspace.
    */
   loadMore(workspaceId?: WorkspaceId): Promise<void>;
-  /** Read one direct-link identity without walking the catalog. */
+  /** Read one direct-link identity and publish its summary before returning. */
   loadSummary(sessionId: SessionId): Promise<void>;
   /**
    * Set this browser's archive query scope and refresh when it changes.

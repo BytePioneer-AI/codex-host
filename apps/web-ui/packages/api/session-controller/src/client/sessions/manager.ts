@@ -477,15 +477,18 @@ export class SessionManager {
 
   /** Resolve a direct link without loading any preceding catalog pages. */
   async loadSummary(sessionId: SessionId): Promise<void> {
-    if (this.summaries.some((row) => row.sessionId === sessionId)) return;
-    const result = await this.remote.session.list({ sessionId });
-    if (!result.ok) throw result.error;
-    if (this.disposed) return;
-    for (const summary of result.value.items) {
-      if (!this.summaries.some((row) => row.sessionId === summary.sessionId))
-        this.summaryOnlyIds.add(summary.sessionId);
-      this.handleSessionAdded(summary, false);
+    if (!this.summaries.some((row) => row.sessionId === sessionId)) {
+      const result = await this.remote.session.list({ sessionId });
+      if (!result.ok) throw result.error;
+      if (this.disposed) return;
+      for (const summary of result.value.items) {
+        if (!this.summaries.some((row) => row.sessionId === summary.sessionId))
+          this.summaryOnlyIds.add(summary.sessionId);
+        this.handleSessionAdded(summary, false);
+      }
     }
+    // Navigation reads the published list as soon as this lookup completes.
+    this.notifier.flushPending();
   }
 
   /**

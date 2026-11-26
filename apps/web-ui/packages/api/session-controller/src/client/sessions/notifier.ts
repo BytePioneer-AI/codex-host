@@ -51,7 +51,7 @@ export class Notifier {
     this.dirty = true;
     this.notifyPending = true;
     this.invalidateSchedule();
-    this.flush();
+    this.flushPending();
   }
 
   /**
@@ -70,7 +70,7 @@ export class Notifier {
     const publish = () => {
       if (generation !== this.scheduleGeneration) return;
       this.scheduled = "none";
-      this.flush();
+      this.flushPending();
     };
     if (kind === "frame") {
       globalThis.requestAnimationFrame(publish);
@@ -84,7 +84,8 @@ export class Notifier {
     this.scheduled = "none";
   }
 
-  private flush(): void {
+  /** Publish pending updates immediately when a caller needs the current list. */
+  flushPending(): void {
     if (!this.notifyPending) return;
     if (this.listeners.size === 0) return; // lazy: dirty (if still set) rebuilds on next getSnapshot
     this.notifyPending = false;

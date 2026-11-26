@@ -1,10 +1,12 @@
 import { expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type { RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionListRequest, SessionListValue, SessionSummary } from "../src/types.ts";
 import { SessionManager } from "../src/client/sessions/manager.ts";
 import type { SessionRemotes } from "../src/client/sessions/remotes.ts";
+import { ClientSessions } from "../src/client/sessions/service.ts";
 import { TYPERT_REMOTE } from "../generated/remote.js";
 
 // The browser export is a loader bundle. Load the same Gateway source in Node.
@@ -217,6 +219,28 @@ it("keeps the page cursor on errors, replays explicit removals, and resolves dir
   manager.resolveTarget(archived);
   await manager.dispose();
 });
+
+it.each(["Host event", "direct lookup"])(
+  "publishes the resolved Session from a %s before the next animation frame",
+  async (source) => {
+    const ctx = new Context();
+    const canonical = row(SessionId("canonical-thread"));
+    const list = async () => ok(source === "direct lookup" ? [canonical] : []);
+    const sessions = new ClientSessions(ctx, { session: { list } } as unknown as SessionRemotes);
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    try {
+      if (source === "Host event") sessions.handleSessionAdded(canonical);
+      expect(sessions.list.getSnapshot().byId[canonical.sessionId]).toBeUndefined();
+
+      await sessions.loadSummary(canonical.sessionId);
+
+      expect(sessions.list.getSnapshot().byId[canonical.sessionId]?.id).toBe(canonical.sessionId);
+    } finally {
+      vi.unstubAllGlobals();
+      await ctx.fiber.dispose();
+    }
+  },
+);
 
 it("restores a retained Session when the Host adds the same identity again", async () => {
   const { manager } = fixture();

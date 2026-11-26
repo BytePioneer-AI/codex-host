@@ -135,6 +135,64 @@ it("unambiguously restores inbound remote-peer:* links while leaving hostId=loca
   );
 });
 
+it("translates outbound and inbound remote delegation mention links across peer perspectives", () => {
+  const hostIdB = "remote-peer:peer-b-on-a";
+  const hostIdC = "remote-peer:peer-c-on-a";
+  const hostIdD = "remote-peer:peer-d-on-a";
+  const nodeMap: Record<string, string> = {
+    local: "node-a",
+    [hostIdB]: "node-b",
+    [hostIdC]: "node-c",
+    [hostIdD]: "node-d",
+  };
+  const outCtx = {
+    targetHostId: hostIdB,
+    targetNodeId: "node-b",
+    targetPeerNodes: {
+      "remote-peer:peer-a-on-b": "node-a",
+      "remote-peer:peer-c-on-b": "node-c",
+    },
+    nodeIdForHostId: (id: string) => nodeMap[id],
+  };
+
+  const outbound = [
+    "[@本机 · Codex](subagent://codexhost-remote/local/codex) ",
+    "[@本机](subagent://codexhost-remote/local) ",
+    `[@Mac Studio · Pi](subagent://codexhost-remote/${encodeURIComponent(hostIdB)}/pi) `,
+    `[@Home Mini · Antigravity](subagent://codexhost-remote/${encodeURIComponent(hostIdC)}/antigravity) `,
+    `[@Unpaired](subagent://codexhost-remote/${encodeURIComponent(hostIdD)}/codex)`,
+  ].join("");
+
+  assert.equal(
+    translateThreadLinksForPeer(outbound, outCtx),
+    [
+      `[@本机 · Codex](subagent://codexhost-remote/${encodeURIComponent("remote-peer:peer-a-on-b")}/codex) `,
+      `[@本机](subagent://codexhost-remote/${encodeURIComponent("remote-peer:peer-a-on-b")}) `,
+      "[@Mac Studio · Pi](subagent://codexhost.pi) ",
+      `[@Home Mini · Antigravity](subagent://codexhost-remote/${encodeURIComponent("remote-peer:peer-c-on-b")}/antigravity) `,
+      `[@Unpaired](subagent://codexhost-remote/${encodeURIComponent(hostIdD)}/codex)`,
+    ].join(""),
+  );
+
+  const inbound = [
+    `[@A](subagent://codexhost-remote/${encodeURIComponent("remote-peer:peer-a-on-b")}/codex) `,
+    `[@C](subagent://codexhost-remote/${encodeURIComponent("remote-peer:peer-c-on-b")}) `,
+    "[@Local](subagent://codexhost-remote/local)",
+  ].join("");
+  assert.equal(
+    translateThreadLinksFromPeer(inbound, {
+      sourcePeerNodes: outCtx.targetPeerNodes,
+      hostIdForNodeId: (nodeId) =>
+        nodeId === "node-a" ? "local" : nodeId === "node-c" ? hostIdC : undefined,
+    }),
+    [
+      "[@A](subagent://codexhost-remote/local/codex) ",
+      `[@C](subagent://codexhost-remote/${encodeURIComponent(hostIdC)}) `,
+      "[@Local](subagent://codexhost-remote/local)",
+    ].join(""),
+  );
+});
+
 it("translates RemoteSessions outbound paths for remote-peer:* while preserving Desktop SSH and projecting B history back to A", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "peer-links-sessions-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

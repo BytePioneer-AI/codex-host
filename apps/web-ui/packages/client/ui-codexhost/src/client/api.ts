@@ -1,6 +1,10 @@
 /** Thin client for the CodexHost server's `codexhost/*` RPC methods. */
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
+  DELEGATION_HOST_HARNESSES_METHOD,
+  DELEGATION_REMOTE_HOSTS_METHOD,
+  delegationHostHarnessesResultSchema,
+  delegationRemoteHostsResultSchema,
   harnessSessionImportResultSchema,
   RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
   RELEASE_ANNOUNCEMENT_GET_METHOD,
@@ -477,5 +481,20 @@ export const remotePeersApi = {
   deleteWorkspace: async (input: RemotePeerDeleteWorkspaceParams) =>
     remotePeerWorkspaceMutationResultSchema.parse(
       await call<unknown>(REMOTE_PEERS_METHODS.deleteWorkspace, input),
+    ),
+};
+
+export const remoteDelegationApi = {
+  remoteHosts: async (sessionHostId?: string) =>
+    delegationRemoteHostsResultSchema.parse(
+      await call<unknown>(DELEGATION_REMOTE_HOSTS_METHOD, {
+        request: sessionHostId ? { sessionHostId } : {},
+      }),
+    ),
+  hostHarnesses: async (hostId: string) =>
+    delegationHostHarnessesResultSchema.parse(
+      await call<unknown>(DELEGATION_HOST_HARNESSES_METHOD, {
+        request: { hostId },
+      }),
     ),
 };

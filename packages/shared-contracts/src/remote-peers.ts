@@ -358,3 +358,41 @@ export const remotePeerWorkspaceMutationResultSchema = z.object({
 export type RemotePeerWorkspaceMutationResult = z.infer<
   typeof remotePeerWorkspaceMutationResultSchema
 >;
+
+export const DELEGATION_REMOTE_HOSTS_METHOD = "codexhost/delegation/remoteHosts";
+export const DELEGATION_HOST_HARNESSES_METHOD = "codexhost/delegation/hostHarnesses";
+
+export const delegationRemoteHostsParamsSchema = z.object({
+  sessionHostId: z.string().min(1).max(128).optional(),
+});
+export type DelegationRemoteHostsParams = z.infer<typeof delegationRemoteHostsParamsSchema>;
+
+export const delegationRemoteHostOptionSchema = z.object({
+  hostId: z.union([z.literal("local"), remotePeerHostIdSchema]),
+  name: z.string().min(1).max(120),
+  isLocal: z.boolean().optional(),
+  color: remotePeerColorSchema.optional(),
+  hostname: z.string().max(255).optional(),
+});
+export type DelegationRemoteHostOption = z.infer<typeof delegationRemoteHostOptionSchema>;
+
+export const delegationRemoteHostsResultSchema = z.object({
+  hosts: z.array(delegationRemoteHostOptionSchema),
+});
+export type DelegationRemoteHostsResult = z.infer<typeof delegationRemoteHostsResultSchema>;
+
+export const delegationHostHarnessesParamsSchema = z.object({
+  hostId: z.union([z.literal("local"), remotePeerHostIdSchema]),
+});
+export type DelegationHostHarnessesParams = z.infer<typeof delegationHostHarnessesParamsSchema>;
+
+export const delegationHostHarnessOptionSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
+  name: z.string().min(1).max(120),
+});
+export type DelegationHostHarnessOption = z.infer<typeof delegationHostHarnessOptionSchema>;
+
+export const delegationHostHarnessesResultSchema = z.object({
+  harnesses: z.array(delegationHostHarnessOptionSchema),
+});
+export type DelegationHostHarnessesResult = z.infer<typeof delegationHostHarnessesResultSchema>;

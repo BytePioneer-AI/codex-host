@@ -23,6 +23,7 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import { harnessCommandApi } from "./api.ts";
 import { HARNESS_COMMAND_SOURCE, harnessCommandReference } from "./harness-command-reference.ts";
+import { registerRemoteHostDelegation } from "./remote-host-delegation.tsx";
 import type {} from "./HostConnectionStatus.tsx";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -443,4 +444,6 @@ export function registerHarnessDiscovery(ctx: Context): void {
       }),
     "ui-codexhost: delegation discovery",
   );
+
+  registerRemoteHostDelegation(ctx, { hostIdOf, supportsDelegation, notify });
 }

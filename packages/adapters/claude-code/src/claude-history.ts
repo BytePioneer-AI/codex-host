@@ -224,8 +224,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
     }
     if (ids.has(value.uuid)) throw new Error("Claude history contains duplicate message IDs");
     ids.add(value.uuid);
-    // Native interruption records reuse the human promptId and omit promptSource. Their role is
-    // user, but they terminate that prompt rather than starting another Host Turn.
+    // A native interruption ends the prompt whose ID it reuses. Its user record omits promptSource.
     const interrupted = isInterruptionRecord(value, promptId);
     const message: ClaudeHistoryMessage = {
       type: value.type,
@@ -297,7 +296,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
     }
     if (interrupted) occupancy.clear();
     messages.push(message);
-    if (isHumanUser(message)) {
+    if (isHumanUser(message) || notification) {
       promptId =
         typeof value.promptId === "string" && value.promptId.length > 0 ? value.promptId : null;
     }

@@ -13,6 +13,8 @@ Claude 在 `run_in_background` 下启动 Bash 时，原生结果立即返回并�
 
 独立续写在历史中也单独成轮：使用触发它的 `task-notification` 用户记录 UUID，与实时自主回合一致，用户输入为空。Checkpoint 是该续写最后一条 Root 消息的 UUID；前一轮的 Checkpoint 保持在通知之前，嵌套子智能体消息不推进 Root 边界。原生 `forkSession(upToMessageId)` 使用这个精确消息切点。
 
+用户停止独立续写时，Claude Code 的原生中断记录复用该通知的 `promptId`，历史回放据此将中断归入续写所在的 Turn。该 Turn 以 `cancelled` 结束，Checkpoint 取中断记录的 UUID，`[Request interrupted by user]` 不会单独显示为用户 Turn。
+
 后台 Agent 或 Workflow 的 occupancy 仍持有原回合时，通知和续写归属该回合。历史读取复用原生委派结果、任务身份与结算解析来还原占用关系；不能仅因出现通知就拆轮，也不能把独立后台 Bash 续写并入前一轮。
 
 ## 结算

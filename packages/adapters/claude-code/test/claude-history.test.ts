@@ -149,20 +149,43 @@ describe("Claude history mapping", () => {
   });
 
   it.each(["[Request interrupted by user]", "[Request interrupted by user for tool use]"])(
-    "recognizes %s without an assistant checkpoint",
+    "recognizes %s for human and task-notification prompts without an assistant checkpoint",
     (text) => {
       const snapshot = mapClaudeSnapshot(
         [
+          { ...message("user", "launch", "run a task"), promptId: "launch", promptSource: "sdk" },
+          message("assistant", "reply", "task started", "end_turn"),
+          {
+            ...message(
+              "user",
+              "notification",
+              "<task-notification>Task finished</task-notification>",
+            ),
+            origin: { kind: "task-notification", producer: "session-task" },
+            promptSource: "system",
+            promptId: "task",
+          },
+          { type: "attachment", attachment: { type: "hook_additional_context" } },
+          { ...message("user", "task-interruption", [{ type: "text", text }]), promptId: "task" },
           { ...message("user", "first", "start"), promptId: "first", promptSource: "sdk" },
           { ...message("user", "interruption", [{ type: "text", text }]), promptId: "first" },
         ],
         sessionId,
       );
-      expect(snapshot.turns).toHaveLength(1);
-      expect(snapshot.turns[0]).toMatchObject({
-        checkpoint: { checkpointId: "interruption" },
-        outcome: { status: "cancelled" },
-      });
+      expect(snapshot.turns).toMatchObject([
+        { input: [{ text: "run a task" }], checkpoint: { checkpointId: "reply" } },
+        {
+          nativeTurnRef: { nativeTurnKey: "notification" },
+          input: [],
+          checkpoint: { checkpointId: "task-interruption" },
+          outcome: { status: "cancelled" },
+        },
+        {
+          input: [{ text: "start" }],
+          checkpoint: { checkpointId: "interruption" },
+          outcome: { status: "cancelled" },
+        },
+      ]);
     },
   );
 

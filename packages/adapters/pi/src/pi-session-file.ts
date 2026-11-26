@@ -1,4 +1,7 @@
+import { createReadStream } from "node:fs";
 import { open, realpath } from "node:fs/promises";
+import type { JsonObject } from "@codexhost/shared-contracts";
+import type { PiSessionHistory } from "./pi-history.js";
 
 const MAX_SESSION_HEADER_BYTES = 64 * 1024;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
@@ -69,4 +72,59 @@ export async function verifyPiSessionCwd(input: {
   if (actualCwd !== expectedCwd) {
     throw new Error("Pi Fork Session did not bind the requested cwd");
   }
+}
+
+function historyEntry(value: unknown): JsonObject | null {
+  if (
+    !isRecord(value) ||
+    value.type === "session" ||
+    typeof value.id !== "string" ||
+    value.id.length === 0 ||
+    (value.parentId !== null && typeof value.parentId !== "string") ||
+    typeof value.type !== "string"
+  ) {
+    return null;
+  }
+  return value as JsonObject;
+}
+
+async function* sessionLines(sessionFile: string): AsyncGenerator<string> {
+  const input = createReadStream(sessionFile, { encoding: "utf8" });
+  let pending = "";
+  try {
+    for await (const chunk of input) {
+      const contents = chunk as string;
+      let start = 0;
+      let newline: number;
+      while ((newline = contents.indexOf("\n", start)) !== -1) {
+        const line = pending + contents.slice(start, newline);
+        pending = "";
+        yield line.endsWith("\r") ? line.slice(0, -1) : line;
+        start = newline + 1;
+      }
+      pending += contents.slice(start);
+    }
+    if (pending.length > 0) yield pending.endsWith("\r") ? pending.slice(0, -1) : pending;
+  } finally {
+    input.destroy();
+  }
+}
+
+export async function readPiSessionHistory(sessionFile: string): Promise<PiSessionHistory> {
+  const entries: JsonObject[] = [];
+  let leafId: string | null = null;
+  for await (const line of sessionLines(sessionFile)) {
+    if (line.length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const entry = historyEntry(parsed);
+    if (!entry) continue;
+    entries.push(entry);
+    leafId = entry.id as string;
+  }
+  return { entries, leafId };
 }

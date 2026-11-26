@@ -56,6 +56,7 @@ import {
   type OpenSessionInput,
   type PermissionModeSelectCommand,
   type PermissionModeSelectCompleted,
+  type ReadThreadSnapshotInput,
   type HostThreadSnapshot,
   type HostUsage,
   type HostUsageRequest,
@@ -107,7 +108,11 @@ import {
   ompStreamingAccount,
   type OmpAccountCredits,
 } from "./omp-account-credits.js";
-import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
+import {
+  readOmpSessionHeader,
+  readOmpSessionHistory,
+  verifyOmpSessionCwd,
+} from "./omp-session-file.js";
 import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
@@ -2369,6 +2374,69 @@ export class OmpAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = ompHarnessId;
   readonly sessionImport: OmpSessionImport;
   readonly usageStatistics: ReturnType<typeof createOmpUsageStatistics>;
+  async readSnapshot(input: ReadThreadSnapshotInput): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closePromise) {
+      return { ok: false, error: invalidState("Omp Adapter is closed") };
+    }
+    const parsedRef = nativeSessionRefSchema.safeParse(input.nativeRef);
+    if (!parsedRef.success || parsedRef.data.harnessId !== this.harnessId) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Omp Native Session reference is invalid",
+          retryable: false,
+        },
+      };
+    }
+    const sourceRef = parsedRef.data as NativeSessionRef;
+    if (
+      !isRecord(sourceRef.locator) ||
+      typeof sourceRef.locator.sessionFile !== "string" ||
+      sourceRef.locator.sessionFile.length === 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Omp Native Session Ref has no resumable Session file",
+          retryable: false,
+        },
+      };
+    }
+    try {
+      const sessionFile = sourceRef.locator.sessionFile;
+      const header = await readOmpSessionHeader(sessionFile);
+      if (header.id !== sourceRef.nativeSessionId) {
+        throw new OmpAdapterFaultError({
+          code: "sessionNotFound",
+          message: "Omp Session header identity does not match the persisted Native Session Ref",
+          retryable: false,
+        });
+      }
+      const history = await readOmpSessionHistory(sessionFile);
+      return {
+        ok: true,
+        value: mapOmpSnapshot(history, {
+          sessionId: sourceRef.nativeSessionId,
+          model: null,
+        }),
+      };
+    } catch (error) {
+      if (isRecord(error) && error.code === "ENOENT") {
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: "Omp Native Session is unavailable",
+            retryable: false,
+          },
+        };
+      }
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
+
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {
       if (

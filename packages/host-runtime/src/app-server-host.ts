@@ -208,6 +208,7 @@ import {
   ExternalThreadRuntime,
   persistedThreadUsage,
   type ExternalThread,
+  type ExternalThreadColdRead,
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
@@ -916,7 +917,13 @@ const COLD_HISTORY_CAPABILITIES = {
 } as const;
 
 function isPassiveThreadInspectMethod(method: string): boolean {
-  return method === "codexhost/thread/inspect" || method === "codexhost/thread/usage/inspect";
+  return (
+    method === "codexhost/thread/inspect" ||
+    method === "codexhost/thread/usage/inspect" ||
+    method === "thread/read" ||
+    method === "thread/turns/list" ||
+    method === "thread/items/list"
+  );
 }
 
 function isPassiveTelemetryOutput(output: HarnessOutput): boolean {
@@ -1123,6 +1130,12 @@ export class AppServerHost {
       listSectionPlacements: () => this.#repository.listSectionPlacements(),
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
+      readColdExternalThread: (threadId) =>
+        this.#externalRuntime.idleRelease.runOperation(
+          threadId,
+          () => this.#readColdExternalThread(threadId),
+          { touch: false },
+        ),
       clientHistoryTurns: (thread) => this.#externalHistoryTurns(thread, true),
       queueSnapshot: (threadId) => this.#externalQueue.snapshot(threadId),
       readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
@@ -1508,6 +1521,7 @@ export class AppServerHost {
       pendingOfficialTurnStarts: this.#pendingOfficialTurnStarts,
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       resolveExternalThread: (threadId) => this.#resolveExternalThread(threadId),
+      readColdExternalThread: (threadId) => this.#readColdExternalThread(threadId),
       writeResolutionError: (request, resolution) =>
         this.#writeResolutionError(request, resolution),
       forwardOfficialRequest: (request, frame) => this.#forwardOfficialRequest(request, frame),
@@ -1549,6 +1563,8 @@ export class AppServerHost {
         this.#rollbackExternalThread(request, derived, rollback),
       listExternalHistory: (request, thread, params, historyFresh) =>
         this.#listExternalHistory(request, thread, params, historyFresh),
+      listColdExternalHistory: (request, cold, params) =>
+        this.#listColdExternalHistory(request, cold, params),
       startExternalTurn: (request, thread) => this.#startExternalTurn(request, thread),
       steerExternalTurn: (request, thread) => this.#steerExternalTurn(request, thread),
       interruptExternalTurn: (request, thread, requestedTurnId) =>
@@ -1557,6 +1573,8 @@ export class AppServerHost {
         this.#readExternalThreadMetadata(request, location),
       readExternalThread: (request, thread, includeTurns, historyFresh) =>
         this.#readExternalThread(request, thread, includeTurns, historyFresh),
+      readColdExternalThreadReply: (request, cold) =>
+        this.#readColdExternalThreadReply(request, cold),
       resumeExternalThread: (request, thread, params, historyFresh) =>
         this.#resumeExternalThread(request, thread, params, historyFresh),
       setExternalThreadName: (request, location, name) =>
@@ -5626,9 +5644,16 @@ export class AppServerHost {
     return this.#externalRuntime.resolve(threadId);
   }
 
+  async #readColdExternalThread(threadId: string): Promise<ExternalThreadColdRead> {
+    const location = await this.#locateExternalThread(threadId);
+    if (location.kind !== "external") return location;
+    await this.#waitForPlugins();
+    return this.#externalRuntime.readCold(threadId);
+  }
+
   async #writeResolutionError(
     request: JsonRpcRequest,
-    resolution: ExternalThreadLocation | ExternalThreadResolution,
+    resolution: ExternalThreadLocation | ExternalThreadResolution | ExternalThreadColdRead,
   ): Promise<boolean> {
     if (resolution.kind !== "error") return false;
     await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
@@ -6008,6 +6033,63 @@ export class AppServerHost {
       await this.#replayExternalPlan(thread);
     }
     await this.#replayExternalUsage(thread);
+  }
+
+  async #readColdExternalThreadReply(
+    request: JsonRpcRequest,
+    cold: Extract<ExternalThreadColdRead, { kind: "cold" }>,
+  ): Promise<void> {
+    if (cold.record.historyMode === "paginated") {
+      await this.#writer.json(
+        rpcError(request, -32602, "Paginated External Threads require thread/turns/list"),
+      );
+      return;
+    }
+    const readTurns = ownTurns(cold.record, cold.turns);
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: {
+          thread: {
+            ...cold.thread,
+            ...(await this.#externalSectionFields(cold.record.hostThreadId)),
+            turns: readTurns,
+          },
+        },
+      }),
+    );
+    if (cold.persistentPlan) {
+      const update = historicalPlanUpdate(
+        cold.record.hostThreadId,
+        readTurns,
+        cold.historicalPlans,
+      );
+      if (update) await this.#writer.json(update);
+    }
+  }
+
+  async #listColdExternalHistory(
+    request: JsonRpcRequest,
+    cold: Extract<ExternalThreadColdRead, { kind: "cold" }>,
+    params: JsonObject,
+  ): Promise<void> {
+    try {
+      const turns = ownTurns(cold.record, cold.turns);
+      const result =
+        request.method === "thread/turns/list"
+          ? listExternalTurns(turns, params)
+          : listExternalItems(turns, params);
+      await this.#writer.json(rpcEnvelope(request, { result }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalHistoryRequestError ? -32602 : -32076,
+          error instanceof ExternalHistoryRequestError
+            ? error.message
+            : "External Thread history projection failed",
+        ),
+      );
+    }
   }
 
   async #listExternalHistory(

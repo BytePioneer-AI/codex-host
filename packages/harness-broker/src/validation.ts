@@ -215,6 +215,14 @@ export const sessionCommandExecuteParamsSchema = sessionParamsSchema.extend({
   command: brokerCommandInvocationSchema,
 });
 
+export const adapterReadSnapshotSchema = z
+  .object({
+    nativeRef: nativeSessionRefSchema,
+    cwd: cwdSchema,
+    environment: brokerEnvironmentSchema.optional(),
+  })
+  .strict();
+
 export const subagentReadSnapshotSchema = z
   .object({
     parent: nativeSessionRefSchema,

@@ -119,8 +119,13 @@ export interface ISessions {
    * @param workspaceId - read on until the page reaches a Session of this Workspace.
    */
   loadMore(workspaceId?: WorkspaceId): Promise<void>;
-  /** Read one direct-link identity without walking the catalog. */
+  /** Read one direct-link identity without walking the catalog and publish it into `list` before resolving. */
   loadSummary(sessionId: SessionId): Promise<void>;
+  /**
+   * Synchronously project an already-buffered summary for `sessionId` into `list` before the next frame flush.
+   * @returns true once `sessionId` is present in `list.getSnapshot().byId`.
+   */
+  syncSummary?(sessionId: SessionId): boolean;
   /**
    * Set this browser's archive query scope and refresh when it changes.
    * Reconnects and automatic refreshes reuse the choice; no Host-global setting is written.

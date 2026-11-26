@@ -412,9 +412,18 @@ export class ClientSessions implements ISessions {
     return this.manager.refreshList();
   }
 
-  /** Set the browser-local list scope without changing Session ownership or selection. */
-  loadSummary(sessionId: SessionId): Promise<void> {
-    return this.manager.loadSummary(sessionId);
+  /** Read one direct-link identity and publish its catalog row before resolving. */
+  async loadSummary(sessionId: SessionId): Promise<void> {
+    await this.manager.loadSummary(sessionId);
+    if (!this.closed) this.projectList();
+  }
+
+  /** Synchronously project an already-buffered summary before the next frame flush. */
+  syncSummary(sessionId: SessionId): boolean {
+    if (this.list.getSnapshot().byId[sessionId] !== undefined) return true;
+    if (this.closed || !this.manager.hasSummary(sessionId)) return false;
+    this.projectList();
+    return this.list.getSnapshot().byId[sessionId] !== undefined;
   }
 
   loadMore(workspaceId?: WorkspaceId): Promise<void> {

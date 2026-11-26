@@ -650,32 +650,35 @@ export async function runDesktopMcpClient(
     await stdio.start();
     return await done.promise;
   } finally {
-    if (listenSignals) {
-      process.off("SIGINT", inputClosed);
-      process.off("SIGTERM", inputClosed);
-    }
     input.off("end", inputClosed);
     input.off("close", inputClosed);
-    const terminateTimeoutMs = options.terminateTimeoutMs ?? TERMINATE_SESSION_TIMEOUT_MS;
-    let terminateTimer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([
-        http.terminateSession().catch(() => undefined),
-        new Promise<void>((resolve) => {
-          terminateTimer = setTimeout(resolve, terminateTimeoutMs).unref();
-        }),
-      ]);
+      const terminateTimeoutMs = options.terminateTimeoutMs ?? TERMINATE_SESSION_TIMEOUT_MS;
+      let terminateTimer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          http.terminateSession().catch(() => undefined),
+          new Promise<void>((resolve) => {
+            terminateTimer = setTimeout(resolve, terminateTimeoutMs).unref();
+          }),
+        ]);
+      } finally {
+        clearTimeout(terminateTimer);
+      }
+      try {
+        await http.close();
+      } catch {
+        // Continue destroying local streams even if HTTP transport shutdown throws.
+      }
+      input.destroy();
+      streams.input.destroy();
+      await stdio.close();
     } finally {
-      clearTimeout(terminateTimer);
+      if (listenSignals) {
+        process.off("SIGINT", inputClosed);
+        process.off("SIGTERM", inputClosed);
+      }
     }
-    try {
-      await http.close();
-    } catch {
-      // Continue destroying local streams even if HTTP transport shutdown throws.
-    }
-    input.destroy();
-    streams.input.destroy();
-    await stdio.close();
   }
 }
 

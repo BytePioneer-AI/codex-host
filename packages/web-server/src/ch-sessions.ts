@@ -2162,7 +2162,8 @@ export class ChSessions {
     this.idleViewTimer = setInterval(() => {
       this.threads.discardIdleViews(
         Date.now(),
-        (id) => this.rows.get(id)?.status.type === "active",
+        (id) =>
+          this.rows.get(id)?.status.type === "active" || Boolean(this.interactions?.hasPending(id)),
       );
     }, 60_000);
     this.idleViewTimer.unref();

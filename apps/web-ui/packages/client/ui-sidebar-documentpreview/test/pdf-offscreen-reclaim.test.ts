@@ -169,7 +169,7 @@ describe("renderPdfPage raster pixel cap", () => {
     const canvas = document.createElement("canvas");
     const signal = new AbortController().signal;
 
-    // 1600 * 2000 * 2^2 = 12_800_000 > 8_388_608 (previously allowed under 16_777_216).
+    // 1600 * 2000 * 2^2 = 12_800_000 exceeds the 8_388_608 raster pixel cap.
     const size = await renderPdfPage(doc, 1, canvas, signal, 2);
 
     const expectedRatio = Math.sqrt(MAX_PDF_PAGE_RASTER_PIXELS / (1600 * 2000));

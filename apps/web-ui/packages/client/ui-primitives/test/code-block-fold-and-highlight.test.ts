@@ -15,7 +15,10 @@ import {
   highlightToHtml,
   resetHighlightHtmlCache,
 } from "../src/markdown/highlight.ts";
-import { MarkdownDelegateProvider } from "../src/markdown/MarkdownDelegate.tsx";
+import {
+  CodeBlockFoldMemoryProvider,
+  MarkdownDelegateProvider,
+} from "../src/markdown/MarkdownDelegate.tsx";
 import { MarkdownText } from "../src/markdown/MarkdownText.tsx";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -304,5 +307,64 @@ describe("CodeBlock folding, clipboard contract, and streaming protection", () =
     // Standalone line-numbered CodeBlock outside provider is not folded.
     expect(blocks[1]?.getAttribute("data-code-folded")).toBeNull();
     expect(blocks[1]?.querySelector("[data-code-fold-toggle]")).toBeNull();
+  });
+
+  it("preserves user-expanded and collapsed state across virtualized unmount/remount via CodeBlockFoldMemoryProvider", () => {
+    const longCode = makeLines(26);
+    const memory = new Map<string, boolean>();
+    const mountRow = (mounted: boolean, scope = "row-1") =>
+      render(
+        createElement(
+          MarkdownDelegateProvider,
+          { collapsibleCodeBlocks: true },
+          mounted
+            ? createElement(
+                CodeBlockFoldMemoryProvider,
+                { key: scope, memory, scope },
+                createElement(MarkdownText, {
+                  text: `\`\`\`ts\n${longCode}\n\`\`\``,
+                  labels: {
+                    code: { copyLabel: "Copy", copiedLabel: "Copied" },
+                    footnotes: "Footnotes",
+                  },
+                }),
+              )
+            : null,
+        ),
+      );
+
+    // 1. Starts folded on initial mount.
+    mountRow(true);
+    expect(host.querySelector(".md-code-block")?.getAttribute("data-code-folded")).toBe("true");
+    expect(host.querySelectorAll("pre code .line")).toHaveLength(FOLD_PREVIEW_LINES);
+
+    // 2. User expands the code block.
+    act(() => {
+      host.querySelector<HTMLButtonElement>("[data-code-fold-toggle]")?.click();
+    });
+    expect(host.querySelector(".md-code-block")?.getAttribute("data-code-folded")).toBe("false");
+    expect(host.querySelectorAll("pre code .line")).toHaveLength(26);
+
+    // 3. Simulate virtualized unmount then remount: block stays expanded with full lines.
+    mountRow(false);
+    expect(host.querySelector(".md-code-block")).toBeNull();
+    mountRow(true);
+    expect(host.querySelector(".md-code-block")?.getAttribute("data-code-folded")).toBe("false");
+    expect(host.querySelectorAll("pre code .line")).toHaveLength(26);
+
+    // 4. Another row scope with identical code starts folded independently.
+    mountRow(true, "row-2");
+    expect(host.querySelector(".md-code-block")?.getAttribute("data-code-folded")).toBe("true");
+    expect(host.querySelectorAll("pre code .line")).toHaveLength(FOLD_PREVIEW_LINES);
+
+    // 5. Collapsing row-1 persists across another unmount/remount cycle.
+    mountRow(true, "row-1");
+    act(() => {
+      host.querySelector<HTMLButtonElement>("[data-code-fold-toggle]")?.click();
+    });
+    mountRow(false, "row-1");
+    mountRow(true, "row-1");
+    expect(host.querySelector(".md-code-block")?.getAttribute("data-code-folded")).toBe("true");
+    expect(host.querySelectorAll("pre code .line")).toHaveLength(FOLD_PREVIEW_LINES);
   });
 });

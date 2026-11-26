@@ -22,12 +22,18 @@ export function toolOutputVersion(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+function detachString(value: string): string {
+  // Break V8 SlicedString/ConsString parent references so oversized source text can be GC'd.
+  if (value.isWellFormed()) return Buffer.from(value, "utf8").toString("utf8");
+  return Buffer.from(value, "utf16le").toString("utf16le");
+}
+
 export function previewToolText(text: string): string {
   if (text.length <= TOOL_OUTPUT_PREVIEW) return text;
   let end = TOOL_OUTPUT_PREVIEW;
   const code = text.charCodeAt(end - 1);
   if (code >= 0xd800 && code <= 0xdbff) end--;
-  return text.slice(0, end);
+  return detachString(text.slice(0, end));
 }
 
 const resultData = (event: WireEvent) => event.data as ResultData;

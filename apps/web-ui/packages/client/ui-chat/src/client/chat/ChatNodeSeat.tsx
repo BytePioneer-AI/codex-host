@@ -1,5 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { JsonBlock } from "@deepseek-ai/dsh-client-ui-primitives";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  CodeBlockFoldMemoryProvider,
+  JsonBlock,
+  useCodeBlockFoldMemory,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type {
   ConversationLocationDataStore,
@@ -191,6 +195,12 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
     };
   }, [registerRow, flowKey, wrapperRef]);
   const [disclosureReset] = useState(() => createSnapshotStore(0));
+  const inheritedFoldMemory = useCodeBlockFoldMemory();
+  const ownFoldMemoryRef = useRef<Map<string, boolean> | null>(null);
+  if (inheritedFoldMemory === undefined && ownFoldMemoryRef.current === null) {
+    ownFoldMemoryRef.current = new Map();
+  }
+  const foldMemory = inheritedFoldMemory ?? ownFoldMemoryRef.current!;
   // A reply resolves its annotation citations against the message it answers.
   const responseAnnotations = useTurnAnnotations(nodeStore, turn);
   const turnData = turnDataOf(routedNode);
@@ -265,8 +275,9 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       data-chat-virtualized={virtualizedPlaceholder ? "" : undefined}
       style={virtualizedPlaceholder ? { minHeight: placeholderHeight } : undefined}
     >
-      {mounted
-        ? renderSlot("conversation.chat.node", routedOwner, {
+      {mounted ? (
+        <CodeBlockFoldMemoryProvider memory={foldMemory} scope={flowKey}>
+          {renderSlot("conversation.chat.node", routedOwner, {
             entryKey: routedNode.kind,
             hookContext,
             fallback: (
@@ -276,8 +287,9 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
                 truncatedLabel={(total) => t("json.truncated", { total })}
               />
             ),
-          })
-        : null}
+          })}
+        </CodeBlockFoldMemoryProvider>
+      ) : null}
     </div>
   );
 });

@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  CodeBlockFoldMemoryProvider,
   IconAgentPresetOutlineRegular,
   IconApiOutlineRegular,
   IconBrowseOutlineRegular,
@@ -311,6 +312,8 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({
       props.actions.setTurnProcessOpen(spec.turn, spec.answerStep ?? 0, true);
   }, [props.actions, spec, alwaysOpen]);
   const rootRef = useSearchableHidden(outerHidden, revealOuter);
+  const foldMemoryRef = useRef<Map<string, boolean> | null>(null);
+  if (foldMemoryRef.current === null) foldMemoryRef.current = new Map();
   useNearViewport(rootRef, members !== undefined);
   useLayoutEffect(() => {
     if (registerRow === undefined || members === undefined) return;
@@ -342,16 +345,18 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({
       style={virtualizedPlaceholder ? { minHeight: placeholderHeight } : undefined}
     >
       {mounted ? (
-        <ChatGroupBody
-          {...props}
-          groupKey={groupKey}
-          useChatGroup={useChatGroup}
-          members={members}
-          closed={closed}
-          grouped={grouped}
-          open={open}
-          setOpen={setOpen}
-        />
+        <CodeBlockFoldMemoryProvider memory={foldMemoryRef.current} scope={groupKey}>
+          <ChatGroupBody
+            {...props}
+            groupKey={groupKey}
+            useChatGroup={useChatGroup}
+            members={members}
+            closed={closed}
+            grouped={grouped}
+            open={open}
+            setOpen={setOpen}
+          />
+        </CodeBlockFoldMemoryProvider>
       ) : null}
     </div>
   );

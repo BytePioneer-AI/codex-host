@@ -1,4 +1,12 @@
-import { Fragment, useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { CSSProperties, ReactNode, Ref } from "react";
 import clsx from "clsx";
 import { writeClipboard } from "../clipboard.ts";
@@ -11,6 +19,7 @@ import {
   subscribeGrammarLoaded,
 } from "./highlight.ts";
 import type { HighlightSpan, StreamingHighlightFrame } from "./highlight.ts";
+import { useCodeBlockFoldMemory } from "./MarkdownDelegate.tsx";
 import { useViewportHighlighting } from "./useViewportHighlighting.ts";
 import css from "./CodeBlock.module.css";
 
@@ -53,6 +62,8 @@ export interface CodeBlockProps {
   streaming?: boolean | undefined;
   /** Fold settled code blocks taller than {@link FOLD_LINE_THRESHOLD} lines by default. */
   collapsible?: boolean | undefined;
+  /** Stable identifier within the enclosing row so expanded state survives virtualized remounts. */
+  foldKey?: string | undefined;
   /** Label for expanding a folded block (receives total line count); defaults to English. */
   expandCodeLabel?: ((totalLines: number) => string) | undefined;
   /** Label for collapsing an expanded foldable block; defaults to English. */
@@ -110,6 +121,7 @@ export function CodeBlock({
   lang,
   streaming,
   collapsible = false,
+  foldKey,
   expandCodeLabel = defaultExpandCodeLabel,
   collapseCodeLabel = DEFAULT_COLLAPSE_CODE_LABEL,
   className,
@@ -122,9 +134,16 @@ export function CodeBlock({
   wrap,
 }: CodeBlockProps) {
   const trimmed = code.endsWith("\n") ? code.slice(0, -1) : code;
-  // Blocks that mount while streaming stay expanded even after streaming settles;
-  // only settled historical blocks start collapsed.
-  const [expanded, setExpanded] = useState(() => streaming === true);
+  const foldMemory = useCodeBlockFoldMemory();
+  const memoryKey =
+    foldKey === undefined
+      ? undefined
+      : `${foldKey}\0${lang ?? ""}\0${trimmed.length}\0${trimmed.slice(0, 64)}`;
+  // Blocks that mount while streaming or were previously expanded in this row
+  // stay expanded; only untouched settled historical blocks start collapsed.
+  const [expanded, setExpanded] = useState(
+    () => streaming === true || (memoryKey !== undefined && foldMemory?.get(memoryKey) === true),
+  );
   const prevStreamingRef = useRef(streaming === true);
   if (streaming === true && !prevStreamingRef.current) {
     prevStreamingRef.current = true;
@@ -138,6 +157,11 @@ export function CodeBlock({
   );
   const totalLines = lineMetrics?.totalLines ?? 0;
   const canFold = collapsible && streaming !== true && totalLines > FOLD_LINE_THRESHOLD;
+  useEffect(() => {
+    if (canFold && expanded && memoryKey !== undefined && foldMemory !== undefined) {
+      if (foldMemory.get(memoryKey) !== true) foldMemory.set(memoryKey, true);
+    }
+  }, [canFold, expanded, foldMemory, memoryKey]);
   const folded = canFold && !expanded;
   const displayCode =
     folded && lineMetrics !== undefined ? trimmed.slice(0, lineMetrics.previewEnd) : trimmed;
@@ -254,8 +278,12 @@ export function CodeBlock({
   }, [copied, trimmed]);
 
   const onToggleFold = useCallback(() => {
-    setExpanded((value) => !value);
-  }, []);
+    setExpanded((value) => {
+      const next = !value;
+      if (memoryKey !== undefined) foldMemory?.set(memoryKey, next);
+      return next;
+    });
+  }, [foldMemory, memoryKey]);
 
   // shiki's HTML output is a static span tree it generated from `code` (no
   // user HTML passes through), the sanctioned innerHTML consumption path per

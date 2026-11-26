@@ -770,7 +770,7 @@ describe("transcript row-shell content virtualization and find lease", () => {
     expect(handle.findLeaseActive).toBe(true);
     expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(total);
 
-    // Activity at 20s extends the 30s idle timer.
+    // Activity on find-navigation keys (e.g. non-editable Enter, Cmd+G, F3) extends the 30s timer.
     await act(async () => {
       vi.advanceTimersByTime(20_000);
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -778,12 +778,34 @@ describe("transcript row-shell content virtualization and find lease", () => {
     });
     expect(handle.findLeaseActive).toBe(true);
 
-    // After full FIND_LEASE_TIMEOUT_MS of idleness, lease releases automatically.
+    // Ordinary non-find keystrokes must NOT indefinitely extend the lease.
     await act(async () => {
-      vi.advanceTimersByTime(FIND_LEASE_TIMEOUT_MS);
+      vi.advanceTimersByTime(15_000);
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+      vi.advanceTimersByTime(16_000);
     });
     expect(handle.findLeaseActive).toBe(false);
     expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(PIN_TAIL);
+
+    // Focusing an editable composer input immediately releases an active find lease.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true }),
+      );
+    });
+    expect(handle.findLeaseActive).toBe(true);
+    const composer = document.createElement("textarea");
+    document.body.appendChild(composer);
+    try {
+      await act(async () => {
+        composer.focus();
+        composer.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      });
+      expect(handle.findLeaseActive).toBe(false);
+      expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(PIN_TAIL);
+    } finally {
+      composer.remove();
+    }
 
     // Switching sessionId resets lease and cached measured heights.
     await act(async () => {

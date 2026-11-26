@@ -251,4 +251,12 @@ it("compacts settled oversized tool text in place and resolves it on demand with
     resolveToolOutput(log, preview.reference, async () => "mutated"),
     { code: "session/tool-output-stale" },
   );
+
+  // Lone UTF-16 surrogates inside the preview slice are preserved bit-exactly when detached.
+  const loneSurrogate = `prefix\ud800middle${"x".repeat(TOOL_OUTPUT_LIMIT + 100)}`;
+  const loneLog = journal();
+  const loneRecord = result(loneLog, loneSurrogate, 2, true);
+  compactLogToolOutputs(loneLog);
+  const loneCompacted = defined(loneLog.events.find((e) => e.seq === loneRecord.event.seq));
+  assert.equal(textOf(loneCompacted), loneSurrogate.slice(0, TOOL_OUTPUT_PREVIEW));
 });

@@ -521,11 +521,13 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
 }
 
 function MarkdownCodeBlock({
+  foldKey,
   code,
   lang,
   streaming,
   labels,
 }: {
+  readonly foldKey: string;
   readonly code: string;
   readonly lang: string | undefined;
   readonly streaming: boolean;
@@ -534,6 +536,7 @@ function MarkdownCodeBlock({
   const { collapsibleCodeBlocks, expandCodeLabel, collapseCodeLabel } = useMarkdownDelegate();
   return (
     <CodeBlock
+      foldKey={foldKey}
       code={code}
       lang={lang}
       streaming={streaming}
@@ -568,6 +571,7 @@ function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): Re
   return (
     <MarkdownCodeBlock
       key={key}
+      foldKey={String(key)}
       // The replaced hast pipeline appended one synthetic newline that
       // CodeBlock's display trim removes; feeding the bare value would make
       // that trim eat a REAL trailing blank line inside the fence instead.

@@ -125,6 +125,34 @@ export function isFindShortcut(
   return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "f";
 }
 
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  if (target === null || typeof target !== "object") return false;
+  const element = target as Partial<HTMLElement>;
+  const tagName = typeof element.tagName === "string" ? element.tagName.toUpperCase() : "";
+  if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") return true;
+  if (element.isContentEditable === true) return true;
+  if (typeof element.getAttribute === "function") {
+    const contentEditable = element.getAttribute("contenteditable");
+    if (contentEditable === "" || contentEditable === "true") return true;
+  }
+  if (typeof element.closest === "function") {
+    if (element.closest("[contenteditable=''], [contenteditable='true']") !== null) return true;
+  }
+  return false;
+}
+
+function isFindRenewalKey(
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "key" | "target">,
+): boolean {
+  if (isFindShortcut(event)) return true;
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "g") {
+    return true;
+  }
+  if (event.key === "F3") return true;
+  if (event.key === "Enter" && !isEditableEventTarget(event.target)) return true;
+  return false;
+}
+
 function turnOfNode(node: ReturnType<ChatSnapshot["nodes"]["get"]>): number | undefined {
   const location = node?.location;
   return location?.kind === "turn" || location?.kind === "step" ? location.turn.turn : undefined;
@@ -558,18 +586,25 @@ export function useTranscriptVirtualization({
       if (!findLeaseActiveRef.current) return;
       if (event.key === "Escape") {
         releaseFindLease();
-      } else {
+      } else if (isFindRenewalKey(event)) {
         activateOrRenewFindLease();
       }
     };
     const onBeforeMatch = (): void => {
       if (findLeaseActiveRef.current) activateOrRenewFindLease();
     };
+    const onEditableFocusIn = (event: FocusEvent): void => {
+      if (findLeaseActiveRef.current && isEditableEventTarget(event.target)) {
+        releaseFindLease();
+      }
+    };
     window.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("beforematch", onBeforeMatch, true);
+    document.addEventListener("focusin", onEditableFocusIn, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("beforematch", onBeforeMatch, true);
+      document.removeEventListener("focusin", onEditableFocusIn, true);
     };
   }, [activateOrRenewFindLease, enabled, releaseFindLease]);
 

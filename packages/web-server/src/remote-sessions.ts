@@ -2019,6 +2019,10 @@ export class RemoteSessions {
               !(error instanceof RpcError) ||
               !["host/history-changed", "host/items-replaced"].includes(error.code)
             ) {
+              if (!current.view) {
+                source.discard(current.identity.threadId);
+                history.retire();
+              }
               throw error;
             }
             if (current.view) {
@@ -3121,6 +3125,11 @@ export class RemoteSessions {
         ? { archivedSessionIds: this.syncArchives() }
         : { accepted: true };
     }
+    const parsedToolOutput =
+      method === "session/toolOutput" ? webToolOutputReferenceSchema.safeParse(request) : undefined;
+    if (parsedToolOutput && !parsedToolOutput.success) {
+      throw new RpcError("gateway/invalid", "Invalid tool output reference.");
+    }
     const readOnly = [
       "session/projections",
       "session/page",
@@ -3153,10 +3162,8 @@ export class RemoteSessions {
         ),
       };
     }
-    if (method === "session/toolOutput") {
-      const parsed = webToolOutputReferenceSchema.safeParse(request);
-      if (!parsed.success) throw new RpcError("gateway/invalid", "Invalid tool output reference.");
-      return view.readToolOutput(parsed.data);
+    if (parsedToolOutput?.success) {
+      return view.readToolOutput(parsedToolOutput.data);
     }
     const entry = this.entries.get(id);
     if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");

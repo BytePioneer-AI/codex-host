@@ -8,17 +8,11 @@ import {
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { PwaInstall } from "@deepseek-ai/dsh-client-web";
 import { ANDROID_APK_RELEASES_URL } from "./MobileGuideCard.tsx";
+import { isDesktopShell } from "./desktop-shell.ts";
 import css from "./PwaInstallRow.module.css";
 
 export interface PwaInstallFace {
   installation: PwaInstall;
-}
-
-export function isDesktopShell(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    (window as { __CODEXHOST_DESKTOP_SHELL__?: boolean }).__CODEXHOST_DESKTOP_SHELL__ === true
-  );
 }
 
 export function PwaInstallRow({

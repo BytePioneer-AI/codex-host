@@ -85,10 +85,11 @@ import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.
 import { webExtensionAppearance } from "./native-extensions/surface.ts";
 import { watchAuthentication } from "./auth-watch.ts";
 import { watchReleaseAnnouncement } from "./release-announcement.ts";
-import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
+import { initializeNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
-import { isDesktopShell, PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { isDesktopShell } from "./desktop-shell.ts";
 import { WallpaperController } from "./wallpaper.ts";
 import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import {
@@ -681,8 +682,7 @@ export function apply(ctx: ClientContext): void {
   );
 
   // Deep links (`?session=<id>`, used by notification clicks) and service-worker messages.
-  ensureServiceWorker();
-  resubmitNotifications();
+  void initializeNotifications().catch(() => undefined);
   ctx.effect(
     () => watchAuthentication((ctx.get("connection") as ConnectionHandle).state),
     "ui-codexhost: enter sign-in when the token is revoked",
@@ -710,7 +710,18 @@ export function apply(ctx: ClientContext): void {
     if (data?.type === "codexhost/open-session" && typeof data.sessionId === "string")
       face.openSession(data.sessionId);
   };
-  if ("serviceWorker" in navigator) {
+  if (isDesktopShell()) {
+    const shellWindow = window as Window & { __codexhostOpenSession?: (sessionId: string) => void };
+    const openSession = (sessionId: string) => face.openSession(sessionId);
+    shellWindow.__codexhostOpenSession = openSession;
+    ctx.effect(
+      () => () => {
+        if (shellWindow.__codexhostOpenSession === openSession)
+          delete shellWindow.__codexhostOpenSession;
+      },
+      "ui-codexhost: desktop session activations",
+    );
+  } else if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", onMessage);
     ctx.effect(
       () => () => {

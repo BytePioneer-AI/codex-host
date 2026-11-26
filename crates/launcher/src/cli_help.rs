@@ -21,7 +21,10 @@ pub(crate) fn subcommand_usage(arguments: &[String]) -> Option<&'static str> {
              --custom-install is Windows-only.",
             Some(&["--json"]),
         ),
-        "app" => ("codexhost app [--onboarding]", Some(&["--onboarding"])),
+        "app" => (
+            "codexhost app [--onboarding | --session <id>]",
+            Some(&["--onboarding"]),
+        ),
         "stop" => (
             "codexhost stop [--node <absolute-file>] [--host-runtime <absolute-file>]\n    \
              [--web-runtime <absolute-file>]",
@@ -97,6 +100,7 @@ mod tests {
             ["web", "--host", "--help"],
             ["inspect", "--custom-install", "-h"],
             ["launch", "--pi", "--help"],
+            ["app", "--session", "--help"],
             ["host", "info", "--help"],
         ] {
             assert!(subcommand_usage(&arguments.map(String::from)).is_none());

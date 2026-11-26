@@ -6,6 +6,7 @@ mod tray;
 mod visibility;
 mod zoom;
 
+use std::io::{self, Write};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -69,10 +70,67 @@ impl Page {
     }
 }
 
+enum MainTarget {
+    Route(&'static str),
+    Session(String),
+}
+
+impl MainTarget {
+    fn apply(self, url: &mut Url) {
+        match self {
+            Self::Route(route) => url.set_fragment(Some(route)),
+            Self::Session(session_id) => {
+                url.query_pairs_mut().append_pair("session", &session_id);
+            }
+        }
+    }
+}
+
 struct View {
     page: Page,
     last_login: Option<Url>,
-    pending_route: Option<&'static str>,
+    pending_target: Option<MainTarget>,
+}
+
+impl View {
+    fn open_target(&mut self, target: MainTarget) -> Result<Option<Url>, String> {
+        if matches!(self.page, Page::Web) {
+            let mut url = self
+                .last_login
+                .clone()
+                .ok_or("Desktop Web login URL is unavailable")?;
+            // Use the login navigation to load a fresh document for the deep link.
+            target.apply(&mut url);
+            Ok(Some(url))
+        } else {
+            self.pending_target = Some(target);
+            Ok(None)
+        }
+    }
+
+    fn connect(&mut self, mut login: Url) -> Url {
+        self.page = Page::Web;
+        self.last_login = Some(login.clone());
+        if let Some(target) = self.pending_target.take() {
+            target.apply(&mut login);
+        }
+        login
+    }
+
+    fn finish_live_session(&mut self, id: &str, opened: bool) -> Option<Url> {
+        if !matches!(self.page, Page::Web)
+            || !matches!(&self.pending_target, Some(MainTarget::Session(pending)) if pending == id)
+        {
+            return None;
+        }
+        let mut login = self.last_login.clone()?;
+        let target = self.pending_target.take()?;
+        if opened {
+            return None;
+        }
+        target.apply(&mut login);
+        Some(login)
+    }
 }
 
 struct Shell {
@@ -154,10 +212,7 @@ fn web_event(app: &AppHandle, event: WebEvent) {
     }
     let status = match event {
         WebEvent::Connected(ready) => {
-            view.page = Page::Web;
-            view.last_login = Some(ready.login_url.clone());
-            let mut url = ready.login_url;
-            url.set_fragment(view.pending_route.take());
+            let url = view.connect(ready.login_url);
             drop(view);
             navigate(app, url);
             return;
@@ -289,26 +344,53 @@ fn refresh_window_hidden(window: &tauri::Window) {
     );
 }
 
-fn set_visible(app: &AppHandle, visible: bool) {
-    let Some(window) = app.get_webview_window(MAIN) else {
-        return;
-    };
+fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(MAIN)
+        .ok_or("Desktop window is unavailable")?;
     if visible {
         #[cfg(target_os = "macos")]
         {
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
             apply_macos_dock_icon();
         }
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        sync_window_hidden_explicit(app, false);
+        let show = window.show();
+        let restore = window.unminimize();
+        let focus = window.set_focus();
+        if show.is_ok() && restore.is_ok() {
+            sync_window_hidden_explicit(app, false);
+        }
+        show.and(restore)
+            .and(focus)
+            .map_err(|error| error.to_string())
     } else {
-        let _ = window.hide();
-        sync_window_hidden_explicit(app, true);
+        let hide = window.hide();
+        if hide.is_ok() {
+            sync_window_hidden_explicit(app, true);
+        }
         #[cfg(target_os = "macos")]
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        hide.map_err(|error| error.to_string())
     }
+}
+
+fn prepare_main_target(
+    app: &AppHandle,
+    shell: &Shell,
+    target: Option<MainTarget>,
+) -> Result<Option<Url>, String> {
+    let mut view = shell.view.lock().unwrap();
+    let begin = matches!(view.page, Page::Dormant)
+        || (matches!(view.page, Page::Onboarding) && target.is_some());
+    let url = match target {
+        Some(target) => view.open_target(target)?,
+        None => None,
+    };
+    drop(view);
+    if begin {
+        begin_web(app, true);
+    }
+    Ok(url)
 }
 
 pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
@@ -316,29 +398,76 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
     if shell.launcher.is_stopping() {
         return;
     }
-    let mut view = shell.view.lock().unwrap();
-    let begin = matches!(view.page, Page::Dormant)
-        || (matches!(view.page, Page::Onboarding) && route.is_some());
-    let mut target = None;
-    if let Some(route) = route {
-        if matches!(view.page, Page::Web) {
-            target = view.last_login.clone().map(|mut url| {
-                // The login redirect forces a fresh document load. The Web UI
-                // reads the section hash on mount, not on hashchange.
-                url.set_fragment(Some(route));
-                url
-            });
-        } else {
-            view.pending_route = Some(route);
-        }
-    }
-    drop(view);
-    if begin {
-        begin_web(app, true);
-    } else if let Some(url) = target {
+    if let Ok(Some(url)) = prepare_main_target(app, &shell, route.map(MainTarget::Route)) {
         navigate(app, url);
     }
-    set_visible(app, true);
+    let _ = set_visible(app, true);
+}
+
+fn session_script(origin: &str, session_id: &str) -> String {
+    let origin = serde_json::to_string(origin).expect("Web origin is a JSON string");
+    let session = serde_json::to_string(session_id).expect("Session ID is a JSON string");
+    format!(
+        "(() => {{ try {{ if (location.origin !== {origin} || typeof window.__codexhostOpenSession !== 'function') return false; window.__codexhostOpenSession({session}); return true; }} catch {{ return false; }} }})()"
+    )
+}
+
+fn finish_live_session(app: &AppHandle, session_id: &str, opened: bool) {
+    let shell = app.state::<Shell>();
+    let target = shell
+        .view
+        .lock()
+        .unwrap()
+        .finish_live_session(session_id, opened);
+    if let Some(url) = target {
+        navigate(app, url);
+    }
+}
+
+fn show_session(app: &AppHandle, session_id: String) {
+    let shell = app.state::<Shell>();
+    if shell.launcher.is_stopping() {
+        return;
+    }
+    let _ = set_visible(app, true);
+    let origin = {
+        let mut view = shell.view.lock().unwrap();
+        let origin = view
+            .last_login
+            .as_ref()
+            .filter(|_| matches!(view.page, Page::Web))
+            .map(|url| url.origin().ascii_serialization());
+        if origin.is_some() {
+            // Keep the target until the live page accepts it or a reconnect consumes it.
+            view.pending_target = Some(MainTarget::Session(session_id.clone()));
+        }
+        origin
+    };
+    let Some(origin) = origin else {
+        if let Ok(Some(url)) =
+            prepare_main_target(app, &shell, Some(MainTarget::Session(session_id)))
+        {
+            navigate(app, url);
+        }
+        return;
+    };
+    let script = session_script(&origin, &session_id);
+    let callback_app = app.clone();
+    let callback_session = session_id.clone();
+    if let Some(window) = app.get_webview_window(MAIN)
+        && window
+            .eval_with_callback(script, move |result| {
+                let app = callback_app.clone();
+                let session = callback_session.clone();
+                let _ = callback_app.run_on_main_thread(move || {
+                    finish_live_session(&app, &session, result == "true");
+                });
+            })
+            .is_ok()
+    {
+        return;
+    }
+    finish_live_session(app, &session_id, false);
 }
 
 pub(crate) fn show_onboarding(app: &AppHandle) {
@@ -348,13 +477,13 @@ pub(crate) fn show_onboarding(app: &AppHandle) {
     }
     let mut view = shell.view.lock().unwrap();
     view.page = Page::Onboarding;
-    view.pending_route = None;
+    view.pending_target = None;
     drop(view);
     let zoom = shell.zoom.lock().unwrap().percent();
     let mut url = embedded(ONBOARDING);
     url.set_query(Some(&format!("zoom={zoom}")));
     navigate(app, url);
-    set_visible(app, true);
+    let _ = set_visible(app, true);
 }
 
 async fn launcher_action<T: Send + 'static>(
@@ -476,7 +605,7 @@ async fn choose_surface(
             Surface::NativeShell => begin_web(&on_main, true),
             Surface::CodexDesktop => {
                 shell.view.lock().unwrap().page = Page::Dormant;
-                set_visible(&on_main, false);
+                let _ = set_visible(&on_main, false);
             }
         }
     })
@@ -609,19 +738,40 @@ async fn window_zoom_set(
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let options = Options::from_env()?;
-    let activation = if options.onboarding {
+    let options = Options::from_env().inspect_err(|_| {
+        if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--session")) {
+            reply_to_session_launch(b"no\n");
+        }
+    })?;
+    let session_launch = options.session_id.is_some();
+    let activation = if let Some(id) = &options.session_id {
+        Activation::ShowSession(id.clone())
+    } else if options.onboarding {
         Activation::Onboarding
     } else {
         Activation::Show
     };
-    let (instance, activations) = match instance::claim(&options.data_dir, activation)? {
+    let claim = instance::claim(&options.data_dir, activation).inspect_err(|_| {
+        if session_launch {
+            reply_to_session_launch(b"no\n");
+        }
+    })?;
+    let (instance, activations) = match claim {
         Claim::Primary {
             instance,
             activations,
         } => (instance, activations),
-        Claim::Forwarded => return Ok(()),
+        Claim::Forwarded | Claim::DeliveryUnknown => {
+            if session_launch {
+                reply_to_session_launch(b"ok\n");
+            }
+            return Ok(());
+        }
     };
+    let initial_target = options.session_id.map(MainTarget::Session);
+    if session_launch {
+        reply_to_session_launch(b"ok\n");
+    }
     let launcher = Arc::new(Launcher::new(
         &std::env::current_exe()?,
         options.data_dir,
@@ -651,7 +801,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Page::Loading(Status::Starting, None)
                 },
                 last_login: None,
-                pending_route: None,
+                pending_target: initial_target,
             }),
             ensure_web,
             locale: locale.clone(),
@@ -684,7 +834,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    set_visible(window.app_handle(), false);
+                    let _ = set_visible(window.app_handle(), false);
                 }
                 // Reconcile actual OS visibility/minimized state on resize or focus
                 // changes. Unfocused visible windows (e.g. on a secondary display)
@@ -817,6 +967,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let delivered = activation_app.run_on_main_thread(move || match activation {
                     Activation::Onboarding => show_onboarding(&handle),
                     Activation::Show => show_main(&handle, None),
+                    Activation::ShowSession(id) => show_session(&handle, id),
                 });
                 if delivered.is_err() {
                     eprintln!("CodexHost: could not deliver a desktop window activation");
@@ -844,11 +995,74 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn reply_to_session_launch(reply: &[u8]) {
+    let mut stdout = io::stdout().lock();
+    let _ = stdout.write_all(reply).and_then(|()| stdout.flush());
+}
+
 #[cfg(test)]
 mod tests {
     use tauri::webview::{PermissionKind, PermissionResponse};
 
-    use super::{Page, Status, permission_response};
+    use super::{MainTarget, Page, Status, View, permission_response, session_script};
+    use url::Url;
+
+    #[test]
+    fn notification_session_uses_the_live_login_and_survives_reconnect() {
+        let old_login = Url::parse("http://127.0.0.1:4400/?token=old").unwrap();
+        let new_login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
+        let session = || MainTarget::Session("thread/一?x=#".into());
+        let mut view = View {
+            page: Page::Loading(Status::Starting, None),
+            last_login: None,
+            pending_target: Some(session()),
+        };
+        let live = view.connect(old_login);
+        assert_eq!(
+            live.as_str(),
+            "http://127.0.0.1:4400/?token=old&session=thread%2F%E4%B8%80%3Fx%3D%23"
+        );
+
+        assert!(view.pending_target.is_none());
+        view.pending_target = Some(MainTarget::Session("earlier".into()));
+        view.page = Page::Loading(Status::Reconnecting, None);
+        assert_eq!(view.open_target(session()).unwrap(), None);
+        assert_eq!(view.finish_live_session("earlier", false), None);
+        assert_eq!(view.finish_live_session("thread/一?x=#", true), None);
+        let reconnected = view.connect(new_login.clone());
+        assert_eq!(
+            reconnected.as_str(),
+            "http://127.0.0.1:4401/?token=new&session=thread%2F%E4%B8%80%3Fx%3D%23"
+        );
+        assert_eq!(view.connect(new_login.clone()), new_login);
+        view.pending_target = Some(session());
+        assert_eq!(
+            view.finish_live_session("thread/一?x=#", false).unwrap(),
+            reconnected
+        );
+        view.pending_target = Some(session());
+        assert_eq!(view.finish_live_session("thread/一?x=#", true), None);
+        assert!(view.pending_target.is_none());
+        let settings = view
+            .open_target(MainTarget::Route("connect-devices"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            settings.as_str(),
+            "http://127.0.0.1:4401/?token=new#connect-devices"
+        );
+    }
+
+    #[test]
+    fn live_session_script_uses_a_json_string_on_the_trusted_origin() {
+        let id = r#"id"); globalThis.injected = true; //"#;
+        let script = session_script("http://127.0.0.1:4400", id);
+        assert!(script.contains(&format!(
+            "window.__codexhostOpenSession({})",
+            serde_json::to_string(id).unwrap()
+        )));
+        assert!(script.contains(r#"location.origin !== "http://127.0.0.1:4400""#));
+    }
 
     #[test]
     fn onboarding_and_dormant_ignore_background_web_events() {

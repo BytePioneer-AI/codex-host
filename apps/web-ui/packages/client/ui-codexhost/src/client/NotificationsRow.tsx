@@ -2,7 +2,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
+import { copyText } from "./api.ts";
 import {
+  desktopNotificationUrl,
   disableNotifications,
   enableNotifications,
   notificationState,
@@ -24,6 +26,7 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testSent, setTestSent] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,6 +54,7 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
   const description =
     error ??
     (testSent ? t("notifications.testSent") : state === null ? "" : t(`notifications.${state}`));
+  const edgeUrl = state === "edge" ? desktopNotificationUrl(window.location.href) : null;
   const test = (): void => {
     setTesting(true);
     setError(null);
@@ -70,7 +74,24 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
         <div className={css.desc} role={error !== null ? "alert" : testSent ? "status" : undefined}>
           {description}
         </div>
+        {edgeUrl !== null && <code className={css.desc}>{edgeUrl}</code>}
       </div>
+      {edgeUrl !== null && (
+        <button
+          type="button"
+          className={css.button}
+          onClick={() => {
+            setError(null);
+            setCopied(false);
+            void copyText(edgeUrl).then(
+              () => setCopied(true),
+              () => setError(t("notifications.edgeCopyFailed")),
+            );
+          }}
+        >
+          {t(copied ? "notifications.edgeCopied" : "notifications.edgeCopy")}
+        </button>
+      )}
       {(state === "off" || state === "on") && (
         <div className={css.actions}>
           {state === "on" && (

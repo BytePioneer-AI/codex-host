@@ -1,14 +1,15 @@
 //! Launch and stop the independent native desktop shell.
 use std::error::Error;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{
-    ProcessIdentity, configure_detached_service_command, process_instance,
+    ProcessIdentity, configure_detached_service_command, process_identity, process_instance,
     terminate_process_identity,
 };
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,29 @@ use crate::{DATA_DIRECTORY_ENV, LAUNCHER_EXECUTABLE_ENV};
 const READY: &str = "desktop-shell-ready.json";
 const STOP_GRACE: Duration = Duration::from_secs(3);
 const STOP_POLL: Duration = Duration::from_millis(25);
+const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AppActivation<'a> {
+    Show,
+    Onboarding,
+    Session(&'a str),
+}
+
+pub fn parse_app_activation(arguments: &[String]) -> Result<AppActivation<'_>, &'static str> {
+    match arguments {
+        [] => Ok(AppActivation::Show),
+        [flag] if flag == "--onboarding" => Ok(AppActivation::Onboarding),
+        [flag, id] if flag == "--session" => {
+            if id.len() <= 1024 && !id.trim().is_empty() && !id.chars().any(char::is_control) {
+                Ok(AppActivation::Session(id))
+            } else {
+                Err("Invalid desktop session ID")
+            }
+        }
+        _ => Err("usage: codexhost app [--onboarding | --session <id>]"),
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 struct ReadyOwner {
@@ -27,11 +51,8 @@ struct ReadyOwner {
     version: String,
 }
 
-pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn Error>> {
+fn shell_command(shell: &Path, data: &Path) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::new(shell);
-    if onboarding {
-        command.arg("--onboarding");
-    }
     command
         .env(
             LAUNCHER_EXECUTABLE_ENV,
@@ -42,8 +63,50 @@ pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn 
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     configure_detached_service_command(&mut command)?;
+    Ok(command)
+}
+
+pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn Error>> {
+    let mut command = shell_command(shell, data)?;
+    if onboarding {
+        command.arg("--onboarding");
+    }
     command.spawn()?;
     Ok(())
+}
+
+pub fn activate_session(shell: &Path, data: &Path, session_id: &str) -> Result<(), Box<dyn Error>> {
+    if let Some(bytes) = read_record(&data.join(READY))? {
+        let owner: ReadyOwner = serde_json::from_slice(&bytes)
+            .map_err(|_| "The desktop shell ready record is invalid")?;
+        if process_instance(owner.pid, owner.started_at_micros).is_none()
+            && process_identity(owner.pid).is_ok()
+        {
+            return Err("The desktop shell ready record belongs to a reused process ID".into());
+        }
+    }
+    let mut child = shell_command(shell, data)?
+        .args(["--session", session_id])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let Some(stdout) = child.stdout.take() else {
+        return Ok(());
+    };
+    if shell_explicitly_rejected(stdout, ACTIVATION_TIMEOUT) {
+        return Err("The desktop shell rejected the session activation".into());
+    }
+    Ok(())
+}
+
+fn shell_explicitly_rejected(mut stdout: impl Read + Send + 'static, timeout: Duration) -> bool {
+    let (send, receive) = mpsc::channel();
+    let _ = thread::Builder::new().spawn(move || {
+        let mut reply = [0; 3];
+        let rejected = stdout.read_exact(&mut reply).is_ok() && &reply == b"no\n";
+        let _ = send.send(rejected);
+    });
+    // Once spawned, a lost reply leaves acceptance unknown.
+    matches!(receive.recv_timeout(timeout), Ok(true))
 }
 
 fn wait_for_exit(owner: ProcessIdentity, timeout: Duration) -> bool {
@@ -108,6 +171,45 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn app_session_takes_one_bounded_literal_id() {
+        let parse = |id: &str| {
+            let arguments = ["--session".to_owned(), id.to_owned()];
+            parse_app_activation(&arguments) == Ok(AppActivation::Session(id))
+        };
+        assert!(parse("--data-dir"));
+        assert!(parse(&"é".repeat(512)));
+        for invalid in ["", " \u{3000}", "a\u{1f}b", "a\u{85}b", &"é".repeat(513)] {
+            assert!(!parse(invalid));
+        }
+        assert!(
+            parse_app_activation(&["--session".into(), "id".into(), "--onboarding".into()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn shell_reply_only_reports_a_complete_explicit_rejection() {
+        assert!(shell_explicitly_rejected(&b"no\n"[..], ACTIVATION_TIMEOUT));
+        for reply in [&b"ok\n"[..], b"", b"no", b"???"] {
+            assert!(!shell_explicitly_rejected(reply, ACTIVATION_TIMEOUT));
+        }
+
+        struct DelayedReply(mpsc::Receiver<()>);
+        impl Read for DelayedReply {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv();
+                Ok(0)
+            }
+        }
+        let (release, reply) = mpsc::channel();
+        assert!(!shell_explicitly_rejected(
+            DelayedReply(reply),
+            Duration::ZERO,
+        ));
+        drop(release);
+    }
+
+    #[test]
     fn stop_ignores_absent_record_and_removes_a_reused_pids_record() {
         let data =
             std::env::temp_dir().join(format!("codexhost-shell-stop-{}", std::process::id()));
@@ -125,10 +227,37 @@ mod tests {
         assert_eq!(serde_json::to_value(&record).unwrap(), fixture);
         let path = data.join(READY);
         fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let error = activate_session(&data.join("unused-shell"), &data, "test").unwrap_err();
+        assert!(error.to_string().contains("reused process ID"));
         assert!(!stop(&data).unwrap());
         assert!(!path.exists());
         assert!(process_instance(current.id, current.started_at_micros).is_some());
         fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn activation_rejects_invalid_ready_json_even_with_a_live_pid() {
+        let data = std::env::temp_dir().join(format!(
+            "codexhost-shell-activation-corrupt-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&data).unwrap();
+        let path = data.join(READY);
+        let pid = std::process::id();
+        assert!(process_identity(pid).is_ok());
+        fs::write(&path, format!(r#"{{"pid":{pid},"started_at_micros":"#)).unwrap();
+
+        let shell = data.join("missing-shell");
+        let invalid = activate_session(&shell, &data, "test").unwrap_err();
+        fs::remove_file(path).unwrap();
+        let absent = activate_session(&shell, &data, "test").unwrap_err();
+        fs::remove_dir_all(data).unwrap();
+
+        assert_eq!(
+            invalid.to_string(),
+            "The desktop shell ready record is invalid"
+        );
+        assert!(absent.is::<std::io::Error>(), "{absent}");
     }
 
     #[test]

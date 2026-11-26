@@ -18,11 +18,17 @@ const MAX_REQUEST_BYTES: u64 = 4 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Activation {
     Onboarding,
     Show,
+    #[serde(rename = "showSession")]
+    ShowSession(String),
+}
+
+pub(crate) fn valid_session_id(id: &str) -> bool {
+    id.len() <= 1024 && !id.trim().is_empty() && !id.chars().any(char::is_control)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,6 +82,7 @@ pub(crate) enum Claim {
         activations: Receiver<Activation>,
     },
     Forwarded,
+    DeliveryUnknown,
 }
 
 pub(crate) struct PrimaryInstance {
@@ -160,9 +167,24 @@ fn claim_with_lock(
         }
 
         let last_problem = match read_live_record(&data_dir) {
-            RecordState::Live(record) => match activate(&record, activation) {
+            RecordState::Live(record) => match activate(&record, &activation) {
                 Ok(()) => return Ok(Claim::Forwarded),
-                Err(error) => Some(error),
+                // The listener may already have queued this session if its response was lost.
+                Err(ActivationFailure::AfterRequest(_))
+                    if matches!(activation, Activation::ShowSession(_)) =>
+                {
+                    return Ok(Claim::DeliveryUnknown);
+                }
+                Err(ActivationFailure::Rejected(error))
+                    if matches!(activation, Activation::ShowSession(_)) =>
+                {
+                    return Err(error);
+                }
+                Err(
+                    ActivationFailure::BeforeRequest(error)
+                    | ActivationFailure::AfterRequest(error)
+                    | ActivationFailure::Rejected(error),
+                ) => Some(error),
             },
             RecordState::Missing => None,
             RecordState::Invalid(error) | RecordState::Stopped(error) => Some(error),
@@ -357,36 +379,62 @@ fn read_live_record(data_dir: &Path) -> RecordState {
     }
 }
 
-fn activate(record: &InstanceRecord, action: Activation) -> Result<(), String> {
+enum ActivationFailure {
+    BeforeRequest(String),
+    AfterRequest(String),
+    Rejected(String),
+}
+
+fn activate(record: &InstanceRecord, action: &Activation) -> Result<(), ActivationFailure> {
+    use ActivationFailure::{AfterRequest, BeforeRequest, Rejected};
     #[cfg(target_os = "windows")]
     allow_forwarded_window_activation(record.pid);
 
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, record.port));
-    let mut stream = TcpStream::connect_timeout(&address, IO_TIMEOUT)
-        .map_err(|error| format!("Cannot contact the existing desktop shell: {error}"))?;
+    let mut stream = TcpStream::connect_timeout(&address, IO_TIMEOUT).map_err(|error| {
+        BeforeRequest(format!(
+            "Cannot contact the existing desktop shell: {error}"
+        ))
+    })?;
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
         .map_err(|error| {
-            format!("Cannot configure the desktop shell activation request: {error}")
+            BeforeRequest(format!(
+                "Cannot configure the desktop shell activation request: {error}"
+            ))
         })?;
     let mut request = serde_json::to_vec(&ActivationRequest {
         nonce: record.nonce.clone(),
-        action,
+        action: action.clone(),
     })
-    .map_err(|error| format!("Cannot encode the desktop shell activation request: {error}"))?;
+    .map_err(|error| {
+        BeforeRequest(format!(
+            "Cannot encode the desktop shell activation request: {error}"
+        ))
+    })?;
     request.push(b'\n');
-    stream
-        .write_all(&request)
-        .map_err(|error| format!("Cannot send the desktop shell activation request: {error}"))?;
+    stream.write_all(&request).map_err(|error| {
+        AfterRequest(format!(
+            "Cannot send the desktop shell activation request: {error}"
+        ))
+    })?;
     let mut response = String::new();
     BufReader::new(&stream)
         .read_line(&mut response)
-        .map_err(|error| format!("Cannot read the desktop shell activation response: {error}"))?;
-    if response.trim() == "ok" {
-        Ok(())
-    } else {
-        Err("The existing desktop shell rejected the activation request".into())
+        .map_err(|error| {
+            AfterRequest(format!(
+                "Cannot read the desktop shell activation response: {error}"
+            ))
+        })?;
+    match response.as_str() {
+        "denied\n" => Err(Rejected(
+            "The existing desktop shell rejected the activation request".into(),
+        )),
+        _ if response.trim() == "ok" => Ok(()),
+        _ => Err(AfterRequest(
+            "The existing desktop shell did not acknowledge the activation request".into(),
+        )),
     }
 }
 
@@ -435,6 +483,10 @@ fn handle_activation(
         && serde_json::from_str::<ActivationRequest>(&request)
             .ok()
             .filter(|request| request.nonce == nonce)
+            .filter(|request| match &request.action {
+                Activation::ShowSession(id) => valid_session_id(id),
+                _ => true,
+            })
             .is_some_and(|request| activations.send(request.action).is_ok());
     stream
         .write_all(if accepted { b"ok\n" } else { b"denied\n" })
@@ -588,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn same_data_directory_forwards_onboarding_and_show_requests() {
+    fn same_data_directory_forwards_activations_and_rejects_invalid_sessions() {
         let temp = aliased_temp_dir();
         let alias_data = temp.alias.join("data");
         let canonical_data = temp.canonical.join("data");
@@ -627,6 +679,23 @@ mod tests {
             activations.recv_timeout(Duration::from_secs(1)).unwrap(),
             Activation::Show
         );
+        let session = Activation::ShowSession("a quoted \"会话\"".into());
+        assert!(matches!(
+            claim_with(&canonical_data, session.clone(), test_retry(), || {}).unwrap(),
+            Claim::Forwarded
+        ));
+        assert_eq!(
+            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
+            session
+        );
+        let result = claim_with(
+            &canonical_data,
+            Activation::ShowSession("bad\nID".into()),
+            test_retry(),
+            || panic!("the explicitly rejected request must not be retried"),
+        );
+        assert!(matches!(result, Err(error) if error.contains("rejected")));
+        assert!(activations.try_recv().is_err());
 
         instance.shutdown();
         assert!(!canonical_data.join(RECORD_FILE).exists());
@@ -635,6 +704,50 @@ mod tests {
         drop(instance);
         assert!(!canonical_data.join(RECORD_FILE).exists());
         assert!(canonical_data.join(LOCK_FILE).is_file());
+    }
+
+    #[test]
+    fn session_activation_is_not_retried_when_the_listener_queued_it_but_the_reply_was_lost() {
+        let temp = aliased_temp_dir();
+        let data_dir = temp.canonical.join("data");
+        let Claim::Primary {
+            instance,
+            activations,
+        } = claim_with(&data_dir, Activation::Show, test_retry(), || {}).unwrap()
+        else {
+            panic!("the first claim must own the data directory");
+        };
+        let address = instance.address();
+        let proxy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let RecordState::Live(mut record) = read_live_record(&data_dir) else {
+            panic!("the primary must own the instance record");
+        };
+        record.port = proxy.local_addr().unwrap().port();
+        write_record(&data_dir.join(RECORD_FILE), &record).unwrap();
+
+        let proxy = thread::spawn(move || {
+            let (client, _) = proxy.accept().unwrap();
+            client.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+            let mut request = String::new();
+            BufReader::new(&client).read_line(&mut request).unwrap();
+            let mut primary = TcpStream::connect_timeout(&address, IO_TIMEOUT).unwrap();
+            primary.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+            primary.write_all(request.as_bytes()).unwrap();
+            let mut reply = String::new();
+            BufReader::new(primary).read_line(&mut reply).unwrap();
+            assert_eq!(reply, "ok\n", "the real listener queued the request");
+            drop(client);
+            proxy
+        });
+
+        let activation = Activation::ShowSession("thread".into());
+        let result = claim_with(&data_dir, activation.clone(), test_retry(), || {});
+        let proxy = proxy.join().unwrap();
+        assert!(matches!(result, Ok(Claim::DeliveryUnknown)));
+        assert_eq!(activations.recv_timeout(IO_TIMEOUT).unwrap(), activation);
+        assert_eq!(activations.try_recv(), Err(TryRecvError::Empty));
+        proxy.set_nonblocking(true).unwrap();
+        assert!(matches!(proxy.accept(), Err(error) if error.kind() == ErrorKind::WouldBlock));
     }
 
     #[test]

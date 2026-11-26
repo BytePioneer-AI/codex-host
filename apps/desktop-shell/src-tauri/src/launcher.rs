@@ -10,12 +10,15 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::instance::valid_session_id;
+
 const MAX_CAPTURED_STDERR_BYTES: usize = 16 * 1024;
 const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Options {
     pub onboarding: bool,
+    pub session_id: Option<String>,
     pub data_dir: PathBuf,
     /// True when the data directory came from `--data-dir` or an absolute
     /// `CODEXHOST_DATA_DIR`, rather than being derived from the home directory.
@@ -29,11 +32,20 @@ impl Options {
         home: Option<OsString>,
     ) -> Result<Self, String> {
         let mut onboarding = false;
+        let mut session_id = None;
         let mut data_dir = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.to_str() {
-                Some("--onboarding") if !onboarding => onboarding = true,
+                Some("--onboarding") if !onboarding && session_id.is_none() => onboarding = true,
+                Some("--session") if !onboarding && session_id.is_none() => {
+                    session_id = Some(
+                        args.next()
+                            .and_then(|id| id.into_string().ok())
+                            .filter(|id| valid_session_id(id))
+                            .ok_or("Invalid desktop session ID")?,
+                    );
+                }
                 Some("--data-dir") if data_dir.is_none() => {
                     let path = args.next().map(PathBuf::from);
                     data_dir = Some(
@@ -43,7 +55,7 @@ impl Options {
                 }
                 _ => {
                     return Err(
-                        "Usage: codexhost-shell [--onboarding] [--data-dir <absolute path>]".into(),
+                        "Usage: codexhost-shell [--onboarding | --session <id>] [--data-dir <absolute path>]".into(),
                     );
                 }
             }
@@ -66,6 +78,7 @@ impl Options {
             .ok_or("Cannot locate the CodexHost data directory")?;
         Ok(Self {
             onboarding,
+            session_id,
             data_dir,
             explicit_data_dir,
         })
@@ -454,9 +467,17 @@ mod tests {
             .unwrap(),
             Options {
                 onboarding: true,
+                session_id: None,
                 data_dir: cli,
                 explicit_data_dir: true,
             }
+        );
+        assert_eq!(
+            parse(vec!["--session".into(), "--data-dir".into()], Some(&env))
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("--data-dir")
         );
         assert_eq!(parse(vec![], Some(&env)).unwrap().data_dir, env);
         let default = parse(vec![], Some(Path::new("relative"))).unwrap();
@@ -468,6 +489,8 @@ mod tests {
             vec!["--data-dir"],
             vec!["--data-dir", "relative"],
             vec!["--onboarding", "--onboarding"],
+            vec!["--session", " "],
+            vec!["--session", "id", "--onboarding"],
             vec!["unexpected"],
         ] {
             assert!(parse(args.into_iter().map(OsString::from).collect(), None).is_err());

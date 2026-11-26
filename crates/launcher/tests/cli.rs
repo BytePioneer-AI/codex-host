@@ -301,7 +301,11 @@ fn native_subcommand_help_succeeds_without_starting_services() {
         (&["inspect"], "codexhost inspect [--json]"),
         (&["status"], "codexhost status"),
         (&["stop"], "codexhost stop ["),
-        (&["app"], "codexhost app [--onboarding]"),
+        (&["app"], "codexhost app [--onboarding | --session <id>]"),
+        (
+            &["app", "--session", "thread-id"],
+            "codexhost app [--onboarding | --session <id>]",
+        ),
         (&["launch-prefs"], "codexhost launch-prefs get --json"),
         (&["autostart"], "codexhost autostart on|off|status"),
         (&["console"], "codexhost console"),

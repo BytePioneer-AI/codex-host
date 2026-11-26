@@ -530,7 +530,7 @@ streams.setFallback((endpoint, args, sink) => {
 preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
-push.register(rpc);
+push.register(rpc, { launcher, hostDataDirectory: displayDirectory });
 async function readNetworkAccess() {
   const host = values.host as string;
   const tailscale = await tailscaleState(listeningPort);

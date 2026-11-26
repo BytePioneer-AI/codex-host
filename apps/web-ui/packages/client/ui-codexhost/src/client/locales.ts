@@ -786,6 +786,10 @@ export const en = {
   "pwa.guide.limitations":
     "If opened inside WeChat or another app, open in an external browser first.",
   "notifications.title": "Notifications",
+  "notifications.edge": "Open this address in Microsoft Edge and manage notifications in Settings.",
+  "notifications.edgeCopy": "Copy address",
+  "notifications.edgeCopied": "Address copied",
+  "notifications.edgeCopyFailed": "Select the address and copy it manually.",
   "notifications.on":
     "This device is notified when a turn finishes or an agent needs your approval or answer.",
   "notifications.off": "Get notified on this device when a turn finishes or an agent needs you.",
@@ -1461,6 +1465,10 @@ export const zh: Record<ImportLocaleKey, string> = {
     "推荐使用 Chrome 或 Edge 打开，出现「安装应用」后点击此处安装，或点击地址栏的安装图标。",
   "pwa.guide.limitations": "若在微信等应用内打开，请先改用外部浏览器（iOS 请使用 Safari）。",
   "notifications.title": "通知",
+  "notifications.edge": "在 Microsoft Edge 中打开此地址，然后在设置中管理通知。",
+  "notifications.edgeCopy": "复制地址",
+  "notifications.edgeCopied": "地址已复制",
+  "notifications.edgeCopyFailed": "请选择并手动复制地址。",
   "notifications.on": "一轮结束、需要审批或回答问题时，会通知这台设备。",
   "notifications.off": "一轮结束或 Agent 需要你时，在这台设备上收到通知。",
   "notifications.denied": "浏览器设置中已阻止此网站的通知。",

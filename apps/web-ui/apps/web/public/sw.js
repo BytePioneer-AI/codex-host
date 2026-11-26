@@ -120,7 +120,14 @@ function offlineResponse() {
       retryDelay = 1000;
       probe();
     }
-    document.getElementById("address").textContent = location.href;
+    const displayUrl = new URL(location.href);
+    displayUrl.searchParams.delete("token");
+    if (displayUrl.hash.startsWith("#token=")) {
+      const fragment = new URLSearchParams(displayUrl.hash.slice(1));
+      fragment.delete("token");
+      displayUrl.hash = fragment.toString();
+    }
+    document.getElementById("address").textContent = displayUrl.href;
     document.getElementById("retry").addEventListener("click", retry);
     updateDescription();
     setTimeout(() => { document.getElementById("help").hidden = false; }, 30000);
@@ -134,7 +141,7 @@ function offlineResponse() {
     });
     window.addEventListener("offline", updateDescription);
     navigator.serviceWorker.addEventListener("message", (event) => {
-      const { type, sessionId } = event.data;
+      const { type, sessionId } = event.data || {};
       if (type === "codexhost/open-session" && typeof sessionId === "string") {
         location.href = "./?session=" + encodeURIComponent(sessionId);
       }
@@ -152,11 +159,19 @@ function offlineResponse() {
   );
 }
 
-async function pushRequest(method, args) {
+class PushHttpError extends Error {
+  constructor(status) {
+    super(`HTTP ${String(status)}`);
+    this.status = status;
+  }
+}
+
+async function pushRequest(method, args, signal) {
   const response = await fetch(new URL(`api/${method}`, self.registration.scope).href, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
+    signal,
     body: JSON.stringify({
       type: "client-request",
       rpcId: crypto.randomUUID(),
@@ -164,7 +179,7 @@ async function pushRequest(method, args) {
       payload: { args },
     }),
   });
-  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  if (!response.ok) throw new PushHttpError(response.status);
   const envelope = await response.json();
   if (!envelope.result.ok) throw new Error(envelope.result.error.message);
   return envelope.result.value;
@@ -215,19 +230,46 @@ self.addEventListener("push", (event) => {
   );
 });
 
+async function activateDesktopSession(sessionId) {
+  if (typeof sessionId !== "string") return false;
+  let subscription;
+  try {
+    subscription = await self.registration.pushManager.getSubscription();
+  } catch {
+    return false;
+  }
+  if (!subscription) return false;
+  const args = { requestId: crypto.randomUUID(), endpoint: subscription.endpoint, sessionId };
+  for (const retry of [false, true]) {
+    try {
+      const result = await pushRequest(
+        "codexhost/desktopSessionActivate",
+        retry ? { ...args, retry } : args,
+        AbortSignal.timeout(10_000),
+      );
+      if (typeof result?.activated === "boolean") return result.activated;
+    } catch (error) {
+      if (!retry && error instanceof PushHttpError && [401, 403, 429].includes(error.status)) {
+        return false;
+      }
+    }
+  }
+  return undefined;
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const target = new URL(event.notification.data?.url || "./", self.registration.scope).href;
   event.waitUntil(
     (async () => {
+      const sessionId = event.notification.data?.sessionId;
+      if ((await activateDesktopSession(sessionId)) !== false) return;
+      const message = { type: "codexhost/open-session", sessionId };
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of windows) {
         if (client.url.startsWith(self.registration.scope)) {
           await client.focus();
-          client.postMessage({
-            type: "codexhost/open-session",
-            sessionId: event.notification.data?.sessionId,
-          });
+          client.postMessage(message);
           return;
         }
       }

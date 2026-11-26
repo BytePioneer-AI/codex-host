@@ -1,7 +1,13 @@
 /** Browser half of Web Push: service worker registration and push subscription. */
 import { pushApi } from "./api.ts";
+import { isDesktopShell } from "./desktop-shell.ts";
 
-export type NotificationState = "unsupported" | "needs-install" | "denied" | "off" | "on";
+export type NotificationState = "unsupported" | "needs-install" | "denied" | "off" | "on" | "edge";
+
+export function desktopNotificationUrl(href: string): string {
+  const url = new URL(href);
+  return url.origin + url.pathname;
+}
 
 function urlBase64ToBytes(value: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
@@ -26,6 +32,7 @@ async function registration(): Promise<ServiceWorkerRegistration> {
 }
 
 export async function notificationState(): Promise<NotificationState> {
+  if (isDesktopShell()) return "edge";
   if (
     !("serviceWorker" in navigator) ||
     !("PushManager" in window) ||
@@ -55,6 +62,7 @@ async function subscribeAndReport(): Promise<void> {
 }
 
 export async function enableNotifications(): Promise<NotificationState> {
+  if (isDesktopShell()) return "edge";
   const permission = await Notification.requestPermission();
   if (permission !== "granted") return permission === "denied" ? "denied" : "off";
   await subscribeAndReport();
@@ -62,6 +70,7 @@ export async function enableNotifications(): Promise<NotificationState> {
 }
 
 export async function disableNotifications(): Promise<NotificationState> {
+  if (isDesktopShell()) return "edge";
   const worker = await navigator.serviceWorker.getRegistration("./");
   const subscription = await worker?.pushManager.getSubscription();
   if (subscription !== null && subscription !== undefined) {
@@ -72,20 +81,37 @@ export async function disableNotifications(): Promise<NotificationState> {
 }
 
 export async function sendTestNotification(): Promise<boolean> {
+  if (isDesktopShell()) return false;
   const worker = await navigator.serviceWorker.getRegistration("./");
   const subscription = await worker?.pushManager.getSubscription();
   if (!subscription) return false;
   return (await pushApi.test(subscription.endpoint)).sent > 0;
 }
 
-/** Keep the service worker installed so notification clicks can reach the app. */
-export function ensureServiceWorker(): void {
+export async function initializeNotifications(): Promise<void> {
   if (!("serviceWorker" in navigator)) return;
-  void registration().catch(() => undefined);
+  if (!isDesktopShell()) {
+    void registration().catch(() => undefined);
+    resubmitNotifications();
+    return;
+  }
+  const worker = await navigator.serviceWorker.getRegistration("./");
+  if (!worker) return;
+  try {
+    const subscription = await worker.pushManager?.getSubscription();
+    if (subscription) {
+      void pushApi.unsubscribe(subscription.endpoint).catch(() => undefined);
+      await subscription.unsubscribe();
+    }
+  } finally {
+    // Retire the legacy registration in this WebView profile along with its push handlers.
+    await worker.unregister();
+  }
 }
 
 /** Restore missing subscriptions and associate them with the current sign-in token. */
 export function resubmitNotifications(): void {
+  if (isDesktopShell()) return;
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window))
     return;
   if (Notification.permission !== "granted") return;

@@ -168,7 +168,7 @@ const USAGE: &str = "usage:
   codexhost --help
   codexhost --version
   codexhost inspect [--json] [--custom-install <absolute-directory>]
-  codexhost app [--onboarding]
+  codexhost app [--onboarding | --session <id>]
   codexhost launch-prefs get --json
   codexhost launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false]
   codexhost web [--background] [--connect-devices] [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>] [--relay <control-host>]
@@ -1729,10 +1729,14 @@ fn launch_presentation(arguments: &[String], terminal: bool) -> console::Present
 }
 
 fn is_launch_command(arguments: &[String]) -> bool {
-    matches!(
-        arguments.first().map(String::as_str),
-        None | Some(START_MENU_ARGUMENT | "launch" | "app")
-    )
+    match arguments.first().map(String::as_str) {
+        None | Some(START_MENU_ARGUMENT | "launch") => true,
+        Some("app") => matches!(
+            desktop_shell::parse_app_activation(&arguments[1..]),
+            Ok(desktop_shell::AppActivation::Show | desktop_shell::AppActivation::Onboarding)
+        ),
+        _ => false,
+    }
 }
 
 fn default_launch_options() -> LaunchOptions {
@@ -1841,15 +1845,25 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch_default(true),
         Some("launch-prefs") => launch_preferences::run(&arguments[1..]),
         Some("app") => {
-            let onboarding = match &arguments[1..] {
-                [] => false,
-                [flag] if flag == "--onboarding" => true,
-                _ => return Err("usage: codexhost app [--onboarding]".into()),
-            };
+            use desktop_shell::AppActivation;
+            let activation = desktop_shell::parse_app_activation(&arguments[1..])?;
+            if let AppActivation::Session(id) = activation {
+                let installed = InstalledResources::from_current_executable()?;
+                let shell = installed
+                    .desktop_shell
+                    .ok_or("The codexhost desktop shell is unavailable")?;
+                let data =
+                    startup_record::data_directory().ok_or("User data directory is unavailable")?;
+                service_update::ensure_start_allowed(&data)?;
+                return desktop_shell::activate_session(&shell, &data, id);
+            }
             autostart::refresh();
             start_launch_console(&default_launch_options());
             let installed = InstalledResources::from_current_executable()?;
-            launch_app(installed.desktop_shell.as_deref(), onboarding)
+            launch_app(
+                installed.desktop_shell.as_deref(),
+                activation == AppActivation::Onboarding,
+            )
         }
         Some("inspect") => {
             let options = parse_inspect_options(&arguments[1..])?;
@@ -1926,7 +1940,14 @@ fn is_delegation_host_command(arguments: &[String]) -> bool {
 }
 
 fn main() -> ExitCode {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let Ok(arguments) = env::args_os()
+        .skip(1)
+        .map(OsString::into_string)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        eprintln!("codexhost launcher: arguments must be UTF-8");
+        return ExitCode::FAILURE;
+    };
     if let Some(synopsis) = cli_help::subcommand_usage(&arguments) {
         println!("usage: {synopsis}");
         return ExitCode::SUCCESS;
@@ -2128,11 +2149,17 @@ mod tests {
     }
 
     #[test]
-    fn app_is_a_launch_command_but_launch_preferences_is_not() {
+    fn app_is_a_launch_command_but_session_activation_and_preferences_are_not() {
         assert!(super::is_launch_command(&[
             "app".into(),
             "--onboarding".into()
         ]));
+        for arguments in [
+            vec!["app".into(), "--session".into(), "id".into()],
+            vec!["app".into(), "--session".into()],
+        ] {
+            assert!(!super::is_launch_command(&arguments));
+        }
         assert!(!super::is_launch_command(&[
             "launch-prefs".into(),
             "get".into(),

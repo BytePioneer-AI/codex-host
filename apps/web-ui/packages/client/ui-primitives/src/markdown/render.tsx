@@ -520,6 +520,33 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
   }
 }
 
+function MarkdownCodeBlock({
+  code,
+  lang,
+  streaming,
+  labels,
+}: {
+  readonly code: string;
+  readonly lang: string | undefined;
+  readonly streaming: boolean;
+  readonly labels: MarkdownCodeLabels;
+}): ReactNode {
+  const { collapsibleCodeBlocks, expandCodeLabel, collapseCodeLabel } = useMarkdownDelegate();
+  return (
+    <CodeBlock
+      code={code}
+      lang={lang}
+      streaming={streaming}
+      collapsible={collapsibleCodeBlocks}
+      expandCodeLabel={expandCodeLabel}
+      collapseCodeLabel={collapseCodeLabel}
+      copyLabel={labels.copyLabel}
+      copiedLabel={labels.copiedLabel}
+      toolbarLabels={labels.toolbarLabels}
+    />
+  );
+}
+
 function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): ReactNode {
   const language = node.lang ?? undefined;
   if (node.value === "") {
@@ -539,7 +566,7 @@ function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): Re
     return <Fragment key={key}>{renderTexToReact(`${node.value}\n`, true)}</Fragment>;
   }
   return (
-    <CodeBlock
+    <MarkdownCodeBlock
       key={key}
       // The replaced hast pipeline appended one synthetic newline that
       // CodeBlock's display trim removes; feeding the bare value would make
@@ -552,9 +579,7 @@ function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): Re
       // has no content yet and took the empty-fence arm above, so `lang`
       // here is final: it can never re-resolve to a different grammar.
       streaming={context.streaming}
-      copyLabel={context.labels.code.copyLabel}
-      copiedLabel={context.labels.code.copiedLabel}
-      toolbarLabels={context.labels.code.toolbarLabels}
+      labels={context.labels.code}
     />
   );
 }

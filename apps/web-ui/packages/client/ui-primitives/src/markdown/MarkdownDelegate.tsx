@@ -41,6 +41,12 @@ export interface MarkdownDelegate {
    */
   readonly openFile?:
     ((path: string, options?: { line?: number; external?: boolean }) => void) | undefined;
+  /** Fold settled long Markdown code fences by default inside this scope. */
+  readonly collapsibleCodeBlocks?: boolean | undefined;
+  /** Localized expand label for folded code fences (receives total line count). */
+  readonly expandCodeLabel?: ((totalLines: number) => string) | undefined;
+  /** Localized collapse label for expanded foldable code fences. */
+  readonly collapseCodeLabel?: string | undefined;
 }
 
 const MarkdownDelegateContext = createContext<MarkdownDelegate>({});
@@ -63,10 +69,31 @@ export function MarkdownDelegateProvider({
   openFile,
   fileImages,
   resolveLink,
+  collapsibleCodeBlocks,
+  expandCodeLabel,
+  collapseCodeLabel,
 }: MarkdownDelegateProviderProps): ReactNode {
   const delegate = useMemo(
-    () => ({ openExternalLink, onLinkContextMenu, openFile, fileImages, resolveLink }),
-    [openExternalLink, onLinkContextMenu, openFile, fileImages, resolveLink],
+    () => ({
+      openExternalLink,
+      onLinkContextMenu,
+      openFile,
+      fileImages,
+      resolveLink,
+      collapsibleCodeBlocks,
+      expandCodeLabel,
+      collapseCodeLabel,
+    }),
+    [
+      openExternalLink,
+      onLinkContextMenu,
+      openFile,
+      fileImages,
+      resolveLink,
+      collapsibleCodeBlocks,
+      expandCodeLabel,
+      collapseCodeLabel,
+    ],
   );
   return (
     <MarkdownDelegateContext.Provider value={delegate}>{children}</MarkdownDelegateContext.Provider>

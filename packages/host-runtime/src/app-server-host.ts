@@ -4325,7 +4325,8 @@ export class AppServerHost {
       const effectiveModel =
         thread.stateObserver.state.effectiveModel ?? thread.requestedModel ?? saved?.model;
       const effectiveThinkingOptionId =
-        thread.stateObserver.state.effectiveThinkingOptionId ?? saved?.thinkingOptionId;
+        thread.stateObserver.state.effectiveThinkingOptionId ??
+        (sameHarnessModelRef(effectiveModel, saved?.model) ? saved?.thinkingOptionId : undefined);
       const effectivePermissionModeId =
         thread.stateObserver.state.effectivePermissionModeId ?? saved?.permissionModeId;
       const inspection = threadInspectionSchema.parse({
@@ -5369,14 +5370,29 @@ export class AppServerHost {
         : {}),
     };
     if (
-      state.effectiveModel &&
-      !sameHarnessModelRef(state.effectiveModel, previousSelection?.model) &&
+      !sameHarnessModelRef(effectiveModel, previousSelection?.model) &&
       !state.effectiveThinkingOptionId
     ) {
       delete nextSelection.thinkingOptionId;
     }
+    const previousTransportModelId = thread.transportModelId;
     const transportModelId = encodeExternalTransportSelection(thread.harnessId, nextSelection);
-    if (transportModelId === thread.transportModelId) return;
+    if (transportModelId === previousTransportModelId) return;
+    try {
+      const record = await this.#repository.setTransportModelId(
+        thread.record.hostThreadId,
+        transportModelId,
+      );
+      if (
+        this.#externalRuntime.get(thread.id) !== thread ||
+        thread.transportModelId !== previousTransportModelId
+      )
+        return;
+      thread.record = record;
+    } catch (error) {
+      this.#diagnose(error);
+      return;
+    }
     thread.transportModelId = transportModelId;
     thread.requestedModel = effectiveModel;
     if (nextSelection.thinkingOptionId) {
@@ -5386,21 +5402,6 @@ export class AppServerHost {
     }
     if (nextSelection.permissionModeId) {
       thread.requestedPermissionModeId = nextSelection.permissionModeId;
-    }
-    try {
-      const record = await this.#repository.setTransportModelId(
-        thread.record.hostThreadId,
-        transportModelId,
-      );
-      if (
-        this.#externalRuntime.get(thread.id) !== thread ||
-        thread.transportModelId !== transportModelId
-      )
-        return;
-      thread.record = record;
-    } catch (error) {
-      this.#diagnose(error);
-      return;
     }
     thread.thread = externalThreadValue({
       record: thread.record,

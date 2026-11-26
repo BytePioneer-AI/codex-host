@@ -14,6 +14,7 @@ import {
   threadTitleInputSchema,
   clientProjectlessWorkspaceSchema,
   harnessModelRefSchema,
+  sameHarnessModelRef,
   restoreHarnessCommandMentions,
   harnessInstallationRequestTimeoutMs,
   jsonValueSchema,
@@ -506,7 +507,9 @@ export class ClientChannelHost {
     const state = thread.stateObserver.state;
     const saved = decodeExternalTransportSelection(thread.harnessId, thread.transportModelId);
     const effectiveModel = state.effectiveModel ?? thread.requestedModel ?? saved?.model;
-    const effectiveThinkingOptionId = state.effectiveThinkingOptionId ?? saved?.thinkingOptionId;
+    const effectiveThinkingOptionId =
+      state.effectiveThinkingOptionId ??
+      (sameHarnessModelRef(effectiveModel, saved?.model) ? saved?.thinkingOptionId : undefined);
     const effectivePermissionModeId = state.effectivePermissionModeId ?? saved?.permissionModeId;
     const snapshot = clientThreadSnapshotSchema.parse(
       copyAsJson({

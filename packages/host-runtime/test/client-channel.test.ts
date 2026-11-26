@@ -14,6 +14,7 @@ import { decodeExternalTransportSelection } from "@codexhost/protocol-core";
 import {
   THREAD_STEER_STRICT_TARGET_PARAM,
   clientThreadSnapshotSchema,
+  harnessModelRefIdSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
@@ -1061,6 +1062,133 @@ describe("public authenticated owner channel", () => {
     expect(fixture.adapter.sessions).toHaveLength(0);
   });
 
+  it("retries an observed configuration after a failed save without changing the saved selection", async () => {
+    const { fixture, a } = await setup();
+    const id = await startPiThread(fixture);
+    const threadId = hostThreadIdSchema.parse(id);
+    const original = (await fixture.mappingStore.getThread(threadId))?.transportModelId;
+    expect(original).toBeTypeOf("string");
+    const session = current(fixture);
+    const event = {
+      type: "session.state.changed" as const,
+      state: {
+        ...session.initialState,
+        effectiveModel: { id: harnessModelRefIdSchema.parse("confirmed") },
+        effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("default"),
+      },
+    };
+    vi.spyOn(fixture.mappingStore, "setTransportModelId").mockRejectedValueOnce(
+      new Error("Synthetic configuration write failure"),
+    );
+    const failed = new Promise<void>((resolve) => {
+      fixture.diagnosticOutput.on("data", (data) => {
+        if (data.toString().includes("Synthetic configuration write failure")) resolve();
+      });
+    });
+    session.emitEvent(event);
+    await failed;
+    const inspected = await a.request<{ transportModelId: string }>("codexhost/thread/inspect", {
+      threadId: id,
+    });
+    expect(inspected.transportModelId).toBe(original);
+    expect((await fixture.mappingStore.getThread(threadId))?.transportModelId).toBe(original);
+    session.emitEvent(event);
+    await vi.waitFor(async () => {
+      expect(
+        decodeExternalTransportSelection(
+          "pi",
+          (await fixture.mappingStore.getThread(threadId))?.transportModelId,
+        ),
+      ).toEqual({
+        model: { id: "confirmed" },
+        thinkingOptionId: "high",
+        permissionModeId: "default",
+      });
+    });
+  });
+
+  it("saves observed configurations in order and clears old thinking while a model save is pending", async () => {
+    const { fixture, a } = await setup();
+    const id = await startPiThread(fixture);
+    const threadId = hostThreadIdSchema.parse(id);
+    const session = current(fixture);
+    const emit = (model: string, thinking?: string) =>
+      session.emitEvent({
+        type: "session.state.changed",
+        state: {
+          ...(session.initialState.nativeRef ? { nativeRef: session.initialState.nativeRef } : {}),
+          effectiveModel: { id: harnessModelRefIdSchema.parse(model) },
+          ...(thinking
+            ? { effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse(thinking) }
+            : {}),
+        },
+      });
+    emit("old", "high");
+    await vi.waitFor(async () => {
+      expect(
+        decodeExternalTransportSelection(
+          "pi",
+          (await fixture.mappingStore.getThread(threadId))?.transportModelId,
+        )?.thinkingOptionId,
+      ).toBe("high");
+    });
+    const gate = Promise.withResolvers<undefined>();
+    const started = Promise.withResolvers<undefined>();
+    const completed = Promise.withResolvers<undefined>();
+    const save = fixture.mappingStore.setTransportModelId.bind(fixture.mappingStore);
+    const persistedModels: string[] = [];
+    vi.spyOn(fixture.mappingStore, "setTransportModelId").mockImplementation(async (...args) => {
+      const model = decodeExternalTransportSelection("pi", args[1])?.model?.id;
+      if (model === "new") {
+        started.resolve(undefined);
+        await gate.promise;
+      }
+      const record = await save(...args);
+      const persistedModel = decodeExternalTransportSelection("pi", record.transportModelId)?.model
+        ?.id;
+      if (persistedModel) persistedModels.push(persistedModel);
+      if (model === "new") completed.resolve(undefined);
+      return record;
+    });
+    try {
+      emit("new");
+      await started.promise;
+      expect((await a.snapshot(id)).configuration.effectiveThinkingOptionId).toBeUndefined();
+      const inspected = await a.request<{ effectiveThinkingOptionId?: string }>(
+        "codexhost/thread/inspect",
+        { threadId: id },
+      );
+      expect(inspected.effectiveThinkingOptionId).toBeUndefined();
+      emit("latest", "low");
+      expect(
+        decodeExternalTransportSelection(
+          "pi",
+          (await fixture.mappingStore.getThread(threadId))?.transportModelId,
+        ),
+      ).toEqual({
+        model: { id: "old" },
+        thinkingOptionId: "high",
+      });
+      gate.resolve(undefined);
+      await completed.promise;
+      await vi.waitFor(async () => {
+        expect(
+          decodeExternalTransportSelection(
+            "pi",
+            (await fixture.mappingStore.getThread(threadId))?.transportModelId,
+          ),
+        ).toEqual({
+          model: { id: "latest" },
+          thinkingOptionId: "low",
+        });
+      });
+      expect(persistedModels).toEqual(["new", "latest"]);
+    } finally {
+      gate.resolve(undefined);
+    }
+  });
+
   it("persists observed session.state.changed configuration and falls back to saved permissionModeId in snapshots", async () => {
     const { fixture, a } = await setup();
     const id = await startPiThread(fixture);
@@ -1082,7 +1210,7 @@ describe("public authenticated owner channel", () => {
       type: "session.state.changed",
       state: {
         ...session.initialState,
-        effectiveModel: { id: "pi/test-model" },
+        effectiveModel: { id: harnessModelRefIdSchema.parse("pi/test-model") },
         effectiveThinkingOptionId: confirmedThinking,
         effectivePermissionModeId: confirmedMode,
       },
@@ -1106,8 +1234,8 @@ describe("public authenticated owner channel", () => {
     session.emitEvent({
       type: "session.state.changed",
       state: {
-        nativeRef: session.initialState.nativeRef,
-        effectiveModel: { id: "pi/test-model" },
+        ...(session.initialState.nativeRef ? { nativeRef: session.initialState.nativeRef } : {}),
+        effectiveModel: { id: harnessModelRefIdSchema.parse("pi/test-model") },
       },
     });
     await vi.waitFor(async () => {

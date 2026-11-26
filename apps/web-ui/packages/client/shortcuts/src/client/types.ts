@@ -56,6 +56,7 @@ export interface ShortcutCatalogEntry {
 /** Keyboard adapter input, with composition and local consumption already resolved. */
 export interface ShortcutGesture {
   readonly code: string;
+  readonly key?: string;
   /** Second physical key currently held with code; matching ignores pair order. */
   readonly secondCode?: string;
   readonly control: boolean;

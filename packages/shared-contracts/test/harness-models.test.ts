@@ -264,6 +264,20 @@ describe("Harness Model runtime contracts", () => {
       }).success,
     ).toBe(false);
     expect(
+      harnessModelCatalogSchema.parse({
+        models: [{ ref: firstRef, label: "first" }],
+        thinkingOptions: [],
+        thinkingOptionsScope: "activeModel",
+      }).thinkingOptionsScope,
+    ).toBe("activeModel");
+    expect(
+      harnessModelCatalogSchema.safeParse({
+        models: [{ ref: firstRef, label: "first" }],
+        thinkingOptions: [],
+        thinkingOptionsScope: "unknown",
+      }).success,
+    ).toBe(false);
+    expect(
       harnessModelSelectionStateSchema.safeParse({
         effectiveThinkingOptionId: "high",
         availableThinkingOptions: [{ id: "off", label: "Off" }],

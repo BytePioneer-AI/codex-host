@@ -3500,3 +3500,185 @@ describe("Antigravity idle wake Turns", () => {
     expect(transports).toHaveLength(0);
   });
 });
+
+describe("native session titles", () => {
+  async function storeSummary(
+    home: string,
+    conversationId: string,
+    fields: { title: string; preview?: string },
+  ): Promise<void> {
+    const root = path.join(home, ".gemini", "antigravity-cli");
+    await mkdir(root, { recursive: true });
+    const db = new DatabaseSync(path.join(root, "conversation_summaries.db"));
+    try {
+      db.exec(`CREATE TABLE IF NOT EXISTS conversation_summaries (
+        conversation_id TEXT PRIMARY KEY, title TEXT, preview TEXT, step_count INTEGER,
+        last_modified_time TEXT, workspace_uris TEXT, status TEXT,
+        parent_conversation_id TEXT, killed INTEGER
+      )`);
+      db.prepare(
+        `INSERT OR REPLACE INTO conversation_summaries VALUES (
+          ?, ?, ?, 0, '2026-11-26 00:00:00.000000+00:00', '[]',
+          'CASCADE_RUN_STATUS_IDLE', '', 0)`,
+      ).run(conversationId, fields.title, fields.preview ?? "");
+    } finally {
+      db.close();
+    }
+  }
+  async function homeFixture(): Promise<string> {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-native-title-"));
+    directories.push(home);
+    return home;
+  }
+
+  it("publishes realtime session_info_update titles", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.eventHandler?.({ type: "session.info", title: "  Fix\n  sidebar title  " });
+    await setImmediate();
+    expect(events(outputs)).toContainEqual({
+      type: "session.title.changed",
+      title: "Fix sidebar title",
+    });
+  });
+  it("ignores empty and duplicate titles but forwards updates", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    for (const title of ["", "   ", "Same", "Same", "Updated"])
+      transport.eventHandler?.({ type: "session.info", title });
+    transport.eventHandler?.({ type: "session.info" });
+    await setImmediate();
+    expect(events(outputs).filter((event) => event.type === "session.title.changed")).toEqual([
+      { type: "session.title.changed", title: "Same" },
+      { type: "session.title.changed", title: "Updated" },
+    ]);
+  });
+  it("delivers an openSession-buffered session.info only after session.state.changed", async () => {
+    const { adapter, transports } = fixture({}, (transport) => {
+      transport.queuedSessionEvents.push({ type: "session.info", title: "Early title" });
+    });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    await start(session, transports);
+    const emitted = events(outputs);
+    const stateIndex = emitted.findIndex(
+      (event) => event.type === "session.state.changed" && event.state.nativeRef !== undefined,
+    );
+    const titleIndex = emitted.findIndex((event) => event.type === "session.title.changed");
+    expect(stateIndex).toBeGreaterThanOrEqual(0);
+    expect(titleIndex).toBeGreaterThan(stateIndex);
+    expect(emitted.at(titleIndex)).toMatchObject({ title: "Early title" });
+  });
+  it("restores a stored title on lazy resume without starting a transport", async () => {
+    const home = await homeFixture();
+    const id = randomUUID();
+    await storeSummary(home, id, { title: "Stored resume title" });
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref(id) }),
+    );
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual({
+        type: "session.title.changed",
+        title: "Stored resume title",
+      }),
+    );
+    expect(transports).toHaveLength(0);
+    await session.close();
+  });
+  it("falls back to the stored title after a turn without a realtime title", async () => {
+    const home = await homeFixture();
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    await storeSummary(home, required(transport.sessionId), { title: "Late DB title" });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual({
+        type: "session.title.changed",
+        title: "Late DB title",
+      }),
+    );
+  });
+  it("keeps a realtime title over the stored one after the turn", async () => {
+    const home = await homeFixture();
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.eventHandler?.({ type: "session.info", title: "Live Title" });
+    await storeSummary(home, required(transport.sessionId), { title: "Old DB Title" });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    await setImmediate();
+    expect(events(outputs).filter((event) => event.type === "session.title.changed")).toEqual([
+      { type: "session.title.changed", title: "Live Title" },
+    ]);
+  });
+  it("never reports the preview column as a title", async () => {
+    const home = await homeFixture();
+    const id = randomUUID();
+    await storeSummary(home, id, { title: "", preview: "First user prompt text" });
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref(id) }),
+    );
+    await setImmediate();
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    await setImmediate();
+    expect(events(outputs).filter((event) => event.type === "session.title.changed")).toEqual([]);
+  });
+  it("degrades silently when the summaries database is missing or unreadable", async () => {
+    const home = await homeFixture();
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const missing = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref(randomUUID()) }),
+    );
+    await setImmediate();
+    const root = path.join(home, ".gemini", "antigravity-cli");
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, "conversation_summaries.db"), "not a sqlite database");
+    const corrupt = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref(randomUUID()) }),
+    );
+    await setImmediate();
+    const transport = await start(corrupt.session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(corrupt.outputs);
+    await setImmediate();
+    const titles = [...missing.outputs, ...corrupt.outputs]
+      .map((output) => (output.kind === "event" ? output.event : null))
+      .filter((event) => event?.type === "session.title.changed");
+    expect(titles).toEqual([]);
+    await missing.session.close();
+    await corrupt.session.close();
+  });
+  it("tolerates closing a lazy resume while its stored title read is in flight", async () => {
+    const home = await homeFixture();
+    const id = randomUUID();
+    await storeSummary(home, id, { title: "Racing title" });
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref(id) }),
+    );
+    await session.close();
+    await setImmediate();
+    expect(transports).toHaveLength(0);
+    expect(
+      events(outputs).filter((event) => event.type === "session.title.changed").length,
+    ).toBeLessThanOrEqual(1);
+  });
+});

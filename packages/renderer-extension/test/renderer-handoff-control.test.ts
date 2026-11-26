@@ -234,6 +234,7 @@ describe("installRendererHandoffControl", () => {
             transportModelId: "codexhost/claude-code-native",
             history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
             handoff: sampleHandoff,
+            locked: true,
           }
         : { owner: "codex", locked: true },
     );

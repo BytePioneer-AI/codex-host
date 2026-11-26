@@ -1,7 +1,6 @@
 import { createReadStream } from "node:fs";
-import { lstat, opendir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
-import { createInterface } from "node:readline";
 
 import type { HostUsageRequest } from "./usage.js";
 
@@ -222,6 +221,9 @@ export function parseHarnessUsageEntry(value: unknown): HarnessUsageEntry | null
   return entry as unknown as HarnessUsageEntry;
 }
 
+const JSONL_CHUNK_BYTES = 128 * 1024;
+const JSONL_HEADER_CHUNK_BYTES = 16 * 1024;
+
 /**
  * `.jsonl` files under `root`, at most `maxDepth` directories down. Links are never followed and
  * a missing root is empty. The fingerprint is identity, size and modification time.
@@ -234,42 +236,110 @@ export async function jsonlUsageSources(
   const sources: HarnessUsageSource[] = [];
   const visit = async (directory: string, depth: number): Promise<void> => {
     signal.throwIfAborted();
-    const entries = await opendir(directory).catch((error: unknown) => {
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     });
     if (!entries) return;
-    for await (const entry of entries) {
-      signal.throwIfAborted();
+    const subdirectories: string[] = [];
+    const files: string[] = [];
+    for (const entry of entries) {
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (depth < maxDepth) await visit(file, depth + 1);
+        if (depth < maxDepth) subdirectories.push(file);
       } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-        const info = await lstat(file).catch(() => null);
-        if (info?.isFile() && info.size > 0) {
-          sources.push({ id: file, fingerprint: `${info.ino}:${info.size}:${info.mtimeMs}` });
+        files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      const stats = await Promise.all(files.map((file) => lstat(file).catch(() => null)));
+      signal.throwIfAborted();
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const info = stats[i];
+        if (file && info?.isFile() && info.size > 0) {
+          sources.push({
+            id: file,
+            fingerprint: `${info.ino}:${info.size}:${info.mtimeMs}`,
+          });
         }
       }
     }
+    for (const subdirectory of subdirectories) await visit(subdirectory, depth + 1);
   };
   await visit(root, 0);
   return sources;
 }
 
+function concatParts(parts: readonly Buffer[], total: number): Buffer {
+  const [single] = parts;
+  return single && parts.length === 1 ? single : Buffer.concat(parts, total);
+}
+
+async function* jsonlLineSlices(
+  file: string,
+  signal: AbortSignal,
+  highWaterMark: number,
+): AsyncGenerator<Buffer> {
+  const stream = createReadStream(file, { highWaterMark, signal });
+  let parts: Buffer[] = [];
+  let buffered = 0;
+  try {
+    for await (const raw of stream) {
+      signal.throwIfAborted();
+      const chunk = raw as Buffer;
+      let start = 0;
+      let end: number;
+      while ((end = chunk.indexOf(0x0a, start)) >= 0) {
+        const lineEnd = end > start && chunk[end - 1] === 0x0d ? end - 1 : end;
+        const slice = chunk.subarray(start, lineEnd);
+        if (buffered === 0) {
+          yield slice;
+        } else {
+          if (slice.length > 0) {
+            parts.push(slice);
+            buffered += slice.length;
+          }
+          const combined = concatParts(parts, buffered);
+          parts = [];
+          buffered = 0;
+          yield combined.length > 0 && combined[combined.length - 1] === 0x0d
+            ? combined.subarray(0, combined.length - 1)
+            : combined;
+        }
+        start = end + 1;
+      }
+      if (start < chunk.length) {
+        const rest = chunk.subarray(start);
+        parts.push(rest);
+        buffered += rest.length;
+      }
+    }
+    if (buffered > 0) {
+      const combined = concatParts(parts, buffered);
+      yield combined.length > 0 && combined[combined.length - 1] === 0x0d
+        ? combined.subarray(0, combined.length - 1)
+        : combined;
+    }
+  } finally {
+    stream.destroy();
+  }
+}
+
 /**
  * The JSON objects of the lines of a `.jsonl` file that contain `marker`. Other lines (tool
- * output, conversation text) are skipped without parsing; malformed lines are skipped.
+ * output, conversation text) are skipped in Buffer form before UTF-8 decoding; malformed lines
+ * are skipped.
  */
 export async function* jsonlRecords(
   file: string,
   marker: string,
   signal: AbortSignal,
 ): AsyncGenerator<Record<string, unknown>> {
-  const lines = createInterface({
-    input: createReadStream(file, { encoding: "utf8", signal }),
-    crlfDelay: Infinity,
-  });
-  for await (const line of lines) {
+  const markerBytes = marker.length > 0 ? Buffer.from(marker, "utf8") : null;
+  for await (const rawLine of jsonlLineSlices(file, signal, JSONL_CHUNK_BYTES)) {
+    if (markerBytes && !rawLine.includes(markerBytes)) continue;
+    const line = rawLine.toString("utf8");
     if (!line.includes(marker)) continue;
     let value: unknown;
     try {
@@ -293,28 +363,21 @@ export async function jsonlHeader(
   signal: AbortSignal,
   maxLines = 4,
 ): Promise<Record<string, unknown> | null> {
-  const stream = createReadStream(file, { encoding: "utf8", signal });
-  const lines = createInterface({ input: stream, crlfDelay: Infinity });
   let seen = 0;
-  try {
-    for await (const line of lines) {
-      if (++seen > maxLines) break;
-      let value: unknown;
-      try {
-        value = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-        const record = value as Record<string, unknown>;
-        if (match(record)) return record;
-      }
+  for await (const rawLine of jsonlLineSlices(file, signal, JSONL_HEADER_CHUNK_BYTES)) {
+    if (++seen > maxLines) break;
+    let value: unknown;
+    try {
+      value = JSON.parse(rawLine.toString("utf8"));
+    } catch {
+      continue;
     }
-    return null;
-  } finally {
-    lines.close();
-    stream.destroy();
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if (match(record)) return record;
+    }
   }
+  return null;
 }
 
 /** Epoch milliseconds from a native number or date string, or null. */

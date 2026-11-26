@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import { FakeHarnessAdapter, type FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
@@ -665,8 +665,9 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
 
     // Deleting the target thread cleans up persisted handoff metadata.
     await callDesktop(fixture, 8, "thread/delete", { threadId: parsed.threadId });
+    expect(fixture.mappingStore.getThreadHandoff).toBeDefined();
     await expect(
-      fixture.mappingStore.getThreadHandoff(hostThreadIdSchema.parse(parsed.threadId)),
+      fixture.mappingStore.getThreadHandoff?.(hostThreadIdSchema.parse(parsed.threadId)),
     ).resolves.toBeNull();
   });
 
@@ -815,8 +816,8 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
       loadedThread: () => undefined,
       clientHistoryTurns: () => [],
       queueSnapshot: () => ({ items: [], pausedReason: null }),
-      readThreadHandoff: (id) =>
-        fixture.mappingStore.getThreadHandoff(hostThreadIdSchema.parse(id)),
+      readThreadHandoff: async (id) =>
+        (await fixture.mappingStore.getThreadHandoff?.(hostThreadIdSchema.parse(id))) ?? null,
       interactions: {
         approvals: new Map(),
         questions: () => new Map(),
@@ -829,8 +830,8 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
         events,
         request: nativeRequest,
         respond: async () => {},
-        readThreadHandoff: (id) =>
-          fixture.mappingStore.getThreadHandoff(hostThreadIdSchema.parse(id)),
+        readThreadHandoff: async (id) =>
+          (await fixture.mappingStore.getThreadHandoff?.(hostThreadIdSchema.parse(id))) ?? null,
       },
       submit: async () => ({ result: {} }),
     });
@@ -989,12 +990,14 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
       adapter.open = async (input) => {
         const opened = await baseOpen(input);
         if (!opened.ok || input.kind !== "create") return opened;
-        const session = opened.value;
+        const session = opened.value as FakeHarnessSession;
         const deferredRef = session.initialState.nativeRef;
         delete session.initialState.nativeRef;
-        const baseExecute = session.execute.bind(session);
+        const baseExecute = session.execute.bind(session) as unknown as (command: {
+          type: string;
+        }) => Promise<unknown>;
         let bound = false;
-        session.execute = async (command) => {
+        session.execute = (async (command: { type: string }) => {
           if (command.type === "turn.start" && !bound && deferredRef) {
             bound = true;
             session.setStateForSnapshot({ ...session.state, nativeRef: deferredRef });
@@ -1004,7 +1007,7 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
             });
           }
           return baseExecute(command);
-        };
+        }) as unknown as FakeHarnessSession["execute"];
         return opened;
       };
       return adapter;

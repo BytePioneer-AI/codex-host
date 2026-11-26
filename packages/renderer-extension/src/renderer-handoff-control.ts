@@ -94,7 +94,11 @@ function defaultResolveComposerThreadId(composer: Element): HostThreadId | null 
 
 function isComposerVisible(composer: Element, ownerWindow: Window): boolean {
   if (!composer.isConnected) return false;
-  if (composer.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+  if (
+    typeof composer.closest === "function" &&
+    composer.closest('[hidden], [inert], [aria-hidden="true"]')
+  )
+    return false;
   if (typeof ownerWindow.getComputedStyle === "function") {
     const style = ownerWindow.getComputedStyle(composer);
     if (style.display === "none" || style.visibility === "hidden") return false;

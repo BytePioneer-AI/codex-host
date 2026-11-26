@@ -131,7 +131,7 @@ function displayPath(filePath: string, cwd: string): string {
   if (!trimmed) return "";
   if (cwd && path.isAbsolute(trimmed) && path.isAbsolute(cwd)) {
     const rel = path.relative(cwd, trimmed);
-    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return rel;
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return rel.replaceAll("\\", "/");
   }
   return trimmed;
 }

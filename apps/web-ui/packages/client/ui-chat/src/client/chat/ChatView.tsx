@@ -4,6 +4,7 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -222,11 +223,13 @@ export function ChatView({
   forkAt,
   openSession,
   handoff,
+  clearHandoffRequest,
   loadModelCatalog,
   loadTurnDiffs,
   editMessage,
   fileMentions,
   usePresentation,
+  useHandoffRequest,
   useProjection,
   useInput,
   inputActions,
@@ -313,9 +316,11 @@ export function ChatView({
   const recoveryLasting = useSustainedRecovery(carrier !== "connected");
   const compacting = useProjection("compacting");
   const handoffMeta = useProjection(WEB_HANDOFF_PROJECTION);
+  const pendingHandoffRequest = useHandoffRequest((request) => request);
   const [handoffTarget, setHandoffTarget] = useState<{
     readonly sessionId: string;
     readonly atSeq?: number;
+    readonly initialHarnessId?: string;
   } | null>(null);
   const activeHandoffTarget = handoffTarget?.sessionId === sessionId ? handoffTarget : null;
   const openHandoffAt = useCallback(
@@ -328,6 +333,23 @@ export function ChatView({
     setHandoffTarget(null);
   }, []);
   const handoffEnabled = handoff !== undefined && loadModelCatalog !== undefined;
+  useEffect(() => {
+    if (
+      pendingHandoffRequest === null ||
+      pendingHandoffRequest.sessionId !== sessionId ||
+      !handoffEnabled
+    ) {
+      return;
+    }
+    setHandoffTarget({
+      sessionId,
+      ...(pendingHandoffRequest.atSeq === undefined ? {} : { atSeq: pendingHandoffRequest.atSeq }),
+      ...(pendingHandoffRequest.targetHarnessId === undefined
+        ? {}
+        : { initialHarnessId: pendingHandoffRequest.targetHarnessId }),
+    });
+    clearHandoffRequest(pendingHandoffRequest.seq);
+  }, [clearHandoffRequest, handoffEnabled, pendingHandoffRequest, sessionId]);
   const openState = useSession((s) => s.openState);
   const historyError = useProjection("remoteHistoryError");
   const nativeConnection = useProjection("nativeConnection");
@@ -624,10 +646,11 @@ export function ChatView({
       )}
       {activeHandoffTarget !== null && handoff !== undefined && loadModelCatalog !== undefined && (
         <HandoffModal
-          key={`${sessionId}:${activeHandoffTarget.atSeq ?? "latest"}`}
+          key={`${sessionId}:${activeHandoffTarget.atSeq ?? "latest"}:${activeHandoffTarget.initialHarnessId ?? "auto"}`}
           open
           atSeq={activeHandoffTarget.atSeq}
           currentHarnessId={currentHarnessId}
+          initialHarnessId={activeHandoffTarget.initialHarnessId}
           loadModelCatalog={loadModelCatalog}
           onSubmit={handoff}
           onClose={closeHandoffModal}

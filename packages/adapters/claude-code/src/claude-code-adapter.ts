@@ -419,7 +419,7 @@ function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
 
-function transportFailure(kind: ClaudeTransportFailureKind): HarnessError {
+function transportFailure(kind: ClaudeTransportFailureKind, resetsAtUnix?: number): HarnessError {
   if (kind === "authentication") {
     return {
       code: "authenticationRequired",
@@ -431,6 +431,40 @@ function transportFailure(kind: ClaudeTransportFailureKind): HarnessError {
     return {
       code: "protocolError",
       message: "Claude Code returned an invalid Tool lifecycle",
+      retryable: false,
+    };
+  }
+  const resetsAt =
+    resetsAtUnix !== undefined &&
+    Number.isSafeInteger(resetsAtUnix) &&
+    resetsAtUnix > 0 &&
+    resetsAtUnix <= 8_640_000_000_000
+      ? isoFromUnix(resetsAtUnix)
+      : undefined;
+  if (kind === "rateLimited") {
+    return {
+      code: "rateLimited",
+      message: resetsAt
+        ? `Claude Code rate limit reached (resets at ${resetsAt})`
+        : "Claude Code rate limit reached",
+      retryable: true,
+      ...(resetsAt ? { resetsAt } : {}),
+    };
+  }
+  if (kind === "quotaExhausted") {
+    return {
+      code: "quotaExhausted",
+      message: resetsAt
+        ? `Claude Code usage limit reached (resets at ${resetsAt})`
+        : "Claude Code usage limit reached",
+      retryable: true,
+      ...(resetsAt ? { resetsAt } : {}),
+    };
+  }
+  if (kind === "billing") {
+    return {
+      code: "quotaExhausted",
+      message: "Claude Code billing or credit limit reached",
       retryable: false,
     };
   }
@@ -2170,7 +2204,10 @@ class ClaudeHarnessSession implements HarnessSession {
         if (event.lastRequestUsage) {
           this.#requestUsageBoundary += 1;
           this.#applyLatestRequestUsage(active, event.lastRequestUsage);
-        } else {
+        } else if (!event.localCommand) {
+          // Local command output and synthetic notices have no transcript
+          // message carrying usage; reading the JSONL for their ids would
+          // only burn the retry budget. Real assistant completions keep it.
           this.#requestLatestRequestUsage(active, event.messageId);
         }
         if (event.checkpointId) active.checkpointId = event.checkpointId;
@@ -2734,7 +2771,7 @@ class ClaudeHarnessSession implements HarnessSession {
       // The Turn ends only once its background work is confirmed stopped; later Segments
       // still reach it through the idle handler. An unproven interruption still fails it.
       if (result.status === "failed") {
-        active.cancellation.failure ??= transportFailure(result.kind);
+        active.cancellation.failure ??= transportFailure(result.kind, result.resetsAtUnix);
       }
       active.cancellation.interrupting = false;
       this.#clearCancelEscalation();
@@ -2755,7 +2792,7 @@ class ClaudeHarnessSession implements HarnessSession {
     } else if (result.status === "cancelled") {
       this.#finish(active, { status: "cancelled", reason: result.reason });
     } else {
-      this.#finishFailed(active, transportFailure(result.kind));
+      this.#finishFailed(active, transportFailure(result.kind, result.resetsAtUnix));
     }
   }
 

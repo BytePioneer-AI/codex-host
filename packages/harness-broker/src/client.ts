@@ -139,6 +139,7 @@ function parseHarnessResult<T>(value: unknown): HarnessResult<T> {
       code: parsed.code,
       message: parsed.message,
       retryable: parsed.retryable,
+      ...(parsed.resetsAt ? { resetsAt: parsed.resetsAt } : {}),
       ...(parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {}),
       ...(parsed.stage ? { stage: parsed.stage } : {}),
       ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),

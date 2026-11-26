@@ -219,6 +219,7 @@ export {
   harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,
+  harnessThinkingOptionsScopeSchema,
   harnessWebUiCapabilitySchema,
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
@@ -252,6 +253,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
+  HarnessThinkingOptionsScope,
   HarnessWebUiCapability,
   HarnessWebUiOpenParams,
   HarnessWebUiOpenResult,
@@ -355,6 +357,7 @@ export {
   updatePhaseSchema,
   updateSemanticVersionSchema,
   updateStartResultSchema,
+  npmDownloadProgressSchema,
   updateStatusResultSchema,
   updateStatusSchema,
 } from "./updates.js";
@@ -508,6 +511,7 @@ export {
   remotePeerHostId,
   peerIdFromRemoteHostId,
   remotePeerIdSchema,
+  remotePeerNodeIdSchema,
   remotePeerHostIdSchema,
   remotePeerTransportKindSchema,
   remotePeerColorSchema,
@@ -575,4 +579,4 @@ export {
   officialCodexModelSelection,
   normalizeOfficialCodexModelRef,
 } from "./official-codex-model-ref.js";
-export { desktopProjectDefinitions } from "./desktop-project-definitions.js";
+export { desktopProjectDefinitions, desktopProjectPathKey } from "./desktop-project-definitions.js";

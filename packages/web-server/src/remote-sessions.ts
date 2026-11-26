@@ -16,6 +16,7 @@ import {
   remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
+  sameHarnessModelRef,
   threadInspectionSchema,
   threadUsageInspectionSchema,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
@@ -34,6 +35,7 @@ import { threadListTitle } from "./ch-thread-title.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { isMethodUnavailableError, type PeerThreadSource } from "./peer-thread-source.ts";
+import { translateContentTextParts, translateThreadLinksForPeer } from "./peer-thread-links.ts";
 import { RemotePeerAttachments, type PeerAttachmentEndpoint } from "./remote-peer-attachments.ts";
 import type { WebFileRef } from "./web-files.ts";
 import { WEB_IMAGE_LIMITS } from "./web-images.ts";
@@ -163,8 +165,10 @@ function hasNonTextContentPart(content: unknown): boolean {
 export interface RemotePeerProvider {
   source(hostId: string): PeerThreadSource | undefined;
   client?(hostId: string): PeerAttachmentEndpoint | undefined;
+  nodeIdForHostId?(hostId: string): string | undefined;
   waitForInitialConnection?(hostId: string): Promise<void>;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
+  onThreadConfigurationChanged?: (hostId: string, threadId: string) => void;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
   onSkillsChanged?: (hostId: string) => void;
@@ -198,6 +202,7 @@ interface Entry {
   /** Fingerprints of catalog projections last confirmed on a retired view, avoiding redundant frames. */
   retiredCatalogProjections?: Map<string, string>;
   peerInspected?: { view: ChThreadView; epoch: string; revision: number };
+  peerInspectRevision?: number;
   historyError?: { code: string; message: string };
   usageRequest?: {
     view: ChThreadView;
@@ -233,6 +238,7 @@ export class RemoteSessions {
   private readonly timer: NodeJS.Timeout;
   private readonly peerHandlers: {
     onThreadChanged: (hostId: string, threadId: string) => Promise<void>;
+    onThreadConfigurationChanged: (hostId: string, threadId: string) => void;
     onUsageChanged: (hostId: string, threadId: string) => void;
     onCatalogInspectionChanged: (hostId: string) => void;
     onSkillsChanged: (hostId: string) => void;
@@ -257,6 +263,8 @@ export class RemoteSessions {
   ) {
     this.peerHandlers = {
       onThreadChanged: (hostId, threadId) => this.handlePeerThreadChanged(hostId, threadId),
+      onThreadConfigurationChanged: (hostId, threadId) =>
+        this.handlePeerConfigurationChanged(hostId, threadId),
       onUsageChanged: (hostId, threadId) => this.handlePeerUsageChanged(hostId, threadId),
       onCatalogInspectionChanged: (hostId) => this.handlePeerCatalogInspectionChanged(hostId),
       onSkillsChanged: () => this.handlePeerSkillsChanged(),
@@ -265,6 +273,7 @@ export class RemoteSessions {
     };
     if (peers) {
       peers.onThreadChanged ??= this.peerHandlers.onThreadChanged;
+      peers.onThreadConfigurationChanged ??= this.peerHandlers.onThreadConfigurationChanged;
       peers.onUsageChanged ??= this.peerHandlers.onUsageChanged;
       peers.onCatalogInspectionChanged ??= this.peerHandlers.onCatalogInspectionChanged;
       peers.onSkillsChanged ??= this.peerHandlers.onSkillsChanged;
@@ -275,6 +284,22 @@ export class RemoteSessions {
       if (this.controls.size) void this.refreshBackground().catch(() => undefined);
     }, 30_000);
     this.timer.unref();
+  }
+  private translatePeerOutboundText(hostId: string, text: string): string {
+    if (!hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) return text;
+    const manifest = this.peers?.client?.(hostId)?.manifest;
+    return translateThreadLinksForPeer(text, {
+      targetHostId: hostId,
+      targetNodeId: manifest?.nodeId,
+      targetPeerNodes: manifest?.peerNodes,
+      nodeIdForHostId: (sourceHostId) => this.peers?.nodeIdForHostId?.(sourceHostId),
+    });
+  }
+  private translatePeerOutboundContent<T>(hostId: string, content: readonly T[]): T[] {
+    if (!hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) return [...content];
+    return translateContentTextParts(content, (text) =>
+      this.translatePeerOutboundText(hostId, text),
+    );
   }
   private async handlePeerThreadChanged(hostId: string, threadId: string): Promise<void> {
     if (this.closed) return;
@@ -291,6 +316,13 @@ export class RemoteSessions {
       }
       throw error;
     }
+  }
+  private handlePeerConfigurationChanged(hostId: string, threadId: string): void {
+    if (this.closed) return;
+    const entry = this.entries.get(remoteSessionId(hostId, threadId));
+    if (!entry) return;
+    entry.peerInspectRevision = (entry.peerInspectRevision ?? 0) + 1;
+    delete entry.peerInspected;
   }
   private handlePeerUsageChanged(hostId: string, threadId: string): void {
     if (this.closed) return;
@@ -1596,13 +1628,14 @@ export class RemoteSessions {
             ...(draftUploadScope !== undefined ? { scope: draftUploadScope } : {}),
             ...(peerPromptRequestId !== undefined ? { requestId: peerPromptRequestId } : {}),
             ...(peerPromptMode !== undefined ? { mode: peerPromptMode } : {}),
-            content: peerPromptContent,
+            content: this.translatePeerOutboundContent(host.hostId, peerPromptContent),
           });
           if (draftUploadScope !== undefined && entry.pendingUploadScope === draftUploadScope) {
             delete entry.pendingUploadScope;
           }
         } else if (legacyPrompt !== undefined) {
-          await this.invoke({ ...legacyPrompt, threadId: thread.id });
+          const text = this.translatePeerOutboundText(host.hostId, legacyPrompt.text);
+          await this.invoke({ ...legacyPrompt, text, threadId: thread.id });
         }
       } finally {
         this.pendingFirstTurns.delete(id);
@@ -2071,11 +2104,31 @@ export class RemoteSessions {
         delete current.retiredCatalogProjections;
         current.viewHarnessId = viewHarnessId(current);
 
+        const startInspectRevision = current.peerInspectRevision ?? 0;
+        const cachedExternal =
+          current.controls?.configuration?.owner === "external"
+            ? current.controls.configuration
+            : undefined;
+        const snapshotConfigChanged =
+          cachedExternal !== undefined &&
+          snapshot !== undefined &&
+          ((snapshot.configuration.effectiveModel !== undefined &&
+            !sameHarnessModelRef(
+              snapshot.configuration.effectiveModel,
+              cachedExternal.effectiveModel,
+            )) ||
+            (snapshot.configuration.effectiveThinkingOptionId !== undefined &&
+              snapshot.configuration.effectiveThinkingOptionId !==
+                cachedExternal.effectiveThinkingOptionId) ||
+            (snapshot.configuration.effectivePermissionModeId !== undefined &&
+              snapshot.configuration.effectivePermissionModeId !==
+                cachedExternal.effectivePermissionModeId));
         const needsInspect =
           !current.peerInspected ||
           current.peerInspected.view !== history ||
           current.peerInspected.epoch !== current.epoch ||
-          current.peerInspected.revision !== configurationRevision;
+          current.peerInspected.revision !== configurationRevision ||
+          snapshotConfigChanged;
 
         if (needsInspect) {
           const configuration = await source.host
@@ -2118,7 +2171,7 @@ export class RemoteSessions {
             }),
             sameEpoch,
           );
-          if (current.epoch) {
+          if (current.epoch && (current.peerInspectRevision ?? 0) === startInspectRevision) {
             current.peerInspected = {
               view: history,
               epoch: current.epoch,
@@ -2918,7 +2971,10 @@ export class RemoteSessions {
             ...(request.expectedTurnId === null || typeof request.expectedTurnId === "string"
               ? { expectedTurnId: request.expectedTurnId }
               : {}),
-            content: request.content as RemotePeerPromptParams["content"],
+            content: this.translatePeerOutboundContent(
+              identity.hostId,
+              request.content as RemotePeerPromptParams["content"],
+            ),
           });
           if (pendingScope !== undefined && entry.pendingUploadScope === pendingScope) {
             delete entry.pendingUploadScope;
@@ -2943,8 +2999,17 @@ export class RemoteSessions {
           throw new RpcError("remote/connection-changed", "Remote Thread changed before dispatch.");
         return this.invoke(operation);
       };
+      const deliveryRequest =
+        method === "session/prompt" &&
+        identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) &&
+        Array.isArray(request.content)
+          ? {
+              ...request,
+              content: this.translatePeerOutboundContent(identity.hostId, request.content),
+            }
+          : request;
       try {
-        return await deliverRemoteInput(invoke, identity, method, request, async () => {
+        return await deliverRemoteInput(invoke, identity, method, deliveryRequest, async () => {
           const view = await this.read(id);
           if (this.entries.get(id) !== entry || !entry.epoch)
             throw new RpcError(
@@ -3078,7 +3143,10 @@ export class RemoteSessions {
     let operation: RemoteSessionOperation;
     switch (method) {
       case "session/prompt": {
-        const text = remotePromptText(request.content);
+        const text = this.translatePeerOutboundText(
+          entry.identity.hostId,
+          remotePromptText(request.content),
+        );
         if (view.thread.canAcceptDirectInput === false)
           throw new RpcError(
             "remote/send-rejected",
@@ -3177,6 +3245,10 @@ export class RemoteSessions {
     if (this.peers) {
       if (this.peers.onThreadChanged === this.peerHandlers.onThreadChanged)
         delete this.peers.onThreadChanged;
+      if (
+        this.peers.onThreadConfigurationChanged === this.peerHandlers.onThreadConfigurationChanged
+      )
+        delete this.peers.onThreadConfigurationChanged;
       if (this.peers.onUsageChanged === this.peerHandlers.onUsageChanged)
         delete this.peers.onUsageChanged;
       if (this.peers.onCatalogInspectionChanged === this.peerHandlers.onCatalogInspectionChanged)

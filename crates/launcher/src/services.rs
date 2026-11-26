@@ -719,7 +719,8 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let status = Command::new(&child)
+        let mut command = Command::new(&child);
+        command
             .args([
                 "--exact",
                 "services::tests::source_web_ignores_inherited_npm_node_but_accepts_explicit_paths",
@@ -727,8 +728,8 @@ mod tests {
             .env(CHILD, &root)
             .env(crate::DATA_DIRECTORY_ENV, &root)
             .env(NPM_NODE_PATH_ENV, root.join("inherited-npm-node"))
-            .env("PATH", &root)
-            .status();
+            .env("PATH", &root);
+        let status = crate::tests::status_retrying_busy(&mut command);
         fs::remove_dir_all(root).unwrap();
         assert!(status.unwrap().success());
     }

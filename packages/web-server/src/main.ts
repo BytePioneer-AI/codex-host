@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { requestRemoteSession } from "@codexhost/desktop-control";
 import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
-import { PeerHostStore } from "./peer-host-store.ts";
+import { loadOrCreatePeerNodeId, PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
 import { servePeerAttachments } from "./peer-attachments-http.ts";
 import { servePeerDelegation } from "./peer-delegation-http.ts";
@@ -452,6 +452,7 @@ async function resolvePeerEpoch(): Promise<string | undefined> {
   return peerEpoch;
 }
 const peerAttachments = new RemotePeerAttachments();
+const localPeerNodeId = loadOrCreatePeerNodeId(data);
 const peerManager = new PeerHostManager(
   new PeerHostStore(data),
   async () => [
@@ -461,6 +462,7 @@ const peerManager = new PeerHostManager(
   events,
   {
     allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1",
+    localNodeId: localPeerNodeId,
     projector: (threadId) => peerAttachments.projector(threadId),
   },
 );
@@ -769,6 +771,8 @@ const server = createWebServer((request, response) => {
             workspaceFiles: peerWorkspaceFilesAvailable,
             officePreview: peerWorkspaceFilesAvailable,
             delegation: peerDelegationAvailable,
+            nodeId: peerManager.selfNodeId(),
+            peerNodes: peerManager.peerNodes(),
           },
         );
         await sendPeerJson(200, result);

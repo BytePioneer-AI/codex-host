@@ -25,6 +25,7 @@ import type {
 } from "../contract/sessions.ts";
 import type { SessionReferenceSource } from "../index.ts";
 import { createScope, scopeIdentityOf, scopeOf as scopeTagOf } from "../scope.ts";
+import type { SessionListEntry } from "./lineage.ts";
 import { SessionManager } from "./manager.ts";
 import type { SessionRemotes } from "./remotes.ts";
 import type {
@@ -275,6 +276,14 @@ export class ClientSessions implements ISessions {
   /** Stable per-id sources retained for the Client root lifetime, including across generation replacement. */
   private readonly retainObservers = new Map<SessionId, RetentionObserver>();
   private readonly scopeDrops = new Set<Promise<void>>();
+  private readonly projectedItemCache = new Map<
+    SessionId,
+    {
+      entry: SessionListEntry;
+      retainedBy: SessionRetainInfo["retainedBy"];
+      summary: SessionSummary;
+    }
+  >();
   private closed = false;
 
   /**
@@ -333,6 +342,41 @@ export class ClientSessions implements ISessions {
       reference.release();
       throw error;
     }
+  }
+
+  handoffSubmissions(sourceId: SessionId, targetId: SessionId): void {
+    const source = this.scopes.get(sourceId)?.session;
+    if (
+      source === undefined ||
+      sourceId === targetId ||
+      (source.getSnapshot().pendingSubmissions.length === 0 && !source.hasInFlightPrompts)
+    )
+      return;
+    const reference = this.retain(targetId, { source: "controllerOperation" });
+    // The sending scope owns the prompt's AbortSignal. Navigation must not cancel admission.
+    const sending = this.retain(sourceId, { source: "controllerOperation" });
+    const target = this.manager.get(targetId);
+    const ids = new Set(source.handoffSubmissions(target));
+    const subscriptions: Array<() => void> = [];
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      for (const unsubscribe of subscriptions) unsubscribe();
+      reference.release();
+      sending.release();
+    };
+    const settled = () => {
+      if (
+        !source.hasInFlightPrompts &&
+        !target.getSnapshot().pendingSubmissions.some((submission) => ids.has(submission.requestId))
+      )
+        release();
+    };
+    subscriptions.push(target.subscribe(settled), source.subscribe(settled));
+    void reference.ready.catch(release);
+    void sending.ready.catch(release);
+    settled();
   }
 
   async using<T>(
@@ -403,9 +447,18 @@ export class ClientSessions implements ISessions {
     return this.manager.refreshList();
   }
 
-  /** Set the browser-local list scope without changing Session ownership or selection. */
-  loadSummary(sessionId: SessionId): Promise<void> {
-    return this.manager.loadSummary(sessionId);
+  /** Read one direct-link identity and publish its catalog row before resolving. */
+  async loadSummary(sessionId: SessionId): Promise<void> {
+    await this.manager.loadSummary(sessionId);
+    if (!this.closed) this.projectList();
+  }
+
+  /** Synchronously project an already-buffered summary before the next frame flush. */
+  syncSummary(sessionId: SessionId): boolean {
+    if (this.list.getSnapshot().byId[sessionId] !== undefined) return true;
+    if (this.closed || !this.manager.hasSummary(sessionId)) return false;
+    this.projectList();
+    return this.list.getSnapshot().byId[sessionId] !== undefined;
   }
 
   loadMore(workspaceId?: WorkspaceId): Promise<void> {
@@ -709,11 +762,17 @@ export class ClientSessions implements ISessions {
     const byId: Record<SessionId, SessionSummary> = {};
     for (const entry of items) {
       ids.push(entry.sessionId);
-      byId[entry.sessionId] = {
+      const retainedBy = this.retentionSnapshot(entry.sessionId).retainedBy;
+      const cached = this.projectedItemCache.get(entry.sessionId);
+      if (cached !== undefined && cached.entry === entry && cached.retainedBy === retainedBy) {
+        byId[entry.sessionId] = cached.summary;
+        continue;
+      }
+      const summary: SessionSummary = {
         id: entry.sessionId,
         displayTitle: displayTitleOf(entry.title, entry.cwd, entry.sessionId),
         running: entry.running,
-        retainedBy: this.retentionSnapshot(entry.sessionId).retainedBy,
+        retainedBy,
         blank: entry.blank,
         updatedAt: entry.updatedAt,
         ...(entry.projectionValues === undefined
@@ -724,6 +783,13 @@ export class ClientSessions implements ISessions {
         ...(entry.parentSessionId !== undefined ? { parentId: entry.parentSessionId } : {}),
         ...(entry.origin !== undefined ? { origin: entry.origin } : {}),
       };
+      this.projectedItemCache.set(entry.sessionId, { entry, retainedBy, summary });
+      byId[entry.sessionId] = summary;
+    }
+    if (this.projectedItemCache.size > items.length) {
+      for (const sessionId of this.projectedItemCache.keys()) {
+        if (byId[sessionId] === undefined) this.projectedItemCache.delete(sessionId);
+      }
     }
     for (const [parentId, projection] of Object.entries(projectionsBySession)) {
       for (const child of projection.values.subagentCatalog ?? []) {

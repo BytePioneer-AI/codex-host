@@ -1,5 +1,5 @@
 import type { Stats } from "node:fs";
-import { lstat, opendir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -63,24 +63,35 @@ async function transcriptFingerprint(file: string): Promise<string | null> {
   return info?.isFile() && info.size > 0 ? `${info.ino}:${info.size}:${info.mtimeMs}` : null;
 }
 
+const LIST_CONCURRENCY = 32;
+
 async function listTranscripts(
   brainRoot: string,
   signal: AbortSignal,
 ): Promise<HarnessUsageSource[]> {
   signal.throwIfAborted();
-  const conversations = await opendir(brainRoot).catch((error: unknown) => {
+  const entries = await readdir(brainRoot, { withFileTypes: true }).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   });
-  if (!conversations) return [];
+  if (!entries) return [];
+  const directories = entries.filter((entry) => entry.isDirectory());
   const sources: HarnessUsageSource[] = [];
-  for await (const entry of conversations) {
+  for (let offset = 0; offset < directories.length; offset += LIST_CONCURRENCY) {
     signal.throwIfAborted();
-    if (!entry.isDirectory()) continue;
-    const file = transcriptPath(brainRoot, entry.name);
-    const fingerprint = await transcriptFingerprint(file);
-    if (fingerprint) sources.push({ id: file, fingerprint });
+    const batch = directories.slice(offset, offset + LIST_CONCURRENCY);
+    const inspected = await Promise.all(
+      batch.map(async (entry) => {
+        const file = transcriptPath(brainRoot, entry.name);
+        const fingerprint = await transcriptFingerprint(file);
+        return fingerprint ? { id: file, fingerprint } : null;
+      }),
+    );
+    for (const source of inspected) {
+      if (source) sources.push(source);
+    }
   }
+  signal.throwIfAborted();
   return sources;
 }
 

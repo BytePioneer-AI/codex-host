@@ -118,7 +118,7 @@
   :global([data-dockkit-host="dock"][data-dockkit-column="0"]) {
   /* Lights end near x 68; 88 leaves the same 20px of air the conversation
      header's leading controls keep after them (ui-sidebar HeaderLeadingControls). */
-  --dsh-dockkit-strip-inline-start: 88px;
+  --dsh-dockkit-strip-inline-start: calc(var(--dsh-mac-lights-end, 68px) + 20px);
 }
 
 :global([data-platform="darwin"])

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 
 import type {
@@ -58,10 +59,20 @@ interface CachedSource {
   entries: readonly HarnessUsageEntry[];
 }
 
+interface HarnessIndex {
+  timeZone: string;
+  seen: Set<string>;
+  entries: IndexedEntry[];
+  indexedSources: number;
+  appendable: boolean;
+}
+
 interface HarnessCache {
   sources: Map<string, CachedSource>;
   persistedAtMs: number;
+  persistAttemptedAtMs: number;
   dirty: boolean;
+  index: HarnessIndex | null;
 }
 
 type CompactEntry = [
@@ -128,7 +139,7 @@ function expand(value: unknown, intern: (value: unknown) => unknown): HarnessUsa
     ...(written1h !== null ? { cacheWrite1hInputTokens: written1h } : {}),
     outputTokens: output,
     ...(reasoning !== null ? { reasoningOutputTokens: reasoning } : {}),
-    ...(sessionId !== null ? { sessionId } : {}),
+    ...(sessionId !== null ? { sessionId: intern(sessionId) } : {}),
     ...(cwd !== null ? { cwd: intern(cwd) } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     ...(credits !== null ? { credits } : {}),
@@ -152,6 +163,7 @@ interface IndexedEntry {
 
 const SESSIONS_PER_MEASURE = 50;
 const MODELS_PER_SESSION = 16;
+const TEXT_COLLATOR = new Intl.Collator();
 
 function emptyTotals(): UsageStatisticsTotals {
   return {
@@ -409,14 +421,15 @@ export class UsageStatistics {
     }> = [];
     this.#progress = { sources: 0, read: 0 };
     this.#modelLabels.clear();
-    for (const { harness, capability } of this.#sources?.() ?? []) {
-      try {
-        const labels = await capability.readModelLabels?.(signal);
-        if (labels)
-          this.#modelLabels.set(
-            harness,
-            Object.fromEntries(
-              Object.entries(labels).filter(
+    const sources = this.#sources?.() ?? [];
+    const discovered = await Promise.all(
+      sources.map(async ({ harness, capability }) => {
+        let labels: Readonly<Record<string, string>> | undefined;
+        try {
+          const raw = await capability.readModelLabels?.(signal);
+          if (raw) {
+            labels = Object.fromEntries(
+              Object.entries(raw).filter(
                 ([id, label]) =>
                   id.length > 0 &&
                   id.length <= 512 &&
@@ -424,20 +437,28 @@ export class UsageStatistics {
                   label.length > 0 &&
                   label.length <= 512,
               ),
-            ),
-          );
-      } catch {
-        if (signal.aborted) return;
-        // Optional display metadata must never prevent usage collection or pricing.
-      }
-      try {
-        const ids = [...(await capability.listSources(signal))];
-        listed.push({ harness, capability, ids });
-        this.#progress.sources += ids.length;
-        this.#failures.delete(harness);
-      } catch (error) {
-        if (signal.aborted) return;
-        this.#failures.set(harness, message(error));
+            );
+          }
+        } catch {
+          // Optional display metadata must never prevent usage collection or pricing.
+        }
+        try {
+          const ids = [...(await capability.listSources(signal))];
+          return { harness, capability, labels, ids };
+        } catch (error) {
+          return { harness, capability, labels, error: message(error) };
+        }
+      }),
+    );
+    if (signal.aborted) return;
+    for (const item of discovered) {
+      if (item.labels) this.#modelLabels.set(item.harness, item.labels);
+      if ("ids" in item && item.ids) {
+        listed.push({ harness: item.harness, capability: item.capability, ids: item.ids });
+        this.#progress.sources += item.ids.length;
+        this.#failures.delete(item.harness);
+      } else if ("error" in item && item.error !== undefined) {
+        this.#failures.set(item.harness, item.error);
       }
     }
     for (const { harness, capability, ids } of listed) {
@@ -448,18 +469,31 @@ export class UsageStatistics {
         ({ id, fingerprint }) => cache.sources.get(id)?.fingerprint !== fingerprint,
       );
       this.#progress.read += ids.length - pending.length;
+      let checkpointFromMs =
+        Math.max(cache.persistedAtMs, cache.persistAttemptedAtMs) || this.#now();
+      let yieldedAtMs = performance.now();
       try {
         for await (const result of readUsageStatisticsSources(capability, pending, signal)) {
           const { id, fingerprint } = result.source;
           if ("entries" in result) {
+            const replacing = cache.sources.has(id);
             cache.sources.set(id, { fingerprint, entries: result.entries });
             cache.dirty = true;
+            if (replacing && cache.index) cache.index.appendable = false;
             this.#generation += 1;
           } else if ("error" in result) failed ??= message(result.error);
           else present.delete(id);
           this.#progress.read += 1;
-          // Large histories are parsed in pieces; other Host requests run in between.
-          await yieldToEventLoop();
+          if (cache.dirty && this.#now() - checkpointFromMs >= PERSIST_INTERVAL_MS) {
+            await this.#persist(harness, cache);
+            checkpointFromMs =
+              Math.max(cache.persistedAtMs, cache.persistAttemptedAtMs) || this.#now();
+            yieldedAtMs = performance.now();
+          } else if (performance.now() - yieldedAtMs >= 12) {
+            // Large histories are parsed in pieces; other Host requests run in between.
+            await yieldToEventLoop();
+            yieldedAtMs = performance.now();
+          }
         }
       } catch (error) {
         if (signal.aborted) return;
@@ -469,11 +503,15 @@ export class UsageStatistics {
         if (!present.has(id)) {
           cache.sources.delete(id);
           cache.dirty = true;
+          cache.index = null;
           this.#generation += 1;
         }
       }
       if (failed) this.#failures.set(harness, failed);
-      if (this.#now() - cache.persistedAtMs >= PERSIST_INTERVAL_MS)
+      if (
+        this.#now() - Math.max(cache.persistedAtMs, cache.persistAttemptedAtMs) >=
+        PERSIST_INTERVAL_MS
+      )
         await this.#persist(harness, cache);
     }
     this.#refreshedAtMs = this.#now();
@@ -482,7 +520,13 @@ export class UsageStatistics {
   #cache(harness: string): HarnessCache {
     let cache = this.#caches.get(harness);
     if (!cache) {
-      cache = { sources: new Map(), persistedAtMs: 0, dirty: false };
+      cache = {
+        sources: new Map(),
+        persistedAtMs: 0,
+        persistAttemptedAtMs: 0,
+        dirty: false,
+        index: null,
+      };
       this.#caches.set(harness, cache);
     }
     return cache;
@@ -523,12 +567,14 @@ export class UsageStatistics {
           const [id, fingerprint, entries] = source;
           if (typeof id !== "string" || typeof fingerprint !== "string" || !Array.isArray(entries))
             continue;
+          const replacing = cache.sources.has(id);
           cache.sources.set(id, {
             fingerprint,
             entries: entries
               .map((entry) => expand(entry, intern))
               .filter((entry): entry is HarnessUsageEntry => entry !== null),
           });
+          if (replacing && cache.index) cache.index.appendable = false;
           this.#generation += 1;
         }
         cache.persistedAtMs = this.#now();
@@ -574,9 +620,12 @@ export class UsageStatistics {
       cache.dirty = false;
       await writeFile(temporary, JSON.stringify({ version: CACHE_VERSION, sources }));
       await rename(temporary, file);
-      cache.persistedAtMs = this.#now();
+      const persistedAtMs = this.#now();
+      cache.persistedAtMs = persistedAtMs;
+      cache.persistAttemptedAtMs = persistedAtMs;
     } catch (error) {
       cache.dirty = true;
+      cache.persistAttemptedAtMs = this.#now();
       this.#options.diagnose?.(`Usage statistics cache for ${harness}: ${message(error)}`);
     } finally {
       await rm(temporary, { force: true }).catch(() => undefined);
@@ -589,14 +638,42 @@ export class UsageStatistics {
       return this.#index.entries;
     const entries: IndexedEntry[] = [];
     for (const [harness, cache] of this.#caches) {
-      const seen = new Set<string>();
-      for (const { entries: parsed } of cache.sources.values()) {
-        for (const entry of parsed) {
-          if (seen.has(entry.id)) continue;
-          seen.add(entry.id);
-          entries.push({ harness, entry, ...calendar.at(entry.occurredAtMs) });
+      let harnessIndex = cache.index;
+      if (
+        !harnessIndex ||
+        harnessIndex.timeZone !== calendar.timeZone ||
+        !harnessIndex.appendable
+      ) {
+        const seen = new Set<string>();
+        const parsedEntries: IndexedEntry[] = [];
+        for (const { entries: parsed } of cache.sources.values()) {
+          for (const entry of parsed) {
+            if (seen.has(entry.id)) continue;
+            seen.add(entry.id);
+            parsedEntries.push({ harness, entry, ...calendar.at(entry.occurredAtMs) });
+          }
         }
+        harnessIndex = {
+          timeZone: calendar.timeZone,
+          seen,
+          entries: parsedEntries,
+          indexedSources: cache.sources.size,
+          appendable: true,
+        };
+        cache.index = harnessIndex;
+      } else if (harnessIndex.indexedSources < cache.sources.size) {
+        let index = 0;
+        for (const { entries: parsed } of cache.sources.values()) {
+          if (index++ < harnessIndex.indexedSources) continue;
+          for (const entry of parsed) {
+            if (harnessIndex.seen.has(entry.id)) continue;
+            harnessIndex.seen.add(entry.id);
+            harnessIndex.entries.push({ harness, entry, ...calendar.at(entry.occurredAtMs) });
+          }
+        }
+        harnessIndex.indexedSources = cache.sources.size;
       }
+      for (const item of harnessIndex.entries) entries.push(item);
     }
     this.#index = { generation: this.#generation, timeZone: calendar.timeZone, entries };
     return entries;
@@ -646,30 +723,35 @@ export class UsageStatistics {
 
     const harnesses = new Set<string>();
     const models = new Set<string | null>();
-    const modelLabels = new Map<string, { harness: string; model: string; label: string }>();
+    const modelLabelsByHarness = new Map<
+      string,
+      Map<string, { harness: string; model: string; label: string }>
+    >();
+    let modelLabelCount = 0;
     const projects = new Set<string | null>();
     const totals = emptyTotals();
-    const daily = new Map<string, UsageStatisticsTotals>();
+    const dailyByHarness = new Map<string, Map<string, UsageStatisticsTotals>>();
     const hourly = new Map<number, UsageStatisticsTotals>();
     const byHarness = new Map<string, UsageStatisticsTotals>();
     const byModel = new Map<string | null, UsageStatisticsTotals>();
-    const credits = new Map<string, NonNullable<UsageStatisticsResult["credits"]>[number]>();
+    const creditsByHarness = new Map<
+      string,
+      Map<string | null, NonNullable<UsageStatisticsResult["credits"]>[number]>
+    >();
     const harnessPriced = new Map<string | null, number>();
     const byProject = new Map<string | null, UsageStatisticsTotals>();
-    const sessions = new Map<
-      string,
-      {
-        harness: string;
-        sessionId: string;
-        project: string | null;
-        title?: string;
-        titleAtMs?: number;
-        models: Map<string, number>;
-        firstAtMs: number;
-        lastAtMs: number;
-        totals: UsageStatisticsTotals;
-      }
-    >();
+    type SessionGroup = {
+      harness: string;
+      sessionId: string;
+      project: string | null;
+      title?: string;
+      titleAtMs?: number;
+      models: Map<string, number>;
+      firstAtMs: number;
+      lastAtMs: number;
+      totals: UsageStatisticsTotals;
+    };
+    const sessionsByHarness = new Map<string, Map<string, SessionGroup>>();
 
     for (const indexed of this.#indexed(calendar)) {
       const { harness, entry, date } = indexed;
@@ -678,24 +760,41 @@ export class UsageStatistics {
       const project = entry.cwd ?? null;
       harnesses.add(harness);
       models.add(model);
-      if (model !== null && modelLabels.size < 4096) {
-        const labels = this.#modelLabels.get(harness);
-        const label = labels && Object.hasOwn(labels, model) ? labels[model] : undefined;
-        modelLabels.set(`${harness}\u0000${model}`, { harness, model, label: label ?? model });
+      if (model !== null && modelLabelCount < 4096) {
+        let harnessLabels = modelLabelsByHarness.get(harness);
+        if (!harnessLabels) {
+          harnessLabels = new Map();
+          modelLabelsByHarness.set(harness, harnessLabels);
+        }
+        if (!harnessLabels.has(model)) {
+          const labels = this.#modelLabels.get(harness);
+          const label = labels && Object.hasOwn(labels, model) ? labels[model] : undefined;
+          harnessLabels.set(model, { harness, model, label: label ?? model });
+          modelLabelCount += 1;
+        }
       }
       projects.add(project);
       if (harnessFilter !== null && harness !== harnessFilter) continue;
       if (modelFilter !== undefined && model !== modelFilter) continue;
       if (projectFilter !== undefined && project !== projectFilter) continue;
       const cost = costOf(entry);
-      addEntry(bucket(daily, `${date}\u0000${harness}`), entry, cost);
+      let harnessDaily = dailyByHarness.get(harness);
+      if (!harnessDaily) {
+        harnessDaily = new Map();
+        dailyByHarness.set(harness, harnessDaily);
+      }
+      addEntry(bucket(harnessDaily, date), entry, cost);
       if (day !== null && date !== day) continue;
       addEntry(totals, entry, cost);
-      const creditsKey = JSON.stringify([harness, model]);
-      let creditGroup = credits.get(creditsKey);
+      let harnessCredits = creditsByHarness.get(harness);
+      if (!harnessCredits) {
+        harnessCredits = new Map();
+        creditsByHarness.set(harness, harnessCredits);
+      }
+      let creditGroup = harnessCredits.get(model);
       if (!creditGroup) {
         creditGroup = { harness, model, credits: 0, reportedRequests: 0, requests: 0 };
-        credits.set(creditsKey, creditGroup);
+        harnessCredits.set(model, creditGroup);
       }
       creditGroup.requests += 1;
       if (entry.credits !== undefined) {
@@ -710,8 +809,12 @@ export class UsageStatistics {
       }
       addEntry(bucket(byProject, project), entry, cost);
       if (entry.sessionId !== undefined) {
-        const key = `${harness}\u0000${entry.sessionId}`;
-        let session = sessions.get(key);
+        let harnessSessions = sessionsByHarness.get(harness);
+        if (!harnessSessions) {
+          harnessSessions = new Map();
+          sessionsByHarness.set(harness, harnessSessions);
+        }
+        let session = harnessSessions.get(entry.sessionId);
         if (!session) {
           session = {
             harness,
@@ -722,7 +825,7 @@ export class UsageStatistics {
             lastAtMs: entry.occurredAtMs,
             totals: emptyTotals(),
           };
-          sessions.set(key, session);
+          harnessSessions.set(entry.sessionId, session);
         }
         session.project ??= project;
         if (
@@ -742,8 +845,11 @@ export class UsageStatistics {
     // The top sessions by cost and by tokens without cache: a cheap model's long session and an
     // expensive model's short one both make the list. Latest sessions are a second list, newest
     // last activity first, as magpie's Usage → Sessions page does.
-    const allSessions = [...sessions.values()];
-    const toSession = (session: (typeof allSessions)[number]): UsageStatisticsSession => ({
+    const allSessions: SessionGroup[] = [];
+    for (const harnessSessions of sessionsByHarness.values()) {
+      for (const session of harnessSessions.values()) allSessions.push(session);
+    }
+    const toSession = (session: SessionGroup): UsageStatisticsSession => ({
       harness: session.harness,
       sessionId: session.sessionId,
       project: session.project,
@@ -775,7 +881,7 @@ export class UsageStatistics {
         (left, right) =>
           right.lastAtMs - left.lastAtMs ||
           right.firstAtMs - left.firstAtMs ||
-          left.sessionId.localeCompare(right.sessionId),
+          TEXT_COLLATOR.compare(left.sessionId, right.sessionId),
       )
       .slice(0, SESSIONS_PER_MEASURE)
       .map(toSession);
@@ -784,7 +890,27 @@ export class UsageStatistics {
     if (unlistedModel) this.#options.prices.missing();
 
     const byName = (left: string | null, right: string | null): number =>
-      left === right ? 0 : left === null ? 1 : right === null ? -1 : left.localeCompare(right);
+      left === right
+        ? 0
+        : left === null
+          ? 1
+          : right === null
+            ? -1
+            : TEXT_COLLATOR.compare(left, right);
+    const modelLabels: Array<{ harness: string; model: string; label: string }> = [];
+    for (const harnessLabels of modelLabelsByHarness.values()) {
+      for (const item of harnessLabels.values()) modelLabels.push(item);
+    }
+    const creditRows: NonNullable<UsageStatisticsResult["credits"]> = [];
+    for (const harnessCredits of creditsByHarness.values()) {
+      for (const row of harnessCredits.values()) {
+        if (row.reportedRequests > 0) creditRows.push(row);
+      }
+    }
+    const dailyRows: UsageStatisticsResult["daily"] = [];
+    for (const [harness, harnessDaily] of dailyByHarness) {
+      for (const [date, value] of harnessDaily) dailyRows.push({ date, harness, ...value });
+    }
     return {
       range,
       from,
@@ -812,24 +938,19 @@ export class UsageStatistics {
         models: [...models].sort(byName).slice(0, 4096),
         projects: [...projects].sort(byName).slice(0, 4096),
       },
-      modelLabels: [...modelLabels.values()],
-      credits: [...credits.values()]
-        .filter((row) => row.reportedRequests > 0)
+      modelLabels,
+      credits: creditRows
         .sort(
           (left, right) =>
-            left.harness.localeCompare(right.harness) || byName(left.model, right.model),
+            TEXT_COLLATOR.compare(left.harness, right.harness) || byName(left.model, right.model),
         )
         .slice(0, 4096),
       totals,
-      daily: [...daily]
-        .map(([key, value]) => {
-          const [date = "", harness = ""] = key.split("\u0000");
-          return { date, harness, ...value };
-        })
-        .sort(
-          (left, right) =>
-            left.date.localeCompare(right.date) || left.harness.localeCompare(right.harness),
-        ),
+      daily: dailyRows.sort(
+        (left, right) =>
+          (left.date < right.date ? -1 : left.date > right.date ? 1 : 0) ||
+          TEXT_COLLATOR.compare(left.harness, right.harness),
+      ),
       hourly: [...hourly]
         .map(([slot, value]) => ({ weekday: Math.floor(slot / 24), hour: slot % 24, ...value }))
         .sort((left, right) => left.weekday - right.weekday || left.hour - right.hour),

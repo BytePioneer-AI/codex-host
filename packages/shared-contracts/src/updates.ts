@@ -21,6 +21,16 @@ export const updatePhaseSchema = z.enum([
   "failed",
 ]);
 
+export const npmDownloadProgressSchema = z
+  .strictObject({
+    completed: z.number().int().nonnegative(),
+    total: z.number().int().positive(),
+  })
+  .refine((progress) => progress.completed <= progress.total, {
+    path: ["completed"],
+    message: "completed must not exceed total",
+  });
+
 export const updateStatusSchema = z
   .strictObject({
     version: updateSemanticVersionSchema,
@@ -29,6 +39,7 @@ export const updateStatusSchema = z
     updatedAt: z.number().int().nonnegative(),
     downloadedBytes: z.number().int().nonnegative().optional(),
     totalBytes: z.number().int().positive().optional(),
+    npmDownload: npmDownloadProgressSchema.optional(),
     error: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).nullable(),
     serviceStopOutput: z.string().optional(),
   })

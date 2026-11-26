@@ -16,6 +16,7 @@ export interface HandoffModalProps {
   readonly open: boolean;
   readonly atSeq?: number | undefined;
   readonly currentHarnessId?: string | undefined;
+  readonly initialHarnessId?: string | undefined;
   readonly loadModelCatalog: () => Promise<ModelCatalog>;
   readonly onSubmit: (input: ChatHandoffInput) => Promise<void>;
   readonly onClose: () => void;
@@ -79,8 +80,13 @@ function orderedHarnesses(catalog: ModelCatalog | null): readonly ModelProviderG
 function pickInitialHarness(
   groups: readonly ModelProviderGroup[],
   currentHarnessId: string | undefined,
+  initialHarnessId: string | undefined,
 ): ModelProviderGroup | undefined {
   if (groups.length === 0) return undefined;
+  if (initialHarnessId !== undefined) {
+    const explicit = groups.find((group) => group.id === initialHarnessId);
+    if (explicit !== undefined) return explicit;
+  }
   return groups.find((group) => group.id !== currentHarnessId) ?? groups[0];
 }
 
@@ -89,6 +95,7 @@ export function HandoffModal({
   open,
   atSeq,
   currentHarnessId,
+  initialHarnessId,
   loadModelCatalog,
   onSubmit,
   onClose,
@@ -113,7 +120,7 @@ export function HandoffModal({
       (value) => {
         if (!active) return;
         const groups = orderedHarnesses(value);
-        const initial = pickInitialHarness(groups, currentHarnessId);
+        const initial = pickInitialHarness(groups, currentHarnessId, initialHarnessId);
         setCatalog(value);
         setCatalogStatus("ready");
         setSelectedHarnessId(initial?.id ?? null);
@@ -128,7 +135,7 @@ export function HandoffModal({
     return () => {
       active = false;
     };
-  }, [currentHarnessId, loadModelCatalog]);
+  }, [currentHarnessId, initialHarnessId, loadModelCatalog]);
 
   useEffect(() => {
     if (!open) return;

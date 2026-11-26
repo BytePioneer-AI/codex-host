@@ -180,7 +180,7 @@ const USAGE: &str = "usage:
   codexhost desktop-screenshot
   codexhost broker install|status|stop|uninstall
   codexhost delegate --help
-  codexhost host info ...
+  codexhost host info|list ...
   codexhost project list ...
   codexhost harness list|inspect ...
   codexhost delegate start ...
@@ -1690,8 +1690,18 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
+    let node = default_node_with_npm(installed.node, inherited_npm_node());
+    let node = if (!node.is_absolute() || !node.is_file())
+        && console::uses_npm_distribution(&installed.console_server)
+    {
+        let program = if cfg!(windows) { "node.exe" } else { "node" };
+        resolve_executable_on_path(Path::new(program))
+            .ok_or("The npm diagnostic console needs Node.js on PATH. Run `codexhost console` from a terminal with Node.js available.")?
+    } else {
+        resolve_default_node(node)?
+    };
     let command = console::ConsoleCommand {
-        node: resolve_default_node(default_node_with_npm(installed.node, inherited_npm_node()))?,
+        node,
         console_server: installed.console_server,
     };
     if console::run(&command, action)? {
@@ -1882,9 +1892,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
-        Some("host") if arguments.get(1).is_some_and(|arg| arg == "info") => {
-            run_delegation_cli(arguments)
-        }
+        Some("host") if is_delegation_host_command(arguments) => run_delegation_cli(arguments),
         Some("host") => host_service::run(&arguments[1..]),
         Some("web-service") => web_service::run(&arguments[1..]),
         Some("proxy-environment") if arguments.len() == 1 => {
@@ -1899,6 +1907,13 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Err("invalid launcher arguments".into())
         }
     }
+}
+
+fn is_delegation_host_command(arguments: &[String]) -> bool {
+    arguments.first().is_some_and(|arg| arg == "host")
+        && arguments
+            .get(1)
+            .is_some_and(|arg| matches!(arg.as_str(), "info" | "list"))
 }
 
 fn main() -> ExitCode {
@@ -1956,6 +1971,23 @@ mod tests {
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+
+    pub(crate) fn status_retrying_busy(
+        command: &mut Command,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let mut attempts = 0;
+        loop {
+            match command.status() {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 10 =>
+                {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                result => return result,
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     use std::process::Stdio;
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -2093,6 +2125,29 @@ mod tests {
             "get".into(),
             "--json".into()
         ]));
+    }
+
+    #[test]
+    fn host_delegation_routing_matches_info_and_list_only() {
+        for args in [
+            vec!["host".into(), "info".into()],
+            vec!["host".into(), "info".into(), "--json".into()],
+            vec!["host".into(), "list".into()],
+            vec!["host".into(), "list".into(), "--json".into()],
+            vec!["host".into(), "list".into(), "--help".into()],
+        ] {
+            assert!(super::is_delegation_host_command(&args), "{args:?}");
+        }
+        for args in [
+            vec!["host".into()],
+            vec!["host".into(), "--node".into(), "/usr/bin/node".into()],
+            vec!["host".into(), "start".into()],
+            vec!["host".into(), "status".into()],
+            vec!["delegate".into(), "list".into()],
+        ] {
+            assert!(!super::is_delegation_host_command(&args), "{args:?}");
+        }
+        assert!(super::USAGE.contains("codexhost host info|list ..."));
     }
 
     #[test]
@@ -2680,29 +2735,29 @@ mod tests {
         }
 
         let found_path = env::join_paths([&first, &second]).unwrap();
-        let found_status = Command::new(&child)
+        let mut found_command = Command::new(&child);
+        found_command
             .args([
                 "--exact",
                 "tests::source_checkout_launch_resolves_node_from_path_with_priority_and_exec_check",
             ])
             .env(CHILD, &root)
             .env("CODEXHOST_TEST_SOURCE_LAUNCH_MODE", MODE_FOUND)
-            .env("PATH", &found_path)
-            .status()
-            .unwrap();
+            .env("PATH", &found_path);
+        let found_status = status_retrying_busy(&mut found_command).unwrap();
         assert!(found_status.success());
 
         let missing_path = env::join_paths([&first]).unwrap();
-        let missing_status = Command::new(&child)
+        let mut missing_command = Command::new(&child);
+        missing_command
             .args([
                 "--exact",
                 "tests::source_checkout_launch_resolves_node_from_path_with_priority_and_exec_check",
             ])
             .env(CHILD, &root)
             .env("CODEXHOST_TEST_SOURCE_LAUNCH_MODE", MODE_MISSING)
-            .env("PATH", &missing_path)
-            .status()
-            .unwrap();
+            .env("PATH", &missing_path);
+        let missing_status = status_retrying_busy(&mut missing_command).unwrap();
         assert!(missing_status.success());
 
         std::fs::remove_dir_all(root).unwrap();

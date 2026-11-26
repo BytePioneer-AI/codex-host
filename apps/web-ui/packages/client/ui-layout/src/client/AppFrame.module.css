@@ -243,6 +243,11 @@
   --dsh-frame-top-clearance: 48px;
 }
 
+:global(html[data-platform="darwin"][data-tauri-shell]:not([data-fullscreen])) {
+  --dsh-mac-lights-end: calc(68px / var(--dsh-shell-zoom, 1));
+  --dsh-mac-lights-bottom: calc(32px / var(--dsh-shell-zoom, 1));
+}
+
 /* In-frame Windows content already clears the caption through .frame padding. */
 :global(html[data-windows-titlebar]) {
   --dsh-frame-top-clearance: var(--dsh-windows-titlebar-height);
@@ -338,7 +343,7 @@
    (28 + 8 + 28), then 8px of air. Main panels whose content reaches the
    top-left corner pad by this. */
 :global([data-platform="darwin"]) .frame[data-sidebar-hidden] {
-  --dsh-frame-leading-clearance: 160px;
+  --dsh-frame-leading-clearance: calc(var(--dsh-mac-lights-end, 68px) + 92px);
 }
 
 /* Fullscreen hides the traffic lights (preload mirrors the window state onto
@@ -369,7 +374,7 @@
 .leadingSeat {
   position: absolute;
   top: 11px;
-  left: 88px;
+  left: calc(var(--dsh-mac-lights-end, 68px) + 20px);
   z-index: 15;
   display: flex;
   align-items: center;
@@ -614,10 +619,14 @@
 
 .frame[data-phone] .leadingSeat {
   top: calc(env(safe-area-inset-top) + 4px);
-  left: 12px;
+  left: calc(var(--dsh-mac-lights-end, -8px) + 20px);
+}
+
+:global([data-windows-titlebar]) .frame[data-phone] .leadingSeat {
+  top: calc(var(--dsh-windows-titlebar-height) + 4px);
 }
 
 /* Phone: only the circular sidebar control sits on the leading edge; New Session moves to the right capsule. */
 .frame[data-phone][data-sidebar-hidden] {
-  --dsh-frame-leading-clearance: 58px;
+  --dsh-frame-leading-clearance: calc(var(--dsh-mac-lights-end, 0px) + 58px);
 }

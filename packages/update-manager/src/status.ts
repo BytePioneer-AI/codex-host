@@ -1,3 +1,7 @@
+import { npmDownloadProgressSchema } from "@codexhost/shared-contracts";
+
+import type { NpmDownloadProgress } from "./npm-registry.js";
+
 export const STATUS_SCHEMA_VERSION = 1;
 export const SEMVER_PATTERN =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
@@ -21,6 +25,7 @@ export interface BackgroundUpdateStatus {
   updatedAt: number;
   downloadedBytes?: number;
   totalBytes?: number;
+  npmDownload?: NpmDownloadProgress;
   error?: string;
   serviceStopOutput?: string;
 }
@@ -28,20 +33,6 @@ export interface BackgroundUpdateStatus {
 export function requireSemanticVersion(value: string): string {
   if (!SEMVER_PATTERN.test(value)) throw new Error("update version must be valid semantic version");
   return value;
-}
-
-export function preparedStatus(
-  version: string,
-  installation: BackgroundUpdateInstallation,
-  now: number,
-): BackgroundUpdateStatus {
-  return {
-    schemaVersion: STATUS_SCHEMA_VERSION,
-    version,
-    installation,
-    phase: "prepared",
-    updatedAt: Math.floor(now / 1000),
-  };
 }
 
 export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
@@ -53,6 +44,7 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     "downloadedBytes",
     "error",
     "installation",
+    "npmDownload",
     "phase",
     "schemaVersion",
     "serviceStopOutput",
@@ -91,6 +83,8 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     (typeof status.downloadedBytes === "number" &&
       typeof status.totalBytes === "number" &&
       status.downloadedBytes > status.totalBytes) ||
+    (status.npmDownload !== undefined &&
+      !npmDownloadProgressSchema.safeParse(status.npmDownload).success) ||
     (status.error !== undefined && typeof status.error !== "string") ||
     (status.serviceStopOutput !== undefined && typeof status.serviceStopOutput !== "string")
   ) {

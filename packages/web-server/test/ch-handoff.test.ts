@@ -11,6 +11,7 @@ import {
   threadHandoffMetadataSchema,
   type ThreadHandoffMetadata,
 } from "@codexhost/shared-contracts";
+import type { ChHostClient } from "../src/ch-host-client.ts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { ChThreadHistory } from "../src/ch-thread-history.ts";
 import { handoffChThread } from "../src/ch-thread-handoff.ts";
@@ -184,6 +185,7 @@ it("exposes codexhostHandoff projection immediately and after a fresh server rel
     sessionId?: string;
   }> = [];
   const sink: StreamSink = {
+    id: "handoff-sink",
     push(event: unknown) {
       pushed.push(event as { type?: string; key?: string; value?: unknown; sessionId?: string });
     },
@@ -215,21 +217,24 @@ it("exposes codexhostHandoff from realtime ClientThreadSnapshot on reload", asyn
   target.turns = [];
   const meta = sampleMetadata("source-rt", "fake");
 
-  host.realtime = {
-    subscribe: () => () => {},
-    request: (method, params) => host.request(method, params),
-    snapshot: async (threadId) => ({
-      cursor: { epoch: "00000000-0000-4000-8000-000000000001", sequence: 1 },
-      thread: { ...structuredClone(target), id: threadId, turns: [] },
-      turnsPage: { data: [], nextCursor: null },
-      configuration: {},
-      interactions: [],
-      handoff: meta,
-    }),
-    respond: async () => ({ resolved: true }),
-  };
+  const realtimeHost: ChHostClient = Object.assign(host, {
+    realtime: {
+      subscribe: () => () => {},
+      request: <T = unknown>(method: string, params: Record<string, unknown>) =>
+        host.request<T>(method, params),
+      snapshot: async (threadId: string) => ({
+        cursor: { epoch: "00000000-0000-4000-8000-000000000001", sequence: 1 },
+        thread: { ...structuredClone(target), id: threadId, turns: [] },
+        turnsPage: { data: [], nextCursor: null },
+        configuration: {},
+        interactions: [],
+        handoff: meta,
+      }),
+      respond: async () => ({ resolved: true }),
+    },
+  });
 
-  const view = new ChThreadHistory(host, target, "fake", () => {});
+  const view = new ChThreadHistory(realtimeHost, target, "fake", () => {});
   await view.refresh(true);
   assert.deepEqual(view.log.projections[WEB_HANDOFF_PROJECTION], meta);
 });

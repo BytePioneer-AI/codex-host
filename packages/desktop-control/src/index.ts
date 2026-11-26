@@ -1,4 +1,5 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
+export { readDesktopGlobalState } from "./desktop-global-state.js";
 export { createLocalPageOpener } from "./local-page-control.js";
 export {
   ensureHostService,

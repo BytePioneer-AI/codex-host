@@ -28,6 +28,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type {
+  ChatHandoffModalRequest,
   ChatNodeInjected,
   ChatScrollPosition,
   ChatViewInjected,
@@ -92,6 +93,20 @@ export const inject = [
 export function apply(ctx: Context): void {
   const quotaNotice = createSnapshotStore<QuotaNoticeState | null>(null);
   let quotaNoticeSeq = 0;
+  const handoffRequest = createSnapshotStore<ChatHandoffModalRequest | null>(null);
+  let handoffRequestSeq = 0;
+  ctx.provide("chatHandoffLauncher", {
+    open(sessionId, options) {
+      handoffRequest.set({
+        seq: ++handoffRequestSeq,
+        sessionId,
+        ...(options?.targetHarnessId === undefined
+          ? {}
+          : { targetHarnessId: options.targetHarnessId }),
+        ...(options?.atSeq === undefined ? {} : { atSeq: options.atSeq }),
+      });
+    },
+  });
   // Each hold is its own token, so a release can only drop the hold it was
   // issued for: one arriving after a dismissal or a later acquisition leaves
   // that newer hold alone.
@@ -258,7 +273,7 @@ export function apply(ctx: Context): void {
           };
           return {
             connection: ctx.get("connection") as ConnectionHandle,
-            hooks: { presentation, browserAvailable },
+            hooks: { presentation, browserAvailable, handoffRequest },
             keyedHooks: {
               chatNode: (key) => chat.getSnapshot().nodes.source(key),
               chatNodeProcess: (key) => chat.getSnapshot().nodes.processSource(key),
@@ -367,6 +382,9 @@ export function apply(ctx: Context): void {
                 });
             },
             openSession: openSessionById,
+            clearHandoffRequest: (seq) => {
+              if (handoffRequest.getSnapshot()?.seq === seq) handoffRequest.set(null);
+            },
             loadModelCatalog: canHandoff
               ? async () => {
                   const response = await ctx.remote.session.modelCatalog(undefined);

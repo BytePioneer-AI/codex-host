@@ -832,6 +832,13 @@ export const en = {
   "wallpaper.error.file-too-large": "Image exceeds the 20 MiB limit.",
   "wallpaper.error.decode-failed": "Could not decode this image file.",
   "wallpaper.error.storage-failed": "Could not save the background image in this browser.",
+
+  "shellZoom.title": "Interface zoom",
+  "shellZoom.description": "Scale window text, icons, and spacing ({shortcuts})",
+  "shellZoom.defaultOption": "{percent}% (Default)",
+  "shellZoom.shortcut.zoomIn": "Zoom in",
+  "shellZoom.shortcut.zoomOut": "Zoom out",
+  "shellZoom.shortcut.reset": "Reset zoom",
 } as const;
 
 export type ImportLocaleKey = keyof typeof en;
@@ -1608,4 +1615,11 @@ export const zh: Record<ImportLocaleKey, string> = {
   "remoteSession.reconnect": "重连",
   "remoteSession.reconnecting": "重连中…",
   "remoteSession.reconnectFailed": "重连失败：{message}",
+
+  "shellZoom.title": "界面缩放",
+  "shellZoom.description": "缩放整个窗口的文字、图标与间距（{shortcuts}）",
+  "shellZoom.defaultOption": "{percent}%（默认）",
+  "shellZoom.shortcut.zoomIn": "放大界面",
+  "shellZoom.shortcut.zoomOut": "缩小界面",
+  "shellZoom.shortcut.reset": "重置缩放",
 };

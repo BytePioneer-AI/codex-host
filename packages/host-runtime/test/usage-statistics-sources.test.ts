@@ -70,4 +70,32 @@ describe("usage source retries", () => {
     ]);
     expect(capability.readSource).toHaveBeenCalledOnce();
   });
+
+  it("overlaps pending source reads while yielding results in listing order", async () => {
+    const first = Promise.withResolvers<undefined>();
+    const secondStarted = Promise.withResolvers<undefined>();
+    const sources = [
+      { id: "first", fingerprint: "1" },
+      { id: "second", fingerprint: "1" },
+    ];
+    const capability: HarnessUsageStatisticsCapability = {
+      listSources: async () => sources,
+      readSource: async (id) => {
+        if (id === "first") {
+          await first.promise;
+          return [];
+        }
+        secondStarted.resolve(undefined);
+        return [];
+      },
+    };
+    const reading = collect(capability, sources);
+    const overlapped = await Promise.race([
+      secondStarted.promise.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    first.resolve(undefined);
+    expect(overlapped).toBe(true);
+    expect((await reading).map((item) => item.source.id)).toEqual(["first", "second"]);
+  });
 });

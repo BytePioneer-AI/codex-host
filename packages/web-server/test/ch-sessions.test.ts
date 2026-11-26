@@ -6,6 +6,7 @@ import { it } from "node:test";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_STEER_STRICT_TARGET_FIELD,
+  clientWorkspaceSnapshotSchema,
   decodeHarnessPluginRoute,
 } from "@codexhost/shared-contracts";
 import { DataDir } from "../src/store.ts";
@@ -13,7 +14,7 @@ import { Workspaces, projectRootTitles } from "../src/workspaces.ts";
 import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../src/transport.ts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
-import { projectGroupRoot } from "../src/ch-project-groups.ts";
+import { nativeProjectRootOwners, projectGroupRoot } from "../src/ch-project-groups.ts";
 import { nativeProjectCommands } from "../src/ch-project-commands.ts";
 import { peerEndpoint } from "../src/peer-manifest.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
@@ -1059,9 +1060,9 @@ it("shares native project changes and keeps removed projects' sessions in the We
   host.add("migrated", cwd, "Migrated", false);
   host.projectSnapshot.assignments.migrated = "owned";
   host.add("unassigned", cwd, "Unassigned", false);
-  // Desktop lists a Thread without a project or assignment under the project holding its cwd.
-  host.add("rooted", join(cwd, "src"), "Rooted", false);
-  host.projectSnapshot.projectless.splice(host.projectSnapshot.projectless.indexOf("rooted"), 1);
+  host.add("rooted", cwd, "Rooted", false);
+  host.add("child-folder", join(cwd, "src"), "Child folder", false);
+  host.projectSnapshot.projectless = ["unassigned"];
   const data = new DataDir(join(root, "web"));
   const workspaces = new Workspaces(data, cwd, true);
   workspaces.create(cwd); // An older Web row for the same folder has a different identity.
@@ -1117,6 +1118,7 @@ it("shares native project changes and keeps removed projects' sessions in the We
   assert.ok(original);
   assert.equal(workspaces.ownerOf("migrated")?.workspaceId, original.workspaceId);
   assert.equal(workspaces.ownerOf("rooted")?.workspaceId, original.workspaceId);
+  assert.equal(workspaces.ownerOf("child-folder"), undefined);
   assert.equal(
     workspaces.ownerOf("unassigned"),
     undefined,
@@ -1156,6 +1158,53 @@ it("shares native project changes and keeps removed projects' sessions in the We
   assert.deepEqual(selected.turns, history);
   const after = (await call("session/list")) as { items: Array<{ sessionId: string }> };
   assert.ok(after.items.some((item) => item.sessionId === selected.id));
+});
+
+it("gives a shared native root to its dedicated project and keeps the other registered roots", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-project-roots-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shared = join(root, "shared");
+  const extra = join(root, "extra");
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [
+    { id: "multi", name: "Multi", rootPaths: [root, shared, extra] },
+    { id: "dedicated", name: "Dedicated", rootPaths: [shared] },
+  ];
+  host.add("via-extra", extra, "Extra", false);
+  host.add("via-shared", shared, "Shared", false);
+  host.projectSnapshot.projectless = [];
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, root, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  await sessions.refreshProjects();
+  assert.equal(workspaces.ownerOf("via-shared")?.projectId, "dedicated");
+  assert.equal(workspaces.ownerOf("via-extra")?.projectId, "multi");
+  const multi = workspaces.byPath(root);
+  assert.ok(multi);
+  const scope = workspaces.catalogScope(multi.workspaceId);
+  assert.ok(scope && "projectId" in scope);
+  assert.deepEqual(scope.rootPaths, [root, extra]);
+});
+
+it("selects an equally ranked native root by creation time and ID regardless of sidebar order", () => {
+  const projects = [
+    { id: "z-later", name: "Later", rootPaths: ["/shared"], createdAt: 20 },
+    { id: "a-first", name: "First A", rootPaths: ["/shared"], createdAt: 10 },
+    { id: "b-first", name: "First B", rootPaths: ["/shared"], createdAt: 10 },
+  ];
+  for (const ordered of [projects, [...projects].reverse()]) {
+    const snapshot = clientWorkspaceSnapshotSchema.parse({
+      projects: ordered,
+      assignments: {},
+      projectless: [],
+      pinned: [],
+    });
+    assert.equal(nativeProjectRootOwners(snapshot.projects).get("/shared")?.projectId, "b-first");
+  }
+  const olderHost = projects.map(({ id, name, rootPaths }) => ({ id, name, rootPaths }));
+  assert.equal(nativeProjectRootOwners(olderHost).get("/shared")?.projectId, "z-later");
 });
 
 it("moves sessions between native projects only after Codex confirms, keeping Web order", async (t) => {
@@ -1666,6 +1715,32 @@ it("groups assigned worktrees under their GUI project without changing execution
   assert.equal(projectGroupRoot(snapshot, "nested", join(root, "subdirectory")), root);
   assert.equal(projectGroupRoot(snapshot, "unselected", join(root, "generated")), undefined);
   assert.equal(projectGroupRoot(snapshot, "unknown", `${root}-other`), undefined);
+});
+
+it("keeps an assigned Thread with its own project when its folder is another project's first root", () => {
+  const home = resolve("computer", "chapter");
+  const shared = resolve("computer", "shared");
+  const extra = resolve("computer", "extra");
+  const snapshot = {
+    projects: [
+      { id: "owner", name: "Owner", rootPaths: [shared] },
+      { id: "chapter", name: "Chapter", rootPaths: [home, shared, extra] },
+    ],
+    assignments: { mine: "chapter", theirs: "owner", plain: "chapter" },
+    projectless: [],
+  };
+  assert.equal(projectGroupRoot(snapshot, "mine", join(shared, "notes")), home);
+  assert.equal(projectGroupRoot(snapshot, "theirs", shared), shared);
+  assert.equal(
+    projectGroupRoot(snapshot, "plain", extra),
+    extra,
+    "a root no project is named after stays its own Workspace",
+  );
+  assert.equal(
+    projectGroupRoot(snapshot, "unassigned", shared),
+    shared,
+    "without an assignment the folder decides",
+  );
 });
 
 it("uses existing Desktop routing without installing code, and does not retry rejected writes", async (t) => {

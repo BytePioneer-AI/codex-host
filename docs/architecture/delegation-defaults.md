@@ -20,4 +20,5 @@ Codex Desktop 与独立 Web 设置共用「多 Agent 协作」页面（`packages
 - 仅当本次委派未显式指定 `--model` / `--thinking` 时读取对应默认值；不改变 CLI 参数协议或外部 HTTP/MCP 接口。
 - 仅显式指定了与已保存默认不同的 `--model` 时，不继承已保存默认中的 `thinkingOptionId`。
 - 已保存的默认模型或思考强度若不再被目标 Harness 当前目录支持，或仅为校验保存默认而触发的目录检查失败时，静默回退到 Agent 原生默认且不改写用户配置；调用方本次显式传入非法参数仍返回 `INVALID_ARGUMENT`。
+- 当目标 Harness 的目录声明 `thinkingOptionsScope: "activeModel"`（仅观测了当前激活模型的思考档位）时，未列出 `supportedThinkingOptionIds` 的模型在调用方显式传入 `--thinking` 时延迟到 `adapter.open()` 切换模型后由原生面校验（若仅配置了已保存默认思考档位仍按上条静默回退）；若仅显式传入 `--thinking` 且原生默认模型已确认支持该档位，优先回退到原生默认模型而不是停留在未观测的已保存模型。
 - `requestId` 与短时去重摘要基于调用方原始请求计算，修改委派默认配置不影响已有 `requestId` 的幂等重试。

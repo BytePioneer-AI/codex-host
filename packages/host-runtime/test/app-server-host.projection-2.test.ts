@@ -1396,6 +1396,54 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it.each([
+    { cwd: "/synthetic", expected: "project-a" },
+    { cwd: "/elsewhere", expected: undefined },
+  ])(
+    "preserves the external parent's project when delegating Codex in $cwd",
+    async ({ cwd, expected }) => {
+      let api: DelegationControlApi | undefined;
+      const fixture = createFixture({
+        onDelegationApi(value) {
+          api = value;
+          return undefined;
+        },
+      });
+      try {
+        await fixture.ready;
+        if (!api) throw new Error("Missing delegation API");
+        const parent = await fixture.mappingStore.createProvisional({
+          hostThreadId: hostThreadIdSchema.parse("external-parent"),
+          createRequestId: "external-parent",
+          harnessId: harnessIdSchema.parse("pi"),
+          cwd: "/synthetic",
+          projectId: "project-a",
+          title: "Parent",
+          transportModelId: "codexhost/pi-native",
+          ephemeral: false,
+          historyMode: "paginated",
+        });
+        const started = api.start({
+          harnessId: "codex",
+          parentThreadId: parent.hostThreadId,
+          task: "review",
+          cwd,
+        });
+        const request = await readJsonLine(fixture.official.stdin);
+        const rejected = expect(started).rejects.toThrow();
+        fixture.official.stdout.write(
+          JSON.stringify({ id: request.id, error: { code: -32000, message: "fixture stop" } }) +
+            "\n",
+        );
+        await rejected;
+        expect(request.method).toBe("thread/start");
+        expect((request.params as JsonObject).projectId).toBe(expected);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("delegates to native Codex through brokered official requests without echoing internal responses", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -1416,12 +1464,13 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture, "parent-thread", "Main review");
+    await answerOfficialParentCwd(fixture, "parent-thread", "Main review", "project-a");
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
       params: {
         cwd: "/synthetic",
+        projectId: "project-a",
         approvalPolicy: "never",
         sandbox: "danger-full-access",
       },

@@ -67,7 +67,7 @@ import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-ru
 const IMPLICIT_DEDUPLICATION_MS = 30_000;
 const NATIVE_REF_TIMEOUT_MS = 10_000;
 
-type ParentMetadata = { cwd?: string; title?: string };
+type ParentMetadata = { cwd?: string; title?: string; projectId?: string };
 type ReadDelegationDefault = (
   harnessId: RoutedHarnessId,
 ) => Promise<HarnessDelegationDefault | undefined>;
@@ -177,6 +177,7 @@ export class HarnessDelegationCoordinator {
   readonly #startOfficial: (
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
     resolveConfiguration: ResolveOfficialConfiguration,
+    projectId?: string,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
@@ -212,6 +213,7 @@ export class HarnessDelegationCoordinator {
     startOfficial(
       input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
       resolveConfiguration: ResolveOfficialConfiguration,
+      projectId?: string,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
@@ -285,8 +287,11 @@ export class HarnessDelegationCoordinator {
     if (input.harnessId === "codex") {
       const startInput = { ...input, parentThreadId, cwd: selectedCwd, title };
       // The official owner resolves preferences only after checking the original request digest.
-      const result = await this.#startOfficial(startInput, (model, inspected) =>
-        this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
+      const result = await this.#startOfficial(
+        startInput,
+        (model, inspected) =>
+          this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
+        parent.cwd === selectedCwd ? parent.projectId : undefined,
       );
       return {
         ...result,
@@ -813,6 +818,7 @@ export class HarnessDelegationCoordinator {
         harnessId: record.harnessId as RoutedHarnessId,
         cwd: record.cwd,
         title: record.title.trim() || record.preview || "",
+        ...(record.projectId ? { projectId: record.projectId } : {}),
       };
     const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => ({}));
     return { harnessId: "codex", ...metadata };

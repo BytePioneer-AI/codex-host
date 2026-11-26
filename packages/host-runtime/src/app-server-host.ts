@@ -1328,8 +1328,8 @@ export class AppServerHost {
         ),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
-      startOfficial: (input, resolveConfiguration) =>
-        this.#startOfficialDelegation(input, resolveConfiguration),
+      startOfficial: (input, resolveConfiguration, projectId) =>
+        this.#startOfficialDelegation(input, resolveConfiguration, projectId),
       listOfficial: (input) => this.#listDelegationThreads(input),
       officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
@@ -2907,7 +2907,9 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
-  async #readOfficialThreadMetadata(threadId: string): Promise<{ cwd?: string; title?: string }> {
+  async #readOfficialThreadMetadata(
+    threadId: string,
+  ): Promise<{ cwd?: string; title?: string; projectId?: string }> {
     const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
     if (isRecord(response.error)) return {};
     const result = isRecord(response.result) ? response.result : null;
@@ -2917,6 +2919,7 @@ export class AppServerHost {
       typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
     return {
       ...(typeof thread.cwd === "string" && thread.cwd.trim() ? { cwd: thread.cwd } : {}),
+      ...(typeof thread.projectId === "string" ? { projectId: thread.projectId } : {}),
       ...(typeof title === "string" && title.trim() ? { title } : {}),
     };
   }
@@ -3030,6 +3033,7 @@ export class AppServerHost {
       model: HarnessModelRef | undefined,
       inspected?: HarnessInspectResult,
     ) => ReturnType<typeof resolveDelegationConfiguration>,
+    projectId?: string,
   ): Promise<DelegationStartResult> {
     let inspected: HarnessInspectResult | undefined;
     const requestedModel = input.officialModelArgument ?? input.model;
@@ -3103,6 +3107,7 @@ export class AppServerHost {
     const nativeSelection = model ? officialCodexModelSelection(model) : undefined;
     const started = await this.#requestOfficial("thread/start", {
       cwd: input.cwd,
+      ...(projectId ? { projectId } : {}),
       ...nativeSelection,
       approvalPolicy: "never",
       sandbox: "danger-full-access",

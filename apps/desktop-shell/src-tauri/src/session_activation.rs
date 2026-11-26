@@ -58,6 +58,16 @@ impl LoginNavigation {
                 .filter(|(name, _)| name != "token")
                 .eq(url.query_pairs())
     }
+
+    #[cfg(any(windows, test))]
+    fn manual_return_url(&self) -> Url {
+        let mut url = self.url.clone();
+        url.set_fragment(None);
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(self.url.query_pairs().filter(|(name, _)| name != "token"));
+        url
+    }
 }
 
 #[derive(Default)]
@@ -67,6 +77,8 @@ pub(super) struct SessionActivation {
     candidate: Option<Candidate>,
     login_navigation: Option<LoginNavigation>,
     login_failed: bool,
+    #[cfg(any(windows, test))]
+    manual_login_return: Option<Url>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -81,6 +93,14 @@ pub(super) enum Scheduling {
     Scheduled,
     NotScheduled,
     Unknown,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativeLoginCompletion {
+    Loaded,
+    Rejected,
+    TransportFailed,
 }
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
@@ -187,25 +207,33 @@ impl SessionActivation {
 
     pub(super) fn clear_unclaimed(&mut self) {
         self.candidate = None;
-        self.login_navigation = None;
+        self.reset_login();
         if !self.has_claim() {
             self.pending = None;
         }
-        self.login_failed = false;
     }
 
-    pub(super) fn cancel_candidate(&mut self) {
+    pub(super) fn web_disconnected(&mut self) {
         self.candidate = None;
+        self.reset_login();
+        self.suspend_unclaimed_delivery();
+    }
+
+    fn reset_login(&mut self) {
         self.login_navigation = None;
         self.login_failed = false;
-        self.pause_joined_login();
+        #[cfg(any(windows, test))]
+        {
+            self.manual_login_return = None;
+        }
     }
 
-    fn pause_joined_login(&mut self) {
+    fn suspend_unclaimed_delivery(&mut self) {
         if let Some(target) = self.pending.as_mut()
-            && target.delivery == Delivery::AfterLogin
+            && target.document.is_none()
+            && target.delivery != Delivery::LoginFailed
         {
-            target.delivery = Delivery::LoginFailed;
+            target.delivery = Delivery::WaitingForWeb;
         }
     }
 
@@ -250,7 +278,21 @@ impl SessionActivation {
         }
     }
 
-    pub(super) fn finish_login(&mut self, generation: u64, authenticated: bool) -> bool {
+    pub(super) fn defer_login(&mut self, generation: u64) -> bool {
+        if !self
+            .login_navigation
+            .as_ref()
+            .is_some_and(|nav| nav.generation == generation)
+        {
+            return false;
+        }
+        self.login_navigation = None;
+        self.login_failed = true;
+        self.suspend_unclaimed_delivery();
+        true
+    }
+
+    fn finish_login(&mut self, generation: u64, authenticated: bool) -> bool {
         if !self
             .login_navigation
             .as_ref()
@@ -260,16 +302,24 @@ impl SessionActivation {
         }
         self.login_navigation = None;
         self.login_failed = !authenticated;
-        if let Some(target) = self.pending.as_mut() {
-            match (&target.delivery, authenticated) {
-                (Delivery::LoginUrl, true) => target.delivery = Delivery::Url,
-                (Delivery::AfterLogin, true) => target.delivery = Delivery::Live,
-                (Delivery::LoginUrl, false) => target.delivery = Delivery::WaitingForWeb,
-                (Delivery::AfterLogin, false) => target.delivery = Delivery::LoginFailed,
+        if !authenticated {
+            self.reject_login_target();
+        } else if let Some(target) = self.pending.as_mut() {
+            match target.delivery {
+                Delivery::LoginUrl => target.delivery = Delivery::Url,
+                Delivery::AfterLogin => target.delivery = Delivery::Live,
                 _ => (),
             }
         }
         true
+    }
+
+    fn reject_login_target(&mut self) {
+        if let Some(target) = self.pending.as_mut()
+            && matches!(target.delivery, Delivery::LoginUrl | Delivery::AfterLogin)
+        {
+            target.delivery = Delivery::LoginFailed;
+        }
     }
 
     #[cfg(any(windows, test))]
@@ -307,13 +357,21 @@ impl SessionActivation {
             // A normal same-origin navigation can supersede authentication,
             // but the stale redirect still must not reach the system browser.
             nav.expired = true;
-            self.pause_joined_login();
+            if let Some(target) = self.pending.as_mut()
+                && target.delivery == Delivery::AfterLogin
+            {
+                target.delivery = Delivery::LoginFailed;
+            }
         }
         ordinary
     }
 
     #[cfg(any(windows, test))]
-    pub(super) fn native_login_completed(&mut self, id: u64, succeeded: bool) -> bool {
+    pub(super) fn native_login_completed(
+        &mut self,
+        id: u64,
+        result: NativeLoginCompletion,
+    ) -> bool {
         let Some(nav) = self
             .login_navigation
             .as_ref()
@@ -321,29 +379,37 @@ impl SessionActivation {
         else {
             return false;
         };
-        self.finish_login(nav.generation, succeeded && nav.expected)
+        let generation = nav.generation;
+        let authenticated = result == NativeLoginCompletion::Loaded && nav.expected;
+        if !authenticated {
+            // This URL can load the home page, but is no longer an activation handshake.
+            self.manual_login_return = Some(nav.manual_return_url());
+        }
+        match result {
+            NativeLoginCompletion::TransportFailed => self.defer_login(generation),
+            _ => self.finish_login(generation, authenticated),
+        }
     }
 
     #[cfg(any(not(windows), test))]
     pub(super) fn portable_login_loaded(&mut self, url: &Url) -> bool {
-        let Some(nav) = self
-            .login_navigation
-            .as_ref()
-            .filter(|nav| nav.authenticated_url(url))
-        else {
+        let Some(nav) = self.login_navigation.as_mut() else {
             return false;
         };
-        let generation = nav.generation;
-        if nav.expired {
-            self.pause_joined_login();
+        if nav.url == *url {
+            // A committed token page is not the server's token-stripping redirect.
+            // Keep admitting the return to the home page after manual sign-in.
+            nav.expired = true;
+            self.reject_login_target();
+            return true;
         }
-        self.finish_login(generation, true)
+        let generation = nav.generation;
+        nav.authenticated_url(url) && self.finish_login(generation, true)
     }
 
     pub(super) fn connect(&mut self, login: &mut Url) -> Option<u64> {
         self.candidate = None;
-        self.login_navigation = None;
-        self.login_failed = false;
+        self.reset_login();
         let target = self.pending.as_mut()?;
         if target.document.is_some() {
             target.delivery = Delivery::PreviousDocument;
@@ -509,6 +575,10 @@ impl SessionActivation {
         {
             return Some(true);
         }
+        #[cfg(any(windows, test))]
+        if self.manual_login_return.as_ref() == Some(url) {
+            return Some(true);
+        }
         if let Some(candidate) = &mut self.candidate
             && candidate.destination.as_ref() == Some(url)
         {
@@ -537,7 +607,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn portable_login_recovers_same_origin_navigation_without_reopening_the_handoff() {
+    fn portable_login_distinguishes_late_completion_from_supersession() {
         let login = Url::parse("http://[::1]:4400/?token=fixture").unwrap();
         let ordinary = Url::parse("http://[::1]:4400/settings?tab=general").unwrap();
         let external = Url::parse("https://example.test/").unwrap();
@@ -589,22 +659,33 @@ mod tests {
             if redirect_before_recovery {
                 assert!(session.portable_login_allows(&redirect));
                 assert!(session.portable_login_loaded(&redirect));
+                assert_eq!(
+                    session.ready("late-page"),
+                    SessionClaim::Wake {
+                        generation: b.to_string()
+                    }
+                );
+                assert_eq!(
+                    session.claim(b, "late-page".into()),
+                    SessionClaim::Granted {
+                        session_id: "B".into()
+                    }
+                );
+                continue;
             }
             assert!(session.portable_login_allows(&ordinary));
-            if !redirect_before_recovery {
-                assert_eq!(session.ready("old-page"), SessionClaim::Unavailable);
-                assert_eq!(
-                    session.claim(b, "old-page".into()),
-                    SessionClaim::Unavailable
-                );
-                assert!(!session.portable_login_allows(&external));
-                assert!(!session.portable_login_allows(&different_port));
-                assert!(!session.portable_login_allows(&stale_session));
-                assert!(!session.portable_login_allows(&unexpected_token));
-                assert!(!session.portable_login_loaded(&ordinary));
-                assert!(session.portable_login_allows(&redirect));
-                assert!(session.portable_login_loaded(&redirect));
-            }
+            assert_eq!(session.ready("old-page"), SessionClaim::Unavailable);
+            assert_eq!(
+                session.claim(b, "old-page".into()),
+                SessionClaim::Unavailable
+            );
+            assert!(!session.portable_login_allows(&external));
+            assert!(!session.portable_login_allows(&different_port));
+            assert!(!session.portable_login_allows(&stale_session));
+            assert!(!session.portable_login_allows(&unexpected_token));
+            assert!(!session.portable_login_loaded(&ordinary));
+            assert!(session.portable_login_allows(&redirect));
+            assert!(session.portable_login_loaded(&redirect));
             assert_eq!(session.ready("old-page"), SessionClaim::Unavailable);
             assert_eq!(
                 session.claim(b, "old-page".into()),
@@ -667,5 +748,58 @@ mod tests {
                 session_id: "B".into()
             }
         );
+    }
+
+    #[test]
+    fn portable_committed_token_page_cannot_be_replayed_by_sign_in_or_reconnect() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=fixture").unwrap();
+        for join_before_rejection in [false, true] {
+            let mut session = SessionActivation::default();
+            let a = session.stage("A".into(), false).unwrap();
+            assert_eq!(
+                session.finish(a, Scheduling::Scheduled),
+                Admission::Accepted
+            );
+            let mut first_hop = login.clone();
+            let a = session.connect(&mut first_hop).unwrap();
+            let sign_in_return = Url::parse(&format!(
+                "http://127.0.0.1:4400/?session=A&desktopSessionGeneration={a}"
+            ))
+            .unwrap();
+            assert!(session.portable_login_allows(&first_hop));
+            let target = if join_before_rejection {
+                session.mark_unconfirmed(a);
+                assert!(matches!(
+                    session.abandon_unconfirmed(),
+                    Some(Abandon::Unclaimed)
+                ));
+                let b = session.stage("B".into(), true).unwrap();
+                assert_eq!(
+                    session.finish(b, Scheduling::Scheduled),
+                    Admission::Accepted
+                );
+                b
+            } else {
+                a
+            };
+
+            assert!(session.portable_login_loaded(&first_hop));
+            assert!(session.login_needs_retry());
+            assert!(!session.login_in_flight());
+            assert!(session.portable_login_allows(&sign_in_return));
+            assert!(session.portable_login_loaded(&sign_in_return));
+            assert_eq!(
+                session.ready("page-after-sign-in"),
+                SessionClaim::Unavailable
+            );
+            assert_eq!(
+                session.claim(target, "page-after-sign-in".into()),
+                SessionClaim::Unavailable
+            );
+            session.web_disconnected();
+            let mut reconnect = login.clone();
+            assert_eq!(session.connect(&mut reconnect), None);
+            assert_eq!(reconnect, login);
+        }
     }
 }

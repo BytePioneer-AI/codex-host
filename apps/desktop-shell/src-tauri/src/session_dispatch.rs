@@ -3,12 +3,20 @@ use std::thread::{self, ThreadId};
 
 use tauri::WebviewWindow;
 use webview2_com::{
-    CoTaskMemPWSTR, ExecuteScriptCompletedHandler, Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    CoTaskMemPWSTR, ExecuteScriptCompletedHandler,
+    Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_WEB_ERROR_STATUS, COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT,
+        COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED,
+        COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED,
+        COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED,
+        COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT,
+        ICoreWebView2,
+    },
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
 };
 use windows_core::{BOOL, HSTRING, PWSTR};
 
-use crate::session_activation::Scheduling;
+use crate::session_activation::{NativeLoginCompletion, Scheduling};
 
 struct NativeCall {
     thread: ThreadId,
@@ -65,10 +73,23 @@ pub(super) fn navigate(window: &WebviewWindow, url: url::Url) -> Scheduling {
     })
 }
 
+fn navigation_failure(status: COREWEBVIEW2_WEB_ERROR_STATUS) -> NativeLoginCompletion {
+    match status {
+        COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT
+        | COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED
+        | COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET
+        | COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED
+        | COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED
+        | COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE
+        | COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT => NativeLoginCompletion::TransportFailed,
+        _ => NativeLoginCompletion::Rejected,
+    }
+}
+
 pub(super) fn observe_navigation(
     window: &WebviewWindow,
     allow: impl Fn(u64, &url::Url, bool) -> bool + Send + 'static,
-    completed: impl Fn(u64, bool) + Send + Sync + 'static,
+    completed: impl Fn(u64, NativeLoginCompletion) + Send + Sync + 'static,
 ) -> Scheduling {
     schedule(window, move |webview| unsafe {
         let completed = Arc::new(completed);
@@ -89,7 +110,7 @@ pub(super) fn observe_navigation(
                             .is_ok_and(|url| allow(id, &url, redirected.as_bool()))
                     {
                         args.SetCancel(true)?;
-                        canceled(id, false);
+                        canceled(id, NativeLoginCompletion::Rejected);
                     }
                 }
                 Ok(())
@@ -103,7 +124,14 @@ pub(super) fn observe_navigation(
                     let mut succeeded = BOOL::default();
                     args.NavigationId(&mut id)?;
                     args.IsSuccess(&mut succeeded)?;
-                    completed(id, succeeded.as_bool());
+                    let outcome = if succeeded.as_bool() {
+                        NativeLoginCompletion::Loaded
+                    } else {
+                        let mut status = COREWEBVIEW2_WEB_ERROR_STATUS::default();
+                        args.WebErrorStatus(&mut status)?;
+                        navigation_failure(status)
+                    };
+                    completed(id, outcome);
                 }
                 Ok(())
             })),
@@ -115,6 +143,25 @@ pub(super) fn observe_navigation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_navigation_differentiates_transport_errors_from_rejection() {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED,
+            COREWEBVIEW2_WEB_ERROR_STATUS_VALID_AUTHENTICATION_CREDENTIALS_REQUIRED,
+        };
+
+        assert_eq!(
+            navigation_failure(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT),
+            NativeLoginCompletion::TransportFailed
+        );
+        for status in [
+            COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED,
+            COREWEBVIEW2_WEB_ERROR_STATUS_VALID_AUTHENTICATION_CREDENTIALS_REQUIRED,
+        ] {
+            assert_eq!(navigation_failure(status), NativeLoginCompletion::Rejected);
+        }
+    }
 
     #[test]
     fn native_hresult_takes_precedence_over_the_dispatcher() {

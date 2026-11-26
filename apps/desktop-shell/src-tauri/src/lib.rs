@@ -270,12 +270,12 @@ fn web_event(app: &AppHandle, event: WebEvent) {
             return;
         }
         WebEvent::Reconnecting => {
-            view.session.cancel_candidate();
+            view.session.web_disconnected();
             view.page = Page::Loading(Status::Reconnecting, None);
             Status::Reconnecting
         }
         WebEvent::Error(message) => {
-            view.session.cancel_candidate();
+            view.session.web_disconnected();
             view.page = Page::Loading(Status::Error, Some(message));
             Status::Error
         }
@@ -299,7 +299,7 @@ fn navigate_session_login(app: &AppHandle, url: Url, generation: u64) {
             .lock()
             .unwrap()
             .session
-            .finish_login(generation, false);
+            .defer_login(generation);
         return;
     }
     schedule_on_main(app, SESSION_LOGIN_LIMIT, move |app| {
@@ -326,14 +326,14 @@ fn observe_session_login(window: &tauri::WebviewWindow) -> Scheduling {
                 open_browser,
             )
         },
-        move |id, succeeded| {
+        move |id, outcome| {
             let finished = completed
                 .state::<Shell>()
                 .view
                 .lock()
                 .unwrap()
                 .session
-                .native_login_completed(id, succeeded);
+                .native_login_completed(id, outcome);
             if finished {
                 wake_pending_session(&completed);
             }
@@ -587,6 +587,15 @@ fn dispatch_live_session(
     outcome
 }
 
+#[cfg(any(not(windows), test))]
+fn portable_dispatch_scheduling(result: &str) -> Scheduling {
+    match result {
+        "true" => Scheduling::Scheduled,
+        "false" => Scheduling::NotScheduled,
+        _ => Scheduling::Unknown,
+    }
+}
+
 #[cfg(not(windows))]
 fn dispatch_portable_session(
     app: &AppHandle,
@@ -604,13 +613,11 @@ fn dispatch_portable_session(
     let reply = Arc::new(Mutex::new(reply));
     let callback_reply = reply.clone();
     let _ = window.eval_with_callback(proof, move |result| {
-        if result != "true" {
-            return;
-        }
+        let scheduling = portable_dispatch_scheduling(&result);
         let app = handle.clone();
         let callback_reply = callback_reply.clone();
         let _ = handle.run_on_main_thread(move || {
-            complete_portable_dispatch(&app, generation, Scheduling::Scheduled, &callback_reply);
+            complete_portable_dispatch(&app, generation, scheduling, &callback_reply);
         });
     });
     // Only the callback can confirm this candidate; dispatch alone cannot replace A.
@@ -634,8 +641,7 @@ fn complete_portable_dispatch(
             sync_session_notice(app);
             schedule_session_followup(app, generation);
         }
-        _ if scheduling == Scheduling::Unknown => wake_pending_session(app),
-        _ => (),
+        Admission::Rejected | Admission::Unknown => wake_pending_session(app),
     }
 }
 
@@ -1678,13 +1684,14 @@ mod tests {
     use tauri::webview::{PermissionKind, PermissionResponse};
     use url::Url;
 
+    use super::session_activation::NativeLoginCompletion::{Loaded, Rejected, TransportFailed};
     use super::{
         Abandon, Admission, DeferredSession, Page, RejectUnfinishedSessionLaunch, Scheduling,
         SessionActivation, SessionClaim, SessionDispatch, SessionLaunchOutcome, SessionLaunchReply,
         SessionReceipt, Status, TopLevelNavigation, View, begin_session_abandonment,
         confirm_session_setup, dispatch_live_session, finish_session, handle_navigation,
-        permission_response, prepare_session, resolve_portable_dispatch, take_deferred_session,
-        wake_script,
+        permission_response, portable_dispatch_scheduling, prepare_session,
+        resolve_portable_dispatch, take_deferred_session, wake_script,
     };
 
     #[test]
@@ -1967,7 +1974,7 @@ mod tests {
         let mut view = view.into_inner().unwrap();
         assert_eq!(view.session.allows_navigation(&initial, true), Some(true));
         assert!(view.session.native_login_allows(10, &initial, false));
-        assert!(!view.session.native_login_completed(9, false));
+        assert!(!view.session.native_login_completed(9, Rejected));
         let redirected =
             Url::parse("http://127.0.0.1:4400/?session=A&desktopSessionGeneration=2").unwrap();
         assert_eq!(
@@ -1975,7 +1982,7 @@ mod tests {
             Some(true)
         );
         assert!(view.session.native_login_allows(10, &redirected, true));
-        assert!(view.session.native_login_completed(10, true));
+        assert!(view.session.native_login_completed(10, Loaded));
         assert!(!view.session.login_needs_retry());
         assert_eq!(view.session.claim(a, "boot-page".into()), granted("A"));
         assert_eq!(
@@ -2024,7 +2031,7 @@ mod tests {
             Some(true)
         );
         assert!(view.session.native_login_allows(10, &redirected, true));
-        assert!(view.session.native_login_completed(10, true));
+        assert!(view.session.native_login_completed(10, Loaded));
         assert_eq!(view.session.claim(b, "boot-page".into()), granted("B"));
         assert_eq!(
             view.session.claim(a, "boot-page".into()),
@@ -2039,32 +2046,29 @@ mod tests {
     #[test]
     fn failed_login_allows_the_next_click_to_request_fresh_authentication() {
         let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
-        for end in [
-            "native rejection",
-            "canceled",
-            "unexpected redirect",
-            "missing callback",
-        ] {
+        for end in ["canceled", "unexpected redirect", "missing callback"] {
             let mut view = session_view(Page::Loading(Status::Starting, None), None);
             accept(&mut view, "A", false);
             let (initial, a) = view.connect(login.clone());
             let a = a.unwrap();
             match end {
-                "native rejection" => assert!(view.session.finish_login(a, false)),
                 "canceled" => {
                     assert!(view.session.native_login_allows(10, &initial, false));
-                    assert!(view.session.native_login_completed(10, false));
+                    assert!(view.session.native_login_completed(10, Rejected));
                 }
                 "unexpected redirect" => {
                     assert!(view.session.native_login_allows(10, &initial, false));
                     let unexpected = Url::parse("http://127.0.0.1:4400/wrong").unwrap();
                     assert!(!view.session.native_login_allows(10, &unexpected, true));
-                    assert!(view.session.native_login_completed(10, true));
+                    assert!(view.session.native_login_completed(10, Loaded));
                 }
                 _ => {
                     view.session.expire_login(a);
                     assert_eq!(view.session.allows_navigation(&initial, true), Some(true));
                 }
+            }
+            if end != "missing callback" {
+                assert_eq!(view.connect(login.clone()), (login.clone(), None));
             }
             let view = Mutex::new(view);
             let Ok(SessionDispatch::Pending(b)) = prepare_session(
@@ -2100,14 +2104,62 @@ mod tests {
     }
 
     #[test]
-    fn joined_login_failure_keeps_the_previous_document_from_claiming() {
+    fn unscheduled_first_login_reconnects_with_a_fresh_url_and_generation() {
         let login = Url::parse("http://127.0.0.1:4400/?token=fixture").unwrap();
-        for completion_arrived in [true, false] {
+        let fresh_login = Url::parse("http://127.0.0.1:4401/?token=fresh").unwrap();
+        let mut view = session_view(Page::Loading(Status::Starting, None), None);
+        accept(&mut view, "A", false);
+        let (first_hop, original) = view.connect(login);
+        let original = original.unwrap();
+        assert!(view.session.defer_login(original));
+        assert!(view.session.login_needs_retry());
+        assert_eq!(
+            view.session.allows_navigation(&first_hop, true),
+            Some(false)
+        );
+        assert_eq!(
+            view.session.claim(original, "old-page".into()),
+            SessionClaim::Unavailable
+        );
+
+        view.session.web_disconnected();
+        let (fresh, replacement) = view.connect(fresh_login);
+        let replacement = replacement.unwrap();
+        assert_ne!(original, replacement);
+        assert_eq!(
+            fresh.as_str(),
+            format!(
+                "http://127.0.0.1:4401/?token=fresh&session=A&desktopSessionGeneration={replacement}"
+            )
+        );
+        assert!(!view.session.defer_login(original));
+        assert_eq!(view.session.allows_navigation(&fresh, true), Some(true));
+        assert_eq!(
+            view.session.claim(original, "old-page".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            view.session.claim(replacement, "new-page".into()),
+            granted("A")
+        );
+    }
+
+    #[test]
+    fn joined_login_failure_and_service_disconnect_have_different_recovery() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=fixture").unwrap();
+        let fresh_login = Url::parse("http://127.0.0.1:4401/?token=fresh").unwrap();
+        for completion in [Some(Rejected), Some(TransportFailed), None] {
+            let authentication_failed = completion == Some(Rejected);
             let mut view = session_view(Page::Loading(Status::Starting, None), None);
             accept(&mut view, "A", false);
             let (initial, a) = view.connect(login.clone());
             assert!(view.session.native_login_allows(1, &initial, false));
-            view.session.mark_unconfirmed(a.unwrap());
+            let a = a.unwrap();
+            let old_redirect = Url::parse(&format!(
+                "http://127.0.0.1:4400/?session=A&desktopSessionGeneration={a}"
+            ))
+            .unwrap();
+            view.session.mark_unconfirmed(a);
             assert!(matches!(
                 view.session.abandon_unconfirmed(),
                 Some(Abandon::Unclaimed)
@@ -2133,49 +2185,61 @@ mod tests {
                     view.session.claim(b, "old-page".into()),
                     SessionClaim::Retry
                 );
-                if completion_arrived {
-                    assert!(view.session.native_login_completed(1, false));
-                } else {
-                    view.session.cancel_candidate();
+                if let Some(completion) = completion {
+                    assert!(view.session.native_login_completed(1, completion));
                 }
+                view.session.web_disconnected();
+                view.page = Page::Loading(Status::Reconnecting, None);
+                assert!(!view.session.portable_login_loaded(&old_redirect));
                 assert_eq!(view.session.ready("old-page"), SessionClaim::Unavailable);
                 assert_eq!(view.session.wake_url_only(b), None);
                 assert_eq!(
                     view.session.claim(b, "old-page".into()),
                     SessionClaim::Unavailable
                 );
-                assert_eq!(view.connect(login.clone()), (login.clone(), None));
-                assert_eq!(
-                    view.session.claim(b, "old-page".into()),
-                    SessionClaim::Unavailable
-                );
+                if authentication_failed {
+                    assert_eq!(
+                        view.connect(fresh_login.clone()),
+                        (fresh_login.clone(), None)
+                    );
+                }
             }
 
-            let Ok(SessionDispatch::Pending(retry)) = prepare_session(
-                &view,
-                "B".into(),
-                || Ok(()),
-                || {
-                    view.lock().unwrap().page = Page::Loading(Status::Starting, None);
-                    true
-                },
-            ) else {
-                panic!("an explicit click must request authentication");
-            };
-            assert_eq!(
-                finish_session(&view, retry, Scheduling::Scheduled),
-                Admission::Accepted
-            );
+            if authentication_failed {
+                let Ok(SessionDispatch::Pending(retry)) = prepare_session(
+                    &view,
+                    "B".into(),
+                    || Ok(()),
+                    || {
+                        view.lock().unwrap().page = Page::Loading(Status::Starting, None);
+                        true
+                    },
+                ) else {
+                    panic!("an explicit click must request authentication");
+                };
+                assert_eq!(
+                    finish_session(&view, retry, Scheduling::Scheduled),
+                    Admission::Accepted
+                );
+            }
             let mut view = view.into_inner().unwrap();
-            let (initial, generation) = view.connect(login.clone());
+            let (initial, generation) = view.connect(fresh_login.clone());
             let generation = generation.unwrap();
+            assert_ne!(b, generation);
+            assert_eq!(
+                initial.as_str(),
+                format!(
+                    "http://127.0.0.1:4401/?token=fresh&session=B&desktopSessionGeneration={generation}"
+                )
+            );
+            assert!(!view.session.portable_login_loaded(&old_redirect));
             let redirect = Url::parse(&format!(
-                "http://127.0.0.1:4400/?session=B&desktopSessionGeneration={generation}"
+                "http://127.0.0.1:4401/?session=B&desktopSessionGeneration={generation}"
             ))
             .unwrap();
             assert!(view.session.native_login_allows(2, &initial, false));
             assert!(view.session.native_login_allows(2, &redirect, true));
-            assert!(view.session.native_login_completed(2, true));
+            assert!(view.session.native_login_completed(2, Loaded));
             assert_eq!(
                 view.session.claim(b, "old-page".into()),
                 SessionClaim::Unavailable
@@ -2183,6 +2247,15 @@ mod tests {
             assert_eq!(
                 view.session.claim(generation, "new-page".into()),
                 granted("B")
+            );
+            assert_eq!(
+                view.session.receipt(generation, "new-page", false, true),
+                SessionReceipt::Confirmed
+            );
+            view.session.web_disconnected();
+            assert_eq!(
+                view.connect(fresh_login.clone()),
+                (fresh_login.clone(), None)
             );
         }
     }
@@ -2222,7 +2295,7 @@ mod tests {
                 view.lock()
                     .unwrap()
                     .session
-                    .native_login_completed(1, expected_redirect)
+                    .native_login_completed(1, if expected_redirect { Loaded } else { Rejected })
             );
             // A late native redirect after the reservation is gone cannot be handed off either.
             assert!(!navigate(&external, 1, true));
@@ -2231,27 +2304,99 @@ mod tests {
     }
 
     #[test]
-    fn portable_execution_proof_and_timeout_share_the_original_reply() {
-        for first in [Scheduling::Scheduled, Scheduling::Unknown] {
-            let view = Mutex::new(session_view(Page::Web, None));
-            let b = view
-                .lock()
-                .unwrap()
-                .session
-                .stage("B".into(), true)
-                .unwrap();
+    fn native_manual_sign_in_return_navigates_without_reviving_the_notification() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=fixture").unwrap();
+        let fresh_login = Url::parse("http://127.0.0.1:4401/?token=fresh").unwrap();
+        for completion in [Loaded, Rejected, TransportFailed] {
+            let mut view = session_view(Page::Loading(Status::Starting, None), None);
+            accept(&mut view, "thread/one", false);
+            let (initial, generation) = view.connect(login.clone());
+            let generation = generation.unwrap();
+            let manual_return = Url::parse(&format!(
+                "http://127.0.0.1:4400/?session=thread%2Fone&desktopSessionGeneration={generation}"
+            ))
+            .unwrap();
+            let mut wrong_origin = manual_return.clone();
+            wrong_origin.set_port(Some(4401)).unwrap();
+            let mut wrong_path = manual_return.clone();
+            wrong_path.set_path("/other");
+            let view = Mutex::new(view);
+            let mut opened = Vec::new();
+            let mut navigate = |url, id| {
+                handle_navigation(
+                    &view,
+                    url,
+                    TopLevelNavigation::Native {
+                        id,
+                        redirected: false,
+                    },
+                    |external| opened.push(external.clone()),
+                )
+            };
+
+            assert!(navigate(&initial, 1));
+            assert!(
+                view.lock()
+                    .unwrap()
+                    .session
+                    .native_login_completed(1, completion)
+            );
+            assert!(!navigate(&wrong_origin, 2));
+            assert!(!navigate(&wrong_path, 3));
+            assert!(!navigate(&initial, 4));
+            assert!(navigate(&manual_return, 5));
+            assert!(opened.is_empty());
+
+            let mut view = view.into_inner().unwrap();
+            assert!(!view.session.native_login_completed(5, Loaded));
+            assert_eq!(view.session.ready("manual-page"), SessionClaim::Unavailable);
+            assert_eq!(
+                view.session.claim(generation, "manual-page".into()),
+                SessionClaim::Unavailable
+            );
+            view.session.web_disconnected();
+            let (url, replacement) = view.connect(fresh_login.clone());
+            if completion == TransportFailed {
+                assert!(replacement.is_some_and(|replacement| replacement != generation));
+            } else {
+                assert_eq!((url, replacement), (fresh_login.clone(), None));
+            }
+        }
+    }
+
+    #[test]
+    fn portable_execution_proof_resolves_once_and_keeps_a_when_b_is_not_scheduled() {
+        for (result, expected, receipt, late) in [
+            (Some("true"), Admission::Accepted, Some(true), None),
+            (
+                Some("false"),
+                Admission::Rejected,
+                Some(false),
+                Some("true"),
+            ),
+            (Some("null"), Admission::Unknown, None, Some("true")),
+            (None, Admission::Unknown, None, Some("false")),
+        ] {
+            let mut current = session_view(Page::Web, None);
+            let a = accept(&mut current, "A", true);
+            let b = current.session.stage("B".into(), true).unwrap();
+            assert_eq!(current.session.claim(b, "page".into()), SessionClaim::Retry);
+            let view = Mutex::new(current);
             let (send, receive) = mpsc::channel();
             let reply = Mutex::new(Some(send));
-            let result = resolve_portable_dispatch(&view, b, first, &reply);
-            let (later, expected) = if first == Scheduling::Scheduled {
-                assert!(receive.try_recv().unwrap());
-                (Scheduling::Unknown, Admission::Accepted)
-            } else {
-                (Scheduling::Scheduled, Admission::Unknown)
-            };
-            assert_eq!(result, expected);
+            let first = result.map_or(Scheduling::Unknown, portable_dispatch_scheduling);
+            assert_eq!(resolve_portable_dispatch(&view, b, first, &reply), expected);
+            match receipt {
+                Some(accepted) => assert_eq!(receive.try_recv(), Ok(accepted)),
+                None => assert_eq!(receive.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
+            }
             assert_eq!(
-                resolve_portable_dispatch(&view, b, later, &reply),
+                resolve_portable_dispatch(
+                    &view,
+                    b,
+                    late.map_or(Scheduling::Unknown, portable_dispatch_scheduling),
+                    &reply,
+                ),
                 Admission::Unknown
             );
             assert_eq!(receive.try_recv(), Err(mpsc::TryRecvError::Disconnected));
@@ -2262,6 +2407,14 @@ mod tests {
                     granted("B")
                 } else {
                     SessionClaim::Unavailable
+                }
+            );
+            assert_eq!(
+                view.session.claim(a, "page".into()),
+                if first == Scheduling::Scheduled {
+                    SessionClaim::Unavailable
+                } else {
+                    granted("A")
                 }
             );
         }

@@ -17,6 +17,7 @@ function isUrgentThreadChange(method: string): boolean {
     method === "mcpServer/elicitation/request" ||
     method === "item/tool/requestUserInput" ||
     method === "codexhost/thread/questions/updated" ||
+    method === "codexhost/thread/configuration/updated" ||
     method === "nativeInteractionError" ||
     method.endsWith("/requestApproval")
   );

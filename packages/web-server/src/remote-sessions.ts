@@ -16,6 +16,7 @@ import {
   remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
+  sameHarnessModelRef,
   threadInspectionSchema,
   threadUsageInspectionSchema,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
@@ -167,6 +168,7 @@ export interface RemotePeerProvider {
   nodeIdForHostId?(hostId: string): string | undefined;
   waitForInitialConnection?(hostId: string): Promise<void>;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
+  onThreadConfigurationChanged?: (hostId: string, threadId: string) => void;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
   onSkillsChanged?: (hostId: string) => void;
@@ -200,6 +202,7 @@ interface Entry {
   /** Fingerprints of catalog projections last confirmed on a retired view, avoiding redundant frames. */
   retiredCatalogProjections?: Map<string, string>;
   peerInspected?: { view: ChThreadView; epoch: string; revision: number };
+  peerInspectRevision?: number;
   historyError?: { code: string; message: string };
   usageRequest?: {
     view: ChThreadView;
@@ -235,6 +238,7 @@ export class RemoteSessions {
   private readonly timer: NodeJS.Timeout;
   private readonly peerHandlers: {
     onThreadChanged: (hostId: string, threadId: string) => Promise<void>;
+    onThreadConfigurationChanged: (hostId: string, threadId: string) => void;
     onUsageChanged: (hostId: string, threadId: string) => void;
     onCatalogInspectionChanged: (hostId: string) => void;
     onSkillsChanged: (hostId: string) => void;
@@ -259,6 +263,8 @@ export class RemoteSessions {
   ) {
     this.peerHandlers = {
       onThreadChanged: (hostId, threadId) => this.handlePeerThreadChanged(hostId, threadId),
+      onThreadConfigurationChanged: (hostId, threadId) =>
+        this.handlePeerConfigurationChanged(hostId, threadId),
       onUsageChanged: (hostId, threadId) => this.handlePeerUsageChanged(hostId, threadId),
       onCatalogInspectionChanged: (hostId) => this.handlePeerCatalogInspectionChanged(hostId),
       onSkillsChanged: () => this.handlePeerSkillsChanged(),
@@ -267,6 +273,7 @@ export class RemoteSessions {
     };
     if (peers) {
       peers.onThreadChanged ??= this.peerHandlers.onThreadChanged;
+      peers.onThreadConfigurationChanged ??= this.peerHandlers.onThreadConfigurationChanged;
       peers.onUsageChanged ??= this.peerHandlers.onUsageChanged;
       peers.onCatalogInspectionChanged ??= this.peerHandlers.onCatalogInspectionChanged;
       peers.onSkillsChanged ??= this.peerHandlers.onSkillsChanged;
@@ -309,6 +316,13 @@ export class RemoteSessions {
       }
       throw error;
     }
+  }
+  private handlePeerConfigurationChanged(hostId: string, threadId: string): void {
+    if (this.closed) return;
+    const entry = this.entries.get(remoteSessionId(hostId, threadId));
+    if (!entry) return;
+    entry.peerInspectRevision = (entry.peerInspectRevision ?? 0) + 1;
+    delete entry.peerInspected;
   }
   private handlePeerUsageChanged(hostId: string, threadId: string): void {
     if (this.closed) return;
@@ -2090,11 +2104,31 @@ export class RemoteSessions {
         delete current.retiredCatalogProjections;
         current.viewHarnessId = viewHarnessId(current);
 
+        const startInspectRevision = current.peerInspectRevision ?? 0;
+        const cachedExternal =
+          current.controls?.configuration?.owner === "external"
+            ? current.controls.configuration
+            : undefined;
+        const snapshotConfigChanged =
+          cachedExternal !== undefined &&
+          snapshot !== undefined &&
+          ((snapshot.configuration.effectiveModel !== undefined &&
+            !sameHarnessModelRef(
+              snapshot.configuration.effectiveModel,
+              cachedExternal.effectiveModel,
+            )) ||
+            (snapshot.configuration.effectiveThinkingOptionId !== undefined &&
+              snapshot.configuration.effectiveThinkingOptionId !==
+                cachedExternal.effectiveThinkingOptionId) ||
+            (snapshot.configuration.effectivePermissionModeId !== undefined &&
+              snapshot.configuration.effectivePermissionModeId !==
+                cachedExternal.effectivePermissionModeId));
         const needsInspect =
           !current.peerInspected ||
           current.peerInspected.view !== history ||
           current.peerInspected.epoch !== current.epoch ||
-          current.peerInspected.revision !== configurationRevision;
+          current.peerInspected.revision !== configurationRevision ||
+          snapshotConfigChanged;
 
         if (needsInspect) {
           const configuration = await source.host
@@ -2137,7 +2171,7 @@ export class RemoteSessions {
             }),
             sameEpoch,
           );
-          if (current.epoch) {
+          if (current.epoch && (current.peerInspectRevision ?? 0) === startInspectRevision) {
             current.peerInspected = {
               view: history,
               epoch: current.epoch,
@@ -3211,6 +3245,10 @@ export class RemoteSessions {
     if (this.peers) {
       if (this.peers.onThreadChanged === this.peerHandlers.onThreadChanged)
         delete this.peers.onThreadChanged;
+      if (
+        this.peers.onThreadConfigurationChanged === this.peerHandlers.onThreadConfigurationChanged
+      )
+        delete this.peers.onThreadConfigurationChanged;
       if (this.peers.onUsageChanged === this.peerHandlers.onUsageChanged)
         delete this.peers.onUsageChanged;
       if (this.peers.onCatalogInspectionChanged === this.peerHandlers.onCatalogInspectionChanged)

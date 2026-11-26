@@ -462,6 +462,28 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     expect(store.records.size).toBe(0);
   });
 
+  it("keeps a mailbox message across a restart and delivers it with its sender", async () => {
+    const store = memoryStore();
+    const before = runtime({ coord: { status: "running" } });
+    before.send.mockRejectedValue(
+      new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn"),
+    );
+    const first = service(before, store);
+    await first.mail({ threadId: "coord", message: "合入了", from: "line" });
+    expect([...store.records.values()]).toMatchObject([
+      { threadId: "coord", state: "pendingDelivery", message: "合入了", from: "line" },
+    ]);
+    first.close();
+
+    const after = runtime({ coord: { status: "completed" }, line: { status: "completed" } });
+    service(after, store);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(after.sent).toHaveLength(1);
+    expect(after.sent[0]?.message).toContain("--- From [line](thread://line), sent ");
+    expect(after.sent[0]?.message).toContain("合入了");
+    expect(store.records.size).toBe(0);
+  });
+
   it("holds a restored notification until the notified Thread is reachable", async () => {
     const store = memoryStore();
     const before = runtime({ child: { status: "running" }, parent: { status: "running" } });

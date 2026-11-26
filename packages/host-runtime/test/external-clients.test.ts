@@ -185,7 +185,7 @@ describe("external clients", () => {
     const watch = vi.fn(async () => ({}));
     const route = externalClientRouter({
       api: api as unknown as DelegationControlApi,
-      watchApi: { watch, watches: vi.fn() } as never,
+      watchApi: { watch, watches: vi.fn(), mail: vi.fn() } as never,
     });
     const call = { client: "script", scope: "dispatch" } as Parameters<typeof route>[0];
 

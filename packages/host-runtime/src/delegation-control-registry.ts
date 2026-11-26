@@ -31,6 +31,7 @@ import {
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadSendInput,
+  type ThreadMailInput,
   type ThreadSendResult,
   type ThreadWaitInput,
   type ThreadWatchInput,
@@ -816,6 +817,19 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
 
   async watches() {
     return this.#watchService.watches();
+  }
+
+  async mail(input: ThreadMailInput) {
+    const authContext = getCallerAuthContext(input);
+    const { callerThreadId, ...local } = input;
+    // The sender is only a label in the delivered Turn; Host-verified identity comes first.
+    const from =
+      authContext?.kind === "external-client"
+        ? clientOrigin(authContext.client)
+        : authContext?.kind === "agent" && authContext.boundThreadId
+          ? authContext.boundThreadId
+          : callerThreadId;
+    return this.#watchService.mail({ ...local, ...(from ? { from } : {}) });
   }
 
   /** Stops watching in this process; stored watches resume in the next Runtime. */

@@ -131,7 +131,7 @@ describe.each(["HTTP", "MCP"] as const)("external client parity: %s", (transport
         wait: vi.fn(),
         list: vi.fn(),
       },
-      watchApi: { watch, watches },
+      watchApi: { watch, watches, mail: vi.fn() },
     });
     server = await startExternalClientServer({
       port: 0,

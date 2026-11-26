@@ -25,7 +25,7 @@ Desktop 在 Turn 运行中提交的跟进消息，经官方 app-server 的 `thre
 - 原生引导调用抛错时，输入可能已产生副作用；恢复的条目保持可见，但不再由 Host 自动推进，即使编辑、重排或之后另一个 Turn 正常完成也不解除该限制。队首为此类条目时不自动跳过它执行后项。用户检查影响后可明确选择手动发送或删除；普通拒绝仍保留原有恢复语义。该内部限制不增加官方队列响应字段。
 - 主进程 Manager 的新轮展示、请求标记和暂停结算见[外部 Thread 的「调整方向」](external-thread-steering.md#主进程-manager-的原生-rpc-路径)。存在其他中断暂停消息时，提交前要求先处理，不能用 resume-all 顺带恢复它。
 - 开始失败时，提交保留在原位置；引导预留失败时恢复原位置并再次发出 `thread/queue/changed`。失败、中断及结果未知时暂停队列，不自动重发。原生引导交付结果未知的条目还按稳定 ID 禁止自动启动；恢复队列、编辑、重排或明确发送另一条消息都不解除此限制。该条目仍可查看、删除或由用户明确选择发送；Harness 明确拒绝、保证未接纳的输入不受此限制。
-- 队列不为空（包括已暂停）时，委派的普通 `thread send` 返回 `THREAD_BUSY`，把下一轮留给队列；因此 watch 通知也等队列清空后才送达，不会越过已暂停的队列唤醒 Thread。显式 `--steer true` 和 `--interrupt` 不受此限，可以先于队列开始。原生 Codex Thread 的队列由 Desktop 主进程管理，Host 看不到，不适用此规则。
+- 队列不为空（包括已暂停）时，委派的普通 `thread send` 返回 `THREAD_BUSY`，把下一轮留给队列；因此 watch 通知和[信箱](thread-watch.md#信箱thread-send---mailbox)都等队列清空后才送达，不会越过已暂停的队列唤醒 Thread。显式 `--steer true` 和 `--interrupt` 不受此限，可以先于队列开始。原生 Codex Thread 的队列由 Desktop 主进程管理，Host 看不到，不适用此规则。
 - Desktop 只为自己 `turn/start` 的输入做本地乐观展示。由队列开始的 Turn 由 Host 投影带 `clientId` 的 userMessage，否则该轮用户消息不显示。
 
 ## 边界

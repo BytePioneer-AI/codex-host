@@ -545,6 +545,45 @@ describe("delegation CLI", () => {
     },
   );
 
+  it("sends a mailbox message with the calling Thread as its sender", async () => {
+    const fetchImpl = successfulFetch({
+      threadId: "coord",
+      status: "running",
+      delivery: "mailbox",
+    });
+    const environment = {
+      [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+      [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+      [DELEGATION_THREAD_ID_ENV]: "line-1",
+    };
+    const run = (extra: string[]) =>
+      runDelegationCli({
+        arguments: [
+          "thread",
+          "send",
+          "coord",
+          "--message",
+          "progress",
+          "--mailbox",
+          "true",
+          ...extra,
+        ],
+        environment,
+        output: new PassThrough(),
+        diagnosticOutput: new PassThrough(),
+        fetchImpl,
+      });
+    expect(await run([])).toBe(0);
+    expect(JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body))).toEqual({
+      threadId: "coord",
+      callerThreadId: "line-1",
+      message: "progress",
+      mailbox: true,
+    });
+    expect(await run(["--steer", "true"])).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("reports a rejected steer without retrying", async () => {
     const error = {
       code: "DELEGATION_FAILED",

@@ -48,7 +48,18 @@ describe("move-to-project menu and dialog", () => {
     assert.equal(state().canSubmit, true);
     assert.equal(state({ busy: true }).canSubmit, false);
     assert.equal(state({ selectedTarget: alpha.id }).canSubmit, false);
-    assert.equal(state({}, { localProjects: [alpha] }).eligible, false);
+    assert.equal(state({}, { localProjects: [alpha] }).canSubmit, false);
+  });
+
+  it("can clear the only project but cannot clear an already projectless or unverified Thread", () => {
+    const clear = { selectedTarget: "" };
+    assert.equal(state(clear, { localProjects: [alpha] }).canSubmit, true);
+    assert.equal(state(clear, { localProjects: [alpha] }).targetDeleted, false);
+    assert.equal(state(clear, { localProjects: [beta] }).canSubmit, false);
+    assert.equal(
+      state(clear, { localProjects: [beta], projectlessSessionIds: [sessionId] }).canSubmit,
+      false,
+    );
   });
 
   it("requires an explicit projectless assignment or a single unambiguous owner", () => {
@@ -62,10 +73,15 @@ describe("move-to-project menu and dialog", () => {
       { projectlessSessionIds: [sessionId] }, // also assigned to alpha
       { localProjects: [alpha, { ...beta, sessionIds: [sessionId] }] },
       { localProjects: [alpha, { ...alpha, sessionIds: [] }, beta] },
+    ]) {
+      assert.equal(state({}, updates).eligible, false);
+      assert.equal(state({}, updates).canSubmit, false);
+    }
+    for (const updates of [
       { localProjects: [alpha, { ...beta, id: " " }] },
       { localProjects: [alpha, beta, beta] },
     ]) {
-      assert.equal(state({}, updates).eligible, false);
+      assert.equal(state({}, updates).targetDeleted, true);
       assert.equal(state({}, updates).canSubmit, false);
     }
   });
@@ -129,7 +145,7 @@ describe("move-to-project menu and dialog", () => {
 
 describe("createProjectMoveCoordinator", () => {
   it("enforces per-session in-flight locks, returns committed/unknown without retry, and handles failures", async () => {
-    const calls: Array<{ sessionId: SessionId; projectId: string }> = [];
+    const calls: Array<{ sessionId: SessionId; projectId: string | null }> = [];
     const moveA = Promise.withResolvers<WorkspaceMoveSessionToProjectValue>();
     const moveBResult = Promise.withResolvers<WorkspaceMoveSessionToProjectValue>();
 

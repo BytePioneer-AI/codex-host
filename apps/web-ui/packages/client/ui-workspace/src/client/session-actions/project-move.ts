@@ -1,5 +1,5 @@
 /**
- * Pure interaction logic for moving a local native Session to an existing local native project.
+ * Pure interaction logic for changing a local Session's native project.
  *
  * Kept framework-free so eligibility, live dialog reconciliation, target-deletion handling,
  * and per-session in-flight locking can be verified directly by focused logic tests.
@@ -17,11 +17,11 @@ import type { WorkspaceSnapshot } from "@deepseek-ai/dsh-api-workspace-controlle
 /** Narrow authoritative move request dispatched to `workspace/moveSessionToProject`. */
 export interface ProjectMovePayload {
   readonly sessionId: SessionId;
-  readonly projectId: string;
+  readonly projectId: string | null;
 }
 
 export type ProjectMoveOutcome =
-  | { readonly status: "committed"; readonly projectId: string }
+  | { readonly status: "committed"; readonly projectId: string | null }
   | { readonly status: "unknown" }
   | { readonly status: "skipped-in-flight" }
   | { readonly status: "failed"; readonly error: unknown };
@@ -100,7 +100,7 @@ export function resolveMoveProjectDialogState(input: {
   >;
   readonly summary:
     Pick<SessionSummary, "id" | "blank" | "origin" | "parentId" | "projectionValues"> | undefined;
-  /** `null` before user selection; chosen native `projectId` otherwise. */
+  /** `null` before selection, `""` for no project, otherwise a native project ID. */
   readonly selectedTarget: string | null;
   readonly busy: boolean;
 }): MoveProjectDialogState {
@@ -134,7 +134,7 @@ export function resolveMoveProjectDialogState(input: {
     !workspace.pinnedSessionIds.includes(sessionId) &&
     !workspace.archivedSessionIds.includes(sessionId) &&
     source !== undefined &&
-    availableProjects.some(({ id }) => id !== source);
+    (source !== null || availableProjects.length > 0);
   const effectiveTarget = input.selectedTarget ?? currentProjectId;
   const targetDeleted =
     input.selectedTarget !== null &&
@@ -144,7 +144,6 @@ export function resolveMoveProjectDialogState(input: {
     eligible &&
     !input.busy &&
     input.selectedTarget !== null &&
-    input.selectedTarget !== "" &&
     !targetDeleted &&
     input.selectedTarget !== currentProjectId;
   return {
@@ -166,7 +165,7 @@ export function createProjectMoveCoordinator(options: {
   readonly lock: SessionMoveLock;
   readonly execute: (
     sessionId: SessionId,
-    projectId: string,
+    projectId: string | null,
   ) => Promise<WorkspaceMoveSessionToProjectValue>;
   readonly onError?: (error: unknown) => void;
 }): ProjectMoveCoordinator {

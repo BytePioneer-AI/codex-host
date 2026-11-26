@@ -316,7 +316,7 @@ export function apply(ctx: Context): void {
         sessionId,
         workspace: workspaces.list.getSnapshot(),
         summary: sessions.list.getSnapshot().byId[sessionId],
-        selectedTarget: projectId,
+        selectedTarget: projectId ?? "",
         busy: false,
       });
       if (!workspaces.moveSessionToProject || !state.canSubmit)

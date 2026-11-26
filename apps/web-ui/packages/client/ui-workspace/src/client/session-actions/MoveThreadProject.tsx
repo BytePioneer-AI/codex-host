@@ -117,14 +117,14 @@ function MoveProjectForm({
     if (!pending.current && !inFlight) dismiss();
   };
   const submit = async () => {
-    if (pending.current || !canSubmit || selectedTarget === null || selectedTarget === "") return;
+    if (pending.current || !canSubmit || selectedTarget === null) return;
     pending.current = true;
     setMoving(true);
     setErrorKind(null);
     try {
       const outcome = await move({
         sessionId: request.sessionId,
-        projectId: selectedTarget,
+        projectId: selectedTarget || null,
       });
       if (outcome.status === "committed") dismiss();
       else if (outcome.status === "unknown") setErrorKind("unknown");
@@ -168,11 +168,7 @@ function MoveProjectForm({
             {t("project.targetDeletedOption")}
           </option>
         )}
-        {!targetDeleted && effectiveTarget === "" && (
-          <option value="" disabled>
-            {t("project.selectPlaceholder")}
-          </option>
-        )}
+        <option value="">{t("project.noProject")}</option>
         {availableProjects.map(({ id, name }) => (
           <option key={id} value={id}>
             {name || id}

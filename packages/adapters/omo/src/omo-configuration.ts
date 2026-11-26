@@ -173,11 +173,6 @@ export function omoNativePermissionPreset(id: HarnessPermissionModeId): string |
   return OMO_PERMISSION_PRESET_IDS.has(id) ? id : null;
 }
 
-/** Native preset to Harness Permission Mode id; ids are the native strings. */
-export function encodeOmoPermissionModeId(preset: string): HarnessPermissionModeId {
-  return harnessPermissionModeIdSchema.parse(preset);
-}
-
 /** The effective Permission Mode id for a native preset, or null when unknown. */
 export function omoEffectivePermissionModeId(
   preset: string | null,

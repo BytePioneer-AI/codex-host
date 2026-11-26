@@ -78,6 +78,7 @@ bun add -g omo-ai                                 # 任意平台，Node.js 24+
 - **引擎侧目录残余**：senpi-memory 扩展把运行时痕迹写进全局 `~/.omo/memory/agents/<project-slug>/`，`OMO_CODING_AGENT_DIR` 不覆盖 memory 仓库根（引擎侧路径，适配器无法阻止）；引擎懒加载的 lsp-daemon 脱离进程树，close 的 taskkill 杀不到，定性为引擎基础设施进程。
 - **shell 路由**：5.1.83 默认把 bash/powershell/grep 包进 eval 工具，适配器在实时与历史两处识别 eval 形状为 `commandExecution`（双路径并存）。
 - **键入冲突**：settlement 窗口里引擎回合多出的 user entry 只在已被观察归属时排除；`get_entries` 应答之后才写出的 entry 仍按 fault 保守处理（归属优先于猜测）。
+- **从 omo 会话内启动 Host**：在活跃 omo 会话里启动 codexhost Host 会继承引擎的会话身份环境变量（如 `PI_SESSION_FILE`），可能阻塞引擎版本探测；适配器给这类探测加了超时上限，但在 omo 会话内运行 Host 不受支持，应从干净 shell 启动。
 - **版本与平台**：所有真机 gate 覆盖 Windows x64、omo 5.1.83、classic RPC；其他 OS 与后续版本按协议门槛与原生响应为准，不以本轮观察硬编码为永久能力。
 
 ## 插件、路由与许可

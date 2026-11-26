@@ -1034,6 +1034,136 @@ describe("Claude native Turn interpretation", () => {
     );
   });
 
+  it("classifies rate-limit, rejected plan-limit, and billing failures from SDK fields", () => {
+    const rateLimited = new ClaudeNativeTurnAccumulator();
+    rateLimited.consume(assistant("", "rate_limit"));
+    expect(
+      rateLimited.consume(result({ is_error: true, terminal_reason: "api_error" })).terminal,
+    ).toEqual({ status: "failed", kind: "rateLimited" });
+
+    const quotaWithReset = new ClaudeNativeTurnAccumulator();
+    quotaWithReset.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: 1_787_674_200,
+      },
+    });
+    quotaWithReset.consume(assistant("", "rate_limit"));
+    expect(
+      quotaWithReset.consume(result({ is_error: true, terminal_reason: "api_error" })).terminal,
+    ).toEqual({ status: "failed", kind: "quotaExhausted", resetsAtUnix: 1_787_674_200 });
+
+    const billing = new ClaudeNativeTurnAccumulator();
+    billing.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    billing.consume(assistant("", "billing_error"));
+    expect(
+      billing.consume(result({ is_error: true, terminal_reason: "api_error" })).terminal,
+    ).toEqual({ status: "failed", kind: "billing" });
+
+    const outOfRangeReset = new ClaudeNativeTurnAccumulator();
+    outOfRangeReset.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 9_000_000_000_000 },
+    });
+    expect(outOfRangeReset.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+    });
+
+    // Cleared rejection or an explicit unrelated assistant error must not misclassify as quota.
+    const cleared = new ClaudeNativeTurnAccumulator();
+    cleared.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    cleared.consume({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
+    cleared.consume(assistant("", "rate_limit"));
+    expect(cleared.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "rateLimited",
+    });
+
+    const unrelatedAfterReject = new ClaudeNativeTurnAccumulator();
+    unrelatedAfterReject.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    unrelatedAfterReject.consume(assistant("", "invalid_request"));
+    expect(unrelatedAfterReject.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "native",
+    });
+
+    // Authentication retains precedence over a rejected rate-limit event.
+    const authFirst = new ClaudeNativeTurnAccumulator();
+    authFirst.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    authFirst.consume(assistant("", "authentication_failed"));
+    expect(authFirst.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "authentication",
+    });
+
+    // When extra-usage overage covers the send, primary rejection is not blocking.
+    for (const overageInfo of [
+      { status: "rejected", resetsAt: 1_787_674_200, isUsingOverage: true },
+      { status: "rejected", resetsAt: 1_787_674_200, overageInUse: true },
+      { status: "rejected", resetsAt: 1_787_674_200, overageStatus: "allowed" },
+      { status: "rejected", resetsAt: 1_787_674_200, overageStatus: "allowed_warning" },
+    ]) {
+      const covered = new ClaudeNativeTurnAccumulator();
+      covered.consume({
+        type: "rate_limit_event",
+        rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+      });
+      covered.consume({ type: "rate_limit_event", rate_limit_info: overageInfo });
+      expect(covered.consume(result({ is_error: true })).terminal).toEqual({
+        status: "failed",
+        kind: "native",
+      });
+    }
+
+    // Both primary and overage rejected: use overageResetsAt when primary reset is absent or later.
+    const overageRejectedOnly = new ClaudeNativeTurnAccumulator();
+    overageRejectedOnly.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        overageStatus: "rejected",
+        overageResetsAt: 1_787_760_600,
+      },
+    });
+    expect(overageRejectedOnly.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+      resetsAtUnix: 1_787_760_600,
+    });
+
+    const overageEarlierReset = new ClaudeNativeTurnAccumulator();
+    overageEarlierReset.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        rateLimitType: "seven_day",
+        resetsAt: 1_787_940_000,
+        overageStatus: "rejected",
+        overageResetsAt: 1_787_760_600,
+      },
+    });
+    expect(overageEarlierReset.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+      resetsAtUnix: 1_787_760_600,
+    });
+  });
+
   it("does not read authentication failure from the text of a successful Turn", () => {
     const turn = new ClaudeNativeTurnAccumulator();
     const text = "Configure the OAuth client; a user who is not logged in sees invalid API key.";

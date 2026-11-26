@@ -71,7 +71,8 @@ it("restores tool cards and the final answer in converted Codex history", () => 
   ).filter(({ message }) => message.content.some((part) => part.type === "text"));
   assert.equal(messages.length, 1);
   assert.match(JSON.stringify(messages), /The task finished\./u);
-  const message = messages[0]!;
+  const [message] = messages;
+  assert.ok(message);
   assert.equal(typeof message.step, "number");
   assert.equal(
     (data("turn/end")[0] as { finalAssistantStep: number }).finalAssistantStep,

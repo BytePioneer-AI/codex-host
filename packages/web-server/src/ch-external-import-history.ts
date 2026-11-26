@@ -75,7 +75,8 @@ export function externalImportHistoryItems(turn: ChTurn, items: ChItem[]): ChIte
   if (turn.status !== "completed" || !IMPORTED_TURN.test(turn.id)) return items;
   const visible: ChItem[] = [];
   for (let index = 0; index < items.length; index++) {
-    const item = items[index]!;
+    const item = items[index];
+    if (!item) continue;
     const text = legacyAgentText(item);
     if (index === items.length - 1 && text === IMPORT_NOTICE) continue;
     const call = TOOL_CALL.exec(text);
@@ -88,7 +89,7 @@ export function externalImportHistoryItems(turn: ChTurn, items: ChItem[]): ChIte
       !TOOL_CALL.test(legacyAgentText(items[index - 1])) &&
       !TOOL_RESULT.test(legacyAgentText(items[index + 2]))
     ) {
-      visible.push(toolItem(item.id, call[1]!, call[2]!, result[1] ?? ""));
+      visible.push(toolItem(item.id, call[1] ?? "", call[2] ?? "", result[1] ?? ""));
       index++;
       continue;
     }

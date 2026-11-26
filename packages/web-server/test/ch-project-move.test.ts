@@ -225,7 +225,8 @@ for (const nativeProjects of [false, true]) {
   it(`keeps a cleared Thread out of projects on refresh (nativeProjects=${nativeProjects})`, async (t) => {
     const host = new FakeChHost();
     const { row, workspaces, call, list, subscribe } = setup(t, host);
-    host.projectSnapshot.nativeProjects = nativeProjects;
+    if (nativeProjects) host.projectSnapshot.nativeProjects = true;
+    else delete host.projectSnapshot.nativeProjects;
     row.projectId = "project-moving"; // Catalog can still name the old project.
     const request = host.request.bind(host);
     let writes = 0;

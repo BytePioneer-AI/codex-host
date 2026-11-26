@@ -151,7 +151,8 @@ fn install_npm(
     }
     run_checked(&mut command, "npm update")?;
     // A nested payload can move to a global sibling when npm installs it explicitly.
-    let package_root = layout.resolved_platform_root();
+    npm.npm_package_root = layout.resolved_platform_root().to_path_buf();
+    let package_root = &npm.npm_package_root;
     verify_distribution(
         &package_root.join("app").join(DISTRIBUTION_FILE),
         version,
@@ -163,7 +164,6 @@ fn install_npm(
             package_root.display()
         )
     })?;
-    npm.npm_package_root = package_root.to_path_buf();
     Ok(())
 }
 
@@ -535,6 +535,7 @@ mod tests {
         let elsewhere = directory.join("other/node_modules/@codexhost/cli-fixture");
         let npm_cli = directory.join("npm.sh");
         let unavailable = directory.join("platform-unavailable");
+        let mismatched = directory.join("platform-mismatched");
         fs::create_dir_all(&global_root).unwrap();
         // npm can skip a failed optional download, but rolls back if the package is required.
         fs::write(
@@ -555,21 +556,24 @@ root='{}'
 mkdir -p "$root/app"
 version=${{2##*@}}
 printf '{{"version":"%s"}}' "$version" > "$root/package.json"
+if [ -f '{}' ]; then version=1.0.0; fi
 printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixture"}}' "$version" > "$root/app/codexhost-distribution.json"
 "#,
                 global_root.display(),
                 unavailable.display(),
                 nested.display(),
                 nested.display(),
-                independent.display()
+                independent.display(),
+                mismatched.display()
             ),
         )
         .unwrap();
-        for (package_root, platform_unavailable) in [
-            (&nested, true),
-            (&nested, false),
-            (&independent, false),
-            (&elsewhere, false),
+        for (package_root, failure) in [
+            (&nested, Some(&unavailable)),
+            (&nested, Some(&mismatched)),
+            (&nested, None),
+            (&independent, None),
+            (&elsewhere, None),
         ] {
             for root in [&nested, &independent, &elsewhere] {
                 let _ = fs::remove_dir_all(root);
@@ -581,8 +585,8 @@ printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixtur
                 r#"{"schemaVersion":1,"version":"1.0.0","distribution":"npm","target":"fixture"}"#,
             )
             .unwrap();
-            if platform_unavailable {
-                fs::write(&unavailable, "").unwrap();
+            if let Some(marker) = failure {
+                fs::write(marker, "").unwrap();
             }
             let mut request = UpdateRequest {
                 schema_version: 1,
@@ -605,7 +609,10 @@ printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixtur
             let result = super::preflight(&request)
                 .and_then(|layout| super::install(&mut request, layout.as_ref()));
 
-            if platform_unavailable {
+            if let Some(marker) = failure {
+                fs::remove_file(marker).unwrap();
+            }
+            if failure == Some(&unavailable) {
                 assert!(result.is_err());
                 assert_eq!(request.installation.resources_root(), *package_root);
                 let installed = super::distribution_metadata(
@@ -613,7 +620,15 @@ printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixtur
                 )
                 .unwrap();
                 assert_eq!(installed.version, "1.0.0");
-                fs::remove_file(&unavailable).unwrap();
+                continue;
+            }
+            if failure == Some(&mismatched) {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("does not match npm 1.1.0"), "{error}");
+                assert_eq!(
+                    request.installation.launcher_path(),
+                    independent.canonicalize().unwrap().join("bin/codexhost")
+                );
                 continue;
             }
             if package_root == &elsewhere {

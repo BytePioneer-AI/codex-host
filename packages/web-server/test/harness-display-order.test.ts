@@ -42,3 +42,31 @@ it("reads Desktop order without writing it and preserves model defaults and fail
   assert.equal(readFileSync(path, "utf8"), original);
   assert.deepEqual(await readHarnessDisplayEntries(join(directory, "missing")), []);
 });
+
+it("classifies uninstalled and user-folded Harnesses into moreHarnesses matching Desktop rules", () => {
+  const result = withHarnessDisplayOrder(
+    {
+      groups: [
+        { id: "codex", name: "Codex", models: [] },
+        { id: "claude-code", name: "Claude Code", models: [] },
+        { id: "pi", name: "Pi", models: [] },
+      ],
+      failures: [{ id: "cursor-cli", name: "Cursor CLI", message: "Auth error" }],
+      notInstalled: [
+        { id: "devin", name: "Devin", installUrl: "https://example.com/devin" },
+        { id: "codebuddy", name: "CodeBuddy" },
+      ],
+    },
+    [
+      { agent: "claude-code", section: "main" },
+      { agent: "pi", section: "more" },
+      { agent: "devin", section: "main" },
+    ],
+  );
+  assert.deepEqual(result.moreHarnesses, ["pi", "codebuddy"]);
+  assert.deepEqual(
+    result.notInstalled?.map((item) => item.id),
+    ["devin", "codebuddy"],
+  );
+  assert.ok(result.harnessOrder.includes("codebuddy"));
+});

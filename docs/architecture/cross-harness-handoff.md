@@ -35,6 +35,6 @@
 - **Web 网关与前端**（`packages/web-server/src/ch-thread-handoff.ts`、`apps/web-ui`）：
   - `session/handoff` 解析消息边界 `atSeq`（缺省时取最新已完成轮次）并调用 `codexhost/thread/handoff`，刷新会话后通过 `codexhostHandoff` 投影持续展示。
   - 已绑定本地会话的 Composer Harness 选择器（`HarnessSelect`）在当前 Harness 下方列出可交接的目标 Harness，点击后打开目标选择弹窗（`HandoffModal`）并自动预选该 Harness 与其默认模型；消息尾操作栏（`TurnTailNodeView`）保留任意历史轮次切点的「上下文交接」入口。新会话顶部在首轮已加载时渲染居中可折叠的 `HandoffDivider`（显示来源 → 目标图标与名称、轮次摘要、跳回源会话按钮及只读预览）。
-- **Codex Desktop 扩展**（`packages/renderer-extension/src/renderer-handoff-control.ts`、`renderer-handoff-view.ts`）：
-  - 在已绑定会话的 Composer 尾部工具栏挂载触发按钮与目标选择弹窗（按当前 Host 路由 `clientForHost`，模型选项保留 `harnessModelRefKey`），确认后通过 `openRendererThread` 切入新会话。
+- **Codex Desktop 扩展**（`packages/renderer-extension/src/renderer-agent-picker.ts`、`renderer-handoff-control.ts`、`renderer-handoff-view.ts`）：
+  - 与 Web 端保持一致：已绑定会话的 Composer Agent 选择器不再锁死，展开后顶部显示当前 Agent（`✓`），下方列出可交接目标（含折叠的「更多 Agent」与未安装引导），点击目标后按当前 Host 路由（`clientForHost`）打开目标选择弹窗并自动预选该 Harness（模型选项保留 `harnessModelRefKey`），确认后通过 `openRendererThread` 切入新会话。
   - 打开带 `handoff` 元数据的会话时，在首轮消息前（空会话回退至 Composer 上方）渲染居中可折叠的交接分割条，支持跳回源会话与只读预览，切换会话或卸载时完整清理。

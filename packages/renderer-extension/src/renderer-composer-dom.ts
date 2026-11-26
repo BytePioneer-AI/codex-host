@@ -700,6 +700,7 @@ export function mountComposerAgentControl(
   onSelectPermissionMode: (permissionModeId: string) => void,
   onOpenCommandMenu: () => void,
   onRefreshModels?: () => void,
+  onHandoff?: (agent: RendererAgent, anchor: HTMLButtonElement) => void,
 ): ComposerAgentControl {
   // External Harnesses inject more footer chips than native Codex. Let the
   // thread column shrink under sidebar / narrow-window pressure so those chips
@@ -721,6 +722,9 @@ export function mountComposerAgentControl(
     onSelect,
     onDownload,
     onOpenProviderPicker,
+    undefined,
+    undefined,
+    onHandoff,
   );
   const modelPicker = mountRendererModelPicker(
     composerId,
@@ -778,6 +782,7 @@ export function mountComposerAgentControl(
         onOpenProviderPicker,
         undefined,
         plugins,
+        onHandoff,
       );
       control.picker.root.replaceWith(next.root);
       control.picker.dispose();
@@ -833,6 +838,7 @@ export function renderComposerAgentControl(
   currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
   accountBalance: AccountBalanceSnapshot | null = null,
+  handoffAvailable = false,
 ): boolean {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
@@ -881,6 +887,7 @@ export function renderComposerAgentControl(
     availability,
     currentCodexAccount,
     ownershipError,
+    handoffAvailable,
   );
   reconcileComposerNativeControls(
     control,

@@ -269,4 +269,46 @@ describe("Renderer Agent picker presentation", () => {
       isNativeModelControlCandidate(element(["data-codexhost-agent-control"], true, true)),
     ).toBe(false);
   });
+
+  it("keeps the picker openable with selectable ready targets when locked handoff is available", () => {
+    expect(
+      rendererAgentPickerView(
+        { agent: "pi", phase: "locked" },
+        "ready",
+        false,
+        ["codex", "pi", "claude-code", "devin", "cursor-cli"],
+        {
+          pi: "ready",
+          "claude-code": "ready",
+          devin: "notInstalled",
+          "cursor-cli": "error",
+        },
+        { id: "pi" as never, name: "Pi", version: "1" },
+        true,
+      ),
+    ).toEqual({
+      label: "Pi",
+      triggerDisabled: false,
+      nativeModelHidden: true,
+      optionDisabled: {
+        codex: false,
+        pi: false,
+        "claude-code": false,
+        devin: true,
+        "cursor-cli": true,
+      },
+      downloadVisible: {
+        pi: false,
+        "claude-code": false,
+        devin: true,
+        "cursor-cli": false,
+      },
+      errorVisible: {
+        pi: false,
+        "claude-code": false,
+        devin: false,
+        "cursor-cli": true,
+      },
+    });
+  });
 });

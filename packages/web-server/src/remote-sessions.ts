@@ -34,6 +34,7 @@ import { threadListTitle } from "./ch-thread-title.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { isMethodUnavailableError, type PeerThreadSource } from "./peer-thread-source.ts";
+import { translateContentTextParts, translateThreadLinksForPeer } from "./peer-thread-links.ts";
 import { RemotePeerAttachments, type PeerAttachmentEndpoint } from "./remote-peer-attachments.ts";
 import type { WebFileRef } from "./web-files.ts";
 import { WEB_IMAGE_LIMITS } from "./web-images.ts";
@@ -163,6 +164,7 @@ function hasNonTextContentPart(content: unknown): boolean {
 export interface RemotePeerProvider {
   source(hostId: string): PeerThreadSource | undefined;
   client?(hostId: string): PeerAttachmentEndpoint | undefined;
+  nodeIdForHostId?(hostId: string): string | undefined;
   waitForInitialConnection?(hostId: string): Promise<void>;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
@@ -275,6 +277,22 @@ export class RemoteSessions {
       if (this.controls.size) void this.refreshBackground().catch(() => undefined);
     }, 30_000);
     this.timer.unref();
+  }
+  private translatePeerOutboundText(hostId: string, text: string): string {
+    if (!hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) return text;
+    const manifest = this.peers?.client?.(hostId)?.manifest;
+    return translateThreadLinksForPeer(text, {
+      targetHostId: hostId,
+      targetNodeId: manifest?.nodeId,
+      targetPeerNodes: manifest?.peerNodes,
+      nodeIdForHostId: (sourceHostId) => this.peers?.nodeIdForHostId?.(sourceHostId),
+    });
+  }
+  private translatePeerOutboundContent<T>(hostId: string, content: readonly T[]): T[] {
+    if (!hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) return [...content];
+    return translateContentTextParts(content, (text) =>
+      this.translatePeerOutboundText(hostId, text),
+    );
   }
   private async handlePeerThreadChanged(hostId: string, threadId: string): Promise<void> {
     if (this.closed) return;
@@ -1596,13 +1614,14 @@ export class RemoteSessions {
             ...(draftUploadScope !== undefined ? { scope: draftUploadScope } : {}),
             ...(peerPromptRequestId !== undefined ? { requestId: peerPromptRequestId } : {}),
             ...(peerPromptMode !== undefined ? { mode: peerPromptMode } : {}),
-            content: peerPromptContent,
+            content: this.translatePeerOutboundContent(host.hostId, peerPromptContent),
           });
           if (draftUploadScope !== undefined && entry.pendingUploadScope === draftUploadScope) {
             delete entry.pendingUploadScope;
           }
         } else if (legacyPrompt !== undefined) {
-          await this.invoke({ ...legacyPrompt, threadId: thread.id });
+          const text = this.translatePeerOutboundText(host.hostId, legacyPrompt.text);
+          await this.invoke({ ...legacyPrompt, text, threadId: thread.id });
         }
       } finally {
         this.pendingFirstTurns.delete(id);
@@ -2918,7 +2937,10 @@ export class RemoteSessions {
             ...(request.expectedTurnId === null || typeof request.expectedTurnId === "string"
               ? { expectedTurnId: request.expectedTurnId }
               : {}),
-            content: request.content as RemotePeerPromptParams["content"],
+            content: this.translatePeerOutboundContent(
+              identity.hostId,
+              request.content as RemotePeerPromptParams["content"],
+            ),
           });
           if (pendingScope !== undefined && entry.pendingUploadScope === pendingScope) {
             delete entry.pendingUploadScope;
@@ -2943,8 +2965,17 @@ export class RemoteSessions {
           throw new RpcError("remote/connection-changed", "Remote Thread changed before dispatch.");
         return this.invoke(operation);
       };
+      const deliveryRequest =
+        method === "session/prompt" &&
+        identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) &&
+        Array.isArray(request.content)
+          ? {
+              ...request,
+              content: this.translatePeerOutboundContent(identity.hostId, request.content),
+            }
+          : request;
       try {
-        return await deliverRemoteInput(invoke, identity, method, request, async () => {
+        return await deliverRemoteInput(invoke, identity, method, deliveryRequest, async () => {
           const view = await this.read(id);
           if (this.entries.get(id) !== entry || !entry.epoch)
             throw new RpcError(
@@ -3078,7 +3109,10 @@ export class RemoteSessions {
     let operation: RemoteSessionOperation;
     switch (method) {
       case "session/prompt": {
-        const text = remotePromptText(request.content);
+        const text = this.translatePeerOutboundText(
+          entry.identity.hostId,
+          remotePromptText(request.content),
+        );
         if (view.thread.canAcceptDirectInput === false)
           throw new RpcError(
             "remote/send-rejected",

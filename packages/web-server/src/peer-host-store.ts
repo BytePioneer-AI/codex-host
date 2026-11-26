@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { z } from "zod";
@@ -5,6 +6,7 @@ import type { DataDir } from "./store.ts";
 import {
   remotePeerColorSchema,
   remotePeerIdSchema,
+  remotePeerNodeIdSchema,
   type RemotePeerAddParams,
   type RemotePeerColor,
   type RemotePeerTransportKind,
@@ -132,6 +134,29 @@ export function parseConnectionLink(
 }
 
 const file = "remote-peers-v1.json";
+const NODE_IDENTITY_FILE = "node-identity-v1.json";
+
+const nodeIdentitySchema = z.object({
+  version: z.literal(1),
+  nodeId: remotePeerNodeIdSchema,
+});
+
+/** Load or generate a persistent, restart-stable nodeId stored under the web data directory. */
+export function loadOrCreatePeerNodeId(data: DataDir): string {
+  try {
+    const raw = readFileSync(data.path(NODE_IDENTITY_FILE), "utf8");
+    const parsed = nodeIdentitySchema.safeParse(JSON.parse(raw));
+    if (parsed.success) return parsed.data.nodeId;
+    console.warn("[remote-peers] invalid node-identity-v1.json; regenerating nodeId");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn("[remote-peers] unreadable node-identity-v1.json; regenerating nodeId");
+    }
+  }
+  const nodeId = randomUUID();
+  data.writeJson(NODE_IDENTITY_FILE, { version: 1, nodeId }, { mode: 0o600 });
+  return nodeId;
+}
 
 export class PeerHostStore {
   constructor(private data: DataDir) {}

@@ -3,6 +3,7 @@ import { jsonObjectSchema, jsonValueSchema } from "./json-value.js";
 import {
   remotePeerHostIdSchema,
   remotePeerIdSchema,
+  remotePeerNodeIdSchema,
   remotePeerStateSchema,
 } from "./remote-peers.js";
 
@@ -68,6 +69,7 @@ export type PeerDelegationHostProject = z.infer<typeof peerDelegationHostProject
 /** Agent-safe summary of a paired remote peer; never exposes tokens or origin URLs. */
 export const peerDelegationHostSummarySchema = z.strictObject({
   hostId: remotePeerHostIdSchema,
+  nodeId: remotePeerNodeIdSchema.optional(),
   displayName: z.string().min(1).max(120),
   online: z.boolean(),
   state: remotePeerStateSchema,

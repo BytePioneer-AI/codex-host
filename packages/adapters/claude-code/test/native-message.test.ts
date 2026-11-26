@@ -1078,10 +1078,10 @@ describe("Claude native Turn interpretation", () => {
       rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
     });
     cleared.consume({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
-    cleared.consume(assistant("", "server_error"));
+    cleared.consume(assistant("", "rate_limit"));
     expect(cleared.consume(result({ is_error: true })).terminal).toEqual({
       status: "failed",
-      kind: "native",
+      kind: "rateLimited",
     });
 
     const unrelatedAfterReject = new ClaudeNativeTurnAccumulator();

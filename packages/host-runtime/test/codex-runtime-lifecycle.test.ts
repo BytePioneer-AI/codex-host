@@ -44,10 +44,10 @@ function fixture(owned: boolean) {
 describe("Codex runtime lifecycle", () => {
   it("handles a premature output close while forwarding a notification", async () => {
     const f = fixture(false);
-    const forwarding = Promise.withResolvers<void>();
-    const forwarded = Promise.withResolvers<void>();
+    const forwarding = Promise.withResolvers<undefined>();
+    const forwarded = Promise.withResolvers<undefined>();
     f.onOutput.mockImplementationOnce(async () => {
-      forwarding.resolve();
+      forwarding.resolve(undefined);
       await forwarded.promise;
     });
     const unhandledRejection = vi.fn();
@@ -65,7 +65,7 @@ describe("Codex runtime lifecycle", () => {
       expect(f.onClosed).toHaveBeenCalledExactlyOnceWith(expect.any(Error));
       expect(unhandledRejection).not.toHaveBeenCalled();
     } finally {
-      forwarded.resolve();
+      forwarded.resolve(undefined);
       f.runtime.close();
       await f.runtime.outputTask;
       process.off("unhandledRejection", unhandledRejection);

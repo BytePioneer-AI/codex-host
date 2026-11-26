@@ -1,8 +1,17 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type MouseEvent,
+} from "react";
 import {
   IconCloseOutlineMedium,
   IconMicrophoneOutlineMedium,
   IconStopFillMedium,
+  shouldAutoFocusTextInput,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
@@ -57,6 +66,22 @@ const isLive = (state: VoiceInputState) =>
 
 const clock = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+
+function keepDesktopFocus(event: MouseEvent<HTMLButtonElement>): void {
+  if (shouldAutoFocusTextInput()) event.preventDefault();
+}
+
+function blurFocusedComposerOnTouch(doc: Document): void {
+  if (shouldAutoFocusTextInput()) return;
+  const active = doc.activeElement;
+  if (
+    active !== null &&
+    active.closest("[data-composer-input]") !== null &&
+    typeof (active as HTMLElement).blur === "function"
+  ) {
+    (active as HTMLElement).blur();
+  }
+}
 
 /** Idle entry, at its usual place left of the model selector. */
 export function VoiceInputButton({
@@ -179,7 +204,7 @@ export function VoiceInputButton({
             className={css.icon}
             aria-label={t("voice.label")}
             disabled={locked}
-            onMouseDown={(event) => event.preventDefault()}
+            onMouseDown={keepDesktopFocus}
             onClick={() => void voice.start()}
           >
             <IconMicrophoneOutlineMedium size={16} />
@@ -288,8 +313,11 @@ function VoiceRecorder({
             className={css.send}
             aria-label={t("voice.send")}
             disabled={locked || !recording}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => voice.send()}
+            onMouseDown={keepDesktopFocus}
+            onClick={(event) => {
+              blurFocusedComposerOnTouch(event.currentTarget.ownerDocument);
+              voice.send();
+            }}
           >
             <span className={css.sendFace}>
               <SendIcon />
@@ -303,8 +331,11 @@ function VoiceRecorder({
           className={css.done}
           aria-label={t("voice.stop")}
           disabled={!recording}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => voice.stop()}
+          onMouseDown={keepDesktopFocus}
+          onClick={(event) => {
+            blurFocusedComposerOnTouch(event.currentTarget.ownerDocument);
+            voice.stop();
+          }}
         >
           <span className={css.doneFace}>
             <IconStopFillMedium size={9} />
@@ -372,7 +403,7 @@ export function VoiceNotice({
           <button
             type="button"
             className={css.primary}
-            onMouseDown={(event) => event.preventDefault()}
+            onMouseDown={keepDesktopFocus}
             onClick={() => voice.insert()}
           >
             {t("voice.insert")}

@@ -42,7 +42,9 @@ export interface HarnessCatalog {
     routableProviders: string[];
     groups: ModelGroup[];
     failures: Array<{ id: string; name: string; message: string }>;
+    notInstalled?: Array<{ id: string; name: string; installUrl?: string }>;
     harnessOrder?: string[];
+    moreHarnesses?: string[];
     rememberedSelections?: Record<
       string,
       { provider: string; model: string; reasoningEffort?: string }

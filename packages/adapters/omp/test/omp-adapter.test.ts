@@ -2282,4 +2282,78 @@ describe("OMP Adapter Subagents", () => {
     await opened.value.close();
     await adapter.close();
   });
+
+  it("reads a persisted OMP Session snapshot cold from disk without creating a transport", async () => {
+    const cwd = path.join(tmpdir(), `codexhost-omp-cold-read-${randomUUID()}`);
+    await mkdir(cwd, { recursive: true });
+    const sessionFile = path.join(cwd, "cold.jsonl");
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const adapter = new OmpAdapter({}, { createTransport });
+    try {
+      const entries = [
+        { type: "session", id: "omp-cold-1", cwd },
+        {
+          type: "message",
+          id: "u1",
+          parentId: null,
+          message: { role: "user", content: [{ type: "text", text: "cold question" }] },
+        },
+        {
+          type: "message",
+          id: "a1",
+          parentId: "u1",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "cold answer" }],
+          },
+        },
+      ];
+      await writeFile(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "omp",
+        nativeSessionId: "omp-cold-1",
+        locator: { sessionFile },
+        formatVersion: 1,
+      });
+      const result = await adapter.readSnapshot({ nativeRef, cwd });
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              nativeTurnRef: { nativeTurnKey: "u1" },
+              outcome: { status: "succeeded" },
+            },
+          ],
+        },
+      });
+      expect(JSON.stringify(result)).toContain("cold answer");
+      await expect(
+        adapter.readSnapshot({
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "omp",
+            nativeSessionId: "missing",
+            locator: { sessionFile: path.join(cwd, "missing.jsonl") },
+            formatVersion: 1,
+          }),
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+      await expect(
+        adapter.readSnapshot({
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "omp",
+            nativeSessionId: "no-locator",
+            formatVersion: 1,
+          }),
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+      expect(createTransport).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

@@ -17,7 +17,7 @@
  * may add node types this renderer has no mapping for.
  */
 
-import { Fragment, createElement, useCallback, useState } from "react";
+import { Fragment, createElement, useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { Key, ReactNode } from "react";
 import clsx from "clsx";
 import type * as Md from "mdast";
@@ -38,6 +38,7 @@ import { ResponseAnnotationLabel } from "../ResponseAnnotation.tsx";
 import type { ResponseAnnotationLabels, ResponseAnnotationView } from "../ResponseAnnotation.tsx";
 import { ImageLightbox } from "../ImageLightbox.tsx";
 import { ImagePreview } from "../ImagePreview.tsx";
+import { IconLoadingOutlineRegular } from "../icons/index.tsx";
 import type { PositionedBlock } from "./incremental.ts";
 import css from "./MarkdownText.module.css";
 
@@ -888,43 +889,90 @@ function LoadedMarkdownImage({
   preview: ReturnType<typeof useMarkdownDelegate>["fileImages"];
   standalone: boolean;
 }): ReactNode {
-  const [failed, setFailed] = useState(false);
+  const [status, setStatus] = useState<"loading" | "ready" | "revealed" | "failed">("loading");
   const [open, setOpen] = useState(false);
+  const imgRef = useRef<HTMLImageElement | null>(null);
   const close = useCallback(() => {
     setOpen(false);
   }, []);
-  if (failed)
+  useLayoutEffect(() => {
+    const el = imgRef.current;
+    if (el !== null && el.complete && el.naturalWidth > 0) {
+      setStatus("ready");
+    }
+  }, [src]);
+  if (status === "failed")
     return (
       <span className={css.imageAlt}>
         {preview === undefined ? "" : `${preview.labels.failed} · `}
         {alt || destination}
       </span>
     );
+  const loading = status === "loading";
+  const framed = preview !== undefined || standalone;
   const img = (
     <img
-      className={css.image}
+      ref={imgRef}
+      className={clsx(
+        css.image,
+        framed && loading && css.imageLoading,
+        status === "revealed" && css.imageReveal,
+      )}
       src={src}
       alt={alt}
+      onLoad={() => {
+        setStatus((current) => (current === "loading" ? "revealed" : current));
+      }}
       onError={() => {
-        setFailed(true);
+        setStatus("failed");
       }}
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"
     />
   );
-  if (preview === undefined) return img;
+  const placeholder =
+    framed && loading ? (
+      <span className={css.imagePlaceholder} role="status" aria-live="polite">
+        <IconLoadingOutlineRegular size={16} className={css.imageSpinner} />
+        {preview !== undefined && <span>{preview.labels.loading}</span>}
+      </span>
+    ) : null;
+  if (preview === undefined) {
+    if (!standalone) return img;
+    return (
+      <span
+        className={clsx(css.imageFrame, loading && css.imageFrameLoading)}
+        aria-busy={loading || undefined}
+      >
+        {placeholder}
+        {img}
+      </span>
+    );
+  }
   return (
     <>
       <button
         type="button"
-        className={clsx(css.imageButton, standalone && css.imageButtonStandalone)}
-        title={preview.labels.open}
-        aria-label={alt ? `${preview.labels.open}: ${alt}` : preview.labels.open}
+        className={clsx(
+          css.imageButton,
+          standalone && css.imageButtonStandalone,
+          loading && css.imageButtonLoading,
+        )}
+        title={loading ? preview.labels.loading : preview.labels.open}
+        aria-label={
+          loading
+            ? preview.labels.loading
+            : alt
+              ? `${preview.labels.open}: ${alt}`
+              : preview.labels.open
+        }
+        aria-busy={loading || undefined}
         onClick={() => {
-          setOpen(true);
+          if (!loading) setOpen(true);
         }}
       >
+        {placeholder}
         {img}
       </button>
       {open && <ImageLightbox src={src} alt={alt} labels={preview.labels} onClose={close} />}

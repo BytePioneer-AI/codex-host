@@ -9,7 +9,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const renameFixture = vi.hoisted(() => ({
-  attempts: 0,
   remainingFailures: 0,
 }));
 
@@ -18,14 +17,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     async rename(oldPath: PathLike, newPath: PathLike): Promise<void> {
-      if (String(newPath).endsWith("status-v1.json")) {
-        renameFixture.attempts += 1;
-        if (renameFixture.remainingFailures > 0) {
-          renameFixture.remainingFailures -= 1;
-          const error = new Error("status file is temporarily busy") as NodeJS.ErrnoException;
-          error.code = "EPERM";
-          throw error;
-        }
+      if (String(newPath).endsWith("status-v1.json") && renameFixture.remainingFailures > 0) {
+        renameFixture.remainingFailures -= 1;
+        const error = new Error("status file is temporarily busy") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
       }
       await actual.rename(oldPath, newPath);
     },
@@ -58,7 +54,6 @@ function stopUpdater(child: ChildProcess): Promise<void> {
 }
 
 afterEach(async () => {
-  renameFixture.attempts = 0;
   renameFixture.remainingFailures = 0;
   await Promise.all(updaters.splice(0).map(stopUpdater));
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -218,14 +213,16 @@ describe("background update manager", () => {
         prefetchNpm: async () => {},
       });
 
-      await expect(
-        manager.prepareNpm({
-          ...common,
-          ...npmFiles,
-          packageRoot: path.join(root, "npm", "platform-package"),
-        }),
-      ).resolves.toMatchObject({ installation: "npm" });
-      expect(renameFixture.attempts).toBe(4);
+      const prepared = await manager.prepareNpm({
+        ...common,
+        ...npmFiles,
+        packageRoot: path.join(root, "npm", "platform-package"),
+      });
+      expect(renameFixture.remainingFailures).toBe(0);
+      await expect(manager.readStatus(prepared.statusPath)).resolves.toMatchObject({
+        installation: "npm",
+        phase: "prepared",
+      });
     },
   );
 

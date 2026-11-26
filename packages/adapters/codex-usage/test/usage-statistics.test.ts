@@ -418,26 +418,53 @@ describe("Codex read-only storage", () => {
     expect((await reader.listSources(signal))[0]?.fingerprint).not.toBe(source.fingerprint);
   });
 
-  it("prefers the session index name over the first typed prompt", async () => {
-    await file(`sessions/${filename()}`, [
-      meta(),
+  it("prefers the session index name over the first typed prompt and scopes fingerprint invalidation per thread", async () => {
+    await file(`sessions/${filename(THREAD)}`, [
+      meta(THREAD),
       row("response_item", {
         type: "message",
         role: "user",
         content: [{ type: "input_text", text: "Typed prompt" }],
       }),
       context(),
-      record("r1", tokens(100, 10), tokens(100, 10)),
+      record("r1", tokens(100, 10), tokens(100, 10), 1, THREAD),
     ]);
-    await writeFile(
-      path.join(root, "session_index.jsonl"),
-      `${JSON.stringify({ id: THREAD, thread_name: "Index title" })}\n`,
-    );
+    await file(`sessions/${filename(CHILD)}`, [
+      meta(CHILD),
+      context(),
+      record("r2", tokens(200, 20), tokens(200, 20), 1, CHILD),
+    ]);
+    const indexFile = path.join(root, "session_index.jsonl");
+    await writeFile(indexFile, `${JSON.stringify({ id: THREAD, thread_name: "Index title" })}\n`);
     const reader = createCodexUsageStatistics({ CODEX_HOME: root });
-    const source = (await reader.listSources(signal))[0];
-    if (!source) throw new Error("missing fixture source");
-    expect((await reader.readSource(source.id, signal))[0]).toMatchObject({
+    const initial = new Map((await reader.listSources(signal)).map((s) => [s.id, s.fingerprint]));
+    const threadSourceId = [...initial.keys()].find((id) => id.endsWith(THREAD));
+    const childSourceId = [...initial.keys()].find((id) => id.endsWith(CHILD));
+    if (!threadSourceId || !childSourceId) throw new Error("missing fixture sources");
+    expect((await reader.readSource(threadSourceId, signal))[0]).toMatchObject({
       sessionTitle: "Index title",
+    });
+
+    // Naming another thread in session_index.jsonl must not invalidate untouched threads.
+    appendFileSync(indexFile, `${JSON.stringify({ id: CHILD, thread_name: "Child title" })}\n`);
+    const afterChildNamed = new Map(
+      (await reader.listSources(signal)).map((s) => [s.id, s.fingerprint]),
+    );
+    expect(afterChildNamed.get(threadSourceId)).toBe(initial.get(threadSourceId));
+    expect(afterChildNamed.get(childSourceId)).not.toBe(initial.get(childSourceId));
+    expect((await reader.readSource(childSourceId, signal))[0]).toMatchObject({
+      sessionTitle: "Child title",
+    });
+
+    // A title update racing with readSource must trigger relisting rather than caching stale data.
+    appendFileSync(indexFile, `${JSON.stringify({ id: THREAD, thread_name: "Renamed title" })}\n`);
+    await expect(reader.readSource(threadSourceId, signal)).rejects.toSatisfy(
+      HarnessUsageSourceChangedError.is,
+    );
+    const relisted = new Map((await reader.listSources(signal)).map((s) => [s.id, s.fingerprint]));
+    expect(relisted.get(threadSourceId)).not.toBe(initial.get(threadSourceId));
+    expect((await reader.readSource(threadSourceId, signal))[0]).toMatchObject({
+      sessionTitle: "Renamed title",
     });
   });
 

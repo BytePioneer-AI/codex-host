@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   REMOTE_PEER_COLORS,
   defaultRemotePeerColor,
+  peerDelegationHostSummarySchema,
   remotePeerAddParamsSchema,
   remotePeerColorSchema,
+  remotePeerManifestSchema,
+  remotePeerNodeIdSchema,
   remotePeerSummarySchema,
   remotePeerUpdateParamsSchema,
   resolveRemotePeerColor,
@@ -91,5 +94,83 @@ describe("remote peer host colors", () => {
         updatedAt: "2026-01-01T00:00:00.000Z",
       }).color,
     ).toBe("green");
+  });
+
+  it("validates optional nodeId and anonymous peerNodes on manifest and host summaries", () => {
+    expect(remotePeerNodeIdSchema.parse("node_a-01")).toBe("node_a-01");
+    expect(() => remotePeerNodeIdSchema.parse("")).toThrow();
+    expect(() => remotePeerNodeIdSchema.parse("bad/id")).toThrow();
+    expect(() => remotePeerNodeIdSchema.parse("a".repeat(65))).toThrow();
+
+    const baseManifest = {
+      version: "0.26.1",
+      platform: "darwin",
+      hostname: "node-b",
+      epoch: "epoch-1",
+      projects: [],
+    };
+    // Legacy peer manifest without nodeId / peerNodes stays valid.
+    expect(remotePeerManifestSchema.parse(baseManifest).nodeId).toBeUndefined();
+
+    const withNodes = remotePeerManifestSchema.parse({
+      ...baseManifest,
+      nodeId: "node-b-uuid",
+      peerNodes: {
+        "remote-peer:peer-a": "node-a-uuid",
+        "remote-peer:peer-c": "node-c-uuid",
+      },
+    });
+    expect(withNodes.nodeId).toBe("node-b-uuid");
+    expect(withNodes.peerNodes).toEqual({
+      "remote-peer:peer-a": "node-a-uuid",
+      "remote-peer:peer-c": "node-c-uuid",
+    });
+
+    // Reject invalid peerNodes key, invalid nodeId value, and >128 entries.
+    expect(() =>
+      remotePeerManifestSchema.parse({
+        ...baseManifest,
+        peerNodes: { local: "node-a-uuid" },
+      }),
+    ).toThrow();
+    expect(() =>
+      remotePeerManifestSchema.parse({
+        ...baseManifest,
+        peerNodes: { "remote-peer:peer-a": "https://secret.example" },
+      }),
+    ).toThrow();
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 129 }, (_, i) => [`remote-peer:p${i}`, `node-${i}`]),
+    );
+    expect(() => remotePeerManifestSchema.parse({ ...baseManifest, peerNodes: tooMany })).toThrow();
+
+    expect(
+      remotePeerSummarySchema.parse({
+        peerId: "peer-1",
+        hostId: "remote-peer:peer-1",
+        nodeId: "node-b-uuid",
+        name: "Mac Studio",
+        origin: "https://peer.r.chost.dev",
+        transportKind: "relay",
+        encrypted: true,
+        enabled: true,
+        state: "connected",
+        projectCount: 0,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }).nodeId,
+    ).toBe("node-b-uuid");
+
+    expect(
+      peerDelegationHostSummarySchema.parse({
+        hostId: "remote-peer:peer-1",
+        nodeId: "node-b-uuid",
+        displayName: "Mac Studio",
+        online: true,
+        state: "connected",
+        delegation: true,
+        projects: [],
+      }).nodeId,
+    ).toBe("node-b-uuid");
   });
 });

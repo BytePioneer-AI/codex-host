@@ -11,6 +11,7 @@ import {
   type WebToolOutputReference,
   type WebTurnFileSummary,
 } from "@codexhost/shared-contracts";
+import { externalImportHistoryItems } from "./ch-external-import-history.ts";
 import { conversationItems } from "./ch-file-operations.ts";
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
@@ -142,6 +143,7 @@ function itemOf(
   reasoningPreviewIds: ReadonlySet<string>,
   projectImage: (path: string, projectionKey: string) => unknown,
   projectionKey: string,
+  projectText: (text: string) => string,
 ): HostItem | undefined {
   const itemId = item.id;
   switch (item.type) {
@@ -150,7 +152,7 @@ function itemOf(
         type: "agentMessage",
         itemId,
         // Web resolves Markdown paths itself; Desktop media escaping is not its wire format.
-        text: String(item.codexhostNativeText ?? item.text ?? ""),
+        text: projectText(String(item.codexhostNativeText ?? item.text ?? "")),
       };
     case "reasoning":
       return {
@@ -336,6 +338,8 @@ export interface ChThreadViewOptions {
   compactToolOutputs?: boolean;
   /** Re-read one native Turn on demand when `session/toolOutput` hits a compacted entry. */
   loadTurn?: (turnId: string) => Promise<ChTurn | undefined>;
+  /** Rewrite projected text fields (for example translating peer thread links). */
+  projectText?: ((text: string) => string) | undefined;
 }
 
 /** The journal is a disposable rendering buffer; every authoritative value remains in CH. */
@@ -345,6 +349,7 @@ export class ChThreadView {
   private readonly liveOutput = new Map<string, string>();
   private readonly compactToolOutputs: boolean;
   private readonly loadTurn: ((turnId: string) => Promise<ChTurn | undefined>) | undefined;
+  private readonly projectText: (text: string) => string;
   private retired = false;
   retire(): void {
     this.retired = true;
@@ -367,6 +372,7 @@ export class ChThreadView {
   ) {
     this.compactToolOutputs = options?.compactToolOutputs === true;
     this.loadTurn = options?.loadTurn;
+    this.projectText = options?.projectText ?? ((text) => text);
     const published = new Map<string, string>();
     this.log = new SessionLog(
       {
@@ -498,6 +504,7 @@ export class ChThreadView {
       () => false,
       this.projectInput,
       this.projectImage,
+      { projectText: this.projectText },
     );
     page.update({ ...this.thread, turns });
     this.log.prepend(page.log.events);
@@ -522,7 +529,7 @@ export class ChThreadView {
       const view = this.turns.get(turn.id);
       if (!view) continue;
       if (view.done && turn === existingTurns.get(turn.id)) continue;
-      const items = conversationItems(turn);
+      const items = this.displayItems(turn);
       const ids = new Set(items.map((item) => item.id));
       const users = items.filter((item) => item.type === "userMessage");
       const published = [...view.started];
@@ -623,7 +630,13 @@ export class ChThreadView {
         return this.projectImage(path, projectionKey);
       },
       imageViewProjectionKey(turnId, item.id),
+      this.projectText,
     );
+  }
+
+  private displayItems(turn: ChTurn): ChItem[] {
+    const items = conversationItems(turn);
+    return this.harnessId === "codex" ? externalImportHistoryItems(turn, items) : items;
   }
 
   private publishMessageTimes(): void {
@@ -686,7 +699,7 @@ export class ChThreadView {
   ): void {
     let previousEnd = thread.createdAt * 1000;
     for (const turn of thread.turns) {
-      const items = conversationItems(turn);
+      const items = this.displayItems(turn);
       let view = this.turns.get(turn.id);
       const complete = finished(turn.status);
       const start = nativeTime(turn.startedAt) ?? (complete ? previousEnd : Date.now());
@@ -857,7 +870,7 @@ export class ChThreadView {
         for (const item of view.items.values())
           if (!view.completed.has(item.itemId))
             projector.itemCompleted(item, { status: "succeeded" });
-        // Protocol Core already resolves native and inferred phases for Desktop and Web.
+        // Use the phase supplied by the Host or recovered for converted history.
         const answer = items.findLast(
           (item) => item.type === "agentMessage" && item.phase === "final_answer",
         );

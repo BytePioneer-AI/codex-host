@@ -31,6 +31,7 @@ import {
   type HostUsage,
   type InspectHarnessInput,
   type OpenSessionInput,
+  type ReadThreadSnapshotInput,
   type TurnOutcome,
   type TurnStartCommand,
   type TurnStartAccepted,
@@ -103,6 +104,7 @@ import {
   readNativeStepWatermark,
   readNativeTurnCompactions,
 } from "./native-replay.js";
+import { normalizeAntigravityNativeTitle, readNativeSessionTitle } from "./native-title.js";
 import { observeNativeTurnCount, readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
   ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
@@ -378,6 +380,12 @@ export class AntigravitySession implements HarnessSession {
   #configurationQueue: Promise<void> | undefined;
   #historyOperation = false;
   #creditsModelId: string | undefined;
+  // A native title must never reach the Host before the first session.state.changed
+  // commits the new Session's nativeRef; #pendingTitle holds it until then.
+  #statePublished = false;
+  #pendingTitle: string | undefined;
+  #publishedTitle: string | undefined;
+  #titleReadWork: Promise<void> | undefined;
 
   constructor(options: SessionOptions) {
     this.#options = options;
@@ -396,6 +404,7 @@ export class AntigravitySession implements HarnessSession {
       observationTimeoutMs: options.adapter.subagentObservationTimeoutMs ?? 30_000,
       emit: (event) => this.#emit(event),
     });
+    if (options.nativeRef) void this.#refreshStoredTitle(options.nativeRef.nativeSessionId);
   }
   get initialState(): HarnessSessionState {
     return { ...this.#state };
@@ -458,11 +467,45 @@ export class AntigravitySession implements HarnessSession {
   }
   #publishState(): void {
     this.#emit({ type: "session.state.changed", state: { ...this.#state } });
+    this.#statePublished = true;
+    const pendingTitle = this.#pendingTitle;
+    this.#pendingTitle = undefined;
+    if (pendingTitle !== undefined) this.#publishTitle(pendingTitle);
     const modelId = this.#state.effectiveModel?.id ?? this.#requested.model?.id;
     if (modelId !== this.#creditsModelId) {
       this.#creditsModelId = modelId;
       this.#emit({ type: "session.accountCredits.changed" });
     }
+  }
+  #publishTitle(raw: unknown): void {
+    if (this.#closed || this.#faulted) return;
+    const title = normalizeAntigravityNativeTitle(raw);
+    if (!title || title === this.#publishedTitle) return;
+    // A created Session has no nativeRef until the first session.state.changed,
+    // so an early title waits for that commit; a resumed Session is already ready.
+    if (!this.#statePublished && !this.#options.nativeRef) {
+      this.#pendingTitle = title;
+      return;
+    }
+    this.#publishedTitle = title;
+    this.#pendingTitle = undefined;
+    this.#emit({ type: "session.title.changed", title });
+  }
+  async #refreshStoredTitle(nativeSessionId: string): Promise<void> {
+    if (this.#closed || this.#faulted || this.#publishedTitle || this.#titleReadWork) return;
+    const work = (async () => {
+      const title = await readNativeSessionTitle(
+        nativeSessionId,
+        antigravityHome(this.#options.environment),
+        this.#abort.signal,
+      );
+      // A realtime session_info_update wins; a stored title only fills the gap.
+      if (title && !this.#publishedTitle) this.#publishTitle(title);
+    })().finally(() => {
+      if (this.#titleReadWork === work) this.#titleReadWork = undefined;
+    });
+    this.#titleReadWork = work;
+    await work;
   }
   /** Leads with the quota group that bills this Session's current Model. */
   readAccountCredits(): Promise<AntigravityQuotaSnapshot | null> {
@@ -840,6 +883,9 @@ export class AntigravitySession implements HarnessSession {
         }
         break;
       }
+      case "session.info":
+        this.#publishTitle(event.title);
+        break;
     }
   }
   async #replayUsage(): Promise<void> {
@@ -1683,6 +1729,17 @@ export class AntigravitySession implements HarnessSession {
     });
     if (this.#postPromptWake && !this.#closed && !this.#faulted) this.#wakes?.observe();
     this.#postPromptWake = false;
+    // Older CLIs or unlucky timing can miss the realtime session_info_update; a
+    // successful Turn that still has no title falls back to one stored-title read.
+    if (
+      outcome.status === "succeeded" &&
+      !this.#publishedTitle &&
+      !this.#closed &&
+      !this.#faulted
+    ) {
+      const nativeSessionId = this.nativeRef?.nativeSessionId;
+      if (nativeSessionId) void this.#refreshStoredTitle(nativeSessionId);
+    }
   }
   #permission(
     turn: ActiveTurn,
@@ -1878,6 +1935,7 @@ export class AntigravitySession implements HarnessSession {
     this.#abort.abort();
     this.#wakes?.close();
     this.#postPromptWake = false;
+    this.#pendingTitle = undefined;
     this.#closeInteractions("cancelled");
     const active = this.#active;
     if (active) this.#finish(active, { status: "cancelled", reason: "Session closed" });
@@ -2160,6 +2218,36 @@ export class AntigravityAdapter implements HarnessAdapter {
       return { ok: false, error: normalizeAntigravityError(error) };
     }
   }
+  async readSnapshot(input: ReadThreadSnapshotInput): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closed) return err("invalidState", "Adapter is closed");
+    if (!validNativeSessionRef(input.nativeRef, harnessId)) {
+      return err("invalidRequest", "Invalid Antigravity Native Session");
+    }
+    try {
+      const environment: NodeJS.ProcessEnv = { ...this.#environment };
+      if (input.environment) {
+        for (const [key, value] of Object.entries(input.environment)) {
+          if (value !== undefined) environment[key] = value;
+        }
+      }
+      const { events } = await readNativeHistory(
+        input.nativeRef.nativeSessionId,
+        antigravityHome(environment),
+      );
+      const turns = projectReplayedEventsToTurns({
+        nativeSessionId: input.nativeRef.nativeSessionId,
+        cwd: input.cwd,
+        events,
+        ...(this.options.toolOutputLimit !== undefined
+          ? { outputLimit: this.options.toolOutputLimit }
+          : {}),
+      });
+      return ok({ turns });
+    } catch {
+      return err("nativeFailure", "Antigravity history unavailable");
+    }
+  }
+
   readonly subagents = {
     readSnapshot: async (input: {
       parent: NativeSessionRef;

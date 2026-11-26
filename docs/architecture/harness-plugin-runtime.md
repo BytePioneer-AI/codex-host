@@ -335,6 +335,10 @@ Host 按 Thread 串行处理配置 RPC（包括观察确认状态和写入映射
 
 外部 Thread 的「调整方向」使用公共 `turn.cancel` → 等待旧轮终态 → `turn.start`，不要求插件新增 steer 命令。Host 负责替换协调，Renderer 复用正常发送展示；官方 Codex Thread 保留原生 steer。执行、版本化绑定、输入限制和验证边界见[外部 Thread 调整方向](external-thread-steering.md)。
 
+## 无状态冷读历史
+
+`HarnessAdapter.readSnapshot?(input)` 是可选的无状态只读入口，允许支持本地历史解析的 Adapter（当前包括 Pi、OMP、Antigravity、Claude Code）直接从原生历史文件/数据库投影 `HostThreadSnapshot`，无需 `open({ kind: "resume" })` 或拉起 Harness 子进程；Broker 通过 `adapter.readSnapshot` 转发该方法，未实现时返回 `unsupported`。Host 在 `thread/read`、`thread/turns/list`、`thread/items/list`、`ClientChannelHost.clientSnapshot` 以及委派 `/v1/thread/read`、`exportThread` 中对未加载（或已故障空闲）的外部 Thread 优先走冷读，仅在 `unsupported` 时回退到热恢复，且只读路径不重置已加载会话的 `idleRelease` 空闲计时器。冷读返回 `persistentPlan: true` 的快照在 `thread/read` 时同样重放 `turn/plan/updated`，挂靠 Side Chat 仍按 `ownTurns` 裁剪父会话历史。
+
 ## 构建、发行与远程路径
 
 `npm run build:typescript` 在 TypeScript 编译后执行 `npm run build:plugins`，按发行清单生成 Host 的相邻插件目录。`npm start` 沿用这个构建路径；`--no-build` 需要之前已生成插件产物。根目录普通发行构建包含预装插件，核心 Host 自身则不依赖这些 Adapter 包。

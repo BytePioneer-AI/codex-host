@@ -27,7 +27,10 @@ import {
   openReleaseAnnouncementDialog,
   type ReleaseAnnouncementDialogHandle,
 } from "./settings/release-announcement-dialog.js";
-import type { RendererConnectionDiagnostics } from "./settings/connections-page.js";
+import {
+  requestConnectionsPageFocus,
+  type RendererConnectionDiagnostics,
+} from "./settings/connections-page.js";
 import settingsCss from "./settings/shell.css";
 import tailwindCss from "./settings/tailwind.css";
 import { webRequestManager } from "./web-request-manager.js";
@@ -84,6 +87,13 @@ function getWebSettingsStyleSheet(): CSSStyleSheet {
 }
 
 function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptions): () => void {
+  if (pageId === "connections") {
+    const win = window as unknown as { __codexhostPendingConnectionsFocus?: string };
+    if (typeof win.__codexhostPendingConnectionsFocus === "string") {
+      requestConnectionsPageFocus(win.__codexhostPendingConnectionsFocus);
+      delete win.__codexhostPendingConnectionsFocus;
+    }
+  }
   const messages = rendererSettingsMessages(resolveRendererSettingsLocale([options.locale]));
   const manager = webRequestManager();
   const modelClient = createRendererModelClient([manager]);
@@ -192,6 +202,11 @@ function openReleaseAnnouncement(
     __codexhostWebSettingsV1?: {
       mount: typeof mount;
       openReleaseAnnouncement: typeof openReleaseAnnouncement;
+      focusConnectionsAgent: typeof requestConnectionsPageFocus;
     };
   }
-).__codexhostWebSettingsV1 = { mount, openReleaseAnnouncement };
+).__codexhostWebSettingsV1 = {
+  mount,
+  openReleaseAnnouncement,
+  focusConnectionsAgent: requestConnectionsPageFocus,
+};

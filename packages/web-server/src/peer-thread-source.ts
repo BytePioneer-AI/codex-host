@@ -46,6 +46,7 @@ export function isMethodUnavailableError(error: unknown): boolean {
 export interface PeerThreadProjector {
   projectInput(content: unknown[]): unknown[];
   projectImage(path: string, projectionKey: string): unknown;
+  projectText?: (text: string) => string;
 }
 
 export interface PeerThreadSourceOptions {
@@ -53,6 +54,7 @@ export interface PeerThreadSourceOptions {
   host: PeerChHostClient;
   onCatalogChanged(): unknown;
   onThreadChanged(threadId: string): unknown;
+  onThreadConfigurationChanged?: (threadId: string) => void;
   onUsageChanged?: (threadId: string) => void;
   onCatalogInspectionChanged?: () => void;
   onSkillsChanged?: () => void;
@@ -152,6 +154,9 @@ export class PeerThreadSource {
     this.stopCatalogInvalidation = options.host.realtime.subscribe((event) => {
       if (event.type === "harness-inspection-changed" || event.type === "hello") {
         options.onCatalogInspectionChanged?.();
+      }
+      if (event.type === "changed" && event.method === "codexhost/thread/configuration/updated") {
+        options.onThreadConfigurationChanged?.(event.threadId);
       }
       if (event.type === "hello") {
         this.skillsListUnavailable = false;
@@ -613,7 +618,10 @@ export class PeerThreadSource {
       origin,
       projector ? (content) => projector.projectInput(content) : undefined,
       projector ? (path, projectionKey) => projector.projectImage(path, projectionKey) : undefined,
-      { hostThreadId: threadId },
+      {
+        hostThreadId: threadId,
+        ...(projector?.projectText ? { projectText: projector.projectText } : {}),
+      },
     );
     this.histories.set(threadId, history);
     return history;

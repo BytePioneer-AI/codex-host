@@ -12,6 +12,7 @@ import {
   WEB_HANDOFF_PROJECTION,
   clientThreadSectionsSchema,
   clientThreadSectionMoveSchema,
+  desktopProjectPathKey,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
@@ -32,7 +33,7 @@ import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
-import { nativeProjectByCwd, projectGroupRoot } from "./ch-project-groups.ts";
+import { nativeProjectRootOwners, projectGroupRoot } from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
@@ -474,21 +475,25 @@ export class ChSessions {
       const groups = new Map<string, string | undefined>();
       if (projects.nativeProjects) {
         const known = new Set(projects.projects.map((project) => project.id));
+        const roots = nativeProjectRootOwners(projects.projects);
+        const projectless = new Set(projects.projectless);
         for (const row of this.rows.values()) {
           // A stale or foreign project ID must not hide the Thread; fall back like Desktop does.
           const explicit = [row.projectId, projects.assignments[row.id]].find(
             (id): id is string => typeof id === "string" && known.has(id),
           );
-          // Desktop lists a Thread without a project under the project whose root holds its cwd.
           const byCwd =
-            explicit === undefined && row.cwd && row.workspaceKind !== "projectless"
-              ? nativeProjectByCwd(projects, row.id, row.cwd)
+            explicit === undefined &&
+            row.cwd &&
+            row.workspaceKind !== "projectless" &&
+            !projectless.has(row.id)
+              ? roots.get(desktopProjectPathKey(row.cwd))?.projectId
               : undefined;
           groups.set(row.id, explicit ?? byCwd);
         }
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
-        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments);
+        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
         return;
       }
       if (this.workspaces.usesNativeProjects) return;

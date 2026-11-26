@@ -30,6 +30,7 @@ export function peerIdFromRemoteHostId(hostId: string): string | undefined {
 }
 
 export const remotePeerIdSchema = z.string().regex(REMOTE_PEER_ID_PATTERN);
+export const remotePeerNodeIdSchema = z.string().regex(REMOTE_PEER_ID_PATTERN);
 export const remotePeerHostIdSchema = z.string().regex(/^remote-peer:[a-zA-Z0-9_-]{1,64}$/u);
 
 export const remotePeerTransportKindSchema = z.enum(["relay", "tailscale", "lan", "custom"]);
@@ -79,6 +80,7 @@ export type RemotePeerState = z.infer<typeof remotePeerStateSchema>;
 export const remotePeerSummarySchema = z.object({
   peerId: remotePeerIdSchema,
   hostId: remotePeerHostIdSchema,
+  nodeId: remotePeerNodeIdSchema.optional(),
   name: z.string().min(1).max(120),
   color: remotePeerColorSchema.optional(),
   origin: z.string().min(1).max(2048),
@@ -203,6 +205,11 @@ export const remotePeerManifestSchema = z.object({
   hostname: z.string().max(255),
   homeDir: z.string().max(4096).optional(),
   epoch: z.string().min(1).max(256),
+  nodeId: remotePeerNodeIdSchema.optional(),
+  peerNodes: z
+    .record(remotePeerHostIdSchema, remotePeerNodeIdSchema)
+    .refine((v) => Object.keys(v).length <= 128)
+    .optional(),
   projects: z.array(remotePeerManifestProjectSchema),
   capabilities: remotePeerCapabilitiesSchema.optional(),
 });

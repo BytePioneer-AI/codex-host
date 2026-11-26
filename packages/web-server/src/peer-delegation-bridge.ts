@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import * as c from "@codexhost/shared-contracts";
 import type { PeerHostManager } from "./peer-host-manager.ts";
+import { translateThreadLinksForPeer } from "./peer-thread-links.ts";
 import { RpcError } from "./transport.ts";
 
 const MAX_BRIDGE_BODY_BYTES = 2 * 1024 * 1024;
@@ -19,7 +20,7 @@ export interface PeerDelegationBridge {
 
 export interface PeerDelegationBridgeOptions {
   peerManager: Pick<PeerHostManager, "client" | "delegationHosts"> &
-    Partial<Pick<PeerHostManager, "peerTokens">>;
+    Partial<Pick<PeerHostManager, "peerTokens" | "nodeIdForHostId">>;
   dataDirectory: string;
   timeoutMs?: number;
 }
@@ -358,8 +359,32 @@ export async function startPeerDelegationBridge(
       };
       response.once("close", onClose);
       try {
+        let forwardInput = req.input;
+        if (
+          (req.operation === "start" && typeof req.input.task === "string") ||
+          (req.operation === "send" && typeof req.input.message === "string")
+        ) {
+          const linkContext = {
+            targetHostId: req.hostId,
+            targetNodeId: client.manifest?.nodeId,
+            targetPeerNodes: client.manifest?.peerNodes,
+            nodeIdForHostId: (sourceHostId: string) =>
+              options.peerManager.nodeIdForHostId?.(sourceHostId),
+          };
+          if (req.operation === "start" && typeof req.input.task === "string") {
+            const translated = translateThreadLinksForPeer(req.input.task, linkContext);
+            if (translated !== req.input.task) {
+              forwardInput = { ...req.input, task: translated };
+            }
+          } else if (req.operation === "send" && typeof req.input.message === "string") {
+            const translated = translateThreadLinksForPeer(req.input.message, linkContext);
+            if (translated !== req.input.message) {
+              forwardInput = { ...req.input, message: translated };
+            }
+          }
+        }
         const reply = await client.delegate(
-          { operation: req.operation, hopCount: req.hopCount, input: req.input },
+          { operation: req.operation, hopCount: req.hopCount, input: forwardInput },
           {
             ...(effectiveTimeoutMs === undefined ? {} : { timeoutMs: effectiveTimeoutMs }),
             signal: callerAbort.signal,

@@ -48,6 +48,8 @@ export type HarnessErrorCode =
   | "authenticationRequired"
   | "configurationRequired"
   | "credentialAccessRequired"
+  | "rateLimited"
+  | "quotaExhausted"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -63,6 +65,8 @@ export interface HarnessError {
   code: HarnessErrorCode;
   message: string;
   retryable: boolean;
+  /** Optional ISO-8601 timestamp when the blocking quota window is expected to reset. */
+  resetsAt?: string;
   diagnostic?: string;
   stage?: string;
   durationMs?: number;
@@ -497,6 +501,8 @@ export interface HostThreadSnapshot {
   turns: HostTurnSnapshot[];
   /** Current Native Session configuration observed with this history read. */
   state?: HarnessSessionState;
+  /** True when this Harness's plan outlives a single Turn and should replay on read. */
+  persistentPlan?: boolean;
 }
 
 export type TurnOutcome =
@@ -751,6 +757,12 @@ export interface HarnessSessionImportCapability {
   }): Promise<HarnessResult<HarnessSessionImportPrepared>>;
 }
 
+export interface ReadThreadSnapshotInput {
+  nativeRef: NativeSessionRef;
+  cwd: string;
+  environment?: Record<string, string | undefined>;
+}
+
 export interface HarnessAdapter {
   /** Native CLI version checks and explicit updates. Never updates the Host plugin,
    * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
@@ -808,6 +820,11 @@ export interface HarnessAdapter {
   inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
+  /**
+   * Optional stateless history read for an unloaded Native Session.
+   * Reads durable local storage without spawning a persistent Native Session process.
+   */
+  readSnapshot?(input: ReadThreadSnapshotInput): Promise<HarnessResult<HostThreadSnapshot>>;
   /**
    * Maps a Model Ref saved by an earlier release to the matching entry of `catalog`.
    * Host calls it only for a saved Ref that the catalog does not contain. Return

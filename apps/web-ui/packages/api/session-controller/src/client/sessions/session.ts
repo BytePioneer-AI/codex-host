@@ -159,6 +159,7 @@ export class Session implements SessionFace {
   private lastAgentError: string | null = null;
   /** Local submission echoes, insertion-ordered (see SessionSnapshot.pendingSubmissions). */
   private pendingSubmissions: readonly PendingSubmission[] = [];
+  private submissionTarget: Session | undefined;
   /** Per-echo settlement state; `retiring` latches the first observation so a
    *  Inbox projection and its durable event cannot both retire one echo. */
   private readonly submissionSettlements = new Map<
@@ -277,6 +278,7 @@ export class Session implements SessionFace {
    * @returns the minted identity for {@link prompt} plus the pre-prompt abandon path.
    */
   beginSubmission(input: BeginSubmissionInput): SubmissionHandle {
+    if (this.submissionTarget !== undefined) return this.submissionTarget.beginSubmission(input);
     const requestId = randomUUID() as SessionRequestId;
     const placement = this.running
       ? input.mode === "steer"
@@ -311,6 +313,39 @@ export class Session implements SessionFace {
     };
   }
 
+  /** Move settlement ownership without dropping the draft's last visible echo during navigation. */
+  handoffSubmissions(target: Session): readonly SessionRequestId[] {
+    target = target.submissionOwner();
+    if (target === this || this.submissionTarget !== undefined) return [];
+    const ids = this.pendingSubmissions.map((submission) => submission.requestId);
+    if (ids.length === 0) return ids;
+    target.pendingSubmissions = [...target.pendingSubmissions, ...this.pendingSubmissions];
+    for (const id of ids) {
+      const settlement = this.submissionSettlements.get(id);
+      if (settlement !== undefined) target.submissionSettlements.set(id, settlement);
+      const inFlight = this.inFlightPrompts.get(id);
+      if (inFlight !== undefined) target.inFlightPrompts.set(id, inFlight);
+    }
+    this.submissionSettlements.clear();
+    this.submissionTarget = target;
+    target.promptAttempted ||= this.promptAttempted;
+    // The target can already have a follow baseline when binding arrives again.
+    for (const { event } of target.eventSource.getSnapshot().entries)
+      target.observeSubmissionEvent(event);
+    target.observeSubmissionInbox();
+    target.notifier.markDirty();
+    return ids;
+  }
+
+  private submissionOwner(): Session {
+    return this.submissionTarget?.submissionOwner() ?? this;
+  }
+
+  /** Original RPC lifetime, including prompts whose echoes moved to a replacement Session. */
+  get hasInFlightPrompts(): boolean {
+    return this.inFlightPrompts.size > 0;
+  }
+
   private activeTurnForSteering(): string | null {
     const value = this.projections.get(WEB_ACTIVE_TURN_PROJECTION);
     return typeof value === "string" ? value : null;
@@ -330,6 +365,8 @@ export class Session implements SessionFace {
     signal?: AbortSignal,
     requestId?: SessionRequestId,
   ): Promise<RemoteResult<SessionPromptValue>> {
+    if (this.submissionTarget !== undefined)
+      return this.submissionTarget.prompt(content, mode, signal, requestId);
     const submittedRequestId = requestId ?? (randomUUID() as SessionRequestId);
     this.promptError = null;
     this.lastAgentError = null;
@@ -402,23 +439,28 @@ export class Session implements SessionFace {
         );
         result = routed.ok ? { ok: true, value: { accepted: true } } : routed;
       }
+      const owner = this.submissionOwner();
       if (
         !result.ok &&
         result.error.code === "remote/outcome-unknown" &&
-        this.hasObservedPrompt(submittedRequestId)
+        owner.hasObservedPrompt(submittedRequestId)
       )
         result = { ok: true, value: { accepted: true } };
       if (!result.ok) {
-        if (requestId !== undefined) this.retireFailedSubmission(requestId);
-        this.promptError = { op: "send", error: result.error, requestId: submittedRequestId };
-        this.notifier.markDirty();
+        if (requestId !== undefined) owner.retireFailedSubmission(requestId);
+        owner.promptError = { op: "send", error: result.error, requestId: submittedRequestId };
+        owner.notifier.markDirty();
         return result;
       }
-      this.acceptPrompt();
+      owner.acceptPrompt();
       return result;
     } finally {
       if (this.inFlightPrompts.get(submittedRequestId) === inFlight)
         this.inFlightPrompts.delete(submittedRequestId);
+      const owner = this.submissionOwner();
+      if (owner.inFlightPrompts.get(submittedRequestId) === inFlight)
+        owner.inFlightPrompts.delete(submittedRequestId);
+      this.notifier.markDirty();
     }
   }
 
@@ -1147,6 +1189,10 @@ export class Session implements SessionFace {
 
   /** Remove one unsettled echo immediately (prompt rejection, abort, or disposal). */
   private retireFailedSubmission(requestId: SessionRequestId): void {
+    if (this.submissionTarget !== undefined) {
+      this.submissionTarget.retireFailedSubmission(requestId);
+      return;
+    }
     const settlement = this.submissionSettlements.get(requestId);
     if (settlement === undefined || settlement.retiring || settlement.admitted !== undefined)
       return;
@@ -1159,6 +1205,10 @@ export class Session implements SessionFace {
     requestId: SessionRequestId,
     retirement: PendingSubmissionRetirement,
   ): void {
+    if (this.submissionTarget !== undefined) {
+      this.submissionTarget.finishSubmission(requestId, retirement);
+      return;
+    }
     const settlement = this.submissionSettlements.get(requestId);
     /* v8 ignore next -- retiring latches before every schedule, so one settlement never finishes twice. */
     if (settlement === undefined) return;

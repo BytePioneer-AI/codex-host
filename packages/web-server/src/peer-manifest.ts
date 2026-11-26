@@ -86,6 +86,8 @@ export interface PeerEndpointOptions {
   workspaceFiles?: boolean;
   officePreview?: boolean;
   delegation?: boolean;
+  nodeId?: string | undefined;
+  peerNodes?: Record<string, string> | undefined;
 }
 
 export async function peerEndpoint(
@@ -144,6 +146,8 @@ export async function peerEndpoint(
       platform: process.platform,
       hostname: hostname(),
       homeDir: homedir(),
+      ...(options?.nodeId !== undefined ? { nodeId: options.nodeId } : {}),
+      ...(options?.peerNodes !== undefined ? { peerNodes: options.peerNodes } : {}),
       projects: workspaces
         .list()
         .filter((w) => !w.remote)

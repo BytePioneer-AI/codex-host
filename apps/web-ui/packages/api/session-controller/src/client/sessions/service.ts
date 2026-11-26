@@ -344,6 +344,41 @@ export class ClientSessions implements ISessions {
     }
   }
 
+  handoffSubmissions(sourceId: SessionId, targetId: SessionId): void {
+    const source = this.scopes.get(sourceId)?.session;
+    if (
+      source === undefined ||
+      sourceId === targetId ||
+      (source.getSnapshot().pendingSubmissions.length === 0 && !source.hasInFlightPrompts)
+    )
+      return;
+    const reference = this.retain(targetId, { source: "controllerOperation" });
+    // The sending scope owns the prompt's AbortSignal. Navigation must not cancel admission.
+    const sending = this.retain(sourceId, { source: "controllerOperation" });
+    const target = this.manager.get(targetId);
+    const ids = new Set(source.handoffSubmissions(target));
+    const subscriptions: Array<() => void> = [];
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      for (const unsubscribe of subscriptions) unsubscribe();
+      reference.release();
+      sending.release();
+    };
+    const settled = () => {
+      if (
+        !source.hasInFlightPrompts &&
+        !target.getSnapshot().pendingSubmissions.some((submission) => ids.has(submission.requestId))
+      )
+        release();
+    };
+    subscriptions.push(target.subscribe(settled), source.subscribe(settled));
+    void reference.ready.catch(release);
+    void sending.ready.catch(release);
+    settled();
+  }
+
   async using<T>(
     target: SessionTarget,
     options: SessionRetainOptions,
@@ -412,9 +447,18 @@ export class ClientSessions implements ISessions {
     return this.manager.refreshList();
   }
 
-  /** Set the browser-local list scope without changing Session ownership or selection. */
-  loadSummary(sessionId: SessionId): Promise<void> {
-    return this.manager.loadSummary(sessionId);
+  /** Read one direct-link identity and publish its catalog row before resolving. */
+  async loadSummary(sessionId: SessionId): Promise<void> {
+    await this.manager.loadSummary(sessionId);
+    if (!this.closed) this.projectList();
+  }
+
+  /** Synchronously project an already-buffered summary before the next frame flush. */
+  syncSummary(sessionId: SessionId): boolean {
+    if (this.list.getSnapshot().byId[sessionId] !== undefined) return true;
+    if (this.closed || !this.manager.hasSummary(sessionId)) return false;
+    this.projectList();
+    return this.list.getSnapshot().byId[sessionId] !== undefined;
   }
 
   loadMore(workspaceId?: WorkspaceId): Promise<void> {

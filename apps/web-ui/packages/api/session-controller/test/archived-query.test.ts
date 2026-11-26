@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import type { WebToolOutputReference } from "@codexhost/shared-contracts";
 import { SessionId, SessionLogOffset } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
@@ -12,6 +13,7 @@ import {
   RecentSessionViews,
   type SessionViewData,
 } from "../src/client/sessions/recent-views.ts";
+import { ClientSessions } from "../src/client/sessions/service.ts";
 import type { SessionRemotes } from "../src/client/sessions/remotes.ts";
 import { Session } from "../src/client/sessions/session.ts";
 import { MAX_TOOL_OUTPUT_CACHE_BYTES, ToolOutputCache } from "../src/client/tool-output.ts";
@@ -622,5 +624,51 @@ it("tracks live Session estimatedBytes incrementally across events, tool outputs
     expect(session.estimatedBytes() - afterTool).toBeGreaterThanOrEqual(1_000);
   } finally {
     await session.dispose();
+  }
+});
+
+it("publishes buffered and fetched summaries before requestAnimationFrame fires on loadSummary and syncSummary", async () => {
+  const buffered = SessionId("buffered-canonical");
+  const fetched = SessionId("fetched-direct");
+  const unknown = SessionId("unknown-session");
+  const frames: FrameRequestCallback[] = [];
+  const originalRaf = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    frames.push(callback);
+    return frames.length;
+  }) as typeof globalThis.requestAnimationFrame;
+
+  const list = vi.fn<(request: SessionListRequest) => Promise<RemoteResult<SessionListValue>>>(
+    async (request) => (request.sessionId === fetched ? ok([row(fetched)]) : ok([])),
+  );
+  const ctx = new Context();
+  const sessions = new ClientSessions(ctx, { session: { list } } as unknown as SessionRemotes);
+
+  try {
+    // 1. Live api-session/added stays rAF-coalesced, yet loadSummary publishes it before rAF.
+    sessions.handleSessionAdded(row(buffered));
+    expect(sessions.list.getSnapshot().byId[buffered]).toBeUndefined();
+    expect(frames).toHaveLength(1);
+
+    await sessions.loadSummary(buffered);
+    expect(list).not.toHaveBeenCalled();
+    expect(sessions.list.getSnapshot().byId[buffered]?.id).toBe(buffered);
+
+    // 2. Direct RPC loadSummary also publishes the fetched row before rAF fires.
+    await sessions.loadSummary(fetched);
+    expect(list).toHaveBeenCalledWith({ sessionId: fetched });
+    expect(sessions.list.getSnapshot().byId[fetched]?.id).toBe(fetched);
+
+    // 3. syncSummary flushes only when the requested id is already buffered.
+    const nextBuffered = SessionId("buffered-sync-only");
+    sessions.handleSessionAdded(row(nextBuffered));
+    expect(sessions.list.getSnapshot().byId[nextBuffered]).toBeUndefined();
+    expect(sessions.syncSummary?.(unknown)).toBe(false);
+    expect(sessions.list.getSnapshot().byId[nextBuffered]).toBeUndefined();
+    expect(sessions.syncSummary?.(nextBuffered)).toBe(true);
+    expect(sessions.list.getSnapshot().byId[nextBuffered]?.id).toBe(nextBuffered);
+  } finally {
+    globalThis.requestAnimationFrame = originalRaf;
+    await ctx.fiber.dispose();
   }
 });

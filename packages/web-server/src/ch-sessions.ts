@@ -66,7 +66,7 @@ import {
 import type { Workspaces } from "./workspaces.ts";
 import { defaultProjections } from "./session-log.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
-import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output.ts";
+import { toolOutputRecords, toolOutputSink } from "./tool-output.ts";
 import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
@@ -1796,7 +1796,7 @@ export class ChSessions {
       const ref = parsed.data;
       await this.owner(ref.sessionId);
       const view = await this.view(ref.sessionId, true);
-      return readToolOutput(view.log, ref);
+      return view.readToolOutput(ref);
     });
     rpc.register("session/attachment", async (args) => {
       const { sessionId, attachmentId } = requestOf<{ sessionId: string; attachmentId: string }>(
@@ -1957,7 +1957,7 @@ export class ChSessions {
         ? (await this.draftSummary(draft)).projections
         : (await this.view(sessionId, true)).log.projectionBaseline();
     });
-    rpc.register("session/page", async (args, context) => {
+    rpc.register("session/page", async (args) => {
       const req = requestOf<{
         address: { sessionId: string };
         throughSeq: number;
@@ -1970,15 +1970,13 @@ export class ChSessions {
       const page = await this.threads.trackPageRead(view.thread.id, view, () =>
         view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages),
       );
-      return context.relay
-        ? {
-            ...page,
-            records: toolOutputRecords(
-              view.log,
-              page.records as Array<{ type: "event"; event: WireEvent }>,
-            ),
-          }
-        : page;
+      return {
+        ...page,
+        records: toolOutputRecords(
+          view.log,
+          page.records as Array<{ type: "event"; event: WireEvent }>,
+        ),
+      };
     });
     rpc.register("session/workspacePathApplications", () => ({ applications: [] }));
     rpc.register("session/openWorkspacePath", async (args, context) => {

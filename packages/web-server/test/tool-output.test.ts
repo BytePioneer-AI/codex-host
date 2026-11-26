@@ -6,7 +6,9 @@ import { SessionLog, type WireEvent } from "../src/session-log.ts";
 import { capText } from "../src/projector.ts";
 import { webToolOutputPreviews } from "@codexhost/shared-contracts";
 import {
+  compactLogToolOutputs,
   readToolOutput,
+  resolveToolOutput,
   toolOutputRecords,
   toolOutputSink,
   TOOL_OUTPUT_LIMIT,
@@ -84,15 +86,21 @@ it("previews large or over-budget settled text without changing local or active 
     textOf(defined(toolOutputRecords(log, [unicode])[0]).event)?.length,
     TOOL_OUTPUT_PREVIEW - 1,
   );
+  const pushed: unknown[] = [];
   const sink: StreamSink = {
     id: "direct",
     closed: false,
-    push: () => {},
+    push: (value) => pushed.push(value),
     end: () => {},
     fail: () => {},
     onClose: () => {},
   };
-  assert.equal(toolOutputSink(log, sink), sink);
+  toolOutputSink(log, sink).push({ type: "snapshot", records: [large, active] });
+  const directFrame = pushed[0] as { records: Array<{ event: WireEvent }> };
+  assert.equal(textOf(defined(directFrame.records[0]).event)?.length, TOOL_OUTPUT_PREVIEW);
+  assert.equal(refs(defined(directFrame.records[0]).event).length, 1);
+  assert.equal(textOf(defined(directFrame.records[1]).event)?.length, 90_000);
+  assert.equal(refs(defined(directFrame.records[1]).event).length, 0);
 });
 
 it("passes live events through without accessing the history journal", () => {
@@ -104,20 +112,22 @@ it("passes live events through without accessing the history journal", () => {
       return Reflect.get(target, key, receiver);
     },
   });
-  let pushed: unknown;
-  const sink: StreamSink = {
-    id: "relay",
-    relay: true,
-    closed: false,
-    push: (value) => {
-      pushed = value;
-    },
-    end: () => {},
-    fail: () => {},
-    onClose: () => {},
-  };
-  toolOutputSink(guarded, sink).push(event);
-  assert.equal(pushed, event);
+  for (const relay of [false, true]) {
+    let pushed: unknown;
+    const sink: StreamSink = {
+      id: relay ? "relay" : "direct",
+      ...(relay ? { relay: true } : {}),
+      closed: false,
+      push: (value) => {
+        pushed = value;
+      },
+      end: () => {},
+      fail: () => {},
+      onClose: () => {},
+    };
+    toolOutputSink(guarded, sink).push(event);
+    assert.equal(pushed, event);
+  }
 });
 
 it("reads only the exact capped projection version and rejects foreign or rewritten references", () => {
@@ -182,4 +192,63 @@ it("measures complete relay opening bytes and previews snapshots, resume windows
     preview.records,
   );
   assert.equal(textOf(record.event), capText(output));
+});
+
+it("compacts settled oversized tool text in place and resolves it on demand with version checks", async () => {
+  const log = journal();
+  const full = capText("C".repeat(150_000));
+  const settled = result(log, full, 0, true);
+  const active = result(log, "A".repeat(90_000), 1, false);
+  const originalEvent = settled.event;
+
+  compactLogToolOutputs(log);
+
+  // Original event object is untouched (safe for already-delivered live frames),
+  // while the journal slot holds only the bounded preview + SHA-256 metadata.
+  assert.equal(textOf(originalEvent), full);
+  const compacted = defined(log.events.find((e) => e.seq === settled.event.seq));
+  assert.notEqual(compacted, originalEvent);
+  assert.equal(textOf(compacted)?.length, TOOL_OUTPUT_PREVIEW);
+  const preview = defined(refs(compacted)[0]);
+  assert.equal(preview.length, full.length);
+  assert.equal(preview.bytes, Buffer.byteLength(full, "utf8"));
+
+  // Active Turn stays full in the journal.
+  const activeStored = defined(log.events.find((e) => e.seq === active.event.seq));
+  assert.equal(textOf(activeStored)?.length, 90_000);
+  assert.equal(refs(activeStored).length, 0);
+
+  // Running toolOutputRecords over already-compacted events keeps existing previews intact.
+  const sent = toolOutputRecords(log, [{ type: "event", event: compacted }]);
+  assert.deepEqual(refs(defined(sent[0]).event), [preview]);
+
+  // Synchronous readToolOutput never treats a compacted preview as authoritative full text.
+  assert.throws(() => readToolOutput(log, preview.reference), {
+    code: "session/tool-output-stale",
+  });
+
+  // resolveToolOutput reloads compacted entries and checks the SHA-256 fingerprint.
+  let loads = 0;
+  const loaded = await resolveToolOutput(log, preview.reference, async () => {
+    loads += 1;
+    return full;
+  });
+  assert.equal(loads, 1);
+  assert.equal(loaded.text, full);
+
+  // Tampered reference is rejected before invoking loadFull.
+  await assert.rejects(
+    resolveToolOutput(log, { ...preview.reference, version: "tampered" }, async () => {
+      loads += 1;
+      return full;
+    }),
+    { code: "session/tool-output-stale" },
+  );
+  assert.equal(loads, 1);
+
+  // Mismatched content from reload is rejected as stale.
+  await assert.rejects(
+    resolveToolOutput(log, preview.reference, async () => "mutated"),
+    { code: "session/tool-output-stale" },
+  );
 });

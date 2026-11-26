@@ -38,6 +38,7 @@ export class ChThreadHistory extends ChThreadView {
   private readonly overrideThreadIdentity: boolean;
   private readonly viewId: string;
   private readonly viewCwd: string;
+  private readonly turnPageCursors = new Map<string, string | null>();
 
   constructor(
     private readonly host: ChHostClient,
@@ -59,6 +60,10 @@ export class ChThreadHistory extends ChThreadView {
       () => pagination.cursor !== null,
       projectInput,
       projectImage,
+      {
+        compactToolOutputs: true,
+        loadTurn: (turnId) => this.readTurn(turnId),
+      },
     );
     this.pagination = pagination;
     this.hasProjectInput = projectInput !== undefined;
@@ -68,6 +73,41 @@ export class ChThreadHistory extends ChThreadView {
     this.viewId = thread.id;
     this.viewCwd = thread.cwd;
     this.commands = new ChCommandPresentation(this.log);
+  }
+
+  private rememberPageCursors(turns: readonly ChTurn[], cursor: string | null): void {
+    for (const turn of turns) this.turnPageCursors.set(turn.id, cursor);
+  }
+
+  /** Re-read one native Turn on demand when its settled tool output text was compacted from memory. */
+  private async readTurn(turnId: string): Promise<ChTurn | undefined> {
+    const walkFrom = async (startCursor: string | null): Promise<ChTurn | undefined> => {
+      let cursor: string | null = startCursor;
+      const seen = new Set<string>();
+      for (let pages = 0; pages < 200; pages++) {
+        const page = await this.page(cursor);
+        this.rememberPageCursors(page.data, cursor);
+        const match = page.data.find((turn) => turn.id === turnId);
+        if (match) return match;
+        if (!page.nextCursor || seen.has(page.nextCursor)) return undefined;
+        seen.add(page.nextCursor);
+        cursor = page.nextCursor;
+      }
+      return undefined;
+    };
+    const hint = this.turnPageCursors.get(turnId);
+    if (hint !== undefined && hint !== null) {
+      try {
+        const page = await this.page(hint);
+        this.rememberPageCursors(page.data, hint);
+        const match = page.data.find((turn) => turn.id === turnId);
+        if (match) return match;
+      } catch (error) {
+        // Fall back to walking from head when a stored cursor anchor was invalidated by history rewrite.
+        if (!(error instanceof RpcError) || error.code !== "host/rejected") throw error;
+      }
+    }
+    return walkFrom(null);
   }
 
   private viewThread(thread: ChThread): ChThread {
@@ -188,6 +228,7 @@ export class ChThreadHistory extends ChThreadView {
         return;
       }
       const recent = snapshot ? snapshot.turnsPage : await this.page(null);
+      this.rememberPageCursors(recent.data, null);
       const descending = [...recent.data];
       const newestKnown = this.thread.turns.at(-1)?.id;
       let cursor = recent.nextCursor;
@@ -204,6 +245,7 @@ export class ChThreadHistory extends ChThreadView {
           throw new RpcError("host/history-invalid", "CH history cursor did not advance.");
         seen.add(cursor);
         const more = await this.page(cursor);
+        this.rememberPageCursors(more.data, cursor);
         descending.push(...more.data);
         cursor = more.nextCursor;
       }
@@ -239,6 +281,20 @@ export class ChThreadHistory extends ChThreadView {
           snapshot?.activeTurnId,
         );
       }
+      if (this.ownerSnapshot) {
+        const storedById = new Map(this.thread.turns.map((turn) => [turn.id, turn]));
+        this.ownerSnapshot = {
+          ...this.ownerSnapshot,
+          turnsPage: {
+            ...this.ownerSnapshot.turnsPage,
+            data: this.ownerSnapshot.turnsPage.data.map(
+              (turn) =>
+                (storedById.get(turn.id) as
+                  ClientThreadSnapshot["turnsPage"]["data"][number] | undefined) ?? turn,
+            ),
+          },
+        };
+      }
       this.commands.update(snapshot?.command, this.thread.turns);
       this.lastHeadReadAt = Date.now();
     })().finally(() => {
@@ -269,6 +325,7 @@ export class ChThreadHistory extends ChThreadView {
       const page = await this.page(cursor);
       if (page.nextCursor && this.seenCursors.has(page.nextCursor))
         throw new RpcError("host/history-invalid", "CH history cursor did not advance.");
+      this.rememberPageCursors(page.data, cursor);
       this.prepend([...page.data].reverse());
       this.seenCursors.add(cursor);
       this.pagination.cursor = page.nextCursor;

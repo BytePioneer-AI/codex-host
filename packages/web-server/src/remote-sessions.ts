@@ -38,7 +38,7 @@ import { RemotePeerAttachments, type PeerAttachmentEndpoint } from "./remote-pee
 import type { WebFileRef } from "./web-files.ts";
 import { WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { IDLE_VIEW_MS } from "./web-thread-state.ts";
-import { defaultProjections } from "./session-log.ts";
+import { defaultProjections, type WireEvent } from "./session-log.ts";
 import {
   applyRemoteControls,
   executeRemoteCommand,
@@ -72,7 +72,7 @@ import {
   type StreamRegistry,
   type StreamSink,
 } from "./transport.ts";
-import { readToolOutput, toolOutputSink } from "./tool-output.ts";
+import { toolOutputRecords, toolOutputSink } from "./tool-output.ts";
 import { followRemoteHistory } from "./remote-history-follow.ts";
 import type { Workspaces } from "./workspaces.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
@@ -1909,7 +1909,7 @@ export class RemoteSessions {
           this.retireView(current);
         if (!current.view || current.viewHarnessId !== harnessId) {
           if (current.view) this.retireView(current);
-          current.view = this.createView(row, harnessId, current.viewOrigin);
+          current.view = this.createView(row, harnessId, current.viewOrigin, identity);
           current.viewHarnessId = harnessId;
         }
         try {
@@ -1921,10 +1921,11 @@ export class RemoteSessions {
           )
             throw error;
           this.retireView(current);
-          current.view = this.createView(row, harnessId, current.viewOrigin);
+          current.view = this.createView(row, harnessId, current.viewOrigin, identity);
           current.viewHarnessId = harnessId;
           current.view.update(row);
         }
+        current.row = { ...snapshot.result.thread, turns: current.view.thread.turns };
         for (const [key, value] of Object.entries(this.summary(id, current).projections.values))
           if (
             [
@@ -2476,7 +2477,12 @@ export class RemoteSessions {
     delete entry.usageRequest;
     delete entry.queueReading;
   }
-  private createView(row: ChThread, harnessId: string, origin = 0): ChThreadView {
+  private createView(
+    row: ChThread,
+    harnessId: string,
+    origin = 0,
+    identity?: { hostId: string; threadId: string },
+  ): ChThreadView {
     const view = new ChThreadView(
       row,
       harnessId,
@@ -2488,6 +2494,18 @@ export class RemoteSessions {
       },
       0,
       origin,
+      undefined,
+      undefined,
+      undefined,
+      identity
+        ? {
+            compactToolOutputs: true,
+            loadTurn: async (turnId) => {
+              const snapshot = await readRemoteHistory((op) => this.invoke(op), identity);
+              return snapshot.result.thread.turns.find((turn) => turn.id === turnId);
+            },
+          }
+        : undefined,
     );
     return view;
   }
@@ -3122,14 +3140,24 @@ export class RemoteSessions {
       const throughSeq = Number(request.throughSeq);
       const beforeSeq = typeof request.beforeSeq === "number" ? request.beforeSeq : undefined;
       const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : 20;
-      return this.trackPageRead(id, view, () =>
+      const page = await this.trackPageRead(id, view, () =>
         view instanceof ChThreadHistory
           ? view.olderPage(throughSeq, beforeSeq, maxMessages)
           : view.log.page(throughSeq, beforeSeq, { maxMessages }),
       );
+      return {
+        ...page,
+        records: toolOutputRecords(
+          view.log,
+          page.records as Array<{ type: "event"; event: WireEvent }>,
+        ),
+      };
     }
-    if (method === "session/toolOutput")
-      return readToolOutput(view.log, webToolOutputReferenceSchema.parse(request));
+    if (method === "session/toolOutput") {
+      const parsed = webToolOutputReferenceSchema.safeParse(request);
+      if (!parsed.success) throw new RpcError("gateway/invalid", "Invalid tool output reference.");
+      return view.readToolOutput(parsed.data);
+    }
     const entry = this.entries.get(id);
     if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");
     if (method === "session/modelCatalog") return remoteModelCatalog(entry);

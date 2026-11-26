@@ -188,6 +188,24 @@ function validResetsAtUnix(value: unknown): number | undefined {
     : undefined;
 }
 
+function isOverageCoveringRateLimit(info: Record<string, unknown>): boolean {
+  return (
+    info.isUsingOverage === true ||
+    info.overageInUse === true ||
+    info.overageStatus === "allowed" ||
+    info.overageStatus === "allowed_warning"
+  );
+}
+
+function rejectedRateLimitResetUnix(info: Record<string, unknown>): number | undefined {
+  const primary = validResetsAtUnix(info.resetsAt);
+  const overage =
+    info.overageStatus === "rejected" ? validResetsAtUnix(info.overageResetsAt) : undefined;
+  if (info.rateLimitType === "overage") return overage ?? primary;
+  if (primary !== undefined && overage !== undefined) return Math.min(primary, overage);
+  return primary ?? overage;
+}
+
 function safeNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -594,12 +612,14 @@ export class ClaudeNativeTurnAccumulator {
 
     if (message.type === "rate_limit_event" && isRecord(message.rate_limit_info)) {
       const info = message.rate_limit_info;
-      if (info.status === "rejected") {
-        const resetsAtUnix =
-          validResetsAtUnix(info.resetsAt) ??
-          (info.overageStatus === "rejected" ? validResetsAtUnix(info.overageResetsAt) : undefined);
+      if (info.status === "rejected" && !isOverageCoveringRateLimit(info)) {
+        const resetsAtUnix = rejectedRateLimitResetUnix(info);
         this.#rejectedRateLimit = resetsAtUnix !== undefined ? { resetsAtUnix } : {};
-      } else if (info.status === "allowed" || info.status === "allowed_warning") {
+      } else if (
+        info.status === "allowed" ||
+        info.status === "allowed_warning" ||
+        (info.status === "rejected" && isOverageCoveringRateLimit(info))
+      ) {
         this.#rejectedRateLimit = null;
       }
     }

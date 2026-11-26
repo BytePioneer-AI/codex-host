@@ -1106,6 +1106,58 @@ describe("Claude native Turn interpretation", () => {
       status: "failed",
       kind: "authentication",
     });
+
+    // When extra-usage overage covers the send, primary rejection is not blocking.
+    for (const overageInfo of [
+      { status: "rejected", resetsAt: 1_787_674_200, isUsingOverage: true },
+      { status: "rejected", resetsAt: 1_787_674_200, overageInUse: true },
+      { status: "rejected", resetsAt: 1_787_674_200, overageStatus: "allowed" },
+      { status: "rejected", resetsAt: 1_787_674_200, overageStatus: "allowed_warning" },
+    ]) {
+      const covered = new ClaudeNativeTurnAccumulator();
+      covered.consume({
+        type: "rate_limit_event",
+        rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+      });
+      covered.consume({ type: "rate_limit_event", rate_limit_info: overageInfo });
+      expect(covered.consume(result({ is_error: true })).terminal).toEqual({
+        status: "failed",
+        kind: "native",
+      });
+    }
+
+    // Both primary and overage rejected: use overageResetsAt when primary reset is absent or later.
+    const overageRejectedOnly = new ClaudeNativeTurnAccumulator();
+    overageRejectedOnly.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        overageStatus: "rejected",
+        overageResetsAt: 1_787_760_600,
+      },
+    });
+    expect(overageRejectedOnly.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+      resetsAtUnix: 1_787_760_600,
+    });
+
+    const overageEarlierReset = new ClaudeNativeTurnAccumulator();
+    overageEarlierReset.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        rateLimitType: "seven_day",
+        resetsAt: 1_787_940_000,
+        overageStatus: "rejected",
+        overageResetsAt: 1_787_760_600,
+      },
+    });
+    expect(overageEarlierReset.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+      resetsAtUnix: 1_787_760_600,
+    });
   });
 
   it("does not read authentication failure from the text of a successful Turn", () => {

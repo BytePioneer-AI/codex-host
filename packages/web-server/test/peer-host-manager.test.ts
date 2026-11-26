@@ -1,4 +1,4 @@
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
@@ -7,7 +7,18 @@ import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { REMOTE_PEERS_METHODS as methods } from "@codexhost/shared-contracts";
+import {
+  REMOTE_PEERS_METHODS as methods,
+  remotePeerIntroduceResultSchema,
+  remotePeerPairingReportSchema,
+  remotePeerSummarySchema,
+  remotePeerTestResultSchema,
+  type RemotePeerAddParams,
+  type RemotePeerIntroduceParams,
+  type RemotePeerPairingReport,
+} from "@codexhost/shared-contracts";
+import { AccessTokenStore } from "../src/access-tokens.ts";
+import { AccessAuth, CredentialConnections } from "../src/auth.ts";
 import {
   loadOrCreatePeerNodeId,
   parseConnectionLink,
@@ -15,6 +26,13 @@ import {
 } from "../src/peer-host-store.ts";
 import { PeerHostManager, createCompositeRemoteCall } from "../src/peer-host-manager.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "../src/peer-manifest.ts";
+import { peerPairingEnabled, servePeerPairing } from "../src/peer-pairing-http.ts";
+import { resolvePeerSelfOrigin } from "../src/peer-pairing.ts";
+import {
+  translateThreadLinksForPeer,
+  translateThreadLinksFromPeer,
+} from "../src/peer-thread-links.ts";
+import { RequestTrust } from "../src/request-trust.ts";
 import { deliverRemoteInput, readRemoteThreadStatus } from "../src/remote-session-delivery.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
@@ -51,6 +69,8 @@ it("normalizes credential links, enforces SSRF host policy, and classifies LAN/T
     "http://169.254.169.254/#token=x",
     "http://[::ffff:169.254.169.254]/#token=x",
     "http://metadata.google.internal/#token=x",
+    "http://metadata.google.internal./#token=x",
+    "http://localhost./#token=x",
     "http://0.0.0.0:4400/#token=x",
     "http://[::ffff:0.0.0.0]:4400/#token=x",
   ])
@@ -1869,4 +1889,390 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
   const dHosts = manager.delegationHosts();
   assert.equal(dHosts.find((h) => h.hostId === peerB2HostId)?.nodeId, "node-b-id");
   assert.equal(dHosts.find((h) => h.hostId === legacyInfo.hostId)?.nodeId, undefined);
+});
+
+const pairingAuth = { local: true, credential: "local", release() {} };
+
+async function pairingNode(
+  t: TestContext,
+  name: string,
+  options: {
+    nodeId?: string;
+    allowLoopback?: boolean;
+    introductionFailure?: () => string;
+  } = {},
+) {
+  const root = mkdtempSync(join(tmpdir(), "peer-pairing-"));
+  const data = new DataDir(root);
+  const store = new PeerHostStore(data);
+  const tokens = new AccessTokenStore(data);
+  const token = tokens.current().secret;
+  const trust = new RequestTrust(undefined);
+  const auth = new AccessAuth(tokens, trust, new CredentialConnections());
+  const rpc = new RpcRegistry();
+  const ws = new Workspaces(data, root, true);
+  const epoch = randomUUID();
+  let origin: string;
+  const manager = new PeerHostManager(store, async () => [origin], new EventHub(root), {
+    allowLoopback: options.allowLoopback ?? true,
+    ...(options.nodeId === undefined ? {} : { localNodeId: options.nodeId }),
+    resolveSelfShare: async (preferredOrigin) => {
+      const share = resolvePeerSelfOrigin([], preferredOrigin, origin);
+      return "error" in share ? share : { ...share, token, name };
+    },
+  });
+  manager.register(rpc);
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", origin);
+    const admission = await auth.gate(req, res, url.pathname);
+    if (admission.handled) return;
+    if (!admission.auth || !trust.sameOrigin(req)) {
+      res.writeHead(403).end();
+      return;
+    }
+    if (url.pathname === "/api/peer/v1/peers") {
+      if (options.introductionFailure) {
+        req.resume();
+        res.writeHead(400).end(JSON.stringify({ error: options.introductionFailure() }));
+        return;
+      }
+      await servePeerPairing(req, res, manager);
+      return;
+    }
+    if (url.pathname === "/api/peer/v1/manifest") {
+      const manifest = await peerEndpoint("GET", url, {}, ws, rpc, epoch, "1", [], {
+        peerPairing: peerPairingEnabled(),
+        nodeId: manager.selfNodeId(),
+        peerNodes: manager.peerNodes(),
+      });
+      res.writeHead(200).end(JSON.stringify(manifest));
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      res.writeHead(200);
+      res.write(
+        `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false })}\n`,
+      );
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  t.after(() => {
+    manager.close();
+    server.closeAllConnections();
+    server.close();
+    tokens.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const connection = {
+    origin,
+    token,
+    name,
+    ...(options.nodeId === undefined ? {} : { expectedNodeId: options.nodeId }),
+  };
+  return {
+    connection,
+    manager,
+    store,
+    rpc,
+    introduce: (input: RemotePeerIntroduceParams, headers?: Record<string, string>) =>
+      fetch(`${origin}/api/peer/v1/peers`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, ...headers },
+        body: JSON.stringify(input),
+      }),
+    add: async (input: RemotePeerAddParams) => {
+      const added = await rpc.dispatch(methods.add, { args: input }, pairingAuth);
+      assert.ok(added.ok, JSON.stringify(added));
+      const value = added.value as { peer: unknown; pairing?: RemotePeerPairingReport };
+      return { peer: remotePeerSummarySchema.parse(value.peer), pairing: value.pairing };
+    },
+  };
+}
+
+it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates links with the refreshed manifests", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const b = await pairingNode(t, "B", { nodeId: "node-b" });
+  const c = await pairingNode(t, "C", { nodeId: "node-c" });
+  const tested = await a.rpc.dispatch(methods.test, { args: b.connection }, pairingAuth);
+  assert.ok(tested.ok);
+  assert.deepEqual(
+    remotePeerTestResultSchema
+      .pick({ nodeId: true, supportsPeerPairing: true, pairedBack: true })
+      .parse(tested.value),
+    { nodeId: "node-b", supportsPeerPairing: true, pairedBack: false },
+  );
+
+  const ab = await a.add({ ...b.connection, pairBack: true });
+  assert.deepEqual(
+    ab.pairing?.results.map(({ introducedHost, status }) => [introducedHost, status]),
+    [["local", "added"]],
+  );
+  assert.equal(ab.peer.pairedBack, true);
+  assert.ok(
+    b.store.load().some((p) => p.origin === a.connection.origin && p.token === a.connection.token),
+  );
+
+  const ac = await a.add({
+    ...c.connection,
+    pairBack: true,
+    meshPeerIds: [ab.peer.peerId, ab.peer.peerId, "missing"],
+  });
+  assert.equal(ac.peer.pairedBack, true);
+  assert.deepEqual(
+    ac.pairing?.results.map(({ targetPeerId, introducedHost, status }) => [
+      targetPeerId,
+      introducedHost,
+      status,
+    ]),
+    [
+      [ac.peer.peerId, "local", "added"],
+      [ab.peer.peerId, ac.peer.peerId, "added"],
+      [ac.peer.peerId, ab.peer.peerId, "added"],
+    ],
+  );
+  assert.deepEqual(
+    b.store
+      .load()
+      .map(({ origin }) => origin)
+      .sort(),
+    [a.connection.origin, c.connection.origin].sort(),
+  );
+  assert.deepEqual(
+    c.store
+      .load()
+      .map(({ origin }) => origin)
+      .sort(),
+    [a.connection.origin, b.connection.origin].sort(),
+  );
+
+  const link = (threadId: string, hostId: string) =>
+    `thread://${threadId}?hostId=${encodeURIComponent(hostId)}`;
+  for (const [target, own, other, otherNodeId] of [
+    [b, ab.peer, ac.peer, "node-c"],
+    [c, ac.peer, ab.peer, "node-b"],
+  ] as const) {
+    const targetClient = a.manager.client(own.hostId)!;
+    const peerNodes = targetClient.manifest?.peerNodes;
+    const inTarget = target.manager.hostIdForNodeId(otherNodeId)!;
+    const localInTarget = target.manager.hostIdForNodeId("node-a")!;
+    assert.ok(inTarget && localInTarget);
+    const links = `${link("self", "local")} ${link("other", other.hostId)}`;
+    const translated = translateThreadLinksForPeer(`${links} ${link("target", own.hostId)}`, {
+      targetHostId: own.hostId,
+      targetNodeId: targetClient.manifest?.nodeId,
+      targetPeerNodes: peerNodes,
+      nodeIdForHostId: (hostId) => a.manager.nodeIdForHostId(hostId),
+    });
+    assert.equal(
+      translated,
+      `${link("self", localInTarget)} ${link("other", inTarget)} ${link("target", "local")}`,
+    );
+    assert.equal(
+      translateThreadLinksFromPeer(`${link("self", localInTarget)} ${link("other", inTarget)}`, {
+        sourcePeerNodes: peerNodes,
+        hostIdForNodeId: (nodeId) => a.manager.hostIdForNodeId(nodeId),
+      }),
+      links,
+    );
+  }
+
+  const denied = await a.rpc.dispatch(
+    methods.syncMesh,
+    { args: {} },
+    { ...pairingAuth, local: false },
+  );
+  assert.ok(!denied.ok);
+  assert.equal(denied.error.code, "auth/local-required");
+  const cb = c.store.load().find(({ origin }) => origin === b.connection.origin);
+  assert.ok(cb);
+  const removed = await c.rpc.dispatch(
+    methods.remove,
+    { args: { peerId: cb.peerId } },
+    pairingAuth,
+  );
+  assert.ok(removed.ok);
+  const synced = await a.rpc.dispatch(methods.syncMesh, { args: {} }, pairingAuth);
+  assert.ok(synced.ok);
+  const steps = remotePeerPairingReportSchema.parse(synced.value).results;
+  assert.deepEqual(
+    steps.map(({ status }) => status),
+    ["existing", "existing", "existing", "added"],
+  );
+  const restored = c.manager.hostIdForNodeId("node-b");
+  assert.ok(restored);
+  assert.notEqual(restored, `remote-peer:${cb.peerId}`);
+  assert.equal(a.manager.client(ac.peer.hostId)?.manifest?.peerNodes?.[restored], "node-b");
+});
+
+it("upserts a verified introduction by nodeId or normalized origin without overwriting a customized peer", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const b = await pairingNode(t, "B", { nodeId: "node-b" });
+  const moved = await pairingNode(t, "B moved", { nodeId: "node-b" });
+  const legacy = await pairingNode(t, "Legacy");
+  const ab = await a.add({ ...b.connection, name: "Custom B", color: "cyan" });
+  assert.equal(ab.pairing, undefined);
+  const same = await a.introduce({
+    ...b.connection,
+    origin: `${b.connection.origin}/different-path`,
+    color: "blue",
+  });
+  assert.equal(same.status, 200);
+  const existing = {
+    status: "existing",
+    peerId: ab.peer.peerId,
+    hostId: ab.peer.hostId,
+    nodeId: "node-b",
+  };
+  assert.deepEqual(await same.json(), existing);
+  const disabled = await a.rpc.dispatch(
+    methods.update,
+    { args: { peerId: ab.peer.peerId, enabled: false } },
+    pairingAuth,
+  );
+  assert.ok(disabled.ok);
+  const update = await a.introduce({ ...moved.connection, color: "rose" });
+  assert.equal(update.status, 200);
+  assert.deepEqual(await update.json(), { ...existing, status: "updated" });
+  const [stored] = a.store.load();
+  assert.deepEqual(stored, {
+    peerId: ab.peer.peerId,
+    nodeId: "node-b",
+    name: "Custom B",
+    color: "cyan",
+    origin: moved.connection.origin,
+    token: moved.connection.token,
+    enabled: true,
+    createdAt: ab.peer.createdAt,
+    updatedAt: stored?.updatedAt,
+  });
+  for (const input of [
+    { ...moved.connection, expectedNodeId: "different-node" },
+    { ...legacy.connection, expectedNodeId: "node-legacy" },
+  ]) {
+    const rejected = await a.introduce(input);
+    assert.equal(rejected.status, 409);
+    assert.deepEqual(await rejected.json(), {
+      error: "Introduced peer did not match the expected nodeId",
+    });
+  }
+  assert.deepEqual(a.store.load(), [stored]);
+  const oldClient = await a.introduce(legacy.connection);
+  assert.equal(oldClient.status, 200);
+  const oldResult = remotePeerIntroduceResultSchema.parse(await oldClient.json());
+  assert.equal(oldResult.nodeId, undefined);
+  const legacyAgain = await a.introduce({
+    ...legacy.connection,
+    origin: `${legacy.connection.origin}/#unused`,
+  });
+  assert.deepEqual(await legacyAgain.json(), { ...oldResult, status: "existing" });
+});
+
+it("isolates partial mesh failures, redacts credentials, and gates the introduction endpoint", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const c = await pairingNode(t, "C", { nodeId: "node-c" });
+  const strict = await pairingNode(t, "Strict", { allowLoopback: false });
+  const b = await pairingNode(t, "B", {
+    nodeId: "node-b",
+    introductionFailure: () =>
+      `Unexpected peer error: ${a.connection.token} ${b.connection.token} ${c.connection.token}`,
+  });
+  const ac = await a.add(c.connection);
+  const ab = await a.add({ ...b.connection, pairBack: true, meshPeerIds: [ac.peer.peerId] });
+  assert.equal(ab.peer.pairedBack, false);
+  const report = remotePeerPairingReportSchema.parse(ab.pairing);
+  assert.deepEqual(
+    report.results.map(({ status }) => status),
+    ["failed", "added", "failed"],
+  );
+  for (const { connection } of [a, b, c])
+    assert.ok(!JSON.stringify(report).includes(connection.token));
+  assert.ok(a.store.load().some(({ peerId }) => peerId === ab.peer.peerId));
+  assert.ok(c.store.load().some(({ origin }) => origin === b.connection.origin));
+  const forged = await a.rpc.dispatch(
+    methods.syncMesh,
+    {
+      args: {
+        peerIds: [ac.peer.peerId],
+        includeMesh: false,
+        selfOrigin: "https://unadvertised.invalid",
+      },
+    },
+    pairingAuth,
+  );
+  assert.ok(forged.ok);
+  assert.match(
+    remotePeerPairingReportSchema.parse(forged.value).results[0]?.error ?? "",
+    /not a shareable address/u,
+  );
+  assert.equal(c.store.load().length, 1);
+
+  for (const origin of [b.connection.origin, "http://169.254.169.254/", "http://0.0.0.0/"]) {
+    const forbidden = await strict.introduce({ origin, token: b.connection.token });
+    assert.equal(forbidden.status, 400);
+    assert.match(((await forbidden.json()) as { error: string }).error, /not allowed/u);
+  }
+  const selfAlias = await pairingNode(t, "A alias", { nodeId: "node-a" });
+  for (const connection of [a.connection, selfAlias.connection]) {
+    const self = await a.introduce(connection);
+    assert.equal(self.status, 400);
+    assert.deepEqual(await self.json(), { error: "Cannot pair this server with itself" });
+  }
+  assert.equal((await a.introduce(c.connection, { authorization: "" })).status, 401);
+  assert.equal(
+    (await a.introduce(c.connection, { origin: "https://untrusted.invalid" })).status,
+    403,
+  );
+  const oversized = await fetch(`${a.connection.origin}/api/peer/v1/peers`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${a.connection.token}` },
+    body: "a".repeat(33 * 1024),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal(strict.store.load().length, 0);
+
+  const previous = process.env.CODEXHOST_DISABLE_PEER_PAIRING;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CODEXHOST_DISABLE_PEER_PAIRING;
+    else process.env.CODEXHOST_DISABLE_PEER_PAIRING = previous;
+  });
+  process.env.CODEXHOST_DISABLE_PEER_PAIRING = "1";
+  const response = await a.introduce(c.connection);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "Peer pairing is disabled on this Host" });
+  await a.manager.client(ac.peer.hostId)?.probe();
+  assert.equal(a.manager.client(ac.peer.hostId)?.summary().supportsPeerPairing, false);
+  const skipped = await a.rpc.dispatch(
+    methods.syncMesh,
+    { args: { peerIds: [ac.peer.peerId] } },
+    pairingAuth,
+  );
+  assert.ok(skipped.ok);
+  assert.equal(remotePeerPairingReportSchema.parse(skipped.value).results[0]?.status, "skipped");
+});
+
+it("uses shareable local origins in priority order and restricts loopback to a configured fallback", () => {
+  const urls = [
+    { kind: "lan", url: "http://192.168.1.2:4400/" },
+    { kind: "tailscale-https", url: "https://server.ts.net/" },
+    { kind: "tailscale-funnel", url: "https://funnel.ts.net/" },
+    { kind: "relay", url: "https://server.r.chost.dev/" },
+    { kind: "public", url: "https://my-host.example/" },
+  ] as const;
+  const fallback = "http://127.0.0.1:4400";
+  assert.deepEqual(resolvePeerSelfOrigin(urls, undefined, fallback), {
+    origin: "https://my-host.example",
+  });
+  assert.deepEqual(resolvePeerSelfOrigin(urls.slice(0, -1), undefined), {
+    origin: "https://server.r.chost.dev",
+  });
+  assert.deepEqual(resolvePeerSelfOrigin(urls, "https://SERVER.ts.net:443/some/path"), {
+    origin: "https://server.ts.net",
+  });
+  assert.ok("error" in resolvePeerSelfOrigin(urls, fallback, fallback));
+  assert.ok("error" in resolvePeerSelfOrigin([], undefined));
+  assert.deepEqual(resolvePeerSelfOrigin([], fallback, fallback), { origin: fallback });
 });

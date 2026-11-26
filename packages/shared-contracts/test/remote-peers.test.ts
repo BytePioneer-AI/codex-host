@@ -6,9 +6,14 @@ import {
   peerDelegationHostSummarySchema,
   remotePeerAddParamsSchema,
   remotePeerColorSchema,
+  remotePeerIntroduceParamsSchema,
+  remotePeerIntroduceResultSchema,
   remotePeerManifestSchema,
+  remotePeerPairingReportSchema,
   remotePeerNodeIdSchema,
   remotePeerSummarySchema,
+  remotePeerSyncMeshParamsSchema,
+  remotePeerTestResultSchema,
   remotePeerUpdateParamsSchema,
   resolveRemotePeerColor,
 } from "@codexhost/shared-contracts";
@@ -28,6 +33,50 @@ describe("remote peer host colors", () => {
       expect(remotePeerColorSchema.parse(color)).toBe(color);
     }
     expect(() => remotePeerColorSchema.parse("magenta")).toThrow();
+  });
+
+  it("keeps pairing opt-in and validates the credential-bearing request separately from public results", () => {
+    const introduction = { origin: "https://a.example", token: "secret", expectedNodeId: "node-a" };
+    expect(remotePeerIntroduceParamsSchema.parse({ ...introduction, name: " A " }).name).toBe("A");
+    expect(
+      remotePeerIntroduceParamsSchema.safeParse({ ...introduction, pairBack: true }).success,
+    ).toBe(false);
+    const result = {
+      status: "updated",
+      peerId: "a-1",
+      hostId: "remote-peer:a-1",
+      nodeId: "node-a",
+    };
+    expect(remotePeerIntroduceResultSchema.parse({ ...introduction, ...result })).toEqual(result);
+    expect(remotePeerSyncMeshParamsSchema.parse({})).toEqual({});
+    expect(
+      remotePeerSyncMeshParamsSchema.safeParse({ peerIds: Array(65).fill("peer") }).success,
+    ).toBe(false);
+    const add = {
+      ...introduction,
+      pairBack: true,
+      meshPeerIds: ["a-1"],
+      selfOrigin: "https://b.example",
+    };
+    expect(remotePeerAddParamsSchema.parse(add)).toMatchObject({
+      pairBack: true,
+      meshPeerIds: ["a-1"],
+      selfOrigin: add.selfOrigin,
+    });
+    const report = {
+      results: [
+        {
+          targetPeerId: "a-1",
+          targetName: "A",
+          introducedHost: "local",
+          introducedName: "B",
+          status: "skipped",
+        },
+      ],
+    };
+    expect(remotePeerPairingReportSchema.parse(report)).toEqual(report);
+    const testResult = { ok: true, supportsPeerPairing: true, pairedBack: false, nodeId: "node-a" };
+    expect(remotePeerTestResultSchema.parse(testResult)).toEqual(testResult);
   });
 
   it("assigns deterministic fallback colors per hostId and spreads across distinct hosts", () => {
@@ -115,12 +164,14 @@ describe("remote peer host colors", () => {
     const withNodes = remotePeerManifestSchema.parse({
       ...baseManifest,
       nodeId: "node-b-uuid",
+      capabilities: { peerPairing: 1 },
       peerNodes: {
         "remote-peer:peer-a": "node-a-uuid",
         "remote-peer:peer-c": "node-c-uuid",
       },
     });
     expect(withNodes.nodeId).toBe("node-b-uuid");
+    expect(withNodes.capabilities).toEqual({ peerPairing: 1 });
     expect(withNodes.peerNodes).toEqual({
       "remote-peer:peer-a": "node-a-uuid",
       "remote-peer:peer-c": "node-c-uuid",

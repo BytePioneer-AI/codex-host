@@ -16,6 +16,8 @@ import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.
 import { loadOrCreatePeerNodeId, PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
 import { servePeerAttachments } from "./peer-attachments-http.ts";
+import { peerPairingEnabled, servePeerPairing } from "./peer-pairing-http.ts";
+import { resolvePeerSelfOrigin } from "./peer-pairing.ts";
 import { servePeerDelegation } from "./peer-delegation-http.ts";
 import { startPeerDelegationBridge } from "./peer-delegation-bridge.ts";
 import { servePeerWorkspaceFiles } from "./peer-workspace-files-http.ts";
@@ -25,7 +27,7 @@ import { WorkspaceFileSearchCache } from "./workspace-file-search.ts";
 import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -453,6 +455,7 @@ async function resolvePeerEpoch(): Promise<string | undefined> {
 }
 const peerAttachments = new RemotePeerAttachments();
 const localPeerNodeId = loadOrCreatePeerNodeId(data);
+const allowLoopbackPeers = process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1";
 const peerManager = new PeerHostManager(
   new PeerHostStore(data),
   async () => [
@@ -461,9 +464,24 @@ const peerManager = new PeerHostManager(
   ],
   events,
   {
-    allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1",
+    allowLoopback: allowLoopbackPeers,
     localNodeId: localPeerNodeId,
     projector: (threadId) => peerAttachments.projector(threadId),
+    resolveSelfShare: async (preferredOrigin) => {
+      if (!accessTokens) return { error: "Remote access tokens are disabled on this Host" };
+      const { networkUrls } = await readNetworkAccess();
+      const self = resolvePeerSelfOrigin(
+        networkUrls,
+        preferredOrigin,
+        allowLoopbackPeers ? `http://127.0.0.1:${listeningPort}` : undefined,
+      );
+      if ("error" in self) return self;
+      return {
+        origin: self.origin,
+        token: accessTokens.current().secret,
+        name: hostname().trim().slice(0, 120) || new URL(self.origin).hostname.slice(0, 120),
+      };
+    },
   },
 );
 peerManager.register(rpc);
@@ -686,6 +704,11 @@ const server = createWebServer((request, response) => {
         response.writeHead(403).end();
         return;
       }
+      const peerRoute = pathname.slice("/api/peer/v1/".length);
+      if (peerRoute === "peers") {
+        await servePeerPairing(request, response, peerManager);
+        return;
+      }
       const sendPeerJson = async (status: number, value: unknown): Promise<void> => {
         const contentType = "application/json; charset=utf-8";
         const compressed = await compressResponse(
@@ -702,7 +725,6 @@ const server = createWebServer((request, response) => {
           })
           .end(compressed.body);
       };
-      const peerRoute = pathname.slice("/api/peer/v1/".length);
       const peerAttachmentsAvailable = Boolean(files && images);
       const peerWorkspaceFilesAvailable = Boolean(dsh);
       const peerDelegationAvailable =
@@ -771,6 +793,7 @@ const server = createWebServer((request, response) => {
             workspaceFiles: peerWorkspaceFilesAvailable,
             officePreview: peerWorkspaceFilesAvailable,
             delegation: peerDelegationAvailable,
+            peerPairing: peerPairingEnabled(),
             nodeId: peerManager.selfNodeId(),
             peerNodes: peerManager.peerNodes(),
           },

@@ -14,6 +14,8 @@ import {
 
 export interface PeerRecord {
   peerId: string;
+  /** Last verified identity, for matching an introduction while this record is disabled or offline. */
+  nodeId?: string | undefined;
   name: string;
   color?: RemotePeerColor | undefined;
   origin: string;
@@ -25,6 +27,7 @@ export interface PeerRecord {
 
 const peerRecordSchema = z.object({
   peerId: remotePeerIdSchema,
+  nodeId: remotePeerNodeIdSchema.optional(),
   name: z.string().min(1).max(120),
   color: remotePeerColorSchema.optional(),
   origin: z.string().min(1).max(2048),
@@ -44,7 +47,7 @@ export interface ParseConnectionLinkOptions {
 function unbracket(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]")
     ? hostname.slice(1, -1).toLowerCase()
-    : hostname.toLowerCase();
+    : hostname.toLowerCase().replace(/\.$/u, "");
 }
 
 function decodeIpv4MappedIpv6(bare: string): string | undefined {
@@ -112,12 +115,8 @@ export function classifyPeerTransport(origin: string): {
   return { transportKind, encrypted: url.protocol === "https:" };
 }
 
-export function parseConnectionLink(
-  input: string | Pick<RemotePeerAddParams, "connectionUrl" | "origin" | "token">,
-  options: ParseConnectionLinkOptions = {},
-) {
-  const p = typeof input === "string" ? { connectionUrl: input } : input;
-  const url = URL.parse(p.connectionUrl ?? p.origin ?? "");
+export function parsePeerUrl(raw: string, options: ParseConnectionLinkOptions = {}): URL {
+  const url = URL.parse(raw);
   if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password)
     throw Error("Invalid peer URL");
   if (!options.skipHostPolicy) {
@@ -126,6 +125,15 @@ export function parseConnectionLink(
     if (!options.allowLoopback && isLoopbackHost(url.hostname))
       throw Error("Loopback peer addresses are not allowed");
   }
+  return url;
+}
+
+export function parseConnectionLink(
+  input: string | Pick<RemotePeerAddParams, "connectionUrl" | "origin" | "token">,
+  options: ParseConnectionLinkOptions = {},
+) {
+  const p = typeof input === "string" ? { connectionUrl: input } : input;
+  const url = parsePeerUrl(p.connectionUrl ?? p.origin ?? "", options);
   const token =
     p.token ?? new URLSearchParams(url.hash.slice(1)).get("token") ?? url.searchParams.get("token");
   if (!token || token.length > 2048 || /\s/u.test(token)) throw Error("Invalid peer token");

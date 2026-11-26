@@ -131,7 +131,9 @@ export class PeerHostClient {
   private readonly fullKnownTurns = new Map<string, Map<string, string>>();
   private readonly truncatedKnownTurns = new Map<string, Map<string, string>>();
   private knownTurnsEpoch: string | undefined;
-  readonly hostId: string;
+  get hostId(): string {
+    return c.remotePeerHostId(this.record.peerId);
+  }
 
   constructor(
     public record: PeerRecord,
@@ -142,7 +144,6 @@ export class PeerHostClient {
       rejectNodeId?: string;
     } = {},
   ) {
-    this.hostId = c.remotePeerHostId(record.peerId);
     this.state = record.enabled ? "connecting" : "disabled";
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
     this.rejectNodeId = options.rejectNodeId;
@@ -209,7 +210,12 @@ export class PeerHostClient {
   summary(): c.RemotePeerSummary {
     const { peerId, name, color, origin, enabled, createdAt, updatedAt } = this.record;
     const { encrypted, transportKind } = classifyPeerTransport(origin);
-    const { version, platform, hostname, homeDir, projects, nodeId } = this.manifest ?? {};
+    const { version, platform, hostname, homeDir, projects, nodeId, peerNodes, capabilities } =
+      this.manifest ?? {};
+    const pairedBack =
+      this.rejectNodeId !== undefined && peerNodes !== undefined
+        ? Object.values(peerNodes).includes(this.rejectNodeId)
+        : undefined;
     return {
       peerId,
       name,
@@ -221,6 +227,8 @@ export class PeerHostClient {
       hostId: this.hostId,
       ...(nodeId !== undefined ? { nodeId } : {}),
       state: this.state,
+      ...(this.manifest ? { supportsPeerPairing: capabilities?.peerPairing === 1 } : {}),
+      ...(pairedBack === undefined ? {} : { pairedBack }),
       encrypted,
       transportKind,
       version,
@@ -444,6 +452,28 @@ export class PeerHostClient {
     this.fullKnownTurns.clear();
     this.truncatedKnownTurns.clear();
     this.knownTurnsEpoch = undefined;
+  }
+
+  async introduce(params: c.RemotePeerIntroduceParams): Promise<c.RemotePeerIntroduceResult> {
+    if (!this.record.enabled || this.state !== "connected") {
+      throw new RpcError("remote/offline", "Remote peer is not connected");
+    }
+    if (this.manifest?.capabilities?.peerPairing !== 1) {
+      throw new RpcError("remote/unsupported", "Remote peer does not support pairing");
+    }
+    const response = await peerFetch(this.record, "/api/peer/v1/peers", {
+      method: "POST",
+      body: params,
+      timeoutMs: 15_000,
+      signal: this.life.signal,
+    });
+    const result = c.remotePeerIntroduceResultSchema.safeParse(
+      await response.json().catch(() => undefined),
+    );
+    if (!result.success) {
+      throw new RpcError("remote/read-failed", "Remote peer returned an invalid pairing result");
+    }
+    return result.data;
   }
 
   async listDirs(path?: string) {

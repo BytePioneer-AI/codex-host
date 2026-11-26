@@ -378,6 +378,7 @@ it("returns and saves each confirmed configuration for queued cold agy selection
     expect(decodeExternalTransportSelection("antigravity", afterModel?.transportModelId)).toEqual({
       model: { id: "new" },
       thinkingOptionId: "low",
+      permissionModeId: "default",
     });
     thinkingGate.resolve(undefined);
     expect(await thinkingReply).toMatchObject({
@@ -387,6 +388,7 @@ it("returns and saves each confirmed configuration for queued cold agy selection
     expect(decodeExternalTransportSelection("antigravity", saved?.transportModelId)).toEqual({
       model: { id: "new" },
       thinkingOptionId: "high",
+      permissionModeId: "default",
     });
   } finally {
     modelGate.resolve(undefined);

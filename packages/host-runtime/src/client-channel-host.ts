@@ -1,6 +1,11 @@
 import type { HostApprovalInteraction, HostQuestionInteraction } from "@codexhost/harness-adapter";
 import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
+import {
+  decodeExternalTransportSelection,
+  jsonRpcRequestSchema,
+  type JsonObject,
+  type JsonValue,
+} from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
@@ -9,6 +14,7 @@ import {
   threadTitleInputSchema,
   clientProjectlessWorkspaceSchema,
   harnessModelRefSchema,
+  sameHarnessModelRef,
   restoreHarnessCommandMentions,
   harnessInstallationRequestTimeoutMs,
   jsonValueSchema,
@@ -28,7 +34,12 @@ import { compactClientSnapshot } from "./client-snapshot-compaction.js";
 import { copyAsJson } from "./client-snapshot-copy.js";
 import { listExternalTurns } from "./external-thread-history.js";
 import type { ExternalThreadQueueSnapshot } from "./external-thread-queue.js";
-import type { ExternalThread, ExternalThreadLocation } from "./external-thread-runtime.js";
+import type {
+  ExternalThread,
+  ExternalThreadColdRead,
+  ExternalThreadLocation,
+} from "./external-thread-runtime.js";
+import { ownTurns } from "./external-thread-side-chat.js";
 import { readExternalWorkspaceSnapshot } from "./native-workspace-snapshot.js";
 import { listNativeProjects } from "./native-project-list.js";
 import {
@@ -101,6 +112,7 @@ export interface ClientChannelHostDependencies {
   listSectionPlacements(): Promise<readonly StoredSectionPlacementV1[]>;
   locateExternalThread(threadId: string): Promise<ExternalThreadLocation>;
   loadedThread(threadId: string): ExternalThread | undefined;
+  readColdExternalThread?(threadId: string): Promise<ExternalThreadColdRead>;
   /** History served to clients, including the live snapshot of a non-ephemeral active Turn. */
   clientHistoryTurns(thread: ExternalThread): JsonObject[];
   queueSnapshot(threadId: string): ExternalThreadQueueSnapshot;
@@ -465,6 +477,42 @@ export class ClientChannelHost {
       );
     }
     let thread = this.#host.loadedThread(threadId);
+    if (!thread && this.#host.readColdExternalThread) {
+      const cold = await this.#host.readColdExternalThread(threadId);
+      if (cold.kind === "error") {
+        throw new ClientChannelRequestError(cold.error.code, cold.error.message);
+      }
+      if (cold.kind === "loaded") {
+        thread = cold.thread;
+      } else if (cold.kind === "cold") {
+        const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
+        const snapshot = clientThreadSnapshotSchema.parse(
+          copyAsJson({
+            cursor: this.clientEvents.cursor,
+            activeTurnId: null,
+            thread: { ...cold.thread, turns: [] },
+            turnsPage: listExternalTurns(ownTurns(cold.record, cold.turns), {
+              limit: 5,
+              sortDirection: "desc",
+              itemsView: "full",
+            }),
+            configuration: cold.configuration,
+            queue: this.#host.queueSnapshot(threadId),
+            interactions: [],
+            ...(handoff ? { handoff } : {}),
+          }),
+        );
+        for (const turn of snapshot.turnsPage.data) {
+          if (typeof turn.id !== "string" || !Array.isArray(turn.items)) continue;
+          const clientId = this.#clientReceipts.clientIdForTurn(threadId, turn.id);
+          const user = turn.items.find(
+            (item: unknown) => isRecord(item) && item.type === "userMessage",
+          ) as Record<string, unknown> | undefined;
+          if (clientId && user && typeof user.clientId !== "string") user.clientId = clientId;
+        }
+        return compactClientSnapshot(snapshot, options);
+      }
+    }
     if (!thread) {
       const prepared = await this.handleClientRequest("thread/turns/list", {
         threadId,
@@ -499,6 +547,12 @@ export class ClientChannelHost {
         })),
     ];
     const state = thread.stateObserver.state;
+    const saved = decodeExternalTransportSelection(thread.harnessId, thread.transportModelId);
+    const effectiveModel = state.effectiveModel ?? thread.requestedModel ?? saved?.model;
+    const effectiveThinkingOptionId =
+      state.effectiveThinkingOptionId ??
+      (sameHarnessModelRef(effectiveModel, saved?.model) ? saved?.thinkingOptionId : undefined);
+    const effectivePermissionModeId = state.effectivePermissionModeId ?? saved?.permissionModeId;
     const snapshot = clientThreadSnapshotSchema.parse(
       copyAsJson({
         cursor: this.clientEvents.cursor,
@@ -520,9 +574,9 @@ export class ClientChannelHost {
           itemsView: "full",
         }),
         configuration: {
-          effectiveModel: state.effectiveModel,
-          effectiveThinkingOptionId: state.effectiveThinkingOptionId,
-          effectivePermissionModeId: state.effectivePermissionModeId,
+          effectiveModel,
+          effectiveThinkingOptionId,
+          effectivePermissionModeId,
         },
         queue: this.#host.queueSnapshot(threadId),
         interactions,

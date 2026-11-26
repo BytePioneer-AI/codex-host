@@ -741,6 +741,26 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   #credits: AccountCreditsSnapshot | null = null;
   #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
 
+  async readSnapshot(
+    input: Parameters<NonNullable<HarnessAdapter["readSnapshot"]>>[0],
+  ): Promise<HarnessResult<HostThreadSnapshot>> {
+    try {
+      return parseHarnessResult<HostThreadSnapshot>(
+        await this.#request(
+          "adapter.readSnapshot",
+          {
+            nativeRef: input.nativeRef,
+            cwd: input.cwd,
+            environment: input.environment,
+          },
+          true,
+        ),
+      );
+    } catch (error) {
+      return { ok: false, error: this.#error(error) };
+    }
+  }
+
   readonly subagents = {
     readSnapshot: async (
       input: Parameters<NonNullable<HarnessAdapter["subagents"]>["readSnapshot"]>[0],

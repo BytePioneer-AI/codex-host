@@ -1549,4 +1549,57 @@ describe("HarnessDelegationCoordinator", () => {
       await value.close();
     }
   });
+
+  it("reads and exports an unloaded external Thread cold without opening a Harness Session", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "cold read task",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      const session = adapter.sessions[0];
+      if (!thread || !session) throw new Error("delegated Thread was not created");
+      session.appendText("cold reply");
+      session.succeedTurn();
+      thread.running = false;
+      thread.activeTurnId = null;
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      await session.close();
+      value.runtime.remove(thread.id);
+      expect(value.runtime.get(thread.id)).toBeUndefined();
+
+      const open = vi.spyOn(adapter, "open");
+      const readSnapshot = vi.fn(async () => snapshot);
+      adapter.readSnapshot = readSnapshot;
+
+      const readResult = await value.coordinator.read({
+        threadId: started.threadId,
+        view: "messages",
+      });
+      expect(readResult).toMatchObject({
+        threadId: started.threadId,
+        harnessId: "pi",
+        status: "completed",
+        totalTurns: 1,
+      });
+      expect(JSON.stringify(readResult)).toContain("cold reply");
+
+      const exported = await value.coordinator.exportThread({
+        threadId: started.threadId,
+        out: path.join(value.directory, "cold-export.json"),
+      });
+      expect(exported).toMatchObject({ harnessId: "pi", turns: 1, complete: true });
+      expect(await readFile(exported.path, "utf8")).toContain("cold reply");
+
+      expect(open).not.toHaveBeenCalled();
+      expect(readSnapshot).toHaveBeenCalledTimes(2);
+      expect(value.runtime.get(thread.id)).toBeUndefined();
+    } finally {
+      await value.close();
+    }
+  });
 });

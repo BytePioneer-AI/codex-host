@@ -59,6 +59,7 @@ import {
   type OpenSessionInput,
   type PermissionModeSelectCommand,
   type PermissionModeSelectCompleted,
+  type ReadThreadSnapshotInput,
   type HostThreadSnapshot,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
@@ -3366,6 +3367,85 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       this.#importScope.resolve((signal) => this.#importIndex.resolve(nativeSessionId, signal)),
   } satisfies HarnessSessionImportCapability);
   readonly usageStatistics: ReturnType<typeof createClaudeUsageStatistics>;
+  async readSnapshot(input: ReadThreadSnapshotInput): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closePromise) {
+      return { ok: false, error: invalidState("Claude Code Adapter is closed") };
+    }
+    if (
+      input.nativeRef.harnessId !== this.harnessId ||
+      input.nativeRef.nativeSessionId.trim().length === 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Claude Code Native Session reference is invalid",
+          retryable: false,
+        },
+      };
+    }
+    let messages: unknown[];
+    try {
+      messages =
+        (await this.#dependencies.readSessionMessages({
+          cwd: input.cwd,
+          sessionId: input.nativeRef.nativeSessionId,
+        })) ?? [];
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "nativeFailure",
+          message: "Claude Code history could not be read",
+          retryable: true,
+        },
+      };
+    }
+    if (messages.length === 0 && isPendingClaudeSession(input.nativeRef)) {
+      try {
+        const pending = await this.#pendingSessions.read(input.nativeRef, input.cwd);
+        if (!pending.started) return { ok: true, value: { turns: [] } };
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: "Claude Code pending Session is unavailable",
+            retryable: false,
+          },
+        };
+      }
+    }
+    if (messages.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionNotFound",
+          message: "Claude Code Native Session is unavailable",
+          retryable: false,
+        },
+      };
+    }
+    try {
+      return {
+        ok: true,
+        value: {
+          ...mapClaudeSnapshot(messages, input.nativeRef.nativeSessionId),
+          persistentPlan: true,
+        },
+      };
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: "protocolError",
+          message: "Claude Code history is invalid",
+          retryable: false,
+        },
+      };
+    }
+  }
+
   readonly subagents = {
     readSnapshot: async (input: {
       parent: NativeSessionRef;

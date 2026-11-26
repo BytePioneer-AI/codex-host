@@ -20,6 +20,10 @@ const emptyRolloutError = {
   code: -32603,
   message: `failed to read thread: thread-store internal error: failed to read session metadata ${rolloutPath}: rollout at ${rolloutPath} is empty`,
 };
+const listTurnsUnsupportedError = {
+  code: -32601,
+  message: "list_turns is not supported yet",
+};
 
 function snapshotChannel() {
   const events = new ClientChannelEvents();
@@ -207,6 +211,92 @@ it("does not carry a pending metadata read retry into a new Host generation", as
   channel.resetGeneration();
   expect(await reading).toMatchObject({ error: { code: -32094 } });
   expect(request).toHaveBeenCalledTimes(1);
+});
+
+it("retries newly started initial turns reads across empty-rollout and list_turns materialization errors", async () => {
+  const { channel, request } = snapshotChannel();
+  const implementation = request.getMockImplementation();
+  if (!implementation) throw new Error("Missing native fixture");
+  let turnsCalls = 0;
+  request.mockImplementation(async (method) => {
+    if (method === "thread/start") return { result: { thread } };
+    if (method === "thread/turns/list") {
+      turnsCalls += 1;
+      if (turnsCalls === 1) return { error: emptyRolloutError };
+      if (turnsCalls === 2) return { error: listTurnsUnsupportedError };
+      if (turnsCalls === 3)
+        return {
+          result: {
+            data: [{ id: "turn-1", status: "completed", items: [] }],
+            nextCursor: null,
+          },
+        };
+      return { error: listTurnsUnsupportedError };
+    }
+    return implementation(method);
+  });
+
+  await channel.request("thread/start", { historyMode: "paginated" });
+  const snapshot = await channel.snapshot("native-thread", {});
+  expect(snapshot.turnsPage.data[0]?.id).toBe("turn-1");
+  expect(turnsCalls).toBe(3);
+
+  // Once the Thread has succeeded on thread/turns/list, later -32601 errors are not retried.
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: null }),
+  ).toEqual({ error: listTurnsUnsupportedError });
+  expect(turnsCalls).toBe(4);
+});
+
+it("does not retry list_turns unsupported for existing Threads or paged cursors", async () => {
+  const { channel, request } = snapshotChannel();
+  request.mockResolvedValue({ error: listTurnsUnsupportedError });
+
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: null }),
+  ).toEqual({ error: listTurnsUnsupportedError });
+  expect(request).toHaveBeenCalledTimes(1);
+
+  request.mockResolvedValueOnce({ result: { thread } });
+  await channel.request("thread/start", { historyMode: "paginated" });
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: "older" }),
+  ).toEqual({ error: listTurnsUnsupportedError });
+  expect(request).toHaveBeenCalledTimes(3);
+});
+
+it("bounds list_turns materialization retries and preserves the upstream -32601 error", async () => {
+  const { channel, request } = snapshotChannel();
+  request.mockResolvedValueOnce({ result: { thread } });
+  await channel.request("thread/start", { historyMode: "paginated" });
+
+  request.mockResolvedValue({ error: listTurnsUnsupportedError });
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: null }),
+  ).toEqual({ error: listTurnsUnsupportedError });
+  expect(request).toHaveBeenCalledTimes(6);
+});
+
+it("aborts pending list_turns materialization retries on Host generation reset", async () => {
+  const { channel, request } = snapshotChannel();
+  request.mockResolvedValueOnce({ result: { thread } });
+  await channel.request("thread/start", { historyMode: "paginated" });
+
+  request.mockResolvedValue({ error: listTurnsUnsupportedError });
+  const listing = channel.request("thread/turns/list", {
+    threadId: "native-thread",
+    cursor: null,
+  });
+  await Promise.resolve();
+  channel.resetGeneration();
+  expect(await listing).toMatchObject({ error: { code: -32094 } });
+  expect(request).toHaveBeenCalledTimes(2);
+
+  // Generation reset also clears the recently started set.
+  expect(
+    await channel.request("thread/turns/list", { threadId: "native-thread", cursor: null }),
+  ).toEqual({ error: listTurnsUnsupportedError });
+  expect(request).toHaveBeenCalledTimes(3);
 });
 
 it("serves client inspection and snapshots from confirmed configuration without repeated resume", async () => {

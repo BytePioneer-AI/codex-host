@@ -1445,6 +1445,36 @@ describe("AppServerHost HarnessAdapter projection", () => {
     },
   );
 
+  it("rejects native delegation when its parent's project cannot be read", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi(value) {
+        api = value;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!api) throw new Error("Missing delegation API");
+      const pending = api.start({
+        harnessId: "codex",
+        task: "Review",
+        parentThreadId: "parent-thread",
+        cwd: "/synthetic",
+      });
+      const request = await readJsonLine(fixture.official.stdin);
+      expect(request.method).toBe("thread/read");
+      const rejected = expect(pending).rejects.toMatchObject({ code: "DELEGATION_FAILED" });
+      fixture.official.stdout.write(
+        JSON.stringify({ id: request.id, error: { code: -32000, message: "Parent unavailable" } }) +
+          "\n",
+      );
+      await rejected;
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("delegates to native Codex through brokered official requests without echoing internal responses", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({

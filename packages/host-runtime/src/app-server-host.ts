@@ -2929,12 +2929,12 @@ export class AppServerHost {
 
   async #readOfficialThreadMetadata(
     threadId: string,
-  ): Promise<{ cwd?: string; title?: string; projectId?: string }> {
+  ): Promise<{ cwd?: string; title?: string; projectId?: string } | null> {
     const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
-    if (isRecord(response.error)) return {};
+    if (isRecord(response.error)) return null;
     const result = isRecord(response.result) ? response.result : null;
     const thread = result && isRecord(result.thread) ? result.thread : null;
-    if (!thread) return {};
+    if (!thread) return null;
     const title =
       typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
     return {
@@ -4625,7 +4625,7 @@ export class AppServerHost {
       let catalog: HarnessCommandCatalog;
       try {
         const metadata = await this.#readOfficialThreadMetadata(params.data.threadId);
-        if (!metadata.cwd) throw new Error("Codex Thread has no Skill workspace");
+        if (!metadata?.cwd) throw new Error("Codex Thread has no Skill workspace");
         const response = await this.#requestOfficial("skills/list", { cwds: [metadata.cwd] });
         if (isRecord(response.error)) throw new Error(String(response.error.message));
         catalog = nativeThreadCommands(isRecord(response.result) ? response.result : {});

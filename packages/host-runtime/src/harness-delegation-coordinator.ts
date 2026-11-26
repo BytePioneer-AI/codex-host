@@ -187,7 +187,7 @@ export class HarnessDelegationCoordinator {
     projectId?: string,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
-  readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
+  readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata | null>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
   readonly #pendingQuestions: (threadId: string) => DelegationPendingQuestion[];
@@ -223,7 +223,7 @@ export class HarnessDelegationCoordinator {
       projectId?: string,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
-    officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
+    officialThreadMetadata(threadId: string): Promise<ParentMetadata | null>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
     pendingQuestions(threadId: string): DelegationPendingQuestion[];
@@ -288,7 +288,7 @@ export class HarnessDelegationCoordinator {
           : "--cwd is required when an external client starts work without a parent Thread",
       );
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
-    const parent = await this.#parentMetadata(parentThreadId);
+    const parent = await this.#parentMetadata(parentThreadId, input.harnessId);
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const title = delegationTitle(input);
     if (input.harnessId === "codex") {
@@ -864,6 +864,7 @@ export class HarnessDelegationCoordinator {
 
   async #parentMetadata(
     parentThreadId: string,
+    targetHarnessId: RoutedHarnessId,
   ): Promise<ParentMetadata & { harnessId: RoutedHarnessId }> {
     // A synthetic origin (external client or remote peer) is no Thread; keep the native default.
     if (isSyntheticOrigin(parentThreadId)) {
@@ -877,7 +878,13 @@ export class HarnessDelegationCoordinator {
         title: record.title.trim() || record.preview || "",
         ...(record.projectId ? { projectId: record.projectId } : {}),
       };
-    const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => ({}));
+    const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => null);
+    if (targetHarnessId === "codex" && metadata === null) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Unable to read the native parent Thread before delegation",
+      );
+    }
     return { harnessId: "codex", ...metadata };
   }
 

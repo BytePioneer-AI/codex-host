@@ -37,6 +37,7 @@ import { isMethodUnavailableError, type PeerThreadSource } from "./peer-thread-s
 import { RemotePeerAttachments, type PeerAttachmentEndpoint } from "./remote-peer-attachments.ts";
 import type { WebFileRef } from "./web-files.ts";
 import { WEB_IMAGE_LIMITS } from "./web-images.ts";
+import { IDLE_VIEW_MS } from "./web-thread-state.ts";
 import { defaultProjections } from "./session-log.ts";
 import {
   applyRemoteControls,
@@ -187,6 +188,7 @@ interface Entry {
   view?: ChThreadView;
   viewHarnessId?: string;
   viewOrigin?: number;
+  historyReadAt?: number;
   reading?: Promise<ChThreadView>;
   queueReading?: Promise<void>;
   controls?: RemoteControls;
@@ -225,12 +227,17 @@ export class RemoteSessions {
     { realtime: NonNullable<PeerThreadSource["host"]["realtime"]>; interactions: ChInteractions }
   >();
   private readonly followLifetime = new AbortController();
+  /** When a periodic check first found each view without a follower. */
+  private readonly unfollowedSince = new WeakMap<ChThreadView, number>();
+  /** Active `session/page` reads holding each view against idle eviction. */
+  private readonly paging = new WeakMap<ChThreadView, number>();
   private listing: Promise<void> | undefined;
   private archiveRevision = 0;
   private archiveWrites = 0;
   private discoveryUnavailable = false;
   private closed = false;
   private readonly timer: NodeJS.Timeout;
+  private readonly idleViewTimer: NodeJS.Timeout;
   private readonly peerHandlers: {
     onThreadChanged: (hostId: string, threadId: string) => Promise<void>;
     onUsageChanged: (hostId: string, threadId: string) => void;
@@ -275,6 +282,10 @@ export class RemoteSessions {
       if (this.controls.size) void this.refreshBackground().catch(() => undefined);
     }, 30_000);
     this.timer.unref();
+    this.idleViewTimer = setInterval(() => {
+      this.discardIdleViews();
+    }, 60_000);
+    this.idleViewTimer.unref();
   }
   private async handlePeerThreadChanged(hostId: string, threadId: string): Promise<void> {
     if (this.closed) return;
@@ -1954,6 +1965,7 @@ export class RemoteSessions {
         const summary = this.summary(id, current);
         if (JSON.stringify(summary) !== before) this.events.emit("api-session/added", summary);
         this.events.emit("api-session/status", id, summary.running);
+        current.historyReadAt = Date.now();
         return current.view;
       } catch (error) {
         requireCurrent();
@@ -2068,6 +2080,7 @@ export class RemoteSessions {
           current.row = { ...snapshot.thread, turns: [] } as ChThread;
         }
         current.view = history;
+        current.historyReadAt = Date.now();
         delete current.retiredCatalogProjections;
         current.viewHarnessId = viewHarnessId(current);
 
@@ -2180,6 +2193,7 @@ export class RemoteSessions {
         }
         if (JSON.stringify(summary) !== before) this.events.emit("api-session/added", summary);
         this.events.emit("api-session/status", id, summary.running);
+        current.historyReadAt = Date.now();
         return history;
       } catch (error) {
         requireCurrent();
@@ -2386,8 +2400,67 @@ export class RemoteSessions {
           this.loadUsage(id, entry, view, epoch, rerunForUpdate);
       });
   }
+  private async trackPageRead<T>(
+    id: string,
+    view: ChThreadView,
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    this.paging.set(view, (this.paging.get(view) ?? 0) + 1);
+    this.unfollowedSince.delete(view);
+    try {
+      return await operation();
+    } finally {
+      const remaining = (this.paging.get(view) ?? 1) - 1;
+      if (remaining > 0) this.paging.set(view, remaining);
+      else this.paging.delete(view);
+      const entry = this.entries.get(id);
+      if (entry?.view === view) {
+        entry.historyReadAt = Date.now();
+        this.unfollowedSince.delete(view);
+      }
+    }
+  }
+  private hasPendingInteraction(id: string, entry: Entry): boolean {
+    for (const item of this.pending.values()) {
+      if (item.sessionId === id) return true;
+    }
+    return this.peerInteractions.get(entry.identity.hostId)?.interactions.hasPending(id) === true;
+  }
+  private isEntryActive(id: string, entry: Entry, view: ChThreadView): boolean {
+    return (
+      this.pendingFirstTurns.has(id) ||
+      this.hasPendingInteraction(id, entry) ||
+      (entry.online && (entry.row.status.type === "active" || view.thread.status.type === "active"))
+    );
+  }
+  /** Drop remote/Peer views that stayed unfollowed, unread, and inactive for `IDLE_VIEW_MS`,
+   * releasing both `RemoteSessions` and `PeerThreadSource.histories` while preserving `viewOrigin`
+   * and retired catalog projection fingerprints for seamless reopening. */
+  discardIdleViews(now = Date.now()): void {
+    if (this.closed) return;
+    for (const [id, entry] of this.entries) {
+      const { view } = entry;
+      if (!view) continue;
+      if (
+        view.log.hasFollowers ||
+        entry.reading ||
+        (this.paging.get(view) ?? 0) > 0 ||
+        this.isEntryActive(id, entry, view)
+      ) {
+        this.unfollowedSince.delete(view);
+        continue;
+      }
+      let since = this.unfollowedSince.get(view);
+      if (since === undefined) this.unfollowedSince.set(view, (since = now));
+      // A follower that came and went between two checks still read the view.
+      if (now - Math.max(since, entry.historyReadAt ?? 0) >= IDLE_VIEW_MS) {
+        this.retireView(entry);
+      }
+    }
+  }
   private retireView(entry: Entry, peerSource?: PeerThreadSource): void {
     if (!entry.view) return;
+    this.unfollowedSince.delete(entry.view);
     entry.viewOrigin = Math.max(entry.viewOrigin ?? 0, entry.view.log.lastSeq + 2);
     entry.retiredCatalogProjections = this.captureCatalogFingerprints(entry.view.log.projections);
     if (typeof entry.view.log.projections.threadTreeParent === "string") {
@@ -2398,6 +2471,7 @@ export class RemoteSessions {
     entry.view.log.reconnectFollowers();
     delete entry.view;
     delete entry.viewHarnessId;
+    delete entry.historyReadAt;
     delete entry.peerInspected;
     delete entry.usageRequest;
     delete entry.queueReading;
@@ -3048,10 +3122,11 @@ export class RemoteSessions {
       const throughSeq = Number(request.throughSeq);
       const beforeSeq = typeof request.beforeSeq === "number" ? request.beforeSeq : undefined;
       const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : 20;
-      if (view instanceof ChThreadHistory) {
-        return view.olderPage(throughSeq, beforeSeq, maxMessages);
-      }
-      return view.log.page(throughSeq, beforeSeq, { maxMessages });
+      return this.trackPageRead(id, view, () =>
+        view instanceof ChThreadHistory
+          ? view.olderPage(throughSeq, beforeSeq, maxMessages)
+          : view.log.page(throughSeq, beforeSeq, { maxMessages }),
+      );
     }
     if (method === "session/toolOutput")
       return readToolOutput(view.log, webToolOutputReferenceSchema.parse(request));
@@ -3167,6 +3242,7 @@ export class RemoteSessions {
     for (const lookup of this.pendingPeerLookups.values()) lookup.resolve(false);
     this.pendingPeerLookups.clear();
     clearInterval(this.timer);
+    clearInterval(this.idleViewTimer);
     for (const timer of this.peerChangeTimers.values()) clearTimeout(timer);
     this.peerChangeTimers.clear();
     this.peerTreeRetryAttempts.clear();

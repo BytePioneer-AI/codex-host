@@ -1,36 +1,18 @@
 import path from "node:path";
 
-import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import type {
   HarnessAdapter,
   HarnessError,
   HarnessInspection,
   HarnessModelCatalog,
   HarnessModelRef,
-  HarnessOutput,
   HarnessResult,
   HarnessSession,
   HarnessSessionCapabilities,
   HarnessSessionState,
   HarnessThinkingOptionId,
-  HostCommand,
-  HostThreadSnapshot,
   InspectHarnessInput,
-  InteractionRespondAccepted,
-  InteractionRespondCommand,
-  ModelSelectCommand,
-  ModelSelectCompleted,
   OpenSessionInput,
-  PermissionModeSelectCommand,
-  PermissionModeSelectCompleted,
-  ThinkingSelectCommand,
-  ThinkingSelectCompleted,
-  TurnCancelAccepted,
-  TurnCancelCommand,
-  TurnStartAccepted,
-  TurnStartCommand,
-  TurnSteerAccepted,
-  TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import { runInstallationCommand } from "@codexhost/harness-discovery";
 import {
@@ -60,6 +42,7 @@ import {
   type OmoThinkingLevel,
 } from "./omo-model-catalog.js";
 import { OmoProtocolError } from "./omo-protocol.js";
+import { OMO_STAGING_CAPABILITIES, OmoHarnessSession } from "./omo-session.js";
 import {
   OmoRpcClosedError,
   OmoRpcCommandTimeoutError,
@@ -72,22 +55,6 @@ import {
 } from "./omo-rpc-session.js";
 
 const omoHarnessId: HarnessId = harnessIdSchema.parse("omo");
-
-/**
- * Capabilities this stage can honor. Model, Thinking, and Permission Mode
- * commands arrive in a later step; until then every selection is declared
- * unavailable and no `permissionModes` catalog is published, because
- * `harnessInspectionSchema` requires the two declarations to agree.
- */
-const omoStagingCapabilities: HarnessSessionCapabilities = {
-  configuration: {
-    selectModel: false,
-    selectThinkingOption: false,
-    selectPermissionMode: false,
-    permissionModeScope: "live",
-  },
-  history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
-};
 
 /** Availability asks only whether the CLI runs; it must not stand in for a full inspection. */
 const availabilityCatalog: HarnessModelCatalog = { models: [], thinkingOptions: [] };
@@ -178,7 +145,7 @@ export class OmoAdapter implements HarnessAdapter {
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspections = new Set<OmoInspectSession>();
   readonly #liveRpcs = new Set<OmoRpcSession>();
-  readonly #sessions = new Set<OmoThinHarnessSession>();
+  readonly #sessions = new Set<OmoHarnessSession>();
   #inspectionGeneration = 0;
   #closePromise: Promise<void> | null = null;
 
@@ -301,9 +268,16 @@ export class OmoAdapter implements HarnessAdapter {
           retryable: false,
         });
       }
-      const session = new OmoThinHarnessSession(rpc, initialState, (closed) => {
-        this.#liveRpcs.delete(rpc);
-        this.#sessions.delete(closed);
+      const session = new OmoHarnessSession(rpc, {
+        initialState,
+        ...(this.#commandTimeoutMs === undefined
+          ? {}
+          : { commandTimeoutMs: this.#commandTimeoutMs }),
+        ...(this.#closeTimeoutMs === undefined ? {} : { closeTurnTimeoutMs: this.#closeTimeoutMs }),
+        onClosed: (closed) => {
+          this.#liveRpcs.delete(rpc);
+          this.#sessions.delete(closed);
+        },
       });
       if (this.#closePromise) {
         return await rejectOpen(invalidState("OmO Adapter is closed"));
@@ -386,7 +360,7 @@ export class OmoAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog: inspected.catalog.catalog,
-        capabilities: omoStagingCapabilities,
+        capabilities: OMO_STAGING_CAPABILITIES,
       };
     } catch (error) {
       // A deliberate close is not a startup failure of the engine.
@@ -417,7 +391,11 @@ export class OmoAdapter implements HarnessAdapter {
       };
     }
     if (this.#closePromise) return closedInspection();
-    return { status: "ready", catalog: availabilityCatalog, capabilities: omoStagingCapabilities };
+    return {
+      status: "ready",
+      catalog: availabilityCatalog,
+      capabilities: OMO_STAGING_CAPABILITIES,
+    };
   }
 
   #resolve(environment: NodeJS.ProcessEnv): string | undefined {
@@ -440,99 +418,6 @@ export class OmoAdapter implements HarnessAdapter {
     return this.#processAdapter
       ? new OmoRpcSession(options, this.#processAdapter)
       : new OmoRpcSession(options);
-  }
-}
-
-/**
- * Thin Session for this stage: it owns a real native process and reports the
- * confirmed identity, but execution and history projection are not implemented
- * yet. Returning a typed `unsupported` keeps the declaration honest instead of
- * faking a working Turn.
- */
-class OmoThinHarnessSession implements HarnessSession {
-  readonly harnessId: HarnessId = omoHarnessId;
-  readonly capabilities: HarnessSessionCapabilities = omoStagingCapabilities;
-  readonly initialState: HarnessSessionState;
-  readonly initialUsage = null;
-  readonly outputs: AsyncIterable<HarnessOutput>;
-  readonly #channel = new HarnessOutputChannel<HarnessOutput>();
-  readonly #rpc: OmoRpcSession;
-  readonly #onClosed: (session: OmoThinHarnessSession) => void;
-  #closePromise: Promise<void> | null = null;
-
-  constructor(
-    rpc: OmoRpcSession,
-    initialState: HarnessSessionState,
-    onClosed: (session: OmoThinHarnessSession) => void,
-  ) {
-    this.#rpc = rpc;
-    this.initialState = initialState;
-    this.#onClosed = onClosed;
-    this.outputs = this.#channel.outputs;
-  }
-
-  execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
-  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
-  execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
-  execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
-  execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
-  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
-  execute(
-    command: PermissionModeSelectCommand,
-  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
-  async execute(
-    command: HostCommand,
-  ): Promise<
-    HarnessResult<
-      | TurnStartAccepted
-      | TurnSteerAccepted
-      | TurnCancelAccepted
-      | InteractionRespondAccepted
-      | ModelSelectCompleted
-      | ThinkingSelectCompleted
-      | PermissionModeSelectCompleted
-    >
-  > {
-    void command;
-    if (this.#closePromise) {
-      return { ok: false, error: invalidState("OmO Session is closed") };
-    }
-    return {
-      ok: false,
-      error: {
-        code: "unsupported",
-        message: "OmO Session execution is not available in this build",
-        retryable: false,
-      },
-    };
-  }
-
-  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
-    if (this.#closePromise) {
-      return { ok: false, error: invalidState("OmO Session is closed") };
-    }
-    return {
-      ok: false,
-      error: {
-        code: "unsupported",
-        message: "OmO Session history projection is not available in this build",
-        retryable: false,
-      },
-    };
-  }
-
-  close(): Promise<void> {
-    this.#closePromise ??= this.#close();
-    return this.#closePromise;
-  }
-
-  async #close(): Promise<void> {
-    this.#channel.end();
-    try {
-      await this.#rpc.close();
-    } finally {
-      this.#onClosed(this);
-    }
   }
 }
 

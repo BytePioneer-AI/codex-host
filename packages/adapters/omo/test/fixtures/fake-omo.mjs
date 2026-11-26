@@ -24,6 +24,9 @@ const state = {
   effectivePermissionPreset: "ask",
 };
 
+if (process.env.FAKE_OMO_PENDING_DIALOGS === "none") state.pendingDialogs = [];
+if (process.env.FAKE_OMO_STREAMING === "true") state.isStreaming = true;
+
 let clientInfo = null;
 const withheld = [];
 
@@ -78,7 +81,507 @@ if (scenario !== "silent-start") {
   });
 }
 
+function respondError(command, errorCode, message = "synthetic refusal") {
+  write({
+    id: command.id,
+    type: "response",
+    command: command.type,
+    success: false,
+    error: message,
+    errorCode,
+  });
+}
+
+// ---------------------------------------------------------------- session peer
+//
+// A synthetic classic-RPC session surface for the Harness Session tests: the
+// prompt/abort/dialog commands, a durable entry log that `get_entries` and
+// `get_tree` answer from, and named Turn scripts that emit the documented event
+// shapes. Nothing here is copied from OmO.
+
+const sessionEntries = [];
+const sessionReceived = { prompts: [], aborts: [], uiResponses: [], commands: [] };
+let sessionEntrySeq = 0;
+let sessionTurnSeq = 0;
+let sessionLastClientTurnId = null;
+let sessionWaitingForAbort = false;
+let sessionDialogState = "none";
+const sessionControls = {
+  promptError: process.env.FAKE_OMO_PROMPT_ERROR ?? null,
+  turnScript: process.env.FAKE_OMO_TURN_SCRIPT ?? "full",
+  disposition: process.env.FAKE_OMO_PROMPT_DISPOSITION ?? null,
+};
+
+function entryId() {
+  sessionEntrySeq += 1;
+  return `u-${sessionEntrySeq}`;
+}
+
+function appendUserEntry(message) {
+  const entry = {
+    type: "message",
+    id: entryId(),
+    parentId: sessionEntries.at(-1)?.id ?? null,
+    timestamp: new Date().toISOString(),
+    inputSource: "rpc",
+    message: { role: "user", content: message, timestamp: Date.now() },
+  };
+  sessionEntries.push(entry);
+  if (process.env.FAKE_OMO_NO_USER_ENTRY_EVENT !== "1") {
+    write({ type: "entry_appended", entry });
+  }
+  return entry;
+}
+
+function events(frames) {
+  for (const frame of frames) write(frame);
+}
+
+function assistantText(text, extra = {}) {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+    api: "synthetic",
+    provider: "synthetic-provider",
+    model: "synthetic-model",
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+    timestamp: Date.now(),
+    ...extra,
+  };
+}
+
+function settle(clientTurnId, aborted = false) {
+  if (aborted) {
+    write({
+      type: "agent_end",
+      clientTurnId,
+      messages: [],
+      willRetry: false,
+      aborted: true,
+      abortSource: "user",
+    });
+  }
+  write({ type: "agent_settled" });
+}
+
+function finishInteractiveTurn(clientTurnId, text) {
+  write({
+    type: "message_start",
+    clientTurnId,
+    message: { role: "assistant", content: [], timestamp: Date.now() },
+  });
+  write({
+    type: "message_update",
+    clientTurnId,
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text },
+  });
+  write({ type: "message_end", clientTurnId, message: assistantText(text) });
+  write({ type: "agent_end", clientTurnId, messages: [assistantText(text)], willRetry: false });
+  write({ type: "agent_settled" });
+}
+
+function runTurnScript(script, clientTurnId) {
+  switch (script) {
+    case "full": {
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      events([
+        {
+          type: "message_update",
+          clientTurnId,
+          assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "think" },
+        },
+        {
+          type: "message_update",
+          clientTurnId,
+          assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Hel" },
+        },
+        {
+          type: "message_update",
+          clientTurnId,
+          assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "lo" },
+        },
+      ]);
+      write({
+        type: "message_end",
+        clientTurnId,
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "thinking" },
+            { type: "text", text: "Hello" },
+            { type: "toolCall", id: "call-bash-1", name: "bash", arguments: { command: "ls" } },
+          ],
+          stopReason: "toolUse",
+          timestamp: Date.now(),
+        },
+      });
+      events([
+        {
+          type: "tool_execution_start",
+          clientTurnId,
+          toolCallId: "call-bash-1",
+          toolName: "bash",
+          args: { command: "ls -la", cwd: "/tmp" },
+        },
+        {
+          type: "tool_execution_update",
+          clientTurnId,
+          toolCallId: "call-bash-1",
+          toolName: "bash",
+          partialResult: { content: [{ type: "text", text: "file-a\n" }] },
+        },
+        {
+          type: "tool_execution_end",
+          clientTurnId,
+          toolCallId: "call-bash-1",
+          toolName: "bash",
+          result: {
+            content: [{ type: "text", text: "file-a\nfile-b" }],
+            details: { exitCode: 0 },
+          },
+          isError: false,
+        },
+        {
+          type: "tool_execution_start",
+          clientTurnId,
+          toolCallId: "call-edit-1",
+          toolName: "edit",
+          args: { path: "/tmp/a.txt" },
+        },
+        {
+          type: "tool_execution_end",
+          clientTurnId,
+          toolCallId: "call-edit-1",
+          toolName: "edit",
+          result: {
+            content: [{ type: "text", text: "edited" }],
+            details: { diff: "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new" },
+          },
+          isError: false,
+        },
+      ]);
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Done" },
+      });
+      write({ type: "message_end", clientTurnId, message: assistantText("Done") });
+      write({
+        type: "agent_end",
+        clientTurnId,
+        messages: [assistantText("Done")],
+        willRetry: false,
+      });
+      write({ type: "agent_settled" });
+      return;
+    }
+    case "agent-end-first": {
+      write({ type: "turn_start", clientTurnId });
+      write({ type: "agent_end", clientTurnId, messages: [], willRetry: true });
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Retried" },
+      });
+      write({ type: "message_end", clientTurnId, message: assistantText("Retried") });
+      write({ type: "agent_end", clientTurnId, messages: [assistantText("Retried")] });
+      write({ type: "agent_settled" });
+      return;
+    }
+    case "cancel": {
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Working" },
+      });
+      state.isStreaming = true;
+      sessionWaitingForAbort = true;
+      return;
+    }
+    case "interaction": {
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "tool_execution_start",
+        clientTurnId,
+        toolCallId: "call-edit-1",
+        toolName: "edit",
+        args: { path: "/tmp/a.txt" },
+      });
+      write({
+        type: "extension_ui_request",
+        id: "ui-approve-1",
+        method: "select",
+        title: "Permission required: edit",
+        options: ["Allow once", "Allow always", "Deny", "Deny with feedback"],
+        toolCallId: "call-edit-1",
+      });
+      sessionDialogState = "approval";
+      return;
+    }
+    case "interaction-timeout": {
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "extension_ui_request",
+        id: "ui-confirm-1",
+        method: "confirm",
+        title: "Clear session?",
+        message: "All messages will be lost.",
+        timeout: 60,
+      });
+      sessionDialogState = "timeout";
+      setTimeout(() => finishInteractiveTurn(clientTurnId, "after timeout"), 160).unref?.();
+      return;
+    }
+    case "interrupted": {
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "tool_execution_start",
+        clientTurnId,
+        toolCallId: "call-interrupted-1",
+        toolName: "bash",
+        args: { command: "sleep 60" },
+      });
+      write({
+        type: "tool_execution_end",
+        clientTurnId,
+        toolCallId: "call-interrupted-1",
+        toolName: "bash",
+        result: {
+          content: [{ type: "text", text: "interrupted" }],
+          details: { interrupted: { reason: "host_restart" } },
+        },
+        isError: true,
+      });
+      write({ type: "agent_end", clientTurnId, messages: [] });
+      write({ type: "agent_settled" });
+      return;
+    }
+    case "tool-error-recovery": {
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "tool_execution_start",
+        clientTurnId,
+        toolCallId: "call-1",
+        toolName: "bash",
+        args: { command: "false" },
+      });
+      write({
+        type: "tool_execution_end",
+        clientTurnId,
+        toolCallId: "call-1",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "exit 1" }], details: { exitCode: 1 } },
+        isError: true,
+      });
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Recovered" },
+      });
+      write({ type: "message_end", clientTurnId, message: assistantText("Recovered") });
+      write({ type: "agent_end", clientTurnId, messages: [assistantText("Recovered")] });
+      write({ type: "agent_settled" });
+      return;
+    }
+    case "transcript-fault": {
+      write({ type: "turn_start", clientTurnId });
+      write({ type: "transcript_write_failed", role: "assistant", errorMessage: "disk full" });
+      return;
+    }
+    case "recovered": {
+      write({
+        type: "session_recovered",
+        cause: "full disk",
+        backupPath: "/tmp/session.jsonl.torn-1",
+        droppedBytes: 12,
+      });
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+function sessionPage(command) {
+  const ids = sessionEntries.map((entry) => entry.id);
+  let lower = 0;
+  if (typeof command.since === "string") {
+    const index = ids.indexOf(command.since);
+    if (index < 0) return null;
+    lower = index + 1;
+  }
+  let upper = sessionEntries.length;
+  if (typeof command.before === "string") {
+    const index = ids.indexOf(command.before);
+    if (index < 0) return null;
+    upper = index;
+  }
+  const range = sessionEntries.slice(lower, upper);
+  if (typeof command.tail === "number") {
+    const page = range.slice(Math.max(0, range.length - command.tail));
+    const hasMore = range.length > page.length;
+    return { entries: page, hasMore, ...(hasMore ? { next_before: page[0].id } : {}) };
+  }
+  const limit = typeof command.limit === "number" ? command.limit : range.length;
+  const page = range.slice(0, limit);
+  const hasMore = range.length > page.length;
+  return { entries: page, hasMore, ...(hasMore ? { nextSince: page.at(-1).id } : {}) };
+}
+
+function handleSession(command) {
+  switch (command.type) {
+    case "get_state":
+      respond(command, { ...state, messageCount: sessionEntries.length });
+      return true;
+    case "get_tree":
+      respond(command, {
+        tree: sessionEntries.length === 0 ? [] : [{ entry: sessionEntries[0], children: [] }],
+        leafId: sessionEntries.at(-1)?.id ?? null,
+      });
+      return true;
+    case "get_entries": {
+      sessionReceived.commands.push("get_entries");
+      const page = sessionPage(command);
+      if (!page) {
+        respondError(command, "not_found", "no such entry");
+        return true;
+      }
+      respond(command, page);
+      return true;
+    }
+    case "probe.received":
+      respond(command, {
+        ...sessionReceived,
+        entries: sessionEntries.map((entry) => ({
+          id: entry.id,
+          role: entry.message?.role ?? null,
+        })),
+        dialogState: sessionDialogState,
+        isStreaming: state.isStreaming,
+      });
+      return true;
+    case "emit":
+      events(Array.isArray(command.frames) ? command.frames : []);
+      respond(command, { emitted: Array.isArray(command.frames) ? command.frames.length : 0 });
+      return true;
+    case "set_controls": {
+      if ("promptError" in command) sessionControls.promptError = command.promptError;
+      if (typeof command.turnScript === "string") sessionControls.turnScript = command.turnScript;
+      if ("disposition" in command) sessionControls.disposition = command.disposition;
+      respond(command, { ...sessionControls });
+      return true;
+    }
+    case "prompt": {
+      sessionReceived.prompts.push({
+        message: command.message,
+        clientTurnId: command.clientTurnId ?? null,
+      });
+      sessionLastClientTurnId = command.clientTurnId ?? null;
+      if (sessionControls.promptError) {
+        respondError(command, sessionControls.promptError);
+        return true;
+      }
+      appendUserEntry(command.message);
+      sessionTurnSeq += 1;
+      const script = sessionControls.turnScript;
+      if (sessionControls.disposition === "handled") {
+        respond(command, { disposition: "handled" });
+        return true;
+      }
+      respond(command, {
+        disposition: "started",
+        turnId: `native-turn-${sessionTurnSeq}`,
+        clientTurnId: command.clientTurnId ?? null,
+      });
+      queueMicrotask(() => runTurnScript(script, command.clientTurnId ?? null));
+      return true;
+    }
+    case "abort": {
+      sessionReceived.aborts.push({ ...command });
+      if (process.env.FAKE_OMO_ABORT_ERROR) {
+        respondError(command, process.env.FAKE_OMO_ABORT_ERROR);
+        return true;
+      }
+      const delayMs = Number(process.env.FAKE_OMO_ABORT_DELAY_MS ?? 0);
+      const idle = process.env.FAKE_OMO_ABORT_IDLE !== "false";
+      const answer = () => {
+        if (idle) state.isStreaming = false;
+        respond(command, { stopped: idle, idle, cleared: 0 });
+        if (process.env.FAKE_OMO_ABORT_SETTLES !== "false" && sessionWaitingForAbort) {
+          sessionWaitingForAbort = false;
+          setTimeout(
+            () => {
+              state.isStreaming = false;
+              settle(sessionLastClientTurnId, true);
+            },
+            Number(process.env.FAKE_OMO_ABORT_SETTLE_DELAY_MS ?? 40),
+          ).unref?.();
+        }
+      };
+      if (delayMs > 0) setTimeout(answer, delayMs).unref?.();
+      else answer();
+      return true;
+    }
+    case "extension_ui_response": {
+      sessionReceived.uiResponses.push({ ...command });
+      respond(command, { accepted: true });
+      if (sessionDialogState === "approval") {
+        if (command.value === "Deny with feedback") {
+          write({
+            type: "extension_ui_request",
+            id: "ui-feedback-1",
+            method: "input",
+            title: "Why deny?",
+            toolCallId: "call-edit-1",
+          });
+          sessionDialogState = "feedback";
+          return true;
+        }
+        sessionDialogState = "none";
+        queueMicrotask(() => finishInteractiveTurn(sessionLastClientTurnId, "answered"));
+        return true;
+      }
+      if (sessionDialogState === "feedback") {
+        sessionDialogState = "none";
+        queueMicrotask(() => finishInteractiveTurn(sessionLastClientTurnId, "denied"));
+        return true;
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
 function handle(command) {
+  if (scenario.startsWith("session") && handleSession(command)) return;
   switch (command.type) {
     case "set_client_info":
       clientInfo = command;

@@ -117,6 +117,12 @@ function handle(command) {
         ],
       });
       return;
+    case "get_tree":
+      respond(command, { tree: [], leafId: null });
+      return;
+    case "get_entries":
+      respond(command, { entries: [], hasMore: false });
+      return;
     case "prompt":
       promptReceived = true;
       fs.appendFileSync(path.join(stateDir, "prompts.log"), JSON.stringify(command) + "\\n");
@@ -303,6 +309,7 @@ const stagingCapabilities = {
     permissionModeScope: "live",
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+  steer: false,
 } as const;
 
 function sessionFixture(cwd: string, environment: NodeJS.ProcessEnv = {}): FixtureAdapter {
@@ -527,19 +534,21 @@ describe("OmO Adapter open", () => {
     expect(fixture.sessionSpawns[0]?.cwd).toBe(path.resolve(cwd));
     expect(fixture.sessionSpawns[0]?.sessionFile).toBeUndefined();
 
-    const iterator = session.outputs[Symbol.asyncIterator]();
-    const pendingOutput = iterator.next();
-    await expect(session.execute(turnStart())).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported" },
+    const emptySnapshot = await session.readSnapshot();
+    expect(emptySnapshot).toMatchObject({ ok: true, value: { turns: [] } });
+    await expect(session.execute(turnStart())).resolves.toEqual({
+      ok: true,
+      value: { turnId: "turn-1" },
     });
-    await expect(session.readSnapshot()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported" },
-    });
+    // The synthetic peer never settles the Turn; close terminates it and ends
+    // the output stream exactly once.
     await Promise.all([session.close(), session.close()]);
     await session.close();
-    await expect(pendingOutput).resolves.toMatchObject({ done: true });
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    for (;;) {
+      const output = await iterator.next();
+      if (output.done) break;
+    }
     await expect(session.execute(turnStart())).resolves.toMatchObject({
       ok: false,
       error: { code: "invalidState" },

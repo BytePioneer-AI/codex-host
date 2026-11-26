@@ -1,6 +1,6 @@
-import { open } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { readDesktopGlobalState } from "./desktop-global-state.js";
 
 export interface RemoteProjectMetadata {
   id: string;
@@ -13,16 +13,8 @@ export interface RemoteProjectMetadata {
 export async function readRemoteProjectMetadata(
   file = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), ".codex-global-state.json"),
 ): Promise<RemoteProjectMetadata[]> {
-  const handle = await open(file, "r").catch(() => undefined);
-  if (!handle) return [];
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > 32 * 1024 * 1024)
-      throw new Error("Invalid Desktop project metadata");
-    const text = await handle.readFile("utf8");
-    if (Buffer.byteLength(text) > 32 * 1024 * 1024)
-      throw new Error("Oversized Desktop project metadata");
-    const state = JSON.parse(text) as Record<string, unknown>;
+    const state = (await readDesktopGlobalState(dirname(file), file)) as Record<string, unknown>;
     const projects = state["remote-projects"];
     if (!Array.isArray(projects)) return [];
     const order = Array.isArray(state["project-order"])
@@ -55,7 +47,9 @@ export async function readRemoteProjectMetadata(
         ];
       })
       .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-  } finally {
-    await handle.close();
+  } catch (error) {
+    const { syscall, path } = error as NodeJS.ErrnoException;
+    if (syscall === "open" && path === file) return [];
+    throw error;
   }
 }

@@ -95,7 +95,7 @@ Shell / command process
 
 DSH 后端运行在 Web 服务进程内。连接、组件和终端进程有各自生命周期，不能把单个输出连接断开等同于立即杀进程；后台也有保留与回收策略。但 **Web 服务退出会清理其拥有的终端进程**。
 
-关闭终端标签是显式结束终端，不等同于隐藏侧栏。当前实现的设计背景见 [右侧栏恢复设计](../../openspec/changes/restore-web-right-sidebar/design.md)。
+关闭终端标签是显式结束终端，不等同于隐藏侧栏。当前实现的设计背景见 [右侧栏恢复设计](../../openspec/changes/archive/2026-11-12-restore-web-right-sidebar/design.md)。
 
 ## 4. Herdr 项目的分层
 
@@ -411,7 +411,7 @@ Core 状态目录可能包含终端记录、屏幕、历史和日志，可能留
 - [Alma 官网](https://alma.now)：2026-11-01 直接核对产品说明；不是固定版本的实现文档。
 - 第 5 节的作者 X 原帖：由 Grok 检索返回，保留原帖标识用于再次核对，不将检索摘要当作发布验收。
 - [Alma Relay README](https://github.com/yetone/alma-relay#readme)、[LICENSE](https://github.com/yetone/alma-relay/blob/main/LICENSE)：2026-11-01 核对；仅支持中继用途与许可判断。
-- [现有 Web 终端行为](../product/standalone-web.md#右侧栏)、[现有右侧栏设计](../../openspec/changes/restore-web-right-sidebar/design.md)：区分当前实现与候选替换。
+- [现有 Web 终端行为](../product/standalone-web.md#右侧栏)、[现有右侧栏设计](../../openspec/changes/archive/2026-11-12-restore-web-right-sidebar/design.md)：区分当前实现与候选替换。
 - [现有 Host 客户端通道](../architecture/host-client-channel.md)、[术语表](../project/领域术语表.md)：后续设计需遵守的产品和所有权边界。
 
 研究范围为文档、schema、相关源码及公开产品材料；未安装或运行 Herdr Core 原型，未验证 Alma 二进制、移动端渲染技术、完整兼容性或跨平台存活保证。

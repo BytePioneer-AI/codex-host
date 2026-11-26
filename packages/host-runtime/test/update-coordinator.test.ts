@@ -249,7 +249,7 @@ describe("Host update coordinator", () => {
 
   it("hands a macOS update to Launcher without starting the Helper", async () => {
     const fixture = await npmFixture();
-    const platformDownload = Promise.withResolvers<void>();
+    const platformDownload = Promise.withResolvers<undefined>();
     const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);
     const manager = createBackgroundUpdateManager({
       platform: "darwin",
@@ -292,7 +292,7 @@ describe("Host update coordinator", () => {
         status: { version: "1.2.3", installation: "npm", phase: "downloading" },
       });
     } finally {
-      platformDownload.resolve();
+      platformDownload.resolve(undefined);
     }
     const home = fixture.environment.HOME;
     if (!home) throw new Error("fixture HOME is missing");

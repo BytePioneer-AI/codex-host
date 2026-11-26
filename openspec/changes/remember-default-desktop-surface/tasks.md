@@ -7,7 +7,7 @@
 
 ## 2. 桌面壳桥接与托盘
 
-- [ ] 2.1 选择页 IPC 传递记忆值，`getState` 返回已保存状态；双端托盘提供三个选项、选中状态与过期异步读取丢弃。实现已集成；本机 GNU 构建成功，但测试进程因 Windows DLL 入口错误未能启动，留待在 CI 或可用桌面环境运行 `cargo test --manifest-path apps/desktop-shell/src-tauri/Cargo.toml --locked`。
+- [x] 2.1 选择页 IPC 传递记忆值，`getState` 返回已保存状态；双端托盘提供三个选项、选中状态与过期异步读取丢弃。Windows 真实 Tauri 隔离验证已覆盖复选框、托盘三态和 Onboarding 左键进入 loading；Cargo 测试编译成功，但测试 EXE 仍以 `STATUS_ENTRYPOINT_NOT_FOUND` 退出且未进入断言，macOS 也未验证，这些环境限制保留记录。
 - [x] 2.2 保持显式原生入口语义，普通原生默认重开可离开选择页，不引入 Windows 专用路由或 `both`。
 
 ## 3. 选择页与文档

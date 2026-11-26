@@ -64,10 +64,21 @@
 
 /* `hidden="until-found"` retains a zero-height box so browser find can reveal
    its subtree. Direct Chat Node Seats and auxiliary rows share one flow;
-   hidden and empty Seats do not contribute spacing. */
+   hidden and genuinely empty Seats do not contribute spacing, while virtualized
+   row shells (`[data-chat-virtualized]`) keep their placeholder height and gap. */
 .column
-  > :not([hidden]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)))
-  ~ :not([hidden]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))) {
+  > :not([hidden]):not(
+    .flowItem:not([data-chat-virtualized]):is(
+        :empty,
+        :has(> [data-slot="conversation.chat.node"]:empty)
+      )
+  )
+  ~ :not([hidden]):not(
+    .flowItem:not([data-chat-virtualized]):is(
+        :empty,
+        :has(> [data-slot="conversation.chat.node"]:empty)
+      )
+  ) {
   margin-top: var(--dsh-chat-flow-gap, 6px);
 }
 
@@ -78,9 +89,12 @@
 }
 
 .column
-  > [data-chat-group-part="response"]:not([hidden]):not(:empty)
+  > [data-chat-group-part="response"]:not([hidden]):not(:empty:not([data-chat-virtualized]))
   + :not([hidden]):not(
-    .flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))
+    .flowItem:not([data-chat-virtualized]):is(
+        :empty,
+        :has(> [data-slot="conversation.chat.node"]:empty)
+      )
   ):not(.running) {
   --dsh-chat-flow-gap: 12px;
 }
@@ -97,14 +111,20 @@
 .column
   > [data-chat-flow-kind="turn-process"]
   + :not([hidden]):not(
-    .flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))
+    .flowItem:not([data-chat-virtualized]):is(
+        :empty,
+        :has(> [data-slot="conversation.chat.node"]:empty)
+      )
   ):not(.running) {
   --dsh-chat-flow-gap: 16px;
 }
 
 /* Empty Seats, including retained empty slot anchors, preserve Turn lookup
    without contributing height or the sibling gap. */
-.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)) {
+.flowItem:not([data-chat-virtualized]):is(
+    :empty,
+    :has(> [data-slot="conversation.chat.node"]:empty)
+  ) {
   height: 0;
 }
 
@@ -154,7 +174,12 @@
   > :nth-last-child(
     2
       of
-      :not([hidden]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)))
+      :not([hidden]):not(
+        .flowItem:not([data-chat-virtualized]):is(
+            :empty,
+            :has(> [data-slot="conversation.chat.node"]:empty)
+          )
+      )
   ):is(
     .flowItem:not([data-chat-flow-kind="user"]):not([data-chat-flow-kind="steering"]):not(
         [data-chat-flow-kind="turn-trigger"]

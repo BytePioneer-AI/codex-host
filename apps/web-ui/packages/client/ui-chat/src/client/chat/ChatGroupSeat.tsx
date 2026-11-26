@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentProps,
@@ -39,10 +40,19 @@ import { useDisclosure } from "./use-disclosure.ts";
 import { useProcessScroll } from "./use-process-scroll.ts";
 import css from "./ChatGroupSeat.module.css";
 
-type SeatProps = Omit<ComponentProps<typeof ChatNodeSeat>, "nodeKey" | "groupPart">;
+type SeatProps = Omit<
+  ComponentProps<typeof ChatNodeSeat>,
+  "nodeKey" | "groupPart" | "mounted" | "placeholderHeight" | "registerRow"
+>;
 type ChatGroupSeatProps = SeatProps & {
   readonly groupKey: GroupKey;
   readonly useChatGroup: ChatViewSlotProps["useChatGroup"];
+  /** Whether this top-level group's header and member subtree should be mounted. */
+  readonly mounted?: boolean;
+  /** Reserved height (px) while unmounted; ignored when the group is hidden. */
+  readonly placeholderHeight?: number;
+  /** Registers this top-level group shell with the transcript virtualizer. */
+  readonly registerRow?: (flowKey: string, element: HTMLDivElement | null) => void;
 };
 const PROCESS_TITLE_MINIMUM_MS = 150;
 
@@ -185,10 +195,79 @@ const ProcessGroupHeader = memo(function ProcessGroupHeader({
   );
 });
 
+/** Mounted interior of a process group; owns body hidden/scroll refs so remounts rebind cleanly. */
+const ChatGroupBody = memo(function ChatGroupBody({
+  groupKey,
+  useChatGroup,
+  members,
+  closed,
+  grouped,
+  open,
+  setOpen,
+  ...props
+}: SeatProps & {
+  readonly groupKey: GroupKey;
+  readonly useChatGroup: ChatViewSlotProps["useChatGroup"];
+  readonly members: readonly NodeReference[];
+  readonly closed: boolean | undefined;
+  readonly grouped: boolean;
+  readonly open: boolean;
+  readonly setOpen: (open: boolean) => void;
+}) {
+  const reveal = useCallback(() => {
+    setOpen(true);
+  }, [setOpen]);
+  const bodyRef = useSearchableHidden(grouped && !open, reveal);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const bodyId = useId();
+  const { edges, events, initialize } = useProcessScroll(bodyRef, contentRef, open, grouped);
+  const toggle = useCallback(() => {
+    if (!open) initialize(closed === false ? "bottom" : "top");
+    setOpen(!open);
+  }, [closed, initialize, open, setOpen]);
+  const classes = [
+    css.body,
+    !grouped ? css.expandedBody : "",
+    grouped && edges.canScrollUp ? css.fadeTop : "",
+    grouped && edges.canScrollDown ? css.fadeBottom : "",
+  ];
+  return (
+    <>
+      <div hidden={!grouped}>
+        <ProcessGroupHeader
+          groupKey={groupKey}
+          useChatGroup={useChatGroup}
+          usePresentation={props.usePresentation}
+          t={props.t}
+          open={open}
+          bodyId={bodyId}
+          toggle={toggle}
+        />
+      </div>
+      <div
+        ref={bodyRef}
+        id={bodyId}
+        className={classes.join(" ")}
+        data-step-process-body
+        data-scroll-up={edges.canScrollUp || undefined}
+        data-scroll-down={edges.canScrollDown || undefined}
+        {...events}
+      >
+        <div ref={contentRef} className={css.content} data-step-process-content data-chat-flow="">
+          <GroupMembers {...props} members={members} />
+        </div>
+      </div>
+    </>
+  );
+});
+
 /** Render a process group with local disclosure and the existing outer-Turn visibility. */
 export const ChatGroupSeat = memo(function ChatGroupSeat({
   groupKey,
   useChatGroup,
+  mounted = true,
+  placeholderHeight,
+  registerRow,
   ...props
 }: ChatGroupSeatProps) {
   const members = useChatGroup(groupKey, (group) => group?.members);
@@ -233,27 +312,21 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({
   }, [props.actions, spec, alwaysOpen]);
   const rootRef = useSearchableHidden(outerHidden, revealOuter);
   useNearViewport(rootRef, members !== undefined);
+  useLayoutEffect(() => {
+    if (registerRow === undefined || members === undefined) return;
+    const element = rootRef.current;
+    if (element === null) return;
+    registerRow(groupKey, element);
+    return () => {
+      registerRow(groupKey, null);
+    };
+  }, [registerRow, groupKey, rootRef, members !== undefined]);
   useEffect(() => {
     if (outerHidden && rootRef.current?.hasAttribute("hidden")) setOpen(false);
   }, [outerHidden, rootRef, setOpen]);
-  const reveal = useCallback(() => {
-    setOpen(true);
-  }, [setOpen]);
-  const bodyRef = useSearchableHidden(grouped && !open, reveal);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const bodyId = useId();
-  const { edges, events, initialize } = useProcessScroll(bodyRef, contentRef, open, grouped);
-  const toggle = useCallback(() => {
-    if (!open) initialize(closed === false ? "bottom" : "top");
-    setOpen(!open);
-  }, [closed, initialize, open, setOpen]);
   if (members === undefined) return null;
-  const classes = [
-    css.body,
-    !grouped ? css.expandedBody : "",
-    grouped && edges.canScrollUp ? css.fadeTop : "",
-    grouped && edges.canScrollDown ? css.fadeBottom : "",
-  ];
+  const virtualizedPlaceholder =
+    !mounted && !outerHidden && placeholderHeight !== undefined && placeholderHeight > 0;
   return (
     <div
       ref={rootRef}
@@ -265,31 +338,21 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({
       data-chat-paging-anchor={(grouped && !open) || undefined}
       data-step-process
       data-group-expanded-mode={!grouped || undefined}
+      data-chat-virtualized={virtualizedPlaceholder ? "" : undefined}
+      style={virtualizedPlaceholder ? { minHeight: placeholderHeight } : undefined}
     >
-      <div hidden={!grouped}>
-        <ProcessGroupHeader
+      {mounted ? (
+        <ChatGroupBody
+          {...props}
           groupKey={groupKey}
           useChatGroup={useChatGroup}
-          usePresentation={props.usePresentation}
-          t={props.t}
+          members={members}
+          closed={closed}
+          grouped={grouped}
           open={open}
-          bodyId={bodyId}
-          toggle={toggle}
+          setOpen={setOpen}
         />
-      </div>
-      <div
-        ref={bodyRef}
-        id={bodyId}
-        className={classes.join(" ")}
-        data-step-process-body
-        data-scroll-up={edges.canScrollUp || undefined}
-        data-scroll-down={edges.canScrollDown || undefined}
-        {...events}
-      >
-        <div ref={contentRef} className={css.content} data-step-process-content data-chat-flow="">
-          <GroupMembers {...props} members={members} />
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 });

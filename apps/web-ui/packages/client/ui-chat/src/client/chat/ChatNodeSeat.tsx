@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { JsonBlock } from "@deepseek-ai/dsh-client-ui-primitives";
 import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type {
@@ -35,6 +35,12 @@ interface ChatNodeSeatProps extends Omit<ChatNodeOwnerProps, "responseAnnotation
   readonly actions: ChatViewSlotProps["actions"];
   readonly renderSlot: ChatViewSlotProps["renderSlot"];
   readonly t: ChatViewSlotProps["t"];
+  /** Whether this row's slot content should be mounted. Nested group members stay mounted. */
+  readonly mounted?: boolean;
+  /** Reserved height (px) while unmounted; ignored for hidden or zero-height seats. */
+  readonly placeholderHeight?: number;
+  /** Registers this top-level row shell with the transcript virtualizer. */
+  readonly registerRow?: (flowKey: string, element: HTMLDivElement | null) => void;
 }
 
 type RoutedChatNodeOwner = {
@@ -85,6 +91,9 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
   actions,
   renderSlot,
   t,
+  mounted = true,
+  placeholderHeight,
+  registerRow,
 }: ChatNodeSeatProps) {
   const node = useChatNode(nodeKey);
   const routedNode = node as ChatNode | undefined;
@@ -166,6 +175,21 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
   }, [processMember, setOpen]);
   const wrapperRef = useSearchableHidden(processHidden, revealProcess);
   useNearViewport(wrapperRef, node !== undefined);
+  const flowKey =
+    routedNode === undefined
+      ? undefined
+      : groupPart === undefined || groupPart === "response"
+        ? routedNode.key
+        : JSON.stringify([routedNode.key, groupPart]);
+  useLayoutEffect(() => {
+    if (registerRow === undefined || flowKey === undefined) return;
+    const element = wrapperRef.current;
+    if (element === null) return;
+    registerRow(flowKey, element);
+    return () => {
+      registerRow(flowKey, null);
+    };
+  }, [registerRow, flowKey, wrapperRef]);
   const [disclosureReset] = useState(() => createSnapshotStore(0));
   // A reply resolves its annotation citations against the message it answers.
   const responseAnnotations = useTurnAnnotations(nodeStore, turn);
@@ -217,15 +241,13 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       responseAnnotations,
     ],
   );
-  if (routedNode === undefined || owner === null) return null;
+  if (routedNode === undefined || owner === null || flowKey === undefined) return null;
   // Runtime dispatch owns the correlation: every Node's discriminant is the
   // keyed-slot entry passed alongside that same Node. TypeScript does not
   // distribute an object containing a union into a union of objects itself.
   const routedOwner = { ...owner, node: routedNode } as RoutedChatNodeOwner;
-  const flowKey =
-    groupPart === undefined || groupPart === "response"
-      ? routedNode.key
-      : JSON.stringify([routedNode.key, groupPart]);
+  const virtualizedPlaceholder =
+    !mounted && !processHidden && placeholderHeight !== undefined && placeholderHeight > 0;
   return (
     <div
       ref={wrapperRef}
@@ -240,18 +262,22 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       data-turn-process-member={processMember || undefined}
       data-turn-process-hidden={processHidden || undefined}
       data-turn-process-answer={compactAnswer || undefined}
+      data-chat-virtualized={virtualizedPlaceholder ? "" : undefined}
+      style={virtualizedPlaceholder ? { minHeight: placeholderHeight } : undefined}
     >
-      {renderSlot("conversation.chat.node", routedOwner, {
-        entryKey: routedNode.kind,
-        hookContext,
-        fallback: (
-          <JsonBlock
-            label={t("message.unknownSurface", { type: routedNode.kind })}
-            payload={routedNode.data}
-            truncatedLabel={(total) => t("json.truncated", { total })}
-          />
-        ),
-      })}
+      {mounted
+        ? renderSlot("conversation.chat.node", routedOwner, {
+            entryKey: routedNode.kind,
+            hookContext,
+            fallback: (
+              <JsonBlock
+                label={t("message.unknownSurface", { type: routedNode.kind })}
+                payload={routedNode.data}
+                truncatedLabel={(total) => t("json.truncated", { total })}
+              />
+            ),
+          })
+        : null}
     </div>
   );
 });

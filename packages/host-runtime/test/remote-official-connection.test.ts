@@ -34,11 +34,11 @@ async function readFrame(stream: Readable): Promise<string> {
 describe("remote official app-server connection", () => {
   it("aborts the socket when a native relay handshake stalls", async () => {
     const server = createServer();
-    const disconnected = Promise.withResolvers<void>();
+    const disconnected = Promise.withResolvers<undefined>();
     server.on("upgrade", (_request, socket) => {
       socket.resume();
       socket.on("end", () => socket.end());
-      socket.once("close", disconnected.resolve);
+      socket.once("close", () => disconnected.resolve(undefined));
     });
     try {
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

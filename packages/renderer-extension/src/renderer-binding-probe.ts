@@ -357,6 +357,7 @@ export interface RendererBindingProbeApi {
     applyAgent?: ApplyAdapterAgent,
     modelControl?: RendererModelClient | null,
     openHandoff?: OpenAdapterHandoff,
+    canOpenHandoff?: (composer: Element) => boolean,
   ): void;
   dispose(): void;
 }
@@ -680,6 +681,7 @@ interface MountedComposer {
   draftUsageClient: RendererModelClient | null;
   commandRequestGeneration: number;
   nativeInferenceRoute: RendererNativeInferenceRoute;
+  handoffAvailable: boolean;
 }
 
 interface MountedCatalogRequest {
@@ -775,6 +777,11 @@ export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
       NATIVE_COMPOSER_REQUEST_ATTRIBUTES.some((attribute) => attribute === mutation.attributeName))
   )
     return true;
+  if (
+    mutation.type === "attributes" &&
+    (mutation.attributeName === "aria-label" || mutation.attributeName === "type")
+  )
+    return target.closest(CODEX_COMPOSER_SELECTOR) !== null;
   // Ignore ordinary typing, but not native request surfaces replacing rich-text content.
   if (mutation.type !== "attributes" && editorForElement(target)) {
     return (
@@ -878,6 +885,7 @@ export function installRendererBindingProbe(
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
+  let canOpenAdapterHandoff: ((composer: Element) => boolean) | null = null;
   let openAdapterHandoff: OpenAdapterHandoff | null = null;
   let modelControl: RendererModelClient | null = null;
   const activeModelHostId = (composer?: Element): string | null => {
@@ -1221,6 +1229,8 @@ export function installRendererBindingProbe(
       }
     }
   }
+  const composerHandoffAvailable = (composer: Element): boolean =>
+    Boolean(openAdapterHandoff && canOpenAdapterHandoff?.(composer));
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
     restorePendingDraftPreference(mounted);
@@ -1240,6 +1250,8 @@ export function installRendererBindingProbe(
     const refreshing =
       catalogRequest?.refreshing &&
       controller.isCurrentModelRequest(mounted.composer, catalogRequest.generation);
+    const handoffAvailable = composerHandoffAvailable(mounted.composer);
+    mounted.handoffAvailable = handoffAvailable;
     const externalSubmissionReady = renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
@@ -1254,7 +1266,7 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
       mounted.accountBalance,
-      Boolean(openAdapterHandoff && threadIdFromComposerModelTarget(mounted.modelTarget)),
+      handoffAvailable,
     );
     const nativeTargetResolved =
       mounted.modelTarget?.[0] === "default" || mounted.modelTarget?.[0] === "conversation";
@@ -3550,6 +3562,7 @@ export function installRendererBindingProbe(
       usageRequestGeneration: 0,
       draftUsageClient: null,
       commandRequestGeneration: 0,
+      handoffAvailable: false,
     };
     mountedByComposer.set(composer, mounted);
     if (isComposerModelWriteAllowed(modelTarget)) {
@@ -3666,6 +3679,9 @@ export function installRendererBindingProbe(
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
       showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
+      if (composerHandoffAvailable(composer) !== mounted.handoffAvailable) {
+        renderMounted(mounted);
+      }
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
       const composer = composerForEditor(editor);
@@ -3886,7 +3902,10 @@ export function installRendererBindingProbe(
         !isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
       ) {
         void loadExternalCatalog(mounted);
-      } else if (state.agent === "codex" && !threadIdFromComposerModelTarget(mounted.modelTarget)) {
+      } else if (
+        (state.agent === "codex" && !threadIdFromComposerModelTarget(mounted.modelTarget)) ||
+        composerHandoffAvailable(mounted.composer) !== mounted.handoffAvailable
+      ) {
         renderMounted(mounted);
       }
     }
@@ -3917,6 +3936,8 @@ export function installRendererBindingProbe(
     attributeFilter: [
       "hidden",
       "aria-hidden",
+      "aria-label",
+      "type",
       "data-codex-composer-root",
       ...NATIVE_COMPOSER_REQUEST_ATTRIBUTES,
     ],
@@ -4212,12 +4233,13 @@ export function installRendererBindingProbe(
         ...(permissionModeId ? { permissionModeId } : {}),
       };
     },
-    setAdapter(status, dispose, applyAgent, nextModelControl, nextOpenHandoff) {
+    setAdapter(status, dispose, applyAgent, nextModelControl, nextOpenHandoff, nextCanOpenHandoff) {
       usageNotificationDispose();
       adapterDispose?.();
       adapterDispose = dispose ?? null;
       applyAdapterAgent = applyAgent ?? null;
       openAdapterHandoff = nextOpenHandoff ?? null;
+      canOpenAdapterHandoff = nextCanOpenHandoff ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
       widgets.refresh();
@@ -4285,6 +4307,7 @@ export function installRendererBindingProbe(
       adapterDispose = null;
       applyAdapterAgent = null;
       openAdapterHandoff = null;
+      canOpenAdapterHandoff = null;
       modelControl = null;
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();

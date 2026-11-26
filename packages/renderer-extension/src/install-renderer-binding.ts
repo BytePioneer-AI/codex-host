@@ -18,6 +18,7 @@ export function installRendererBinding(
       adapter.applyAgent,
       adapter.modelControl,
       adapter.openHandoff,
+      adapter.canOpenHandoff,
     );
   } catch (error) {
     console.error(

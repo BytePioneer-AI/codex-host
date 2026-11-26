@@ -15,7 +15,7 @@ import {
   sendButtonWithin,
   trailingActionAnchor,
 } from "./renderer-composer-dom.js";
-import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { orbitComposerKind } from "./renderer-composer-kind.js";
 import { hasNativeComposerRequest } from "./renderer-composer-request.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import { rendererHarnessMessages } from "./renderer-harness-localization.js";
@@ -67,6 +67,7 @@ const OWNED_TRAILING_SELECTORS = [
 
 export interface RendererHandoffControl {
   refresh(): void;
+  canOpenForComposer(composer: Element): boolean;
   openForComposer(
     composer: Element,
     options?: { targetHarnessId?: string; anchor?: HTMLElement },
@@ -119,7 +120,7 @@ function findActiveConversationComposer(
 ): { composer: Element; threadId: HostThreadId } | null {
   const composers = [...ownerDocument.querySelectorAll(CODEX_COMPOSER_SELECTOR)];
   for (const composer of composers) {
-    if (isOrbitComposer(composer) || hasNativeComposerRequest(composer)) continue;
+    if (orbitComposerKind(composer) !== "codex" || hasNativeComposerRequest(composer)) continue;
     if (!isComposerVisible(composer, ownerWindow)) continue;
     const threadId = resolveThreadId(composer);
     if (threadId) return { composer, threadId };
@@ -214,6 +215,9 @@ export function installRendererHandoffControl(
   ) {
     return {
       refresh() {},
+      canOpenForComposer() {
+        return false;
+      },
       openForComposer() {
         return false;
       },
@@ -279,7 +283,7 @@ export function installRendererHandoffControl(
   const clientForHost = (hostId: string | null): RendererModelClient | null => {
     const base = options.getClient();
     if (!base) return null;
-    if (hostId === null) return base;
+    if (hostId === null) return options.getHostId && base.clientForHost ? null : base;
     if (base.clientForHost) return base.clientForHost(hostId);
     if (!base.currentHostId) return hostId === "local" ? base : null;
     return base.currentHostId() === hostId ? base : null;
@@ -600,11 +604,34 @@ export function installRendererHandoffControl(
     });
   };
 
+  const canOpenForComposer = (composer: Element): boolean => {
+    const sendButton = sendButtonWithin(composer);
+    if (
+      disposed ||
+      orbitComposerKind(composer) !== "codex" ||
+      hasNativeComposerRequest(composer) ||
+      !isComposerVisible(composer, ownerWindow) ||
+      !sendButton ||
+      !isComposerVisible(sendButton, ownerWindow) ||
+      !resolveThreadId(composer)
+    )
+      return false;
+    // Native running Turns expose Stop in place of, or alongside, Send.
+    const hasStop = [...composer.querySelectorAll("button")].some(
+      (button) =>
+        isComposerVisible(button, ownerWindow) &&
+        /^(stop|stop generating|stop streaming|停止|停止生成|停止响应)$/iu.test(
+          button.getAttribute("aria-label")?.trim() || button.getAttribute("title")?.trim() || "",
+        ),
+    );
+    return !hasStop && clientForHost(options.getHostId?.(composer) ?? null) !== null;
+  };
+
   const openForComposer = (
     composer: Element,
     openOptions?: { targetHarnessId?: string; anchor?: HTMLElement },
   ): boolean => {
-    if (disposed || isOrbitComposer(composer) || hasNativeComposerRequest(composer)) return false;
+    if (!canOpenForComposer(composer)) return false;
     const threadId = resolveThreadId(composer);
     if (!threadId) return false;
     const hostId = options.getHostId?.(composer) ?? null;
@@ -885,6 +912,7 @@ export function installRendererHandoffControl(
   return {
     refresh,
     openForComposer,
+    canOpenForComposer,
     dispose() {
       if (disposed) return;
       disposed = true;

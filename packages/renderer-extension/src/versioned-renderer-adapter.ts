@@ -718,6 +718,7 @@ export function installCurrentRendererAdapter(): {
     permissionModeId?: HarnessPermissionModeId,
     composer?: Element,
   ): boolean;
+  canOpenHandoff(composer: Element): boolean;
   openHandoff(composer: Element, targetHarnessId?: string, anchor?: HTMLElement): boolean;
   dispose(): void;
 } {
@@ -1028,6 +1029,7 @@ export function installCurrentRendererAdapter(): {
     status: liveStatus,
     modelControl,
     applyAgent,
+    canOpenHandoff: (composer: Element) => handoffControl.canOpenForComposer(composer),
     openHandoff: (composer: Element, targetHarnessId?: string, anchor?: HTMLElement) =>
       handoffControl.openForComposer(composer, {
         ...(targetHarnessId === undefined ? {} : { targetHarnessId }),

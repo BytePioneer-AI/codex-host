@@ -594,6 +594,53 @@ describe("installRendererHandoffControl", () => {
     ).toBe("Carried 3 of 5 turns (2 omitted, up to turn 4)");
   });
 
+  it.each([
+    "draft",
+    "orbit",
+    "request",
+    "running",
+    "running-alongside-send",
+    "disconnected",
+    "unrouted-host",
+    "unsupported",
+  ])("rejects picker handoff for %s composers", (scenario) => {
+    const dom = createConversationDom(scenario === "draft" ? null : "thread-picker");
+    const client = createMockClient(
+      scenario === "unrouted-host" ? { clientForHost: vi.fn(() => null) } : {},
+    );
+    if (scenario === "orbit")
+      Object.defineProperty(dom.composer, "__reactFiber$test", {
+        value: { memoizedProps: { isOrbit: true }, return: null },
+      });
+    if (scenario === "request") dom.portal.setAttribute("data-codex-composer-request", "true");
+    if (scenario === "running") {
+      const button = dom.composer.querySelector("button")!;
+      button.type = "button";
+      button.setAttribute("aria-label", "Stop");
+    }
+    if (scenario === "running-alongside-send") {
+      const stopButton = document.createElement("button");
+      stopButton.type = "button";
+      stopButton.setAttribute("aria-label", "Stop generating");
+      dom.composer.querySelector(".composer-toolbar")?.append(stopButton);
+    }
+    if (scenario === "disconnected") dom.shell.remove();
+    const control = installRendererHandoffControl({
+      getClient: () => (scenario === "unsupported" ? null : client),
+      ...(scenario === "unrouted-host" ? { getHostId: () => null } : {}),
+      mountTrigger: false,
+    });
+    try {
+      const anchor = document.createElement("button");
+      document.body.append(anchor);
+      expect(control.canOpenForComposer(dom.composer)).toBe(false);
+      expect(control.openForComposer(dom.composer, { anchor })).toBe(false);
+      expect(document.querySelector(`[${HANDOFF_POPOVER_ATTRIBUTE}]`)).toBeNull();
+    } finally {
+      control.dispose();
+    }
+  });
+
   it("supports agent-picker integration with mountTrigger=false and explicit target preselection", async () => {
     const dom = createConversationDom("thread-picker-handoff", { externalControls: true });
     const client = createMockClient({
@@ -610,6 +657,7 @@ describe("installRendererHandoffControl", () => {
       expect(document.querySelector(`[${HANDOFF_CONTROL_ATTRIBUTE}]`)).toBeNull();
       const anchor = document.createElement("button");
       document.body.append(anchor);
+      expect(control.canOpenForComposer(dom.composer)).toBe(true);
       const opened = control.openForComposer(dom.composer, {
         targetHarnessId: "antigravity",
         anchor,

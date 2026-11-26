@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, type Readable } from "node:stream";
 import { expect, vi } from "vitest";
 import type {
   HarnessAdapter,
@@ -81,7 +81,7 @@ export class JsonLineCollector {
   }> = [];
   #buffer = "";
 
-  constructor(stream: PassThrough) {
+  constructor(stream: Readable) {
     stream.setEncoding("utf8");
     stream.on("data", (chunk: string) => {
       this.#buffer += chunk;

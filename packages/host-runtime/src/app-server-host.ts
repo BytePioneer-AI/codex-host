@@ -27,6 +27,7 @@ import {
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { readThreadCatalog } from "./thread-catalog.js";
+import { readOfficialImportTimes, type OfficialImportTimes } from "./official-import-duplicates.js";
 import { confirmNativeThreadArchived } from "./native-thread-archive-confirm.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
@@ -3505,10 +3506,11 @@ export class AppServerHost {
     };
     const decoded = decodeThreadListRequest(request);
     if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
-    const { records, sharedOwners } = await this.#localThreadCatalog();
+    const { records, sharedOwners, officialImportTimes } = await this.#localThreadCatalog();
     const result = await aggregateThreadList({
       query: decoded,
       records,
+      officialImportTimes,
       ...(this.#options.sharedThreads
         ? { sharedThreads: await this.#options.sharedThreads.list(decoded.params) }
         : {}),
@@ -3604,6 +3606,13 @@ export class AppServerHost {
         ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
         ...(parsed.data.scope ? { scope: parsed.data.scope } : {}),
         readLocal: () => this.#localThreadCatalog(),
+        readImportMirrorFilter: async () => {
+          const { placements, officialImportTimes } = await this.#localThreadCatalog();
+          return {
+            placedIds: new Set(placements.map((placement) => placement.hostThreadId)),
+            officialImportTimes,
+          };
+        },
         ...(this.#options.sharedThreads ? { sharedThreads: this.#options.sharedThreads } : {}),
         runtimeFor: (id) => this.#listRuntimeState(id),
         ...(this.#options.externalOnly
@@ -3633,7 +3642,7 @@ export class AppServerHost {
     const timing = new ThreadListTiming();
     let ok = false;
     try {
-      const { records, placements } = await timing.measure("store", () =>
+      const { records, placements, officialImportTimes } = await timing.measure("store", () =>
         this.#localThreadCatalog(),
       );
       timing.counts.mappingRecords = records.length;
@@ -3650,6 +3659,7 @@ export class AppServerHost {
         aggregateThreadList({
           query: listRequest,
           records,
+          officialImportTimes,
           ...(sharedThreads ? { sharedThreads } : {}),
           ...(origin === "client" ? { timing } : {}),
           runtimeFor: (threadId) => this.#listRuntimeState(threadId),
@@ -3707,14 +3717,20 @@ export class AppServerHost {
   async #localThreadCatalog(): Promise<{
     records: StoredThreadSummaryV1[];
     placements: StoredSectionPlacementV1[];
+    officialImportTimes: OfficialImportTimes;
     sharedOwners?: ReadonlyMap<string, string>;
   }> {
     const [records, placements] = await Promise.all([
       this.#repository.listSummaries(),
       this.#repository.listSectionPlacements(),
     ]);
+    // Matched against every local record, so a shared-owned Thread still hides its official import.
+    const officialImportTimes = await readOfficialImportTimes(
+      this.#officialRuntimeScope.permanentHome,
+      records,
+    );
     const shared = this.#options.sharedThreads;
-    if (!shared) return { records, placements };
+    if (!shared) return { records, placements, officialImportTimes };
     const ids = [...new Set([...records, ...placements].map((entry) => entry.hostThreadId))];
     const sharedOwners = new Map<string, string>();
     try {
@@ -3727,12 +3743,13 @@ export class AppServerHost {
     } catch (error) {
       // Without the shared Host the local store is the only catalog left.
       this.#diagnose(error);
-      return { records, placements };
+      return { records, placements, officialImportTimes };
     }
-    if (sharedOwners.size === 0) return { records, placements };
+    if (sharedOwners.size === 0) return { records, placements, officialImportTimes };
     return {
       records: records.filter((record) => !sharedOwners.has(record.hostThreadId)),
       placements: placements.filter((placement) => !sharedOwners.has(placement.hostThreadId)),
+      officialImportTimes,
       sharedOwners,
     };
   }

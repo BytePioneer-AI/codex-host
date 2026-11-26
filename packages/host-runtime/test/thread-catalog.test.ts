@@ -360,6 +360,29 @@ describe("source-separated Thread catalog", () => {
     },
   );
 
+  it("omits untouched official import mirrors but keeps continued or sectioned ones", async () => {
+    const options = input();
+    options.readImportMirrorFilter = async () => ({
+      placedIds: new Set(["placed"]),
+      officialImportTimes: new Map([
+        ["mirror", 10],
+        ["continued", 10],
+        ["placed", 10],
+      ]),
+    });
+    options.requestOfficialPage = async () =>
+      page([
+        { ...row("mirror", 5), recencyAt: 5 },
+        { ...row("continued", 4), recencyAt: 90 },
+        { ...row("placed", 3), recencyAt: 3 },
+        row("native", 2),
+      ]);
+    const firstPage = await readThreadCatalog(options);
+    expect(firstPage.threads.map((thread) => thread.id)).toEqual(["continued", "placed", "native"]);
+    const nextPage = await readThreadCatalog({ ...options, officialCursor: { live: "next" } });
+    expect(nextPage.threads.map((thread) => thread.id)).toEqual(["continued", "placed", "native"]);
+  });
+
   it("rejects a non-advancing native cursor without requesting another page", async () => {
     const request = vi.fn(async () => page([], "A"));
     await expect(

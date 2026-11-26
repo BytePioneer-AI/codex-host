@@ -21,6 +21,10 @@ import {
 } from "./external-thread-list.js";
 
 import type { ThreadListTiming } from "./thread-list-timing.js";
+import {
+  isShadowedOfficialThread,
+  type OfficialImportTimes,
+} from "./official-import-duplicates.js";
 
 const MAX_OFFICIAL_PAGE_REQUESTS = 256;
 const OFFICIAL_TIE_ANCHOR = "\uffff";
@@ -87,6 +91,8 @@ export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
   records: readonly StoredThreadSummaryV1[];
   sharedThreads?: readonly JsonObject[];
+  /** Official Threads Codex imported from Sessions codexhost lists itself; untouched ones are skipped. */
+  officialImportTimes?: OfficialImportTimes;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
@@ -181,7 +187,15 @@ export async function aggregateThreadList(input: {
   while (output.length < query.limit) {
     const external = externalPage.data[externalIndex] ?? null;
     let official = await ensureOfficial();
-    while (official && externalIds.has(String(official.thread.id))) {
+    while (
+      official &&
+      (externalIds.has(String(official.thread.id)) ||
+        isShadowedOfficialThread(
+          input.officialImportTimes,
+          official.thread,
+          input.placementOf?.(String(official.thread.id)) !== undefined,
+        ))
+    ) {
       officialIndex += 1;
       official = await ensureOfficial();
     }

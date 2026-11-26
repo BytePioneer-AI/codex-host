@@ -154,6 +154,34 @@ describe("aggregated Thread list", () => {
     expect(cursor).toBeNull();
   });
 
+  it("skips untouched official import mirrors without breaking pagination", async () => {
+    const source = officialSource([
+      { ...official("mirror-5", 5), recencyAt: 5 },
+      { ...official("continued-4", 4), recencyAt: 90 },
+      { ...official("mirror-3", 3), recencyAt: 3 },
+      official("native-2", 2),
+    ]);
+    const officialImportTimes = new Map([
+      ["mirror-5", 10],
+      ["continued-4", 10],
+      ["mirror-3", 10],
+    ]);
+    const ids: unknown[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await aggregateThreadList({
+        query: query({ cursor, limit: 1, sortDirection: "desc" }),
+        records: [],
+        officialImportTimes,
+        runtimeFor: () => null,
+        requestOfficialPage: source.request,
+      });
+      ids.push(...page.data.map((thread) => thread.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(ids).toEqual(["continued-4", "native-2"]);
+  });
+
   it("records failed official calls without logging their error payload or masking failures", async () => {
     vi.stubEnv("CODEXHOST_TRACE_SESSION_LIST", "1");
     let now = 0;

@@ -25,6 +25,10 @@ import {
   type ThreadListEntry,
 } from "./external-thread-list.js";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
+import {
+  isShadowedOfficialThread,
+  type OfficialImportTimes,
+} from "./official-import-duplicates.js";
 import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 
 const OFFICIAL_PAGE_SIZE = 20;
@@ -70,6 +74,12 @@ interface ExternalCatalog {
   reservedIds: Set<string>;
 }
 
+/** Official import mirrors outside any section are omitted; sectioned ones stay visible. */
+export interface ImportMirrorFilter {
+  placedIds: ReadonlySet<string>;
+  officialImportTimes: OfficialImportTimes;
+}
+
 export interface ThreadCatalogInput {
   includeArchived?: boolean;
   officialCursor?: ThreadCatalogReadResult["officialCursor"];
@@ -79,6 +89,8 @@ export interface ThreadCatalogInput {
     records: readonly StoredThreadSummaryV1[];
     placements: readonly StoredSectionPlacementV1[];
   }>;
+  /** Read for every call, including later native pages that skip `readLocal`. */
+  readImportMirrorFilter?(): Promise<ImportMirrorFilter>;
   sharedThreads?: Pick<SharedThreadBridge, "list" | "ownership">;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   /** Lazy admission to the existing managed scope; only unavailable here permits external-only. */
@@ -260,7 +272,8 @@ export async function readThreadCatalog(
   };
 
   try {
-    const [external, ...official] = await Promise.all([
+    const [mirrorFilter, external, ...official] = await Promise.all([
+      input.readImportMirrorFilter?.(),
       input.officialCursor === undefined
         ? readExternal()
         : Promise.resolve<ExternalCatalog>({
@@ -277,7 +290,16 @@ export async function readThreadCatalog(
     }
     for (const row of official.flat()) {
       const id = row.ownership.threadId;
-      if (!external.reservedIds.has(id) && !byId.has(id)) byId.set(id, row);
+      if (external.reservedIds.has(id) || byId.has(id)) continue;
+      if (
+        isShadowedOfficialThread(
+          mirrorFilter?.officialImportTimes,
+          row.entry.thread,
+          mirrorFilter?.placedIds.has(id),
+        )
+      )
+        continue;
+      byId.set(id, row);
     }
     const rows = [...byId.values()].sort((left, right) =>
       compareThreadListEntries(left.entry, right.entry, "desc"),

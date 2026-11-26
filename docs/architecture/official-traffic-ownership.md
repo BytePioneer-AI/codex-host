@@ -67,6 +67,12 @@ Desktop 的原生预热池按工作目录匹配。每次创建使用独立的消
 - `thread/queue/*`：官方 Thread 原样转发；外部 Thread 的 list/add/update/delete/reorder/start 由 Host 管理真实队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)。不支持的外部队列方法返回 `-32076`。
 - 其他带外部 `threadId` 的 `thread/*` 请求返回 `-32076`。例外是 `thread/attachment/list`、`thread/settings/update`：不带 codexhost 渲染扩展的官方客户端（如 SSH 连接的 ChatGPT iOS app）打开 Thread 或发送前会调用它们，因此按官方结构返回空结果。`thread/settings/update` 只确认、不应用，权限仍由 Harness 自己的权限模式决定。
 
+## 官方自动导入的镜像 Thread
+
+官方 Codex 开启 `external-agent-import-sync-enabled` 时，会把 `~/.claude/projects` 等位置的 Harness 原生会话导入为一个新的官方 Thread，登记在 `$CODEX_HOME/external_agent_session_imports.json`。这个 Thread 与 codexhost 已列出的外部 Thread 指向同一份原生会话，却是不同的 ID，没有父子关系，会作为多余的顶层会话出现，委派产生的子 Thread 尤其明显。
+
+Host 在 `thread/list`、`codexhost/thread/catalog/read` 和委派列表中跳过这类镜像：导入记录的 `source_path` 与本地外部 Thread 的原生会话一致（Claude Code 按会话文件名，Pi、OMP 按 `locator.sessionFile`），且该 Thread 的 `recencyAt` 不晚于导入时间。导入后在 Codex 里续聊过、或已放进分区的镜像归用户所有，保持可见。独立的 Claude 会话不在 codexhost 中，不受影响。导入索引缺失或损坏时按“无镜像”处理。续页同样过滤。只在列表聚合里省略，按 ID 的 `thread/read`、`thread/resume` 与深链不变；`section_position` 排序的分区列表不过滤。共享 Host 的查看端只能用本地 Mapping Store 匹配。
+
 ## 外部 Thread 的归档与永久删除
 
 归档只改变 Host 记录的归档状态，可以取消归档。Desktop 原生「永久删除」通过 `thread/delete` 删除 codexhost 的 Thread 映射、备份与元数据，并关闭已加载的 Harness 连接；不删除 Harness 原生会话或历史，也不向官方 Codex 转发该删除请求。未加载的 Thread 无需启动 Harness 即可删除。此流程不增加 codexhost 弹窗。

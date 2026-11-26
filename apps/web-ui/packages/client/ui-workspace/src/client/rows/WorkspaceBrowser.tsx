@@ -21,6 +21,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -550,6 +551,20 @@ function SessionTree({
   const sessionDropCommitted = useRef(false);
   const [workspaceDrag, setWorkspaceDrag] = useState<WorkspaceDragState | null>(null);
   const workspaceDropCommitted = useRef(false);
+  const treeBody = useRef<HTMLDivElement>(null);
+  const workspaceToRefocus = useRef<WorkspaceId | null>(null);
+  useLayoutEffect(() => {
+    const id = workspaceToRefocus.current;
+    workspaceToRefocus.current = null;
+    if (id === null || document.activeElement !== document.body) return;
+    const tree = treeBody.current?.querySelector('[role="tree"]');
+    const row = tree?.querySelector<HTMLElement>(
+      `[data-row-key="${CSS.escape(`workspace:${id}`)}"]`,
+    );
+    // The destination section or folder may be collapsed.
+    const entry = row ?? tree?.querySelector<HTMLElement>('[data-row-key][tabindex="0"]');
+    entry?.focus();
+  }, [pinnedWorkspaceIds]);
   const nativeDragActive = drag !== null || workspaceDrag !== null;
   useNativeDragAcceptance(nativeDragActive);
   const currentGroup =
@@ -944,7 +959,13 @@ function SessionTree({
               }
             }}
             drag={workspaceDragProps}
-            pin={{ pinned, toggle: () => setWorkspacePinned(workspaceId, !pinned) }}
+            pin={{
+              pinned,
+              toggle: () => {
+                workspaceToRefocus.current = workspaceId;
+                setWorkspacePinned(workspaceId, !pinned);
+              },
+            }}
             actions={{
               rename: () => onRenameRequest(workspaceId, group.label),
               delete: () => onDeleteRequest(workspaceId, group.label),
@@ -1135,7 +1156,7 @@ function SessionTree({
   const recentRoot = rootGroups.find((group) => group.key === UNGROUPED_KEY);
   if (recentRoot !== undefined) groupRows.push(renderGroup(recentRoot, 0));
   return (
-    <div className={clsx(css.treeBody, css.wide)}>
+    <div ref={treeBody} className={clsx(css.treeBody, css.wide)}>
       {workspaceDropAtListStart && <span className={css.listTopDropIndicator} aria-hidden="true" />}
       <AnimatedRows
         className={clsx(css.list, workspaceDropAtListStart && css.listTopDropActive)}

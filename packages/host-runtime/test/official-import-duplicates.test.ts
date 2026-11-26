@@ -54,6 +54,24 @@ describe("official import duplicates", () => {
     expect([...times.keys()].sort()).toEqual(["mirror-claude", "mirror-pi"]);
   });
 
+  it("compares normalized source paths with the host filesystem's Windows casing rules", async () => {
+    const home = await codexHome(
+      JSON.stringify({
+        records: [
+          {
+            source_path: "C:/Users/Test/file.jsonl",
+            imported_thread_id: "mirror",
+            imported_at: 10,
+          },
+        ],
+      }),
+    );
+    const times = await readOfficialImportTimes(home, [
+      record("pi", "id", { sessionFile: "c:/users/test/File.jsonl" }),
+    ]);
+    expect(times.has("mirror")).toBe(process.platform === "win32");
+  });
+
   it.each([undefined, "not json", '{"records":"x"}'])(
     "fails open for a missing or malformed index (%s)",
     async (contents) => {
@@ -69,7 +87,9 @@ describe("official import duplicates", () => {
     expect(isShadowedOfficialThread(times, { id: "t", recencyAt: 10 })).toBe(true);
     expect(isShadowedOfficialThread(times, { id: "t", recencyAt: 11 })).toBe(false);
     expect(isShadowedOfficialThread(times, { id: "t" })).toBe(false);
-    expect(isShadowedOfficialThread(times, { id: "t", recencyAt: 1 }, true)).toBe(false);
+    expect(
+      isShadowedOfficialThread(times, { id: "t", recencyAt: 1, section: { id: "custom" } }),
+    ).toBe(false);
     expect(isShadowedOfficialThread(times, { id: "other", recencyAt: 1 })).toBe(false);
   });
 });

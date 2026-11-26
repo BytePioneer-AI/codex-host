@@ -74,12 +74,6 @@ interface ExternalCatalog {
   reservedIds: Set<string>;
 }
 
-/** Official import mirrors outside any section are omitted; sectioned ones stay visible. */
-export interface ImportMirrorFilter {
-  placedIds: ReadonlySet<string>;
-  officialImportTimes: OfficialImportTimes;
-}
-
 export interface ThreadCatalogInput {
   includeArchived?: boolean;
   officialCursor?: ThreadCatalogReadResult["officialCursor"];
@@ -88,9 +82,9 @@ export interface ThreadCatalogInput {
   readLocal(): Promise<{
     records: readonly StoredThreadSummaryV1[];
     placements: readonly StoredSectionPlacementV1[];
+    officialImportTimes?: OfficialImportTimes;
   }>;
-  /** Read for every call, including later native pages that skip `readLocal`. */
-  readImportMirrorFilter?(): Promise<ImportMirrorFilter>;
+  readContinuationImportTimes?(): Promise<OfficialImportTimes>;
   sharedThreads?: Pick<SharedThreadBridge, "list" | "ownership">;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   /** Lazy admission to the existing managed scope; only unavailable here permits external-only. */
@@ -166,7 +160,10 @@ export async function readThreadCatalog(
       }
     }));
 
-  const readOfficial = (query: DecodedThreadListRequest): Promise<CatalogEntry[]> =>
+  const readOfficial = (
+    query: DecodedThreadListRequest,
+    importTimes: Promise<OfficialImportTimes | undefined>,
+  ): Promise<CatalogEntry[]> =>
     measure(query.archived ? "officialArchived" : "official", async (count) => {
       const branch = query.archived ? "archived" : "live";
       const cursor = input.officialCursor?.[branch];
@@ -185,9 +182,11 @@ export async function readThreadCatalog(
         });
         if (page.nextCursor !== null && page.nextCursor === next)
           throw new Error("Official Thread catalog pagination did not advance");
-        data.push(...page.data);
+        const times = await importTimes;
+        const visible = page.data.filter((thread) => !isShadowedOfficialThread(times, thread));
+        data.push(...visible);
         next = page.nextCursor;
-        if (next === null || !scope || page.data.some((thread) => inScope(scope, thread))) break;
+        if (next === null || !scope || visible.some((thread) => inScope(scope, thread))) break;
       }
       officialCursor[branch] = next;
       return data.map((thread) => ({
@@ -197,12 +196,11 @@ export async function readThreadCatalog(
       }));
     });
 
-  const readExternal = async (): Promise<ExternalCatalog> => {
+  const readExternal = async (
+    localRead: ReturnType<ThreadCatalogInput["readLocal"]>,
+  ): Promise<ExternalCatalog> => {
     const [local, sharedPages] = await Promise.all([
-      measure("local", async (count) => {
-        count();
-        return input.readLocal();
-      }),
+      localRead,
       Promise.all(
         queries.map((query) =>
           measure(query.archived ? "sharedArchived" : "shared", async (count) => {
@@ -272,16 +270,22 @@ export async function readThreadCatalog(
   };
 
   try {
-    const [mirrorFilter, external, ...official] = await Promise.all([
-      input.readImportMirrorFilter?.(),
+    const local =
       input.officialCursor === undefined
-        ? readExternal()
-        : Promise.resolve<ExternalCatalog>({
-            rows: [],
-            archivedThreadIds: [],
-            reservedIds: new Set<string>(),
-          }),
-      ...queries.map(readOfficial),
+        ? measure("local", (count) => {
+            count();
+            return input.readLocal();
+          })
+        : undefined;
+    const times = local
+      ? local.then((snapshot) => snapshot.officialImportTimes)
+      : Promise.resolve(input.readContinuationImportTimes?.());
+    const [external, official] = await Promise.all([
+      local
+        ? readExternal(local)
+        : { rows: [], archivedThreadIds: [], reservedIds: new Set<string>() },
+      Promise.all(queries.map((query) => readOfficial(query, times))),
+      times,
     ]);
     const byId = new Map<string, CatalogEntry>();
     // Live rows win over archived duplicates; confirmed external ownership wins over native echoes.
@@ -291,14 +295,6 @@ export async function readThreadCatalog(
     for (const row of official.flat()) {
       const id = row.ownership.threadId;
       if (external.reservedIds.has(id) || byId.has(id)) continue;
-      if (
-        isShadowedOfficialThread(
-          mirrorFilter?.officialImportTimes,
-          row.entry.thread,
-          mirrorFilter?.placedIds.has(id),
-        )
-      )
-        continue;
       byId.set(id, row);
     }
     const rows = [...byId.values()].sort((left, right) =>

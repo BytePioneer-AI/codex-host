@@ -3606,13 +3606,11 @@ export class AppServerHost {
         ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
         ...(parsed.data.scope ? { scope: parsed.data.scope } : {}),
         readLocal: () => this.#localThreadCatalog(),
-        readImportMirrorFilter: async () => {
-          const { placements, officialImportTimes } = await this.#localThreadCatalog();
-          return {
-            placedIds: new Set(placements.map((placement) => placement.hostThreadId)),
-            officialImportTimes,
-          };
-        },
+        readContinuationImportTimes: async () =>
+          readOfficialImportTimes(
+            this.#officialRuntimeScope.permanentHome,
+            await this.#repository.listSummaries(),
+          ),
         ...(this.#options.sharedThreads ? { sharedThreads: this.#options.sharedThreads } : {}),
         runtimeFor: (id) => this.#listRuntimeState(id),
         ...(this.#options.externalOnly

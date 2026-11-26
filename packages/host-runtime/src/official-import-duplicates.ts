@@ -17,6 +17,11 @@ interface ImportRecord {
   importedAt: number;
 }
 
+function sourcePathKey(file: string): string {
+  const normalized = path.normalize(file);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 function importRecords(parsed: unknown): ImportRecord[] {
   if (!parsed || typeof parsed !== "object") return [];
   const records = (parsed as { records?: unknown }).records;
@@ -32,7 +37,7 @@ function importRecords(parsed: unknown): ImportRecord[] {
       return [];
     return [
       {
-        sourcePath: path.normalize(source_path),
+        sourcePath: sourcePathKey(source_path),
         importedThreadId: imported_thread_id,
         importedAt: imported_at,
       },
@@ -58,7 +63,9 @@ async function readImportIndex(codexHome: string): Promise<ImportRecord[]> {
 
 function nativeSessionIds(record: StoredThreadSummaryV1): string[] {
   return [record.nativeSessionRef, record.importSourceRef].flatMap((ref) =>
-    ref ? [ref.nativeSessionId] : [],
+    ref
+      ? [process.platform === "win32" ? ref.nativeSessionId.toLowerCase() : ref.nativeSessionId]
+      : [],
   );
 }
 
@@ -66,7 +73,7 @@ function sessionFile(record: StoredThreadSummaryV1): string | null {
   const locator = record.nativeSessionRef?.locator;
   if (!locator || typeof locator !== "object" || Array.isArray(locator)) return null;
   const file = (locator as { sessionFile?: unknown }).sessionFile;
-  return typeof file === "string" ? path.normalize(file) : null;
+  return typeof file === "string" ? sourcePathKey(file) : null;
 }
 
 function isCodexhostSessionSource(
@@ -110,9 +117,16 @@ export async function readOfficialImportTimes(
 export function isShadowedOfficialThread(
   importTimes: OfficialImportTimes | undefined,
   thread: JsonObject,
-  hasSection = false,
 ): boolean {
-  if (hasSection || typeof thread.id !== "string") return false;
+  const section = thread.section;
+  if (
+    typeof thread.id !== "string" ||
+    (section &&
+      typeof section === "object" &&
+      !Array.isArray(section) &&
+      typeof section.id === "string")
+  )
+    return false;
   const importedAt = importTimes?.get(thread.id);
   return (
     importedAt !== undefined &&

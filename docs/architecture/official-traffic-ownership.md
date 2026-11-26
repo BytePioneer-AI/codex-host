@@ -71,7 +71,7 @@ Desktop 的原生预热池按工作目录匹配。每次创建使用独立的消
 
 官方 Codex 开启 `external-agent-import-sync-enabled` 时，会把 `~/.claude/projects` 等位置的 Harness 原生会话导入为一个新的官方 Thread，登记在 `$CODEX_HOME/external_agent_session_imports.json`。这个 Thread 与 codexhost 已列出的外部 Thread 指向同一份原生会话，却是不同的 ID，没有父子关系，会作为多余的顶层会话出现，委派产生的子 Thread 尤其明显。
 
-Host 在 `thread/list`、`codexhost/thread/catalog/read` 和委派列表中跳过这类镜像：导入记录的 `source_path` 与本地外部 Thread 的原生会话一致（Claude Code 按会话文件名，Pi、OMP 按 `locator.sessionFile`），且该 Thread 的 `recencyAt` 不晚于导入时间。导入后在 Codex 里续聊过、或已放进分区的镜像归用户所有，保持可见。独立的 Claude 会话不在 codexhost 中，不受影响。导入索引缺失或损坏时按“无镜像”处理。续页同样过滤。只在列表聚合里省略，按 ID 的 `thread/read`、`thread/resume` 与深链不变；`section_position` 排序的分区列表不过滤。共享 Host 的查看端只能用本地 Mapping Store 匹配。
+Host 在 `thread/list`、`codexhost/thread/catalog/read` 和委派列表中跳过这类镜像：导入记录的 `source_path` 与本地外部 Thread 的原生会话一致（Claude Code 按会话文件名，Pi、OMP 按 `locator.sessionFile`），且该 Thread 的 `recencyAt` 不晚于导入时间。导入后在 Codex 里续聊过、或已放进分区的镜像归用户所有，保持可见。独立的 Claude 会话不在 codexhost 中，不受影响。导入索引缺失或损坏时按“无镜像”处理。项目目录按过滤后的可见行判断是否继续翻页。聚合列表达到扫描上限时返回续页游标，后续读取沿用原有排序。只在列表聚合里省略，按 ID 的 `thread/read`、`thread/resume` 与深链不变；`section_position` 排序的分区列表不过滤。共享 Host 的查看端只能用本地 Mapping Store 匹配。
 
 ## 外部 Thread 的归档与永久删除
 

@@ -44,8 +44,8 @@ import { mergeTurnRailItems, type TurnRailItem } from "./turn-rail-items.ts";
 import { useChatScroll } from "./use-chat-scroll.ts";
 import {
   entryFlowKey,
-  flowKeyForAnswerKey,
   flowKeyForScrollAnchor,
+  resolveRevealTargetFlowKey,
   useTranscriptVirtualization,
   type TranscriptVirtualization,
 } from "./use-transcript-virtualization.ts";
@@ -263,6 +263,7 @@ export function ChatView({
 }: ChatViewSlotProps) {
   const order = useChat((s) => s.order);
   const browserAvailable = useBrowserAvailable((available) => available);
+  const groupedChat = useConversation((snapshot) => snapshot.views.grouped("chat"));
   const groupedEntries = useConversation((snapshot) => snapshot.views.grouped("chat")?.entries);
   const entries = useMemo<readonly RenderEntry[]>(
     () => groupedEntries ?? order.map((key) => ({ kind: "node", key: key as NodeKey })),
@@ -533,10 +534,13 @@ export function ChatView({
     }
     return null;
   }, [entries, messageEditing.draft?.seq, nodeStore]);
-  const revealTargetFlowKey =
-    viewRequest?.view === "chat" && annotationToReveal?.anchor !== undefined
-      ? flowKeyForAnswerKey(annotationToReveal.anchor.answerKey)
-      : null;
+  const revealTargetFlowKey = useMemo(
+    () =>
+      viewRequest?.view === "chat" && annotationToReveal?.anchor !== undefined
+        ? resolveRevealTargetFlowKey(annotationToReveal.anchor.answerKey, entries, groupedChat)
+        : null,
+    [annotationToReveal?.anchor, entries, groupedChat, viewRequest?.view],
+  );
   const { initialized, revealResponseAnnotation } = scroll;
   const savedAnchorFlowKey = useMemo(() => {
     if (initialized) return null;
@@ -562,7 +566,7 @@ export function ChatView({
     pendingTurnJump?.sessionId === sessionId ? pendingTurnJump.item : null;
   const navigateToTurn = useCallback(
     (item: TurnRailItem) => {
-      const targetAnchorKey = item.anchor.kind === "loaded" ? item.anchor.anchorKey : null;
+      const targetAnchorKey = item.anchor.kind === "loaded" ? item.anchor.key : null;
       virtualization.pinNavigationTarget({ turn: item.turn, anchorKey: targetAnchorKey });
       if (
         item.anchor.kind === "loaded" &&
@@ -592,6 +596,18 @@ export function ChatView({
     if (!initialized || viewRequest?.view !== "chat") return;
     if (revealTargetFlowKey !== null) {
       virtualization.pinNavigationTarget({ turn: null, anchorKey: revealTargetFlowKey });
+      const targetInEntries = entries.some(
+        (entry) =>
+          entryFlowKey(entry) === revealTargetFlowKey ||
+          (entry.kind === "node" && entry.key === revealTargetFlowKey),
+      );
+      if (
+        virtualization.active &&
+        targetInEntries &&
+        !virtualization.isAnchorMounted(revealTargetFlowKey)
+      ) {
+        return;
+      }
     }
     if (annotationToReveal !== undefined) revealResponseAnnotation(annotationToReveal);
     completeViewRequest();
@@ -599,6 +615,7 @@ export function ChatView({
     initialized,
     viewRequest,
     annotationToReveal,
+    entries,
     revealResponseAnnotation,
     revealTargetFlowKey,
     completeViewRequest,

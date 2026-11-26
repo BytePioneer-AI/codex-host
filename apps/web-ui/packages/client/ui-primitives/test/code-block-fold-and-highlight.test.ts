@@ -240,6 +240,31 @@ describe("CodeBlock folding, clipboard contract, and streaming protection", () =
     });
     expect(block?.getAttribute("data-code-folded")).toBe("true");
     expect(host.querySelectorAll("pre code .line")).toHaveLength(FOLD_PREVIEW_LINES);
+
+    // Resuming streaming on a collapsed block expands it and keeps it expanded once settled again.
+    render(
+      createElement(CodeBlock, {
+        code: `${growingCode}\nconst line_26 = 26;\n`,
+        lang: "ts",
+        streaming: true,
+        collapsible: true,
+        copyLabel: "Copy",
+        copiedLabel: "Copied",
+      }),
+    );
+    expect(host.querySelectorAll("pre code .line")).toHaveLength(26);
+    render(
+      createElement(CodeBlock, {
+        code: `${growingCode}\nconst line_26 = 26;\n`,
+        lang: "ts",
+        streaming: false,
+        collapsible: true,
+        copyLabel: "Copy",
+        copiedLabel: "Copied",
+      }),
+    );
+    expect(block?.getAttribute("data-code-folded")).toBe("false");
+    expect(host.querySelectorAll("pre code .line")).toHaveLength(26);
   });
 
   it("renders oversized blocks as plain monospace text without Shiki markup and still copies full text", async () => {

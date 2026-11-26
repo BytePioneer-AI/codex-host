@@ -753,7 +753,7 @@ export class Session implements SessionFace {
     const journal = this.events?.capture() ?? this.cachedJournal;
     return {
       ...(journal === undefined ? {} : { journal }),
-      toolOutputs: this.toolOutputs.values,
+      toolOutputs: new Map(this.toolOutputs.values),
       entries: this.eventSource.getSnapshot().entries,
       baseSeq: this.baseSeq,
       hasMore: this.hasMore,
@@ -897,6 +897,7 @@ export class Session implements SessionFace {
     try {
       await events.open(HISTORY_PAGE_OPTIONS);
       if (generation !== this.openGeneration || this.events !== events) return;
+      this.cachedJournal = undefined;
       this.openState = "open";
     } catch (error) {
       if (generation !== this.openGeneration || this.events !== events) return;

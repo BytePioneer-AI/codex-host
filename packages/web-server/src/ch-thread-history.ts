@@ -21,6 +21,12 @@ interface TurnsPage {
   nextCursor: string | null;
 }
 
+function isInvalidCursorError(error: unknown): boolean {
+  if (!(error instanceof RpcError)) return false;
+  if (error.code !== "host/rejected" && error.code !== "remote/request-failed") return false;
+  return (error.details as { hostCode?: unknown } | undefined)?.hostCode === -32602;
+}
+
 export class ChThreadHistory extends ChThreadView {
   private loaded = false;
   private readonly commands: ChCommandPresentation;
@@ -89,16 +95,18 @@ export class ChThreadHistory extends ChThreadView {
     const walkFrom = async (startCursor: string | null): Promise<ChTurn | undefined> => {
       let cursor: string | null = startCursor;
       const seen = new Set<string>();
-      for (let pages = 0; pages < 200; pages++) {
+      while (true) {
+        this.ensureCurrent();
         const page = await this.page(cursor);
         this.rememberPageCursors(page.data, cursor);
         const match = page.data.find((turn) => turn.id === turnId);
         if (match) return match;
-        if (!page.nextCursor || seen.has(page.nextCursor)) return undefined;
+        if (!page.nextCursor) return undefined;
+        if (seen.has(page.nextCursor))
+          throw new RpcError("host/history-invalid", "CH history cursor did not advance.");
         seen.add(page.nextCursor);
         cursor = page.nextCursor;
       }
-      return undefined;
     };
     const hint = this.turnPageCursors.get(turnId);
     if (hint !== undefined && hint !== null) {
@@ -109,7 +117,7 @@ export class ChThreadHistory extends ChThreadView {
         if (match) return match;
       } catch (error) {
         // Fall back to walking from head when a stored cursor anchor was invalidated by history rewrite.
-        if (!(error instanceof RpcError) || error.code !== "host/rejected") throw error;
+        if (!isInvalidCursorError(error)) throw error;
       }
     }
     return walkFrom(null);

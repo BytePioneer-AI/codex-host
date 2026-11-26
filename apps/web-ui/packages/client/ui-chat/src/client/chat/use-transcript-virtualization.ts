@@ -14,7 +14,11 @@ import {
   useState,
   type RefObject,
 } from "react";
-import type { RenderEntry } from "@deepseek-ai/dsh-client-ui-conversation/client";
+import type {
+  GroupKey,
+  NodeReference,
+  RenderEntry,
+} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { ChatSnapshot } from "../contract/snapshot.ts";
 
 /** Minimum top-level entry count required before content virtualization activates. */
@@ -23,14 +27,37 @@ export const VIRTUALIZE_THRESHOLD = 48;
 export const PIN_TAIL = 10;
 /** Idle timeout before releasing a temporary native-find full-mount lease. */
 export const FIND_LEASE_TIMEOUT_MS = 30_000;
-/** IntersectionObserver rootMargin (~1.5 viewport heights above and below). */
-export const VIRTUALIZE_OVERSCAN_MARGIN = "150% 0px";
+/** Hard duration ceiling for a temporary native-find full-mount lease. */
+export const FIND_LEASE_MAX_DURATION_MS = 180_000;
+const OVERSCAN_MULTIPLIER = 1.5;
+const OVERSCAN_BUCKET_PX = 160;
+const MIN_OVERSCAN_PX = 320;
+const FALLBACK_OVERSCAN_PX = 1200;
+const FOLLOW_BOTTOM_THRESHOLD_PX = 24;
+/** Fallback pixel IntersectionObserver rootMargin (~1.5 viewport heights at 800px). */
+export const VIRTUALIZE_OVERSCAN_MARGIN = `${FALLBACK_OVERSCAN_PX}px 0px`;
 /** Conservative placeholder height (px) for unmeasured node rows. */
 export const ESTIMATED_NODE_HEIGHT = 80;
 /** Conservative placeholder height (px) for unmeasured group rows. */
 export const ESTIMATED_GROUP_HEIGHT = 32;
 /** Extra following rows mounted alongside a jump target so the landing viewport renders immediately. */
 const JUMP_TARGET_FOLLOWING_ROWS = 2;
+const EMPTY_MOUNTED_KEYS: ReadonlySet<string> = new Set();
+
+/**
+ * Compute a bucketed pixel vertical `rootMargin` (~1.5x root viewport height)
+ * so IntersectionObserver never resolves `%` against the scrollport's width.
+ */
+export function computeOverscanMargin(rootHeight: number): string {
+  if (!Number.isFinite(rootHeight) || rootHeight <= 0) {
+    return VIRTUALIZE_OVERSCAN_MARGIN;
+  }
+  const bucketed = Math.max(
+    MIN_OVERSCAN_PX,
+    Math.ceil((rootHeight * OVERSCAN_MULTIPLIER) / OVERSCAN_BUCKET_PX) * OVERSCAN_BUCKET_PX,
+  );
+  return `${bucketed}px 0px`;
+}
 
 /** Explicit navigation target pinned until superseded, reset, or session switch. */
 export interface NavigationPinTarget {
@@ -61,7 +88,9 @@ export interface TranscriptVirtualizationInput {
   readonly busyTurn?: number | null;
   /** Override idle timeout for the native-find lease (defaults to {@link FIND_LEASE_TIMEOUT_MS}). */
   readonly findLeaseTimeoutMs?: number;
-  /** Override IntersectionObserver rootMargin (defaults to {@link VIRTUALIZE_OVERSCAN_MARGIN}). */
+  /** Override maximum hard duration for the native-find lease (defaults to {@link FIND_LEASE_MAX_DURATION_MS}). */
+  readonly findLeaseMaxDurationMs?: number;
+  /** Override IntersectionObserver rootMargin (defaults to 1.5x `root.clientHeight` in px). */
   readonly overscanMargin?: string;
 }
 
@@ -111,6 +140,43 @@ export function flowKeyForAnswerKey(answerKey: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Minimal grouped-view lookup needed to map grouped members to their top-level group key. */
+export interface GroupedChatLookup {
+  groupSource(key: GroupKey): {
+    getSnapshot(): { readonly members: readonly NodeReference[] } | undefined;
+  };
+}
+
+/**
+ * Resolve a response annotation `answerKey` to the top-level flow key that must
+ * stay mounted, mapping grouped inner members to their enclosing `groupKey`.
+ */
+export function resolveRevealTargetFlowKey(
+  answerKey: string,
+  entries: readonly RenderEntry[],
+  groupedView: GroupedChatLookup | undefined,
+): string | null {
+  const rawFlowKey = flowKeyForAnswerKey(answerKey);
+  if (rawFlowKey === null) return null;
+  for (const entry of entries) {
+    if (entryFlowKey(entry) === rawFlowKey) return rawFlowKey;
+    if (entry.kind === "node" && entry.key === rawFlowKey) return entryFlowKey(entry);
+  }
+  if (groupedView !== undefined) {
+    for (const entry of entries) {
+      if (entry.kind !== "group") continue;
+      const members = groupedView.groupSource(entry.key).getSnapshot()?.members;
+      if (members === undefined) continue;
+      if (
+        members.some((member) => entryFlowKey(member) === rawFlowKey || member.key === rawFlowKey)
+      ) {
+        return entry.key;
+      }
+    }
+  }
+  return rawFlowKey;
 }
 
 /** Strip the `group:` prefix from a `ChatScrollPosition.anchorKey` to obtain its flow key. */
@@ -203,39 +269,58 @@ export function findTopLevelRowFlowKey(node: Node | null, column: HTMLElement): 
   return current.getAttribute("data-chat-flow-key");
 }
 
-function endpointRowIndex(
+function scanColumnChildRowIndex(
+  column: HTMLElement,
+  startChildIndex: number,
+  step: 1 | -1,
+  flowKeyToIndex: ReadonlyMap<string, number>,
+): number | null {
+  const childCount = column.childNodes.length;
+  for (let i = startChildIndex; i >= 0 && i < childCount; i += step) {
+    const child = column.childNodes[i];
+    if (child instanceof Element) {
+      const key = child.getAttribute("data-chat-flow-key");
+      if (key !== null) {
+        const idx = flowKeyToIndex.get(key);
+        if (idx !== undefined) return idx;
+      }
+    }
+  }
+  return null;
+}
+
+function insideColumnEndpointIndex(
   container: Node,
   offset: number,
   boundary: "start" | "end",
   column: HTMLElement,
   flowKeyToIndex: ReadonlyMap<string, number>,
-  entryCount: number,
 ): number | null {
-  if (entryCount === 0) return null;
+  const childCount = column.childNodes.length;
+  if (childCount === 0) return null;
+  const step: 1 | -1 = boundary === "end" ? -1 : 1;
   if (container === column) {
-    const childCount = column.childNodes.length;
-    if (childCount === 0) return null;
-    const rawIdx = boundary === "end" ? Math.max(0, offset - 1) : Math.min(offset, childCount - 1);
-    const step = boundary === "end" ? -1 : 1;
-    for (let i = rawIdx; i >= 0 && i < childCount; i += step) {
-      const child = column.childNodes[i];
-      if (child instanceof Element) {
-        const key = child.getAttribute("data-chat-flow-key");
-        if (key !== null) {
-          const idx = flowKeyToIndex.get(key);
-          if (idx !== undefined) return idx;
-        }
-      }
+    if (boundary === "end" && offset <= 0) return null;
+    if (boundary === "start" && offset >= childCount) return null;
+    const rawIdx = boundary === "end" ? Math.min(offset - 1, childCount - 1) : Math.max(0, offset);
+    return scanColumnChildRowIndex(column, rawIdx, step, flowKeyToIndex);
+  }
+  let directChild: Node | null = container;
+  while (directChild !== null && directChild.parentNode !== column) {
+    directChild = directChild.parentNode;
+  }
+  if (directChild === null || directChild.parentNode !== column) return null;
+  if (directChild instanceof Element) {
+    const key = directChild.getAttribute("data-chat-flow-key");
+    if (key !== null) {
+      return flowKeyToIndex.get(key) ?? null;
     }
-    return null;
   }
-  const directKey = findTopLevelRowFlowKey(container, column);
-  if (directKey !== null) {
-    return flowKeyToIndex.get(directKey) ?? null;
+  for (let i = 0; i < childCount; i += 1) {
+    if (column.childNodes[i] === directChild) {
+      return scanColumnChildRowIndex(column, i + step, step, flowKeyToIndex);
+    }
   }
-  const position = column.compareDocumentPosition(container);
-  if ((position & Node.DOCUMENT_POSITION_PRECEDING) !== 0) return 0;
-  if ((position & Node.DOCUMENT_POSITION_FOLLOWING) !== 0) return entryCount - 1;
   return null;
 }
 
@@ -252,45 +337,67 @@ export function resolveSelectionFlowRange(
   if (selection === null || selection.rangeCount === 0 || selection.isCollapsed) return null;
   if (flowKeys.length === 0) return null;
 
+  const ownerDocument = column.ownerDocument;
+  const columnRange = ownerDocument.createRange();
+  if (column.parentNode !== null) {
+    columnRange.selectNode(column);
+  } else {
+    columnRange.selectNodeContents(column);
+  }
+
   let minIndex = Number.POSITIVE_INFINITY;
   let maxIndex = -1;
 
   for (let r = 0; r < selection.rangeCount; r += 1) {
     const range = selection.getRangeAt(r);
     if (range.collapsed) continue;
+    let startsBeforeColumnEnd: boolean;
+    let endsAfterColumnStart: boolean;
+    try {
+      // END_TO_START compares range.start vs columnRange.end;
+      // START_TO_END compares range.end vs columnRange.start.
+      startsBeforeColumnEnd = range.compareBoundaryPoints(range.END_TO_START, columnRange) < 0;
+      endsAfterColumnStart = range.compareBoundaryPoints(range.START_TO_END, columnRange) > 0;
+    } catch {
+      continue;
+    }
+    if (!startsBeforeColumnEnd || !endsAfterColumnStart) continue;
+
     const startInside = column.contains(range.startContainer);
     const endInside = column.contains(range.endContainer);
-    const startBefore =
-      !startInside &&
-      (column.compareDocumentPosition(range.startContainer) & Node.DOCUMENT_POSITION_PRECEDING) !==
-        0;
-    const endAfter =
-      !endInside &&
-      (column.compareDocumentPosition(range.endContainer) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
-    if (!startInside && !endInside && !(startBefore && endAfter)) continue;
+    let startIdx: number | null;
+    if (startInside) {
+      startIdx = insideColumnEndpointIndex(
+        range.startContainer,
+        range.startOffset,
+        "start",
+        column,
+        flowKeyToIndex,
+      );
+    } else {
+      startIdx = range.compareBoundaryPoints(range.START_TO_START, columnRange) <= 0 ? 0 : null;
+    }
 
-    const startIdx = endpointRowIndex(
-      range.startContainer,
-      range.startOffset,
-      "start",
-      column,
-      flowKeyToIndex,
-      flowKeys.length,
-    );
-    const endIdx = endpointRowIndex(
-      range.endContainer,
-      range.endOffset,
-      "end",
-      column,
-      flowKeyToIndex,
-      flowKeys.length,
-    );
-    if (startIdx === null && endIdx === null) continue;
-    const lo = startIdx ?? endIdx ?? 0;
-    const hi = endIdx ?? startIdx ?? flowKeys.length - 1;
-    minIndex = Math.min(minIndex, lo, hi);
-    maxIndex = Math.max(maxIndex, lo, hi);
+    let endIdx: number | null;
+    if (endInside) {
+      endIdx = insideColumnEndpointIndex(
+        range.endContainer,
+        range.endOffset,
+        "end",
+        column,
+        flowKeyToIndex,
+      );
+    } else {
+      endIdx =
+        range.compareBoundaryPoints(range.END_TO_END, columnRange) >= 0
+          ? flowKeys.length - 1
+          : null;
+    }
+
+    if (startIdx === null || endIdx === null || startIdx > endIdx) continue;
+    minIndex = Math.min(minIndex, startIdx);
+    maxIndex = Math.max(maxIndex, endIdx);
   }
 
   if (maxIndex < 0 || !Number.isFinite(minIndex)) return null;
@@ -318,6 +425,13 @@ function sameNavigationTarget(
   return left.turn === right.turn && left.anchorKey === right.anchorKey;
 }
 
+interface PendingScrollCompensation {
+  readonly scroller: HTMLElement;
+  readonly anchorEl: HTMLElement;
+  readonly prevTop: number;
+  readonly prevScrollTop: number;
+}
+
 /**
  * Virtualize offscreen top-level transcript row contents while keeping outer row
  * shells, heights, selection spans, focus/editing, jump targets, tail streaming,
@@ -334,7 +448,8 @@ export function useTranscriptVirtualization({
   savedAnchorFlowKey = null,
   busyTurn = null,
   findLeaseTimeoutMs = FIND_LEASE_TIMEOUT_MS,
-  overscanMargin = VIRTUALIZE_OVERSCAN_MARGIN,
+  findLeaseMaxDurationMs = FIND_LEASE_MAX_DURATION_MS,
+  overscanMargin,
 }: TranscriptVirtualizationInput): TranscriptVirtualization {
   const hasIntersectionObserver = typeof IntersectionObserver !== "undefined";
   const enabled = entries.length > VIRTUALIZE_THRESHOLD && hasIntersectionObserver;
@@ -343,23 +458,36 @@ export function useTranscriptVirtualization({
   const heightsRef = useRef<Map<string, number>>(new Map());
   const rowElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const visibleKeysRef = useRef<Set<string>>(new Set());
-  const mountedKeysRef = useRef<Set<string>>(new Set());
+  const mountedKeysRef = useRef<ReadonlySet<string>>(EMPTY_MOUNTED_KEYS);
   const ioRef = useRef<IntersectionObserver | null>(null);
+  const ioSettledRef = useRef(false);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const resizeObservedRef = useRef<Set<HTMLDivElement>>(new Set());
   const findLeaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const findLeaseStartedAtRef = useRef<number | null>(null);
+  const pendingScrollCompensationRef = useRef<PendingScrollCompensation | null>(null);
 
   if (sessionRef.current !== sessionId) {
     sessionRef.current = sessionId;
     heightsRef.current.clear();
     visibleKeysRef.current = new Set();
-    mountedKeysRef.current = new Set();
+    mountedKeysRef.current = EMPTY_MOUNTED_KEYS;
+    ioSettledRef.current = false;
+    findLeaseStartedAtRef.current = null;
+    pendingScrollCompensationRef.current = null;
   }
 
   const [visibleState, setVisibleState] = useState<{
     readonly sessionId: string;
     readonly keys: ReadonlySet<string>;
   }>(() => ({ sessionId, keys: new Set() }));
+  const [ioSettledState, setIoSettledState] = useState<{
+    readonly sessionId: string;
+    readonly settled: boolean;
+  }>(() => ({ sessionId, settled: false }));
+  const [measuredOverscanMargin, setMeasuredOverscanMargin] = useState<string>(
+    VIRTUALIZE_OVERSCAN_MARGIN,
+  );
   const [selectionState, setSelectionState] = useState<{
     readonly sessionId: string;
     readonly range: SelectionFlowRange | null;
@@ -379,6 +507,8 @@ export function useTranscriptVirtualization({
 
   const visibleKeys =
     visibleState.sessionId === sessionId ? visibleState.keys : visibleKeysRef.current;
+  const ioSettled = enabled && ioSettledState.sessionId === sessionId && ioSettledState.settled;
+  const effectiveOverscanMargin = overscanMargin ?? measuredOverscanMargin;
   const selectionRange = selectionState.sessionId === sessionId ? selectionState.range : null;
   const focusedFlowKey = focusedState.sessionId === sessionId ? focusedState.flowKey : null;
   const navigationPin = navigationState.sessionId === sessionId ? navigationState.target : null;
@@ -419,30 +549,59 @@ export function useTranscriptVirtualization({
 
   const releaseFindLease = useCallback(() => {
     clearFindLeaseTimer();
+    findLeaseStartedAtRef.current = null;
     measureMountedRows();
     setFindLeaseState((prev) =>
       prev.sessionId === sessionId && !prev.active ? prev : { sessionId, active: false },
     );
   }, [clearFindLeaseTimer, measureMountedRows, sessionId]);
 
-  const activateOrRenewFindLease = useCallback(() => {
-    clearFindLeaseTimer();
+  const scheduleFindLeaseTimer = useCallback(
+    (delayMs: number) => {
+      clearFindLeaseTimer();
+      findLeaseTimerRef.current = setTimeout(() => {
+        findLeaseTimerRef.current = null;
+        findLeaseStartedAtRef.current = null;
+        measureMountedRows();
+        setFindLeaseState((prev) =>
+          prev.sessionId === sessionId && !prev.active ? prev : { sessionId, active: false },
+        );
+      }, delayMs);
+    },
+    [clearFindLeaseTimer, measureMountedRows, sessionId],
+  );
+
+  const activateFindLease = useCallback(() => {
+    findLeaseStartedAtRef.current = Date.now();
     setFindLeaseState((prev) =>
       prev.sessionId === sessionId && prev.active ? prev : { sessionId, active: true },
     );
-    findLeaseTimerRef.current = setTimeout(() => {
-      findLeaseTimerRef.current = null;
-      measureMountedRows();
-      setFindLeaseState((prev) =>
-        prev.sessionId === sessionId && !prev.active ? prev : { sessionId, active: false },
-      );
-    }, findLeaseTimeoutMs);
-  }, [clearFindLeaseTimer, findLeaseTimeoutMs, measureMountedRows, sessionId]);
+    scheduleFindLeaseTimer(Math.min(findLeaseTimeoutMs, findLeaseMaxDurationMs));
+  }, [findLeaseMaxDurationMs, findLeaseTimeoutMs, scheduleFindLeaseTimer, sessionId]);
 
-  // Reset lease timer whenever session changes or virtualization deactivates.
+  const renewFindLease = useCallback(() => {
+    const startedAt = findLeaseStartedAtRef.current ?? Date.now();
+    findLeaseStartedAtRef.current = startedAt;
+    const remainingCap = findLeaseMaxDurationMs - (Date.now() - startedAt);
+    if (remainingCap <= 0) {
+      releaseFindLease();
+      return;
+    }
+    scheduleFindLeaseTimer(Math.min(findLeaseTimeoutMs, remainingCap));
+  }, [findLeaseMaxDurationMs, findLeaseTimeoutMs, releaseFindLease, scheduleFindLeaseTimer]);
+
+  // Reset lease state and IO settle gate whenever session changes or virtualization deactivates.
   useEffect(() => {
     if (!enabled) {
       clearFindLeaseTimer();
+      findLeaseStartedAtRef.current = null;
+      ioSettledRef.current = false;
+      setFindLeaseState((prev) =>
+        prev.sessionId === sessionId && !prev.active ? prev : { sessionId, active: false },
+      );
+      setIoSettledState((prev) =>
+        prev.sessionId === sessionId && !prev.settled ? prev : { sessionId, settled: false },
+      );
       return;
     }
     return () => {
@@ -450,10 +609,34 @@ export function useTranscriptVirtualization({
     };
   }, [clearFindLeaseTimer, enabled, sessionId]);
 
+  // Derive default pixel overscan from the scrollport's height and track container resizes.
+  useLayoutEffect(() => {
+    if (!enabled || overscanMargin !== undefined) return;
+    const list = listRef.current;
+    const root = list?.closest("[data-conversation-scroll]") ?? list ?? null;
+    if (root === null) return;
+    const update = (height: number): void => {
+      const next = computeOverscanMargin(height);
+      setMeasuredOverscanMargin((prev) => (prev === next ? prev : next));
+    };
+    update(root.clientHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((roEntries) => {
+      const entry = roEntries.at(-1);
+      const height = entry?.contentRect.height ?? root.clientHeight;
+      update(height > 0 ? height : root.clientHeight);
+    });
+    ro.observe(root);
+    return () => {
+      ro.disconnect();
+    };
+  }, [enabled, listRef, overscanMargin, sessionId]);
+
   // Shared IntersectionObserver tracking top-level row shells within overscan of the scrollport.
   useLayoutEffect(() => {
     if (!enabled) {
       ioRef.current = null;
+      ioSettledRef.current = false;
       return;
     }
     const list = listRef.current;
@@ -473,7 +656,7 @@ export function useTranscriptVirtualization({
               changed = true;
             }
           } else {
-            if (mountedKeysRef.current.has(flowKey)) {
+            if (mountedKeysRef.current.has(flowKey) && !heightsRef.current.has(flowKey)) {
               const measured = ioEntry.boundingClientRect?.height;
               recordMeasuredHeight(heightsRef.current, flowKey, target, measured);
             }
@@ -483,12 +666,18 @@ export function useTranscriptVirtualization({
             }
           }
         }
+        if (!ioSettledRef.current) {
+          ioSettledRef.current = true;
+          setIoSettledState((prev) =>
+            prev.sessionId === sessionId && prev.settled ? prev : { sessionId, settled: true },
+          );
+        }
         if (changed) {
           visibleKeysRef.current = next;
           setVisibleState({ sessionId, keys: next });
         }
       },
-      { root, rootMargin: overscanMargin },
+      { root, rootMargin: effectiveOverscanMargin },
     );
     ioRef.current = observer;
     for (const element of rowElementsRef.current.values()) {
@@ -498,7 +687,7 @@ export function useTranscriptVirtualization({
       observer.disconnect();
       if (ioRef.current === observer) ioRef.current = null;
     };
-  }, [enabled, listRef, overscanMargin, sessionId]);
+  }, [effectiveOverscanMargin, enabled, listRef, sessionId]);
 
   // Track selection spans across top-level rows via document `selectionchange`.
   useEffect(() => {
@@ -578,35 +767,51 @@ export function useTranscriptVirtualization({
 
   useEffect(() => {
     if (!enabled || typeof window === "undefined") return;
+    const list = listRef.current;
+    const scroller = list?.closest("[data-conversation-scroll]") ?? list ?? null;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (isFindShortcut(event)) {
-        activateOrRenewFindLease();
+        activateFindLease();
         return;
       }
       if (!findLeaseActiveRef.current) return;
       if (event.key === "Escape") {
         releaseFindLease();
       } else if (isFindRenewalKey(event)) {
-        activateOrRenewFindLease();
+        renewFindLease();
       }
     };
     const onBeforeMatch = (): void => {
-      if (findLeaseActiveRef.current) activateOrRenewFindLease();
+      if (findLeaseActiveRef.current) renewFindLease();
     };
     const onEditableFocusIn = (event: FocusEvent): void => {
       if (findLeaseActiveRef.current && isEditableEventTarget(event.target)) {
         releaseFindLease();
       }
     };
+    const onFindScroll = (): void => {
+      if (findLeaseActiveRef.current) renewFindLease();
+    };
+    const onFindSelectionChange = (): void => {
+      if (!findLeaseActiveRef.current) return;
+      const selection = document.getSelection();
+      if (selection !== null && selection.rangeCount > 0 && !selection.isCollapsed) {
+        renewFindLease();
+      }
+    };
     window.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("beforematch", onBeforeMatch, true);
     document.addEventListener("focusin", onEditableFocusIn, true);
+    document.addEventListener("selectionchange", onFindSelectionChange);
+    scroller?.addEventListener("scroll", onFindScroll, { passive: true });
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("beforematch", onBeforeMatch, true);
       document.removeEventListener("focusin", onEditableFocusIn, true);
+      document.removeEventListener("selectionchange", onFindSelectionChange);
+      scroller?.removeEventListener("scroll", onFindScroll);
     };
-  }, [activateOrRenewFindLease, enabled, releaseFindLease]);
+  }, [activateFindLease, enabled, listRef, releaseFindLease, renewFindLease, sessionId]);
 
   // Compute pinned indices/keys for the current render.
   const pinnedKeys = useMemo(() => {
@@ -679,29 +884,39 @@ export function useTranscriptVirtualization({
     return start <= end ? { start, end } : { start: end, end: start };
   }, [flowKeyToIndex, selectionRange]);
 
-  const virtualizing = enabled && !findLeaseActive;
+  const virtualizing = enabled && ioSettled && !findLeaseActive;
   const tailStartIndex = Math.max(0, entries.length - PIN_TAIL);
+  const activeVisibleKeys = virtualizing ? visibleKeys : null;
+  const activePinnedKeys = virtualizing ? pinnedKeys : null;
+  const activeSelectionBounds = virtualizing ? selectionBounds : null;
+  const activeTailStartIndex = virtualizing ? tailStartIndex : 0;
 
   const isMounted = useCallback(
     (index: number, flowKey: string): boolean => {
       if (!virtualizing) return true;
-      if (index >= tailStartIndex) return true;
-      if (visibleKeys.has(flowKey)) return true;
-      if (pinnedKeys.has(flowKey)) return true;
+      if (index >= activeTailStartIndex) return true;
+      if (activeVisibleKeys !== null && activeVisibleKeys.has(flowKey)) return true;
+      if (activePinnedKeys !== null && activePinnedKeys.has(flowKey)) return true;
       if (
-        selectionBounds !== null &&
-        index >= selectionBounds.start &&
-        index <= selectionBounds.end
+        activeSelectionBounds !== null &&
+        index >= activeSelectionBounds.start &&
+        index <= activeSelectionBounds.end
       )
         return true;
       return false;
     },
-    [pinnedKeys, selectionBounds, tailStartIndex, virtualizing, visibleKeys],
+    [
+      activePinnedKeys,
+      activeSelectionBounds,
+      activeTailStartIndex,
+      activeVisibleKeys,
+      virtualizing,
+    ],
   );
 
   // Maintain the set of currently mounted flow keys and observe only mounted rows with ResizeObserver.
   const currentMountedKeys = useMemo(() => {
-    if (!enabled) return new Set<string>();
+    if (!enabled) return EMPTY_MOUNTED_KEYS;
     const set = new Set<string>();
     for (let i = 0; i < entries.length; i += 1) {
       const key = flowKeys[i]!;
@@ -710,8 +925,96 @@ export function useTranscriptVirtualization({
     return set;
   }, [enabled, entries.length, flowKeys, isMounted]);
 
+  // Capture a viewport anchor before commit when rows above the viewport mount from
+  // placeholder shells, compensating height growth on engines without CSS overflow-anchor.
+  pendingScrollCompensationRef.current = null;
+  if (enabled && mountedKeysRef.current.size > 0) {
+    const prevMounted = mountedKeysRef.current;
+    const list = listRef.current;
+    const scroller = list?.closest<HTMLElement>("[data-conversation-scroll]") ?? list ?? null;
+    if (scroller !== null && scroller.isConnected) {
+      const floor = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const followingTail =
+        floor <= 0 ||
+        floor - scroller.scrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX ||
+        list?.closest("[data-chat-following-tail]") !== null;
+      if (!followingTail) {
+        const scrollerTop = scroller.getBoundingClientRect().top;
+        const elements = rowElementsRef.current;
+        let hasAboveViewportMount = false;
+        for (const flowKey of currentMountedKeys) {
+          if (prevMounted.has(flowKey)) continue;
+          const el = elements.get(flowKey);
+          if (el === undefined || !el.isConnected || el.hasAttribute("hidden")) continue;
+          if (el.getBoundingClientRect().top < scrollerTop) {
+            hasAboveViewportMount = true;
+            break;
+          }
+        }
+        if (hasAboveViewportMount) {
+          let bestAnchor: HTMLElement | null = null;
+          let bestTop = Number.POSITIVE_INFINITY;
+          let fallbackAnchor: HTMLElement | null = null;
+          let fallbackTop = Number.POSITIVE_INFINITY;
+          for (const flowKey of prevMounted) {
+            if (!currentMountedKeys.has(flowKey)) continue;
+            const el = elements.get(flowKey);
+            if (el === undefined || !el.isConnected || el.hasAttribute("hidden")) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom <= scrollerTop) continue;
+            if (rect.top >= scrollerTop && rect.top < bestTop) {
+              bestAnchor = el;
+              bestTop = rect.top;
+            } else if (rect.top < fallbackTop) {
+              fallbackAnchor = el;
+              fallbackTop = rect.top;
+            }
+          }
+          if (bestAnchor === null && fallbackAnchor === null) {
+            for (const el of elements.values()) {
+              if (!el.isConnected || el.hasAttribute("hidden")) continue;
+              const rect = el.getBoundingClientRect();
+              if (rect.bottom <= scrollerTop) continue;
+              if (rect.top >= scrollerTop && rect.top < bestTop) {
+                bestAnchor = el;
+                bestTop = rect.top;
+              }
+            }
+          }
+          const anchorEl = bestAnchor ?? fallbackAnchor;
+          const prevTop = bestAnchor !== null ? bestTop : fallbackTop;
+          if (anchorEl !== null && Number.isFinite(prevTop)) {
+            pendingScrollCompensationRef.current = {
+              scroller,
+              anchorEl,
+              prevTop,
+              prevScrollTop: scroller.scrollTop,
+            };
+          }
+        }
+      }
+    }
+  }
+
   useLayoutEffect(() => {
+    const prevMounted = mountedKeysRef.current;
     mountedKeysRef.current = currentMountedKeys;
+
+    const pendingCompensation = pendingScrollCompensationRef.current;
+    pendingScrollCompensationRef.current = null;
+    if (
+      pendingCompensation !== null &&
+      pendingCompensation.scroller.isConnected &&
+      pendingCompensation.anchorEl.isConnected &&
+      Math.abs(pendingCompensation.scroller.scrollTop - pendingCompensation.prevScrollTop) <= 0.5
+    ) {
+      const nextTop = pendingCompensation.anchorEl.getBoundingClientRect().top;
+      const delta = nextTop - pendingCompensation.prevTop;
+      if (Math.abs(delta) > 0.5) {
+        pendingCompensation.scroller.scrollTop += delta;
+      }
+    }
+
     if (!enabled) {
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
@@ -748,7 +1051,11 @@ export function useTranscriptVirtualization({
     for (const flowKey of currentMountedKeys) {
       const el = elements.get(flowKey);
       if (el === undefined) continue;
-      recordMeasuredHeight(heightsRef.current, flowKey, el);
+      const isNewlyMountedOrUnobserved =
+        ro !== null ? !observed.has(el) : !prevMounted.has(flowKey);
+      if (isNewlyMountedOrUnobserved || !heightsRef.current.has(flowKey)) {
+        recordMeasuredHeight(heightsRef.current, flowKey, el);
+      }
       if (ro !== null && !observed.has(el)) {
         ro.observe(el);
         observed.add(el);

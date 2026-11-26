@@ -1154,6 +1154,23 @@ it("reaps stalled standalone SSE sessions without interrupting long-running POST
     });
     return req;
   }
+  function consumeSseLines(
+    stream: import("node:http").IncomingMessage,
+    onLine: (line: string) => void,
+  ) {
+    const decoder = new TextDecoder();
+    let pending = "";
+    stream.on("data", (chunk: Buffer) => {
+      pending += decoder.decode(chunk, { stream: true });
+      let newlineIndex = pending.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = pending.slice(0, newlineIndex).replace(/\r$/u, "");
+        pending = pending.slice(newlineIndex + 1);
+        onLine(line);
+        newlineIndex = pending.indexOf("\n");
+      }
+    });
+  }
 
   // 1. Healthy standalone SSE sends keepalives, reconnects cleanly, and stalls trigger reap.
   const first = await initializeSession();
@@ -1161,8 +1178,8 @@ it("reaps stalled standalone SSE sessions without interrupting long-running POST
   const [sse1Res] = (await once(sse1, "response")) as [import("node:http").IncomingMessage];
   expect(sse1Res.statusCode).toBe(200);
   const keepAliveSeen = Promise.withResolvers<undefined>();
-  sse1Res.on("data", (chunk: Buffer) => {
-    if (chunk.toString("utf8").includes(": keepalive")) keepAliveSeen.resolve(undefined);
+  consumeSseLines(sse1Res, (line) => {
+    if (line.includes(": keepalive")) keepAliveSeen.resolve(undefined);
   });
   await keepAliveSeen.promise;
   await new Promise((resolve) => setTimeout(resolve, timeout + 150));
@@ -1203,10 +1220,8 @@ it("reaps stalled standalone SSE sessions without interrupting long-running POST
   const [sseRes] = (await once(sse, "response")) as [import("node:http").IncomingMessage];
   expect(sseRes.statusCode).toBe(200);
   const elicitationId = Promise.withResolvers<string>();
-  let sseBuffer = "";
-  sseRes.on("data", (chunk: Buffer) => {
-    sseBuffer += chunk.toString("utf8");
-    for (const message of parseSseData(sseBuffer)) {
+  consumeSseLines(sseRes, (line) => {
+    for (const message of parseSseData(line)) {
       if (message.method === "elicitation/create" && typeof message.id === "string") {
         elicitationId.resolve(message.id);
       }

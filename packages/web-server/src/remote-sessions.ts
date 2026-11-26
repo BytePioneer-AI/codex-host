@@ -2533,6 +2533,9 @@ export class RemoteSessions {
     delete entry.peerInspected;
     delete entry.usageRequest;
     delete entry.queueReading;
+    if (entry.row.turns.length > 0) {
+      entry.row = { ...entry.row, turns: [] };
+    }
   }
   private createView(
     row: ChThread,
@@ -3228,7 +3231,7 @@ export class RemoteSessions {
       };
     }
     if (parsedToolOutput?.success) {
-      return view.readToolOutput(parsedToolOutput.data);
+      return this.trackPageRead(id, view, () => view.readToolOutput(parsedToolOutput.data));
     }
     const entry = this.entries.get(id);
     if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");

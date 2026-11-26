@@ -88,7 +88,9 @@ export function estimateUnknownBytes(value: unknown, depth = 0, active?: Set<obj
       } finally {
         visited.delete(value);
       }
-      if (Object.isFrozen(value)) immutableObjectBytes.set(value, total);
+      if (depth === 0 && active === undefined && Object.isFrozen(value)) {
+        immutableObjectBytes.set(value, total);
+      }
       return total;
     }
     default:

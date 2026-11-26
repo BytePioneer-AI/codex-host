@@ -112,6 +112,32 @@ export function PdfBody(props: PdfBodyProps & { readonly loading: ReactNode }): 
       void session.dispose();
     };
   }, [data, tab.signal, attempt]);
+  useEffect(() => {
+    if (load?.kind !== "loaded" || load.data !== data) {
+      setPageWidth(undefined);
+      return;
+    }
+    if (load.document.numPages < 1 || tab.signal.aborted) return;
+    let cancelled = false;
+    void load.document.getPage(1).then(
+      (page) => {
+        try {
+          if (!cancelled && !tab.signal.aborted) {
+            const { width } = page.getViewport({ scale: 96 / 72 });
+            setPageWidth(width);
+          }
+        } finally {
+          page.cleanup();
+        }
+      },
+      () => {
+        // Page rendering surfaces document/page load failures through PdfPage.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [data, load, tab.signal]);
   if (data === undefined)
     return (
       <p className={css.status} role="alert">

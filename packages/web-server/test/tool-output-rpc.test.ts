@@ -11,6 +11,7 @@ import { capText } from "../src/projector.ts";
 import { RemoteSessions, remoteSessionId } from "../src/remote-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { TOOL_OUTPUT_PREVIEW } from "../src/tool-output.ts";
+import { IDLE_VIEW_MS } from "../src/web-thread-state.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import {
   EventHub,
@@ -400,4 +401,190 @@ it("previews remote session pages on local connections and reloads compacted too
   const stale = await rpc.dispatch("session/toolOutput", { args: { request: ref } });
   assert.ok(!stale.ok);
   assert.equal(stale.error.code, "session/tool-output-stale");
+});
+
+it("protects in-flight local and remote session/toolOutput reads from idle eviction and clears retired non-peer row turns", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"] });
+  const dir = mkdtempSync(join(tmpdir(), "tool-output-evict-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // 1. Local ChSessions: an in-flight session/toolOutput read must keep the view alive past IDLE_VIEW_MS.
+  const host = new FakeChChannel();
+  const row = host.add("local-evict", dir);
+  const bigOutput = "LOCAL-EVICT-" + "L".repeat(75_000);
+  defined(row.turns[0]).items.push({
+    id: "cmd-evict",
+    type: "commandExecution",
+    status: "completed",
+    command: "dump",
+    cwd: dir,
+    aggregatedOutput: bigOutput,
+    exitCode: 0,
+  });
+  const localReloadStarted = Promise.withResolvers<void>();
+  const releaseLocalReload = Promise.withResolvers<void>();
+  t.after(() => releaseLocalReload.resolve());
+  const baseHostRequest = host.request.bind(host);
+  let holdLocalReload = false;
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (holdLocalReload && method === "thread/turns/list") {
+      localReloadStarted.resolve();
+      await releaseLocalReload.promise;
+    }
+    return baseHostRequest<T>(method, params);
+  };
+  const sessions = new ChSessions(host, new Workspaces(new DataDir(dir), dir), new EventHub(dir));
+  t.after(() => sessions.close());
+  const localRpc = new RpcRegistry();
+  const localStreams = new Streams();
+  sessions.register(localRpc, localStreams);
+  await sessions.refresh();
+
+  const localPage = await localRpc.dispatch("session/page", {
+    args: { request: { address: { sessionId: row.id }, throughSeq: 2 ** 40 + 100 } },
+  });
+  assert.ok(localPage.ok);
+  const localRecords = (
+    localPage.value as { records: Array<{ event: { type: string; data: { meta?: unknown } } }> }
+  ).records;
+  const localTool = defined(localRecords.find((record) => record.event.type === "tool/result"));
+  const localRef = defined(webToolOutputPreviews(localTool.event.data.meta)[0]).reference;
+
+  holdLocalReload = true;
+  const localLoad = localRpc.dispatch("session/toolOutput", { args: { request: localRef } });
+  await localReloadStarted.promise;
+  // Trigger idle view timer past IDLE_VIEW_MS while session/toolOutput is in flight.
+  t.mock.timers.tick(60_000);
+  t.mock.timers.tick(IDLE_VIEW_MS + 60_000);
+  releaseLocalReload.resolve();
+  const localLoaded = await localLoad;
+  assert.ok(localLoaded.ok, "in-flight local session/toolOutput must survive idle eviction");
+  assert.equal((localLoaded.value as { text: string }).text, bigOutput);
+
+  // 2. Non-peer RemoteSessions: in-flight session/toolOutput survives idle eviction, and
+  // retiring the view afterwards clears entry.row.turns without mutating the old array.
+  const remoteOutput = "REMOTE-EVICT-" + "R".repeat(75_000);
+  const sessionId = remoteSessionId("remote-control:desktop-evict", "remote-thread-evict");
+  const remoteReloadStarted = Promise.withResolvers<void>();
+  const releaseRemoteReload = Promise.withResolvers<void>();
+  t.after(() => releaseRemoteReload.resolve());
+  let holdRemoteReload = false;
+  let remoteReads = 0;
+  const remote = new RemoteSessions(new EventHub(dir), async (operation) => {
+    if (operation.kind === "hosts")
+      return [{ hostId: "remote-control:desktop-evict", online: true, epoch: "e1" }];
+    if (operation.kind === "list")
+      return {
+        epoch: "e1",
+        nextCursor: null,
+        data: [
+          {
+            id: "remote-thread-evict",
+            cwd: "/remote",
+            modelProvider: "codexhost",
+            createdAt: 100,
+            updatedAt: 200,
+            status: { type: "idle" },
+          },
+        ],
+      };
+    if (operation.kind === "read") {
+      remoteReads += 1;
+      if (holdRemoteReload) {
+        remoteReloadStarted.resolve();
+        await releaseRemoteReload.promise;
+      }
+      return {
+        epoch: "e1",
+        requests: [],
+        result: {
+          thread: {
+            id: "remote-thread-evict",
+            cwd: "/remote",
+            modelProvider: "codexhost",
+            createdAt: 100,
+            updatedAt: 200,
+            status: { type: "idle" },
+            turns: [
+              {
+                id: "remote-turn-1",
+                status: "completed",
+                items: [
+                  { id: "u1", type: "userMessage", content: [{ type: "text", text: "go" }] },
+                  {
+                    id: "c1",
+                    type: "commandExecution",
+                    status: "completed",
+                    command: "dump",
+                    cwd: "/remote",
+                    aggregatedOutput: remoteOutput,
+                    exitCode: 0,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      };
+    }
+    if (operation.kind === "queue") return { available: false, items: [] };
+    if (operation.kind === "usage") throw new RpcError("remote/unsupported", "no usage");
+    throw new Error(`Unexpected remote operation: ${operation.kind}`);
+  });
+  t.after(() => remote.close());
+  const remoteRpc = new RpcRegistry();
+  const remoteStreams = new Streams();
+  remoteRpc.register("session/list", () => ({ items: [], archivedSessionIds: [] }));
+  remoteRpc.register("session/page", () => {
+    throw new Error("local session/page must not handle remote id");
+  });
+  remoteRpc.register("session/toolOutput", () => {
+    throw new Error("local session/toolOutput must not handle remote id");
+  });
+  remote.install(remoteRpc, remoteStreams);
+  await remote.refresh();
+
+  const remotePage = await remoteRpc.dispatch("session/page", {
+    args: { request: { address: { sessionId }, throughSeq: 100 } },
+  });
+  assert.ok(remotePage.ok);
+  const remoteRecords = (
+    remotePage.value as { records: Array<{ event: { type: string; data: { meta?: unknown } } }> }
+  ).records;
+  const remoteTool = defined(remoteRecords.find((record) => record.event.type === "tool/result"));
+  const remoteRef = defined(webToolOutputPreviews(remoteTool.event.data.meta)[0]).reference;
+
+  const entry = defined(
+    (
+      remote as unknown as {
+        entries: Map<string, { row: { turns: unknown[] }; view?: unknown }>;
+      }
+    ).entries.get(sessionId),
+  );
+  const turnsBeforeRetire = entry.row.turns;
+  assert.equal(turnsBeforeRetire.length, 1);
+
+  holdRemoteReload = true;
+  const remoteLoad = remoteRpc.dispatch("session/toolOutput", { args: { request: remoteRef } });
+  await remoteReloadStarted.promise;
+  remote.discardIdleViews();
+  t.mock.timers.tick(IDLE_VIEW_MS + 60_000);
+  remote.discardIdleViews();
+  assert.ok(entry.view, "in-flight remote session/toolOutput must protect view from eviction");
+
+  releaseRemoteReload.resolve();
+  const remoteLoaded = await remoteLoad;
+  assert.ok(remoteLoaded.ok);
+  assert.equal((remoteLoaded.value as { text: string }).text, remoteOutput);
+  assert.equal(remoteReads, 2);
+
+  // After settling and waiting a full IDLE_VIEW_MS, retiring drops the view and clears entry.row.turns
+  // without mutating the previous turns array in place.
+  remote.discardIdleViews();
+  t.mock.timers.tick(IDLE_VIEW_MS);
+  remote.discardIdleViews();
+  assert.equal(entry.view, undefined);
+  assert.deepEqual(entry.row.turns, []);
+  assert.notEqual(entry.row.turns, turnsBeforeRetire);
+  assert.equal(turnsBeforeRetire.length, 1);
 });

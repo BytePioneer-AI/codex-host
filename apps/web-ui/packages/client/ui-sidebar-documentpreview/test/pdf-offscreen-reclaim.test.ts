@@ -242,7 +242,13 @@ describe("PdfBody offscreen canvas reclaim and redraw", () => {
     });
   });
 
-  function mountPdf(doc: PdfDocument) {
+  function mountPdf(
+    doc: PdfDocument,
+    options?: {
+      readonly initialPage?: number;
+      readonly onIntrinsicWidth?: (width: number | undefined) => void;
+    },
+  ) {
     const tabController = new AbortController();
     const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
     const disposeSession = vi.fn(async () => {});
@@ -251,12 +257,20 @@ describe("PdfBody offscreen canvas reclaim and redraw", () => {
       dispose: disposeSession,
     });
 
+    const CapturingZoomViewport = (viewportProps: ZoomViewportProps): ReactNode => {
+      options?.onIntrinsicWidth?.(viewportProps.intrinsicWidth);
+      return createElement(TestZoomViewport, viewportProps);
+    };
+
+    const initialByTab =
+      options?.initialPage === undefined ? {} : { "tab-1": { page: options.initialPage } };
+
     const props: PdfBodyProps & { readonly loading: ReactNode } = {
       content: { kind: "bytes", data: bytes },
       useTabInfo: () => ({
         tab: { id: "tab-1", signal: tabController.signal } as never,
       }),
-      useStore: (selector) => selector({ byTab: {} } as never),
+      useStore: (selector) => selector({ byTab: initialByTab } as never),
       actions: {
         page: vi.fn(),
         zoom: vi.fn(),
@@ -264,7 +278,7 @@ describe("PdfBody offscreen canvas reclaim and redraw", () => {
       } as never,
       t: ((key: string) => key) as never,
       retainTab: vi.fn(),
-      ZoomViewport: TestZoomViewport,
+      ZoomViewport: options?.onIntrinsicWidth ? CapturingZoomViewport : TestZoomViewport,
       zoomSurfaceClass: "zoom-surface",
       scrollportRef: vi.fn(),
       loading: createElement("div", null, "loading"),
@@ -444,6 +458,53 @@ describe("PdfBody offscreen canvas reclaim and redraw", () => {
     expect(page2Canvas.width).toBe(1000);
     expect(page2Canvas.height).toBe(1400);
     expect(page2Text.querySelectorAll(".textLayer")).toHaveLength(1);
+
+    unmount();
+  });
+
+  it("populates ZoomViewport intrinsicWidth from page 1 viewport metadata even when restored to a later page with page 1 offscreen", async () => {
+    let cancelPage1Render!: () => void;
+    const page1 = makeFakePage({
+      width: 612,
+      height: 792,
+      onRender: () => {
+        let rejectRender!: (reason?: unknown) => void;
+        const promise = new Promise<void>((_resolve, reject) => {
+          rejectRender = reject;
+        });
+        const cancel = vi.fn(() => {
+          rejectRender(new DOMException("cancelled", "AbortError"));
+        });
+        cancelPage1Render = cancel;
+        return { promise, cancel };
+      },
+    });
+    const page5 = makeFakePage({ width: 612, height: 792 });
+    const doc: PdfDocument = {
+      numPages: 5,
+      getPage: vi.fn(async (n: number) => (n === 1 ? page1.page : page5.page)),
+    };
+
+    const observedWidths: Array<number | undefined> = [];
+    const { unmount } = mountPdf(doc, {
+      initialPage: 5,
+      onIntrinsicWidth: (width) => {
+        observedWidths.push(width);
+      },
+    });
+    await flushAsyncWork();
+
+    // Immediately mark page 1 offscreen so page 1 never completes canvas rendering.
+    const page1Host = container.querySelector<HTMLDivElement>('[data-pdf-page="1"]')!;
+    act(() => {
+      FakeIntersectionObserver.emit(page1Host, false);
+    });
+    await flushAsyncWork();
+
+    expect(cancelPage1Render).toHaveBeenCalledTimes(1);
+    expect(page1.page.getViewport).toHaveBeenCalledWith({ scale: 96 / 72 });
+    expect(page1.cleanup).toHaveBeenCalled();
+    expect(observedWidths.at(-1)).toBe(612);
 
     unmount();
   });

@@ -1801,7 +1801,7 @@ export class ChSessions {
       const ref = parsed.data;
       await this.owner(ref.sessionId);
       const view = await this.view(ref.sessionId, true);
-      return view.readToolOutput(ref);
+      return this.threads.trackPageRead(view.thread.id, view, () => view.readToolOutput(ref));
     });
     rpc.register("session/attachment", async (args) => {
       const { sessionId, attachmentId } = requestOf<{ sessionId: string; attachmentId: string }>(

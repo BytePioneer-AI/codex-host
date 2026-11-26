@@ -144,13 +144,9 @@ export function CodeBlock({
   const [expanded, setExpanded] = useState(
     () => streaming === true || (memoryKey !== undefined && foldMemory?.get(memoryKey) === true),
   );
-  const prevStreamingRef = useRef(streaming === true);
-  if (streaming === true && !prevStreamingRef.current) {
-    prevStreamingRef.current = true;
-    if (!expanded) setExpanded(true);
-  } else if (streaming !== true && prevStreamingRef.current) {
-    prevStreamingRef.current = false;
-  }
+  useEffect(() => {
+    if (streaming === true) setExpanded(true);
+  }, [streaming]);
   const lineMetrics = useMemo(
     () => (collapsible ? inspectCodeLines(trimmed, FOLD_PREVIEW_LINES) : undefined),
     [collapsible, trimmed],

@@ -18,13 +18,19 @@ import type { ChatStoreState } from "../src/client/contract/store.ts";
 import type { ProcessGroupData } from "../src/client/contract/process-groups.ts";
 import { ChatNodeSeat } from "../src/client/chat/ChatNodeSeat.tsx";
 import { ChatGroupSeat } from "../src/client/chat/ChatGroupSeat.tsx";
+import { ChatViewport } from "../src/client/chat/use-chat-viewport.ts";
 import {
   ESTIMATED_NODE_HEIGHT,
+  FIND_LEASE_MAX_DURATION_MS,
   FIND_LEASE_TIMEOUT_MS,
   PIN_TAIL,
+  VIRTUALIZE_OVERSCAN_MARGIN,
   VIRTUALIZE_THRESHOLD,
+  computeOverscanMargin,
   entryFlowKey,
   flowKeyForAnswerKey,
+  resolveRevealTargetFlowKey,
+  resolveSelectionFlowRange,
   useTranscriptVirtualization,
   type NavigationPinTarget,
   type TranscriptVirtualization,
@@ -285,6 +291,8 @@ interface HarnessProps {
   savedAnchorFlowKey?: string | null;
   busyTurn?: number | null;
   findLeaseTimeoutMs?: number;
+  findLeaseMaxDurationMs?: number;
+  overscanMargin?: string;
   withConversationScroll?: boolean;
   onHandle?: (handle: TranscriptVirtualization) => void;
 }
@@ -301,6 +309,8 @@ function VirtualizedTranscriptHarness({
   savedAnchorFlowKey = null,
   busyTurn = null,
   findLeaseTimeoutMs,
+  findLeaseMaxDurationMs,
+  overscanMargin,
   withConversationScroll = true,
   onHandle,
 }: HarnessProps) {
@@ -323,6 +333,8 @@ function VirtualizedTranscriptHarness({
     savedAnchorFlowKey,
     busyTurn,
     findLeaseTimeoutMs,
+    findLeaseMaxDurationMs,
+    overscanMargin,
   });
   onHandle?.(virtualization);
 
@@ -383,7 +395,7 @@ function buildEntries(count: number): {
 }
 
 function findVirtualizationIO(instances: MockIOInstance[]): MockIOInstance | undefined {
-  return instances.findLast((instance) => instance.options?.rootMargin === "150% 0px");
+  return instances.findLast((instance) => instance.options?.rootMargin?.endsWith("px 0px"));
 }
 
 describe("transcript row-shell content virtualization and find lease", () => {
@@ -515,9 +527,9 @@ describe("transcript row-shell content virtualization and find lease", () => {
 
     const io = findVirtualizationIO(mockIO.instances);
     expect(io).toBeDefined();
-    expect(io?.options?.rootMargin).toBe("150% 0px");
+    expect(io?.options?.rootMargin).toBe(VIRTUALIZE_OVERSCAN_MARGIN);
 
-    // All 60 top-level shells remain in the DOM with their data-chat-* attributes.
+    // Before the first IO callback settles, rows stay mounted (no white flash) while shells register.
     const row0 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-0"]')!;
     const hiddenMemberRow = container.querySelector<HTMLElement>(
       `[data-chat-flow-key="${hiddenMemberKey}"]`,
@@ -528,6 +540,14 @@ describe("transcript row-shell content virtualization and find lease", () => {
     const visibleGroupRow = container.querySelector<HTMLElement>(
       `[data-chat-flow-key="${visibleGroupKey}"]`,
     )!;
+
+    expect(row0.querySelector('[data-rendered-body="node-0"]')).not.toBeNull();
+    expect(io?.observed.has(row0)).toBe(true);
+
+    // First IO callback settles virtualization and unmounts offscreen rows.
+    await act(async () => {
+      io!.emit([{ target: row0, isIntersecting: false }]);
+    });
 
     expect(row0).not.toBeNull();
     expect(row0.dataset.chatAnchorKey).toBe("node-0");
@@ -720,7 +740,19 @@ describe("transcript row-shell content virtualization and find lease", () => {
       );
     });
 
-    // Initially only tail 10 entries are mounted.
+    const io = findVirtualizationIO(mockIO.instances)!;
+    // Before first IO callback settles, all rows remain mounted.
+    expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(total);
+    await act(async () => {
+      io.emit([
+        {
+          target: container.querySelector<HTMLElement>('[data-chat-flow-key="node-0"]')!,
+          isIntersecting: false,
+        },
+      ]);
+    });
+
+    // After first IO callback, only tail 10 entries are mounted.
     expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(PIN_TAIL);
     expect(handle.findLeaseActive).toBe(false);
 
@@ -828,9 +860,492 @@ describe("transcript row-shell content virtualization and find lease", () => {
       );
     });
     expect(handle.findLeaseActive).toBe(false);
-    expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(PIN_TAIL);
+    // Session switch resets ioSettled so the new session stays mounted until its first IO settles.
+    expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(total);
+    const nextIo = findVirtualizationIO(mockIO.instances)!;
     const nextSessionRow3 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-3"]')!;
+    await act(async () => {
+      nextIo.emit([{ target: nextSessionRow3, isIntersecting: false }]);
+    });
+    expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(PIN_TAIL);
     expect(nextSessionRow3.style.minHeight).toBe(`${ESTIMATED_NODE_HEIGHT}px`);
+  });
+
+  it("renews native-find lease on passive scroll and non-collapsed selectionchange up to the hard cap, and resets when disabled", async () => {
+    vi.useFakeTimers();
+    const total = 56;
+    const { entries, nodes } = buildEntries(total);
+    let handle!: TranscriptVirtualization;
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-find-renew",
+          entries,
+          nodes,
+          findLeaseMaxDurationMs: 75_000,
+          onHandle: (h) => {
+            handle = h;
+          },
+        }),
+      );
+    });
+    const io = findVirtualizationIO(mockIO.instances)!;
+    await act(async () => {
+      io.emit([
+        {
+          target: container.querySelector<HTMLElement>('[data-chat-flow-key="node-0"]')!,
+          isIntersecting: false,
+        },
+      ]);
+    });
+    expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(PIN_TAIL);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true }),
+      );
+    });
+    expect(handle.findLeaseActive).toBe(true);
+
+    // Passive scroll on the scrollport extends the 30s idle window.
+    const scroller = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+    await act(async () => {
+      vi.advanceTimersByTime(25_000);
+      scroller.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(handle.findLeaseActive).toBe(true);
+
+    // Non-collapsed selectionchange renews; collapsed selectionchange does not.
+    const row0Text = container.querySelector('[data-chat-flow-key="node-0"] p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(row0Text, 0);
+    range.setEnd(row0Text, 4);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+      document.dispatchEvent(new Event("selectionchange"));
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(handle.findLeaseActive).toBe(true);
+
+    // Hard duration ceiling (75s from Cmd+F; 70s elapsed so far) terminates sliding renewals.
+    await act(async () => {
+      vi.advanceTimersByTime(6_000);
+    });
+    expect(handle.findLeaseActive).toBe(false);
+    expect(FIND_LEASE_MAX_DURATION_MS).toBe(180_000);
+    selection.removeAllRanges();
+
+    // Dropping below VIRTUALIZE_THRESHOLD while find lease is active resets findLeaseState.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true }),
+      );
+    });
+    expect(handle.findLeaseActive).toBe(true);
+
+    const short = buildEntries(20);
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-find-renew",
+          entries: short.entries,
+          nodes: short.nodes,
+          onHandle: (h) => {
+            handle = h;
+          },
+        }),
+      );
+    });
+    expect(handle.active).toBe(false);
+    expect(handle.findLeaseActive).toBe(false);
+
+    // Crossing the threshold again starts clean without a stuck lease and stays mounted until first IO.
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-find-renew",
+          entries,
+          nodes,
+          onHandle: (h) => {
+            handle = h;
+          },
+        }),
+      );
+    });
+    expect(handle.active).toBe(true);
+    expect(handle.findLeaseActive).toBe(false);
+    expect(container.querySelectorAll("[data-rendered-body]")).toHaveLength(total);
+  });
+
+  it("handles Cmd+A (selectNode(column)) and downward selection past column bottom without clamping to row 0", () => {
+    const outer = document.createElement("div");
+    const before = document.createElement("div");
+    before.textContent = "before";
+    const column = document.createElement("div");
+    const after = document.createElement("div");
+    after.textContent = "after";
+    outer.append(before, column, after);
+    document.body.append(outer);
+
+    try {
+      const flowKeys: string[] = [];
+      const flowKeyToIndex = new Map<string, number>();
+      for (let i = 0; i < 6; i += 1) {
+        const key = `node-${i}`;
+        const row = document.createElement("div");
+        row.setAttribute("data-chat-flow-key", key);
+        row.textContent = `Row ${i}`;
+        column.append(row);
+        flowKeys.push(key);
+        flowKeyToIndex.set(key, i);
+      }
+
+      const selection = window.getSelection()!;
+
+      // 1. Cmd+A / selectNode(column) selects all rows 0..5.
+      const selectAll = document.createRange();
+      selectAll.selectNode(column);
+      selection.removeAllRanges();
+      selection.addRange(selectAll);
+      expect(resolveSelectionFlowRange(selection, column, flowKeys, flowKeyToIndex)).toEqual({
+        startKey: "node-0",
+        endKey: "node-5",
+      });
+
+      // 2. Dragging from row 3 past bottom into ancestor `outer` (after column) clamps end to row 5, NOT 0.
+      const dragPastBottom = document.createRange();
+      dragPastBottom.setStart(column.children[3]!.firstChild!, 0);
+      dragPastBottom.setEnd(outer, 3);
+      selection.removeAllRanges();
+      selection.addRange(dragPastBottom);
+      expect(resolveSelectionFlowRange(selection, column, flowKeys, flowKeyToIndex)).toEqual({
+        startKey: "node-3",
+        endKey: "node-5",
+      });
+
+      // 3. Dragging from ancestor `outer` offset 0 into row 2 clamps start to row 0.
+      const dragFromTop = document.createRange();
+      dragFromTop.setStart(outer, 0);
+      dragFromTop.setEnd(column.children[2]!.firstChild!, 3);
+      selection.removeAllRanges();
+      selection.addRange(dragFromTop);
+      expect(resolveSelectionFlowRange(selection, column, flowKeys, flowKeyToIndex)).toEqual({
+        startKey: "node-0",
+        endKey: "node-2",
+      });
+
+      // 4. Selection entirely outside column returns null.
+      const outsideOnly = document.createRange();
+      outsideOnly.selectNodeContents(after);
+      selection.removeAllRanges();
+      selection.addRange(outsideOnly);
+      expect(resolveSelectionFlowRange(selection, column, flowKeys, flowKeyToIndex)).toBeNull();
+    } finally {
+      outer.remove();
+    }
+  });
+
+  it("avoids O(N) reflow on scroll, preserves RO heights over stale IO callbacks, and computes pixel overscan from root height", async () => {
+    const originalRO = globalThis.ResizeObserver;
+    const roRecords: Array<{
+      callback: ResizeObserverCallback;
+      observed: Set<Element>;
+    }> = [];
+    class MockResizeObserver implements ResizeObserver {
+      readonly observed = new Set<Element>();
+      readonly callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        roRecords.push({ callback, observed: this.observed });
+      }
+      observe(target: Element): void {
+        this.observed.add(target);
+      }
+      unobserve(target: Element): void {
+        this.observed.delete(target);
+      }
+      disconnect(): void {
+        this.observed.clear();
+      }
+    }
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+
+    try {
+      const total = 55;
+      const { entries, nodes } = buildEntries(total);
+      let handle!: TranscriptVirtualization;
+
+      await act(async () => {
+        root.render(
+          createElement(VirtualizedTranscriptHarness, {
+            sessionId: "s-perf",
+            entries,
+            nodes,
+            onHandle: (h) => {
+              handle = h;
+            },
+          }),
+        );
+      });
+
+      // Verify pixel overscan helper and explicit overscanMargin override.
+      expect(computeOverscanMargin(600)).toBe("960px 0px");
+      const scroller = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+      const rootRo = roRecords.find((r) => r.observed.has(scroller));
+      expect(rootRo).toBeDefined();
+      await act(async () => {
+        rootRo!.callback(
+          [{ target: scroller, contentRect: { height: 600 } } as unknown as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+      });
+      const resizedIo = findVirtualizationIO(mockIO.instances)!;
+      expect(resizedIo.options?.rootMargin).toBe("960px 0px");
+
+      // Settle IO with row 5 visible and row 0 offscreen.
+      const row0 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-0"]')!;
+      const row5 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-5"]')!;
+      const row6 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-6"]')!;
+      await act(async () => {
+        resizedIo.emit([
+          { target: row0, isIntersecting: false },
+          { target: row5, isIntersecting: true },
+        ]);
+      });
+
+      // Record RO height 320px for row5, then emit stale offscreen IO height 180px: RO value must win.
+      const rowRo = roRecords.find((r) => r.observed.has(row5));
+      expect(rowRo).toBeDefined();
+      await act(async () => {
+        rowRo!.callback(
+          [
+            {
+              target: row5,
+              borderBoxSize: [{ blockSize: 320 }],
+              contentRect: { height: 320 },
+            } as unknown as ResizeObserverEntry,
+          ],
+          {} as ResizeObserver,
+        );
+      });
+      await act(async () => {
+        resizedIo.emit([{ target: row5, isIntersecting: false, height: 180 }]);
+      });
+      expect(row5.style.minHeight).toBe("320px");
+
+      // While virtualizing, mounting a new row (row6) must NOT re-measure already-observed mounted rows (tail).
+      const tailRow = container.querySelector<HTMLElement>('[data-chat-flow-key="node-54"]')!;
+      const rectSpy = vi.fn(() => ({ height: 90, top: 0, bottom: 90 }) as DOMRect);
+      Object.defineProperty(tailRow, "getBoundingClientRect", {
+        configurable: true,
+        value: rectSpy,
+      });
+      await act(async () => {
+        rowRo!.callback(
+          [
+            {
+              target: tailRow,
+              borderBoxSize: [{ blockSize: 90 }],
+              contentRect: { height: 90 },
+            } as unknown as ResizeObserverEntry,
+          ],
+          {} as ResizeObserver,
+        );
+      });
+      rectSpy.mockClear();
+      await act(async () => {
+        resizedIo.emit([{ target: row6, isIntersecting: true }]);
+      });
+      expect(rectSpy).not.toHaveBeenCalled();
+
+      // While !virtualizing (findLeaseActive), IO visibleKeys churn keeps isMounted identity stable.
+      await act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true }),
+        );
+      });
+      const stableIsMounted = handle.isMounted;
+      await act(async () => {
+        resizedIo.emit([{ target: row0, isIntersecting: true }]);
+      });
+      expect(handle.isMounted).toBe(stableIsMounted);
+
+      // Explicit overscanMargin always takes precedence over root height.
+      await act(async () => {
+        root.render(
+          createElement(VirtualizedTranscriptHarness, {
+            sessionId: "s-perf",
+            entries,
+            nodes,
+            overscanMargin: "500px 0px",
+          }),
+        );
+      });
+      expect(findVirtualizationIO(mockIO.instances)?.options?.rootMargin).toBe("500px 0px");
+    } finally {
+      globalThis.ResizeObserver = originalRO;
+    }
+  });
+
+  it("compensates scrollTop when above-viewport rows expand on engines without overflow-anchor, without disturbing tail-follow", async () => {
+    const total = 56;
+    const { entries, nodes } = buildEntries(total);
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-anchor-comp",
+          entries,
+          nodes,
+        }),
+      );
+    });
+
+    const io = findVirtualizationIO(mockIO.instances)!;
+    const scroller = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+    const row2 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-2"]')!;
+    const row10 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-10"]')!;
+
+    // Settle IO with row10 in viewport and row2 offscreen above.
+    await act(async () => {
+      io.emit([{ target: row10, isIntersecting: true }]);
+    });
+    expect(row2.querySelector("[data-rendered-body]")).toBeNull();
+    expect(row10.querySelector("[data-rendered-body]")).not.toBeNull();
+
+    // Configure scroller away from bottom: scrollHeight=5000, clientHeight=600, scrollTop=1000.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 5000 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 600 });
+    let scrollTopValue = 1000;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (value: number) => {
+        scrollTopValue = value;
+      },
+    });
+    Object.defineProperty(scroller, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({ top: 0, bottom: 600, height: 600, left: 0, right: 600, width: 600 }) as DOMRect,
+    });
+    // Row 2 sits above viewport (top = -200); when it mounts, row 10 shifts from top=40 -> top=240 (+200px).
+    Object.defineProperty(row2, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({ top: -200, bottom: -120, height: 80, left: 0, right: 600, width: 600 }) as DOMRect,
+    });
+    Object.defineProperty(row10, "getBoundingClientRect", {
+      configurable: true,
+      value: () => {
+        const expanded = row2.querySelector("[data-rendered-body]") !== null;
+        const top = expanded ? 240 : 40;
+        return { top, bottom: top + 100, height: 100, left: 0, right: 600, width: 600 } as DOMRect;
+      },
+    });
+
+    await act(async () => {
+      io.emit([{ target: row2, isIntersecting: true }]);
+    });
+    expect(row2.querySelector("[data-rendered-body]")).not.toBeNull();
+    expect(scrollTopValue).toBe(1200);
+  });
+
+  it("exempts [data-chat-virtualized] row shells from ChatViewport :empty checks during paging and fallback capture", () => {
+    const scroller = document.createElement("div");
+    scroller.setAttribute("data-conversation-scroll", "");
+    const list = document.createElement("div");
+    const column = document.createElement("div");
+    scroller.append(list);
+    list.append(column);
+    document.body.append(scroller);
+
+    try {
+      const emptyNonVirtualized = document.createElement("div");
+      emptyNonVirtualized.setAttribute("data-chat-flow-key", "empty-hidden");
+      emptyNonVirtualized.setAttribute("data-chat-anchor-key", "empty-hidden");
+      emptyNonVirtualized.setAttribute("data-chat-paging-anchor", "");
+
+      const virtualizedShell = document.createElement("div");
+      virtualizedShell.setAttribute("data-chat-flow-key", "node-0");
+      virtualizedShell.setAttribute("data-chat-anchor-key", "node-0");
+      virtualizedShell.setAttribute("data-chat-paging-anchor", "");
+      virtualizedShell.setAttribute("data-chat-virtualized", "");
+      virtualizedShell.style.minHeight = "120px";
+
+      column.append(emptyNonVirtualized, virtualizedShell);
+
+      Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 400 });
+      Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+      Object.defineProperty(scroller, "scrollTop", {
+        configurable: true,
+        writable: true,
+        value: 200,
+      });
+      Object.defineProperty(scroller, "getBoundingClientRect", {
+        configurable: true,
+        value: () =>
+          ({ top: 0, bottom: 400, left: 0, right: 600, width: 600, height: 400 }) as DOMRect,
+      });
+      Object.defineProperty(virtualizedShell, "getBoundingClientRect", {
+        configurable: true,
+        value: () =>
+          ({ top: 50, bottom: 170, left: 0, right: 600, width: 600, height: 120 }) as DOMRect,
+      });
+
+      const viewport = new ChatViewport();
+      viewport.attach(list, column);
+      try {
+        // Fallback capturePosition skips ordinary :empty rows but keeps [data-chat-virtualized] shells.
+        const captured = viewport.capturePosition();
+        expect(captured?.anchorKey).toBe("node-0");
+
+        // beginPaging selects the virtualized paging anchor and preserve() does not abort on it.
+        viewport.beginPaging();
+        expect(viewport.preserving).toBe(true);
+        Object.defineProperty(virtualizedShell, "getBoundingClientRect", {
+          configurable: true,
+          value: () =>
+            ({ top: 150, bottom: 270, left: 0, right: 600, width: 600, height: 120 }) as DOMRect,
+        });
+        const landing = viewport.preserve();
+        expect(landing).not.toBeNull();
+        expect(scroller.scrollTop).toBe(300);
+      } finally {
+        viewport.detach();
+      }
+    } finally {
+      scroller.remove();
+    }
+  });
+
+  it("maps grouped inner member answerKeys to their enclosing top-level groupKey for reveal pinning", () => {
+    const groupKey = "group-1" as GroupKey;
+    const memberKey = "node-step-2" as NodeKey;
+    const entries: RenderEntry[] = [
+      { kind: "node", key: "node-0" as NodeKey },
+      { kind: "group", key: groupKey },
+    ];
+    const groupedView = {
+      groupSource: (key: GroupKey) => ({
+        getSnapshot: () =>
+          key === groupKey
+            ? { members: [{ kind: "node" as const, key: memberKey, groupPart: "response" }] }
+            : undefined,
+      }),
+    };
+
+    expect(resolveRevealTargetFlowKey(JSON.stringify(["node-0", null]), entries, groupedView)).toBe(
+      "node-0",
+    );
+    expect(
+      resolveRevealTargetFlowKey(JSON.stringify([memberKey, "response"]), entries, groupedView),
+    ).toBe(groupKey);
   });
 
   it("gracefully mounts all rows when IntersectionObserver is unavailable", async () => {

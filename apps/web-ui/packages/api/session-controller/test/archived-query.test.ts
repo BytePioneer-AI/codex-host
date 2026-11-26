@@ -4,6 +4,7 @@ import type { WebToolOutputReference } from "@codexhost/shared-contracts";
 import { SessionId, SessionLogOffset } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type { RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
+import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionListRequest, SessionListValue, SessionSummary } from "../src/types.ts";
 import { SessionManager } from "../src/client/sessions/manager.ts";
 import { ProjectionValueStore } from "../src/client/sessions/projection-store.ts";
@@ -16,6 +17,7 @@ import {
 import { ClientSessions } from "../src/client/sessions/service.ts";
 import type { SessionRemotes } from "../src/client/sessions/remotes.ts";
 import { Session } from "../src/client/sessions/session.ts";
+import { estimateUnknownBytes } from "../src/client/memory-budget.ts";
 import { MAX_TOOL_OUTPUT_CACHE_BYTES, ToolOutputCache } from "../src/client/tool-output.ts";
 import { TYPERT_REMOTE } from "../generated/remote.js";
 
@@ -670,5 +672,124 @@ it("publishes buffered and fetched summaries before requestAnimationFrame fires 
   } finally {
     globalThis.requestAnimationFrame = originalRaf;
     await ctx.fiber.dispose();
+  }
+});
+
+it("clones toolOutputs in captureView, clears cachedJournal after successful open while keeping it on failure, and avoids caching depth-truncated frozen sub-objects", async () => {
+  // 1. Depth-truncated frozen sub-object must not pollute immutableObjectBytes cache.
+  const deepPayload = Object.freeze({ text: "z".repeat(1_000) });
+  let wrapped: Record<string, unknown> = { leaf: deepPayload };
+  for (let i = 0; i < 12; i += 1) {
+    wrapped = { next: wrapped };
+  }
+  // Visit deepPayload past MAX_WALK_DEPTH first.
+  estimateUnknownBytes(wrapped);
+  // Direct top-level estimate must still report full string bytes (~2000+), not truncated 64 bytes.
+  expect(estimateUnknownBytes(deepPayload)).toBeGreaterThanOrEqual(2_000);
+
+  // 2. captureView clones toolOutputs so subsequent live reads do not mutate captured snapshots.
+  const toolOutput = vi
+    .fn<SessionRemotes["session"]["toolOutput"]>()
+    .mockResolvedValueOnce({ ok: true, value: { text: "first" } })
+    .mockResolvedValueOnce({ ok: true, value: { text: "second" } });
+  const view = makeView(200);
+  const makeStream = <Frame>(open: (signal: AbortSignal) => AsyncIterable<Frame>) => {
+    const controller = new AbortController();
+    return {
+      async *[Symbol.asyncIterator]() {
+        for await (const value of open(controller.signal)) {
+          yield { value, generation: 1, accept: () => {} };
+        }
+      },
+      dispose: vi.fn(async () => {
+        controller.abort();
+      }),
+    };
+  };
+  const session = new Session(
+    ordinary,
+    {
+      $stream: ({ open }: { open: (signal: AbortSignal) => AsyncIterable<unknown> }) =>
+        makeStream(open),
+      session: {
+        toolOutput,
+        follow: async function* () {
+          throw new RemoteError("test/offline", "offline", {});
+        },
+      },
+    } as unknown as SessionRemotes,
+    { cachedView: view },
+  );
+  try {
+    await session.readToolOutput({
+      sessionId: ordinary,
+      epoch: "ep-1",
+      turn: 1,
+      seq: 1,
+      callId: "call-1",
+      part: "output",
+      version: "v1",
+    });
+    const captured = session.captureView();
+    expect(captured?.toolOutputs?.size).toBe(1);
+
+    await session.readToolOutput({
+      sessionId: ordinary,
+      epoch: "ep-1",
+      turn: 1,
+      seq: 2,
+      callId: "call-2",
+      part: "output",
+      version: "v1",
+    });
+    expect(captured?.toolOutputs?.size).toBe(1);
+
+    // 3. Failed open preserves cachedJournal for retry; successful open releases cachedJournal.
+    await session.open();
+    expect(session.getSnapshot().openState).toBe("error");
+    expect(session.captureView()?.journal).toBeDefined();
+  } finally {
+    await session.dispose();
+  }
+
+  let releaseStream!: () => void;
+  const keepOpen = new Promise<void>((resolve) => {
+    releaseStream = resolve;
+  });
+  const okSession = new Session(
+    ordinary,
+    {
+      $stream: ({ open }: { open: (signal: AbortSignal) => AsyncIterable<unknown> }) =>
+        makeStream(open),
+      session: {
+        follow: async function* (_req: unknown, signal: AbortSignal) {
+          yield {
+            type: "snapshot",
+            epoch: "ep-1",
+            cursor: 1,
+            resumedAfter: 1,
+            records: [],
+            hasMore: false,
+            assistantStream: { revision: 0, blocks: [] },
+          };
+          await Promise.race([
+            keepOpen,
+            new Promise<void>((resolve) => {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            }),
+          ]);
+        },
+      },
+    } as unknown as SessionRemotes,
+    { cachedView: view },
+  );
+  try {
+    await okSession.open();
+    expect(okSession.getSnapshot().openState).toBe("open");
+    // cachedJournal is cleared after open succeeds (events stream now owns live capture).
+    expect((okSession as unknown as { cachedJournal: unknown }).cachedJournal).toBeUndefined();
+  } finally {
+    releaseStream();
+    await okSession.dispose();
   }
 });

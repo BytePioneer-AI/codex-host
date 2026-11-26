@@ -64,8 +64,13 @@ export function PermissionSelect({ locked, select, useProjection, t }: Permissio
   if (selection === undefined || !native?.selectable || native.catalog === null) return null;
   const modes = native.catalog.modes.map((mode) => {
     const key = `codex.${mode.id}` as PermissionAccessKey;
+    const descriptionKey = `${key}.description` as PermissionAccessKey;
     return native.harnessId === "codex" && Object.hasOwn(accessEn, key)
-      ? { ...mode, label: t(key) }
+      ? {
+          ...mode,
+          label: t(key),
+          ...(Object.hasOwn(accessEn, descriptionKey) ? { description: t(descriptionKey) } : {}),
+        }
       : mode;
   });
   const current = modes.find((mode) => mode.id === selection.currentValue);

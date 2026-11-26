@@ -13,6 +13,11 @@ import {
 import type { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelRequestError } from "./client-channel-error.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
+import {
+  CODEX_APPROVE_FOR_ME_MODE,
+  codexApproveForMeSettings,
+  nativePermissionSettingsMatch,
+} from "./codex-runtime/native-permission-presets.js";
 import { nativeThreadConfiguration } from "./codex-runtime/native-thread-controls.js";
 import { sendNativeQueuedMessage } from "./native-queued-steering.js";
 import { submitNativeQueuedInput } from "./native-queued-input.js";
@@ -596,11 +601,25 @@ export class NativeClientChannel {
         params,
       );
     }
-    let reply = await this.#host.request(
-      method,
-      method === "thread/resume" ? { ...params, excludeTurns: true } : params,
-    );
+    const approveForMe =
+      method === "thread/start" && params.permissions === CODEX_APPROVE_FOR_ME_MODE;
+    const nativeParams = approveForMe
+      ? { ...params, ...codexApproveForMeSettings }
+      : method === "thread/resume"
+        ? { ...params, excludeTurns: true }
+        : params;
+    let reply = await this.#host.request(method, nativeParams);
     if (generation !== this.#generationToken) return stale();
+    if (approveForMe && "result" in reply) {
+      const applied = resultObject(reply);
+      if (!applied || !nativePermissionSettingsMatch(codexApproveForMeSettings, applied))
+        return {
+          error: {
+            code: -32078,
+            message: "Codex did not confirm Approve for me on the new Thread",
+          },
+        };
+    }
     const initialTurnsPage =
       method === "thread/turns/list" && (params.cursor === undefined || params.cursor === null);
     const shouldRetryMaterialization = (current: NativeClientReply): boolean => {

@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 
 import { ClientChannelEvents } from "../src/client-channel-events.js";
+import { CODEX_APPROVE_FOR_ME_MODE } from "../src/codex-runtime/native-permission-presets.js";
 import { NativeClientChannel, type NativeClientReply } from "../src/native-client-channel.js";
 
 const thread: JsonObject = {
@@ -24,6 +25,74 @@ const listTurnsUnsupportedError = {
   code: -32601,
   message: "list_turns is not supported yet",
 };
+
+it.each([
+  ["auto_review", "on-request", true],
+  ["user", "on-request", false],
+  ["auto_review", "never", false],
+] as const)(
+  "starts Approve for me only when Codex confirms %s / %s",
+  async (reviewer, policy, confirmed) => {
+    const channel = new NativeClientChannel({
+      events: new ClientChannelEvents(),
+      async request(method, params) {
+        if (method !== "thread/start") throw new Error(`Unexpected native method ${method}`);
+        expect(params).toEqual({
+          permissions: ":workspace",
+          approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
+        });
+        return {
+          result: {
+            thread,
+            model: "gpt-5.4",
+            activePermissionProfile: { id: ":workspace" },
+            approvalPolicy: policy,
+            approvalsReviewer: reviewer,
+          },
+        };
+      },
+      respond: async () => {},
+    });
+    const started = await channel.request("thread/start", {
+      permissions: CODEX_APPROVE_FOR_ME_MODE,
+    });
+    if (confirmed) {
+      expect(started).toHaveProperty("result.thread.id", thread.id);
+      await expect(
+        channel.request("codexhost/thread/inspect", { threadId: thread.id }),
+      ).resolves.toHaveProperty("result.effectivePermissionModeId", CODEX_APPROVE_FOR_ME_MODE);
+    } else {
+      expect(started).toHaveProperty(
+        "error.message",
+        "Codex did not confirm Approve for me on the new Thread",
+      );
+    }
+  },
+);
+
+it("shows a Desktop Thread's confirmed legacy workspace sandbox and automatic reviewer", async () => {
+  const channel = new NativeClientChannel({
+    events: new ClientChannelEvents(),
+    async request(method) {
+      if (method !== "thread/resume") throw new Error(`Unexpected native method ${method}`);
+      return {
+        result: {
+          thread,
+          model: "gpt-5.4",
+          sandbox: { type: "workspaceWrite" },
+          approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
+          activePermissionProfile: null,
+        },
+      };
+    },
+    respond: async () => {},
+  });
+  await expect(
+    channel.request("codexhost/thread/inspect", { threadId: thread.id }),
+  ).resolves.toHaveProperty("result.effectivePermissionModeId", CODEX_APPROVE_FOR_ME_MODE);
+});
 
 function snapshotChannel() {
   const events = new ClientChannelEvents();

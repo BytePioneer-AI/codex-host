@@ -45,6 +45,9 @@ export const accessZh = {
   mode: "访问模式，当前：{name}",
   "codex.:read-only": "只读",
   "codex.:workspace": "工作区写入",
+  "codex.:codexhost-approve-for-me": "帮我授权",
+  "codex.:codexhost-approve-for-me.description":
+    "可修改工作区文件，符合条件的授权请求由 Codex 自动审查。",
   "codex.:danger-full-access": "完全访问",
   "codex.configuration": "跟随 Codex 设置",
   "codex.configuration.description": "未选择权限档案，由 Codex 当前配置决定。",
@@ -83,6 +86,9 @@ export const accessEn = {
   mode: "Access mode, current: {name}",
   "codex.:read-only": "Read only",
   "codex.:workspace": "Workspace write",
+  "codex.:codexhost-approve-for-me": "Approve for me",
+  "codex.:codexhost-approve-for-me.description":
+    "Allow workspace edits and automatically review eligible approval requests.",
   "codex.:danger-full-access": "Full access",
   "codex.configuration": "Follow Codex settings",
   "codex.configuration.description":

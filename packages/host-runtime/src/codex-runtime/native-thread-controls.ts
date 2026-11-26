@@ -5,14 +5,16 @@ import {
   harnessConfigurationStateSchema,
 } from "@codexhost/shared-contracts";
 import { officialCodexModelRef } from "../official-codex-model-ref.js";
+import {
+  nativePermissionModeId,
+  nativePermissionSettingsMatch,
+} from "./native-permission-presets.js";
 
 const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function nativeThreadConfiguration(settings: JsonObject) {
-  const profile = isRecord(settings.activePermissionProfile)
-    ? settings.activePermissionProfile
-    : undefined;
+  const permissionModeId = nativePermissionModeId(settings);
   const effort = settings.effort ?? settings.reasoningEffort;
   return harnessConfigurationStateSchema.parse({
     ...(typeof settings.model === "string"
@@ -25,7 +27,7 @@ export function nativeThreadConfiguration(settings: JsonObject) {
         }
       : {}),
     ...(typeof effort === "string" ? { effectiveThinkingOptionId: effort } : {}),
-    ...(typeof profile?.id === "string" ? { effectivePermissionModeId: profile.id } : {}),
+    ...(permissionModeId ? { effectivePermissionModeId: permissionModeId } : {}),
   });
 }
 
@@ -67,12 +69,7 @@ export async function updateNativeThreadSettings(
         }
         if ((applied.serviceTier ?? "default") !== (settings.serviceTier ?? "default")) return;
       }
-      if (
-        settings.permissions !== undefined &&
-        (!isRecord(applied.activePermissionProfile) ||
-          applied.activePermissionProfile.id !== settings.permissions)
-      )
-        return;
+      if (!nativePermissionSettingsMatch(settings, applied)) return;
       resolve(applied);
     };
     notifications.add(listener);

@@ -120,6 +120,9 @@ export class CodexRuntime {
       while (!current.done) {
         const frame = current.value;
         const following = frames.next();
+        // The prefetched read can fail while onOutput is still pending.
+        // Observe the rejection now so awaiting it below can handle it normally.
+        void following.catch(() => undefined);
         const value = parseJsonFrame(frame);
         if (!this.broker.handle(value) && !this.#closing) {
           await onOutput({ generation: this.generation, frame, value });

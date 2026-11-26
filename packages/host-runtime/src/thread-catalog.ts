@@ -255,7 +255,9 @@ export async function readThreadCatalog(
       query: listQuery(true),
       runtimeFor: input.runtimeFor,
       placementOf: (id) => placements.get(id),
-    }).map((record) => record.hostThreadId);
+    })
+      .filter((record) => !record.ephemeral)
+      .map((record) => record.hostThreadId);
     return { rows, archivedThreadIds, reservedIds: new Set([...localOwners.keys(), ...sharedIds]) };
   };
 
@@ -279,9 +281,9 @@ export async function readThreadCatalog(
       const id = row.ownership.threadId;
       if (!external.reservedIds.has(id) && !byId.has(id)) byId.set(id, row);
     }
-    const rows = [...byId.values()].sort((left, right) =>
-      compareThreadListEntries(left.entry, right.entry, "desc"),
-    );
+    const rows = [...byId.values()]
+      .filter(({ entry }) => entry.thread.ephemeral !== true)
+      .sort((left, right) => compareThreadListEntries(left.entry, right.entry, "desc"));
     const result: ThreadCatalogReadResult = {
       officialCursor,
       threads: rows.map(({ entry }) => ({ ...entry.thread, turns: [] })),

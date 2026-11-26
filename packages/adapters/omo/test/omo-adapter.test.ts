@@ -228,6 +228,22 @@ function handle(command) {
       return;
     }
     case "set_model": {
+      fs.appendFileSync(
+        path.join(stateDir, "config-commands.log"),
+        JSON.stringify(command) + "\\n",
+      );
+      const refusal = process.env.FAKE_OMO_SET_MODEL_ERROR;
+      if (refusal) {
+        write({
+          id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: 'model_not_found: unknown model "' + command.provider + "/" + command.modelId + '"',
+          errorCode: refusal,
+        });
+        return;
+      }
       const row = catalog.find(
         (model) => model.provider === command.provider && model.id === command.modelId,
       );
@@ -252,6 +268,14 @@ function handle(command) {
       return;
     }
     case "set_thinking_level": {
+      fs.appendFileSync(
+        path.join(stateDir, "config-commands.log"),
+        JSON.stringify(command) + "\\n",
+      );
+      if (process.env.FAKE_OMO_SET_THINKING_IGNORE === "1") {
+        respond(command, {});
+        return;
+      }
       state.thinkingLevel = command.level;
       const change = {
         type: "thinking_level_change",
@@ -563,6 +587,19 @@ function readForksLog(cwd: string): Array<Record<string, unknown>> {
 }
 
 /**
+ * Frames the fixture peer received for `set_model`/`set_thinking_level`, in
+ * arrival order. Resumes and unspecified create inputs must leave it empty.
+ */
+function readConfigLog(cwd: string): Array<Record<string, unknown>> {
+  const log = path.join(cwd, ".fake-omo", "config-commands.log");
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/**
  * A synthetic source Session in the documented JSONL shape: a header plus
  * user/assistant message pairs linked by id/parentId. Written for this suite;
  * no OmO sample or asset was copied.
@@ -821,11 +858,7 @@ describe("OmO Adapter open", () => {
     const cwd = temporaryDirectory();
     const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
     const fixture = sessionFixture(cwd);
-    const result = await fixture.adapter.open({
-      kind: "create",
-      cwd,
-      model: { id: "requested/other-model" },
-    });
+    const result = await fixture.adapter.open({ kind: "create", cwd });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected an open Session");
     const session = result.value;
@@ -841,8 +874,9 @@ describe("OmO Adapter open", () => {
       effectiveThinkingOptionId: "medium",
       effectivePermissionModeId: "ask",
     });
-    // requested≠effective: the requested Model was never confirmed and must not be echoed.
-    expect(session.initialState.effectiveModel?.id).not.toBe("requested/other-model");
+    // Omitted configuration sends no native command; delegation item (b)
+    // depends on this create path staying silent.
+    expect(readConfigLog(cwd)).toEqual([]);
     expect(session.capabilities).toEqual(sessionCapabilities);
     expect(session.initialUsage).toBeNull();
     expect(fixture.sessionSpawns).toHaveLength(1);
@@ -868,6 +902,130 @@ describe("OmO Adapter open", () => {
       ok: false,
       error: { code: "invalidState" },
     });
+  });
+
+  it("applies an explicit Model at create and publishes the confirmed effective state", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      model: { id: "synthetic-provider/other-model" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an open Session");
+    // The published state is the native post-application state, not the request.
+    expect(result.value.initialState).toMatchObject({
+      effectiveModel: { id: "synthetic-provider/other-model" },
+      resolvedModelLabel: "Synthetic Other",
+      effectiveThinkingOptionId: "medium",
+    });
+    expect(readConfigLog(cwd)).toEqual([
+      expect.objectContaining({
+        type: "set_model",
+        provider: "synthetic-provider",
+        modelId: "other-model",
+        scope: "session",
+      }),
+    ]);
+    await result.value.close();
+  });
+
+  it("applies an explicit Thinking option at create with turn scope", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      thinkingOptionId: "high",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an open Session");
+    expect(result.value.initialState).toMatchObject({
+      effectiveModel: { id: "synthetic-provider/synthetic-model" },
+      effectiveThinkingOptionId: "high",
+    });
+    expect(readConfigLog(cwd)).toEqual([
+      expect.objectContaining({ type: "set_thinking_level", level: "high", scope: "turn" }),
+    ]);
+    await result.value.close();
+  });
+
+  it("applies an explicit Model before its explicit Thinking option at create", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      model: { id: "synthetic-provider/other-model" },
+      thinkingOptionId: "high",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an open Session");
+    expect(result.value.initialState).toMatchObject({
+      effectiveModel: { id: "synthetic-provider/other-model" },
+      effectiveThinkingOptionId: "high",
+    });
+    // Ordering matters: the level is validated against the newly selected Model.
+    expect(readConfigLog(cwd).map((frame) => frame.type)).toEqual([
+      "set_model",
+      "set_thinking_level",
+    ]);
+    await result.value.close();
+  });
+
+  it("rejects an explicit Model the engine does not offer without writing configuration", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      model: { id: "requested/other-model" },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest", retryable: false },
+    });
+    expect(readConfigLog(cwd)).toEqual([]);
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
+  it("rejects a create when the engine refuses the explicit Model and publishes nothing", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd, { FAKE_OMO_SET_MODEL_ERROR: "model_not_found" });
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      model: { id: "synthetic-provider/other-model" },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest", retryable: false },
+    });
+    expect(readConfigLog(cwd)).toHaveLength(1);
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
+  it("rejects a create when the engine never confirms the explicit Thinking option", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd, { FAKE_OMO_SET_THINKING_IGNORE: "1" });
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      thinkingOptionId: "high",
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", retryable: false },
+    });
+    expect(readConfigLog(cwd)).toHaveLength(1);
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
   });
 
   it("propagates per-Session environment overrides to the spawned process", async () => {
@@ -1477,8 +1635,10 @@ describe("OmO Adapter open", () => {
       effectiveThinkingOptionId: "medium",
       effectivePermissionModeId: "ask",
     });
-    // No preset frame was sent for the hint.
+    // No preset or Model/Thinking frame was sent for the hint: resume only
+    // restores native state, it never replays the persisted configuration.
     expect(readPresetsLog(cwd)).toEqual([]);
+    expect(readConfigLog(cwd)).toEqual([]);
     await result.value.close();
   });
 

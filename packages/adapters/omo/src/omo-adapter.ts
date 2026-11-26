@@ -411,6 +411,29 @@ export class OmoAdapter implements HarnessAdapter {
         }
         initialState = omoInitialState(rpc.state, cwd);
       }
+      // Explicit Model and Thinking at create are native commands, not
+      // published preferences: both are applied after the startup get_state
+      // and only a fresh get_state may confirm them. Model goes first because
+      // the Thinking level is validated against the newly selected Model.
+      // Omitted configuration sends nothing and keeps the native default.
+      if (
+        input.kind === "create" &&
+        (input.model !== undefined || input.thinkingOptionId !== undefined)
+      ) {
+        if (input.model !== undefined) {
+          const selected = await selectOmoModel(rpc, input.model, {
+            ...(this.#commandTimeoutMs === undefined ? {} : { timeoutMs: this.#commandTimeoutMs }),
+          });
+          if (!selected.ok) return await rejectOpen(selected.error);
+        }
+        if (input.thinkingOptionId !== undefined) {
+          const selected = await selectOmoThinking(rpc, input.thinkingOptionId, {
+            ...(this.#commandTimeoutMs === undefined ? {} : { timeoutMs: this.#commandTimeoutMs }),
+          });
+          if (!selected.ok) return await rejectOpen(selected.error);
+        }
+        initialState = omoInitialState(rpc.state, cwd);
+      }
       const session = new OmoHarnessSession(rpc, {
         initialState,
         // Real 5.1.83 keeps an empty session file after a no-conversation close

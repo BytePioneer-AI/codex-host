@@ -82,11 +82,13 @@ export interface InputTriggerCandidate {
   /** Opaque source-owned pick payload. */
   readonly value?: string;
   /**
-   * The row offers a drill action beside the settling pick: Tab or the row's
-   * chevron refines the query in place (directory descent) instead of
-   * resolving the candidate.
+   * The row offers a drill action beside the settling pick: Tab, Right arrow,
+   * or the row's chevron descends into the candidate in place instead of
+   * resolving it.
    */
   readonly drill?: boolean;
+  /** Optional custom label/aria text for the drill hint beside the row chevron. */
+  readonly drillLabel?: string;
 }
 
 /**
@@ -194,6 +196,13 @@ export interface InputTriggerSource {
   readonly launcherOrder?: number;
   /** Whether the menu renders the source-title row; defaults to true. */
   readonly showGroupTitle?: boolean;
+  /**
+   * When true, drilling into this source scopes the open menu exclusively to
+   * this source until its header returns undefined or the menu closes.
+   */
+  readonly drillExclusive?: boolean;
+  /** Notified when the open menu closes without a drill re-entry. */
+  onClose?(session: ClientSessionContext): void;
   candidates(
     session: ClientSessionContext,
     req: CandidateRequest,

@@ -399,8 +399,10 @@ export const packageMetadata = {
 
 export {
   DELEGATION_MENTION_PATH_PREFIX,
+  REMOTE_DELEGATION_MENTION_PATH_PREFIX,
   HARNESS_COMMAND_MENTION_PATH_PREFIX,
   delegationMentionPath,
+  remoteDelegationMentionPath,
   harnessCommandMentionPath,
   harnessCommandReferences,
   restoreHarnessCommandMentions,
@@ -545,6 +547,14 @@ export {
   remotePeerRenameWorkspaceParamsSchema,
   remotePeerDeleteWorkspaceParamsSchema,
   remotePeerWorkspaceMutationResultSchema,
+  DELEGATION_REMOTE_HOSTS_METHOD,
+  DELEGATION_HOST_HARNESSES_METHOD,
+  delegationRemoteHostsParamsSchema,
+  delegationRemoteHostOptionSchema,
+  delegationRemoteHostsResultSchema,
+  delegationHostHarnessesParamsSchema,
+  delegationHostHarnessOptionSchema,
+  delegationHostHarnessesResultSchema,
   type RemotePeerCapabilities,
   type RemotePeerColor,
   type RemotePeerTransportKind,
@@ -572,6 +582,12 @@ export {
   type RemotePeerRenameWorkspaceParams,
   type RemotePeerDeleteWorkspaceParams,
   type RemotePeerWorkspaceMutationResult,
+  type DelegationRemoteHostsParams,
+  type DelegationRemoteHostOption,
+  type DelegationRemoteHostsResult,
+  type DelegationHostHarnessesParams,
+  type DelegationHostHarnessOption,
+  type DelegationHostHarnessesResult,
 } from "./remote-peers.js";
 
 export {

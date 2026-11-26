@@ -1632,6 +1632,12 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
               version: "1.0.0",
               icon: "data:image/png;base64,AA==",
             },
+            {
+              id: "antigravity",
+              name: "Antigravity",
+              version: "1.0.0",
+              icon: "data:image/png;base64,AA==",
+            },
           ],
         } as T;
       }
@@ -1640,6 +1646,22 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
           return {
             status: "notInstalled",
             error: { code: "unavailable", message: "No Codex", retryable: false },
+          } as T;
+        }
+        if (params.harnessId === "antigravity") {
+          return {
+            ...inspection,
+            catalog: {
+              ...inspection.catalog,
+              models: [
+                {
+                  ref: { id: "agy-one" },
+                  label: "Agy One",
+                  supportedThinkingOptionIds: ["medium"],
+                },
+              ],
+              defaultModel: { id: "agy-one" },
+            },
           } as T;
         }
         return inspection as T;
@@ -1885,6 +1907,24 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
   await sleep(160);
   assert.equal(snapshotCalls, snapsAfterClose);
 
+  // Bound Peer thread modelCatalog includes all ready Harnesses on that Peer for @ delegation
+  // while keeping routableProviders locked to the thread's bound Harness.
+  const boundCatalog = await rpc.dispatch("session/modelCatalog", {
+    args: { request: { sessionId: parentSessionId } },
+  });
+  assert.ok(boundCatalog.ok);
+  assert.deepEqual((boundCatalog.value as { routableProviders: string[] }).routableProviders, [
+    "claude-code",
+  ]);
+  assert.deepEqual(
+    (boundCatalog.value as { groups: Array<{ id: string }> }).groups.map((g) => g.id),
+    ["claude-code", "antigravity"],
+  );
+  const crossHarnessSelect = await rpc.dispatch("session/selectModel", {
+    args: { request: { sessionId: parentSessionId, provider: "antigravity", model: "agy-one" } },
+  });
+  assert.equal(crossHarnessSelect.ok, false);
+
   // 3. Peer draft modelCatalog uses source.catalog.models() without projectHarnesses/inspectHarness ops.
   const ws = defined(workspaces.list().find((w) => w.remote?.hostId === hostId));
   const created = await rpc.dispatch("session/create", {
@@ -1898,6 +1938,7 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
   assert.ok(draftCatalog.ok);
   assert.deepEqual((draftCatalog.value as { routableProviders: string[] }).routableProviders, [
     "claude-code",
+    "antigravity",
   ]);
   assert.equal(
     opLog.some((op) => op.kind === "projectHarnesses" || op.kind === "inspectHarness"),

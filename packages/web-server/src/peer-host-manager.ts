@@ -20,6 +20,12 @@ export interface PeerHostManagerOptions {
   projector?: (threadId: string) => PeerThreadProjector;
 }
 
+export interface PeerHostRegisterOptions {
+  localHostname?: string;
+  localDelegationAvailable?: () => boolean;
+  localHarnesses?: () => Promise<c.DelegationHostHarnessOption[]>;
+}
+
 export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
   private sources = new Map<string, PeerThreadSource>();
@@ -223,12 +229,120 @@ export class PeerHostManager {
       }));
   }
 
+  /** Browser-safe reachable delegation hosts from the perspective of `sessionHostId` (Hub A hostId space). */
+  delegationRemoteHosts(
+    sessionHostId = "local",
+    localHost?: { hostname?: string; delegationAvailable?: boolean },
+  ): c.DelegationRemoteHostOption[] {
+    if (sessionHostId === "local") {
+      return [...this.clients.values()]
+        .filter(
+          (p) =>
+            p.record.enabled &&
+            p.state === "connected" &&
+            p.manifest?.capabilities?.delegation === 1,
+        )
+        .map((p) => ({
+          hostId: c.remotePeerHostId(p.record.peerId),
+          name: p.record.name,
+          ...(p.record.color !== undefined ? { color: p.record.color } : {}),
+          ...(p.manifest?.hostname ? { hostname: p.manifest.hostname } : {}),
+        }));
+    }
+    if (c.peerIdFromRemoteHostId(sessionHostId) === undefined) return [];
+    const sourceClient = this.client(sessionHostId);
+    if (!sourceClient || !sourceClient.record.enabled || sourceClient.state !== "connected") {
+      return [];
+    }
+    const peerNodes = sourceClient.manifest?.peerNodes;
+    if (!peerNodes) return [];
+    const reachableNodeIds = new Set<string>();
+    for (const [peerHostId, nodeId] of Object.entries(peerNodes)) {
+      if (c.peerIdFromRemoteHostId(peerHostId) !== undefined && nodeId) {
+        reachableNodeIds.add(nodeId);
+      }
+    }
+    const results: c.DelegationRemoteHostOption[] = [];
+    if (
+      this.localNodeId !== undefined &&
+      reachableNodeIds.has(this.localNodeId) &&
+      localHost?.delegationAvailable !== false
+    ) {
+      const localName = localHost?.hostname?.trim() || "local";
+      results.push({
+        hostId: "local",
+        name: localName,
+        isLocal: true,
+        ...(localHost?.hostname ? { hostname: localHost.hostname } : {}),
+      });
+    }
+    const seenNodeIds = new Set<string>();
+    if (sourceClient.manifest?.nodeId) seenNodeIds.add(sourceClient.manifest.nodeId);
+    if (this.localNodeId) seenNodeIds.add(this.localNodeId);
+    for (const p of this.clients.values()) {
+      if (
+        !p.record.enabled ||
+        p.state !== "connected" ||
+        p.hostId === sessionHostId ||
+        p.manifest?.capabilities?.delegation !== 1
+      ) {
+        continue;
+      }
+      const nodeId = p.manifest?.nodeId;
+      if (!nodeId || !reachableNodeIds.has(nodeId) || seenNodeIds.has(nodeId)) continue;
+      seenNodeIds.add(nodeId);
+      results.push({
+        hostId: c.remotePeerHostId(p.record.peerId),
+        name: p.record.name,
+        ...(p.record.color !== undefined ? { color: p.record.color } : {}),
+        ...(p.manifest?.hostname ? { hostname: p.manifest.hostname } : {}),
+      });
+    }
+    return results;
+  }
+
+  /** Ready Harness options for a delegation target host (`local` or a connected `remote-peer:*`). */
+  async delegationHostHarnesses(
+    hostId: string,
+    localHarnesses?: () => Promise<c.DelegationHostHarnessOption[]>,
+  ): Promise<c.DelegationHostHarnessOption[]> {
+    if (hostId === "local") {
+      return localHarnesses ? await localHarnesses() : [];
+    }
+    const client = this.client(hostId);
+    if (!client || !client.record.enabled || client.state !== "connected") return [];
+    const source = this.source(hostId);
+    if (!source) return [];
+    const catalog = await source.catalog.models().catch(() => undefined);
+    if (!catalog) return [];
+    return catalog.groups.map((group) => ({ id: group.id, name: group.name }));
+  }
+
   call(op: c.RemoteSessionOperation) {
     if (op.kind === "hosts") return Promise.resolve(this.hosts());
     return this.get(c.peerIdFromRemoteHostId(op.hostId) ?? "").call(op);
   }
 
-  register(rpc: RpcRegistry) {
+  register(rpc: RpcRegistry, options: PeerHostRegisterOptions = {}) {
+    rpc.register(c.DELEGATION_REMOTE_HOSTS_METHOD, async (args, ctx) => {
+      if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
+      const { sessionHostId } = c.delegationRemoteHostsParamsSchema.parse(requestOf(args));
+      return c.delegationRemoteHostsResultSchema.parse({
+        hosts: this.delegationRemoteHosts(sessionHostId ?? "local", {
+          ...(options.localHostname === undefined ? {} : { hostname: options.localHostname }),
+          ...(options.localDelegationAvailable === undefined
+            ? {}
+            : { delegationAvailable: options.localDelegationAvailable() }),
+        }),
+      });
+    });
+    rpc.register(c.DELEGATION_HOST_HARNESSES_METHOD, async (args, ctx) => {
+      if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
+      const { hostId } = c.delegationHostHarnessesParamsSchema.parse(requestOf(args));
+      return c.delegationHostHarnessesResultSchema.parse({
+        harnesses: await this.delegationHostHarnesses(hostId, options.localHarnesses),
+      });
+    });
     const linkOptions = { allowLoopback: this.allowLoopback };
     const localOnlyActions = new Set(["add", "update", "remove", "test"]);
     for (const [action, method] of Object.entries(c.REMOTE_PEERS_METHODS))

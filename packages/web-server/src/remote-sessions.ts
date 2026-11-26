@@ -3235,7 +3235,24 @@ export class RemoteSessions {
     }
     const entry = this.entries.get(id);
     if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");
-    if (method === "session/modelCatalog") return remoteModelCatalog(entry);
+    if (method === "session/modelCatalog") {
+      const base = remoteModelCatalog(entry);
+      const peerSource = this.peers?.source(entry.identity.hostId);
+      if (!peerSource) return base;
+      const peerCatalog = await peerSource.catalog.models().catch(() => undefined);
+      if (!peerCatalog?.groups.length) return base;
+      const bound = base.groups[0];
+      const groups = bound
+        ? peerCatalog.groups.some((group) => group.id === bound.id)
+          ? peerCatalog.groups.map((group) => (group.id === bound.id ? bound : group))
+          : [bound, ...peerCatalog.groups]
+        : peerCatalog.groups;
+      return {
+        ...base,
+        groups,
+        ...(peerCatalog.harnessOrder ? { harnessOrder: peerCatalog.harnessOrder } : {}),
+      };
+    }
     if (method === "session/selectModel")
       return selectRemoteModel(
         id,

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MappingStore, storedThreadCoreV1Schema } from "@codexhost/mapping-store";
 import { clientWorkspaceSnapshotSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { HostClientChannel } from "@codexhost/desktop-control";
+import { writeDesktopGlobalStateDatabase } from "../../../tests/fixtures/desktop-global-state.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import { allocateProjectlessWorkspace } from "../src/projectless-workspace.js";
 import { readExternalWorkspaceSnapshot } from "../src/native-workspace-snapshot.js";
@@ -104,6 +105,84 @@ describe("owner-allocated projectless execution directories", () => {
     expect(snapshot.assignments).toEqual({ "native-worktree": "project" });
     expect(snapshot.projectless).toEqual(["native-projectless"]);
     expect(await readFile(file, "utf8")).toBe(original);
+  });
+
+  it("reads section projects, assignments and projectless IDs from SQLite after migration", async () => {
+    const home = await homeDirectory();
+    const nativeProject = { id: "native-project", name: "Project", rootPaths: [home] };
+    await writeFile(
+      path.join(home, ".codex-global-state.json"),
+      JSON.stringify({
+        "thread-project-assignments": {
+          previous: { projectKind: "local", projectId: nativeProject.id },
+        },
+        "projectless-thread-ids": ["moved"],
+      }),
+    );
+    writeDesktopGlobalStateDatabase(home, [
+      ["global", "electron-renderer-content-owner", "owner"],
+      ["global", "electron-owner-atoms:owner", {}],
+      [
+        "global",
+        "app-server-project-id-by-legacy-project-id-by-host",
+        {
+          [`local:${path.resolve(home)}`]: { legacy: nativeProject.id },
+        },
+      ],
+      [
+        "global",
+        "thread-project-assignments",
+        { moved: { projectKind: "local", projectId: "legacy" } },
+      ],
+      ["global", "projectless-thread-ids", ["previous"]],
+      [
+        "electron-owner-atoms:owner",
+        "sidebar-custom-sections-v3",
+        {
+          account: {
+            sections: [
+              { hostSectionIds: { local: "section" }, itemKeys: ["codex:project:legacy"] },
+            ],
+          },
+        },
+      ],
+    ]);
+    const snapshot = await readExternalWorkspaceSnapshot(
+      { CODEX_HOME: home },
+      [],
+      [],
+      ["previous", "moved"],
+      [nativeProject],
+    );
+    expect(snapshot).toEqual({
+      projects: [nativeProject],
+      nativeProjects: true,
+      sectionProjects: { section: [nativeProject.id] },
+      assignments: { moved: nativeProject.id },
+      projectless: ["previous"],
+      pinned: [],
+    });
+  });
+
+  it("reads legacy JSON until Desktop migrates a version 0 database", async () => {
+    const home = await homeDirectory();
+    await writeFile(path.join(home, ".codex-global-state.sqlite"), "");
+    const file = path.join(home, ".codex-global-state.json");
+    await writeFile(file, JSON.stringify({ "projectless-thread-ids": ["legacy-thread"] }));
+    const snapshot = () =>
+      readExternalWorkspaceSnapshot({ CODEX_HOME: home }, [], [], ["legacy-thread"]);
+    expect((await snapshot()).projectless).toEqual(["legacy-thread"]);
+    await rm(file);
+    expect((await snapshot()).projectless).toEqual([]);
+  });
+
+  it("rejects SQLite version 2 even when valid legacy JSON exists", async () => {
+    const home = await homeDirectory();
+    await writeFile(path.join(home, ".codex-global-state.json"), "{}");
+    writeDesktopGlobalStateDatabase(home, [], 2);
+    await expect(readExternalWorkspaceSnapshot({ CODEX_HOME: home }, [], [])).rejects.toThrow(
+      "Unsupported global state database version: 2",
+    );
   });
 
   it("keeps no-project affiliation in the canonical store across reload, not GUI metadata", async () => {

@@ -186,6 +186,8 @@ export class V2Adapter implements HarnessAdapter {
             this.options.toolOutputLimit ?? 64_000,
             models.index,
           );
+          if (source.snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
+            throw new Error("OpenCode history contains an incomplete execution");
           const parent = info;
           const turns = source.snapshot.turns;
           let count: number;

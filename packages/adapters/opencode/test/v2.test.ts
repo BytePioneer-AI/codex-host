@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  FileDiffInfo,
   ModelInfo,
   OpenCodeClient,
   OpenCodeEvent,
@@ -16,7 +17,7 @@ import {
   type HostEvent,
 } from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { hostTurnIdSchema, nativeCheckpointRefSchema } from "@codexhost/shared-contracts";
 import { encodeOpenCodeVariant } from "../src/model-catalog.js";
 import { openCodeMajor, openCodeVersion } from "../src/version.js";
 import { assistantItems, projectHistory, readHistory, readMessages } from "../src/v2/history.js";
@@ -36,11 +37,11 @@ const info: SessionInfo = {
   cost: 0,
   tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
 };
-const user = (id = "user", turnId: string | undefined = "host-turn"): SessionMessageInfo => ({
+const user = (id = "user", turnId: string | null = "host-turn"): SessionMessageInfo => ({
   id,
   type: "user",
   text: id,
-  ...(turnId !== undefined ? { metadata: { "codexhost.turnId": turnId } } : {}),
+  ...(turnId !== null ? { metadata: { "codexhost.turnId": turnId } } : {}),
   time: { created: 1 },
 });
 const assistant = (text: string): SessionMessageAssistant => ({
@@ -89,7 +90,7 @@ function fixture() {
       compact,
       interrupt,
       form: { list: vi.fn(async () => []) },
-      diff: vi.fn(async () => []),
+      diff: vi.fn(async (): Promise<FileDiffInfo[]> => []),
     },
     permission: { list: vi.fn(async (): Promise<PermissionRequest[]> => []), reply: vi.fn() },
   };
@@ -303,25 +304,34 @@ describe("OpenCode v2 native history", () => {
           type: "compaction",
           reason: "auto",
           status: "completed",
+          summary: "",
+          recent: "",
           time: { created: 2 },
         },
         { ...assistant("recovered"), id: "a2" },
         idle("succeeded", "idle-2"),
-        user("native-1", undefined),
-        user("native-steered", undefined),
+        user("native-1", null),
+        user("native-steered", null),
         { ...assistant("native cut off"), id: "a3" },
         {
           id: "c-manual",
           type: "compaction",
           reason: "manual",
           status: "completed",
+          summary: "",
+          recent: "",
           time: { created: 4 },
         },
         idle("succeeded", "idle-4"),
+        user("native-2", null),
+        { ...assistant("native cut off 2"), id: "a4" },
+        user("u3", "turn-3"),
+        { ...assistant("host after native"), id: "a5" },
+        idle("succeeded", "idle-5"),
       ],
       100,
     );
-    expect(snapshot.turns).toHaveLength(4);
+    expect(snapshot.turns).toHaveLength(6);
     expect(snapshot.turns[0]).toMatchObject({
       nativeTurnRef: { nativeTurnKey: "u1" },
       input: [{ text: "u1" }],
@@ -350,6 +360,17 @@ describe("OpenCode v2 native history", () => {
       checkpoint: { checkpointId: "idle-4" },
     });
     expect(snapshot.turns[3]?.items.map(({ item }) => item.type)).toEqual(["contextCompaction"]);
+    expect(snapshot.turns[4]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "native-2" },
+      input: [{ text: "native-2" }],
+      outcome: { status: "unknown" },
+    });
+    expect(snapshot.turns[5]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "u3" },
+      input: [{ text: "u3" }],
+      outcome: { status: "succeeded" },
+      checkpoint: { checkpointId: "idle-5" },
+    });
   });
   it("skips session.diff for turns in skipDiffTurnKeys while loading diffs for other completed turns", async () => {
     const messages: SessionMessageInfo[] = [
@@ -360,8 +381,14 @@ describe("OpenCode v2 native history", () => {
       { ...assistant("second"), id: "a2", snapshot: { files: ["new.ts"] } },
       idle("succeeded", "idle-2"),
     ];
-    const diff = vi.fn(async () => [
-      { file: "new.ts", patch: "@@ -0,0 +1 @@\n+x\n", status: "added" as const },
+    const diff = vi.fn(async (): Promise<FileDiffInfo[]> => [
+      {
+        file: "new.ts",
+        patch: "@@ -0,0 +1 @@\n+x\n",
+        additions: 1,
+        deletions: 0,
+        status: "added",
+      },
     ]);
     const client = {
       message: { list: vi.fn(async () => ({ data: messages, cursor: {} })) },
@@ -959,7 +986,13 @@ describe("OpenCode v2 Session lifecycle", () => {
       { ...assistant("cut off"), id: "a1" },
     );
     f.client.session.diff.mockResolvedValue([
-      { file: "new.ts", patch: "@@ -0,0 +1 @@\n+ok\n", status: "added" },
+      {
+        file: "new.ts",
+        patch: "@@ -0,0 +1 @@\n+ok\n",
+        additions: 1,
+        deletions: 0,
+        status: "added",
+      },
     ]);
     await f.start();
     expect((await f.turn()).ok).toBe(true);
@@ -1005,6 +1038,8 @@ describe("OpenCode v2 Session lifecycle", () => {
         type: "compaction",
         reason: "manual",
         status: "completed",
+        summary: "",
+        recent: "",
         time: { created: 4 },
       });
       return { id: "compact" };
@@ -1128,7 +1163,7 @@ describe("OpenCode v2 Adapter open", () => {
     }
   });
 
-  it("allows rollbackLastTurn to drop a trailing incomplete turn", async () => {
+  it("rejects rollbackLastTurn and fork when source history contains an incomplete turn", async () => {
     const cwd = fs.realpathSync(os.tmpdir());
     const sessionInfo: SessionInfo = { ...info, location: { directory: cwd } };
     const client = adapterClient(sessionInfo, [
@@ -1138,24 +1173,37 @@ describe("OpenCode v2 Adapter open", () => {
       user("u1", "turn-1"),
       { ...assistant("cut off"), id: "a1" },
     ]);
+    const sourceRef = v2Ref(sessionInfo, "default");
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: sessionInfo.id,
+      checkpointId: "idle-0",
+      locator: { protocol: 2, userMessageID: "u0" },
+      formatVersion: 1,
+    });
     const adapter = new V2Adapter({});
     try {
       const rolled = await adapter.open({
         kind: "rollbackLastTurn",
         cwd,
-        sourceRef: v2Ref(sessionInfo, "default"),
+        sourceRef,
       });
-      expect(rolled.ok).toBe(true);
-      if (!rolled.ok) throw new Error("Expected rollbackLastTurn to succeed");
-      expect(client.session.fork).toHaveBeenCalledWith({
-        sessionID: sessionInfo.id,
-        before: "u1",
+      expect(rolled).toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("incomplete execution") },
       });
-      const snapshot = await rolled.value.readSnapshot();
-      expect(snapshot.ok && snapshot.value.turns.map((t) => t.outcome.status)).toEqual([
-        "succeeded",
-      ]);
-      await rolled.value.close();
+
+      const forked = await adapter.open({
+        kind: "fork",
+        cwd,
+        sourceRef,
+        checkpoint,
+      });
+      expect(forked).toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("incomplete execution") },
+      });
+      expect(client.session.fork).not.toHaveBeenCalled();
     } finally {
       await adapter.close();
     }

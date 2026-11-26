@@ -65,7 +65,7 @@ mod windows_ui;
 
 pub use background::{
     configure_detached_service_command, configure_detached_service_command_compat,
-    detach_from_terminal,
+    detach_from_terminal, spawn_detached_service,
 };
 pub use desktop_launch::{
     DesktopProcess, launch_desktop, launch_desktop_with_removed_environment, launch_stock_desktop,

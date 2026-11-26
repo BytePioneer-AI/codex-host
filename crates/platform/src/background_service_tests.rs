@@ -117,3 +117,30 @@ fn detached_service_releases_callers_capture_pipes() {
     );
     assert!(format!("{}{}", output.unwrap(), error.unwrap()).contains("foreground completed"));
 }
+
+#[test]
+fn spawn_detached_service_runs_a_simple_child() {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/c", "exit 0"]);
+        command
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 0"]);
+        command
+    };
+    let mut child = super::spawn_detached_service(&mut command).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn breakaway_retry_is_windows_only() {
+    // On macOS/Linux errno 5 is EIO, not a rejected breakaway; the retry path
+    // must stay Windows-only.
+    assert!(!super::is_job_breakaway_denied(&std::io::Error::from_raw_os_error(5)));
+    assert!(!super::is_job_breakaway_denied(&std::io::Error::other("no os code")));
+}

@@ -288,22 +288,8 @@ impl Launcher {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         codexhost_platform::configure_detached_service_command(&mut command)
             .map_err(|error| format!("Cannot detach `codexhost launch`: {error}"))?;
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            // A caller inside a Windows job without JOB_OBJECT_LIMIT_BREAKAWAY_OK
-            // rejects CREATE_BREAKAWAY_FROM_JOB with ERROR_ACCESS_DENIED
-            // (os error 5). Retry and let the child stay in the caller's job.
-            Err(error) if error.raw_os_error() == Some(5) => {
-                codexhost_platform::configure_detached_service_command_compat(&mut command)
-                    .map_err(|error| format!("Cannot detach `codexhost launch`: {error}"))?;
-                command
-                    .spawn()
-                    .map_err(|error| format!("Cannot run `codexhost launch`: {error}"))?
-            }
-            Err(error) => {
-                return Err(format!("Cannot run `codexhost launch`: {error}"));
-            }
-        };
+        let mut child = codexhost_platform::spawn_detached_service(&mut command)
+            .map_err(|error| format!("Cannot run `codexhost launch`: {error}"))?;
         let stdout = child.stdout.take().expect("piped launcher stdout");
         let mut stderr = child.stderr.take().expect("piped launcher stderr");
         let (ready, signal) = mpsc::channel();

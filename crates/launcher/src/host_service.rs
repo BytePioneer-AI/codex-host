@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codexhost_platform::{
-    PlatformError, configure_background_command, configure_detached_service_command,
-    node_entrypoint_path, process_identity, spawn_supervised, terminate_process_identity,
+    PlatformError, configure_background_command, node_entrypoint_path, process_identity,
+    spawn_detached_service, spawn_supervised, terminate_process_identity,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -207,8 +207,7 @@ fn ensure(arguments: &[String], options: Options) -> Result<(), Box<dyn Error>> 
     if let Some(root) = env::var_os(desktop_root_env).filter(|root| Path::new(root).is_absolute()) {
         command.env(desktop_root_env, root);
     }
-    configure_detached_service_command(&mut command)?;
-    let mut supervisor = command.spawn()?;
+    let mut supervisor = spawn_detached_service(&mut command)?;
     let started = Instant::now();
     let result = loop {
         if let Some(result) = readiness(&ready) {

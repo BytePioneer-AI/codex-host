@@ -9,8 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codexhost_platform::{
-    configure_background_command, configure_detached_service_command, node_entrypoint_path,
-    spawn_supervised,
+    configure_background_command, node_entrypoint_path, spawn_detached_service, spawn_supervised,
 };
 use serde::{Deserialize, Serialize};
 
@@ -172,8 +171,7 @@ pub(super) fn ensure(
         .arg(&options.runtime)
         .arg("--ready-file")
         .arg(&ready);
-    configure_detached_service_command(&mut command)?;
-    let mut supervisor = command.spawn()?;
+    let mut supervisor = spawn_detached_service(&mut command)?;
     let started = Instant::now();
     let result = loop {
         if let Some(result) = readiness(&ready) {

@@ -8,8 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{
-    ProcessIdentity, configure_detached_service_command, process_instance,
-    terminate_process_identity,
+    ProcessIdentity, process_instance, spawn_detached_service, terminate_process_identity,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,8 +40,7 @@ pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    configure_detached_service_command(&mut command)?;
-    command.spawn()?;
+    spawn_detached_service(&mut command)?;
     Ok(())
 }
 

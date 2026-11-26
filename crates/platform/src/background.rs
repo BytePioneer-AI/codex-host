@@ -132,6 +132,39 @@ pub fn configure_detached_service_command_compat(
     configure_detached_service_command_impl(command, false)
 }
 
+/// Spawn a detached service process from a command already configured by
+/// [`configure_detached_service_command`]. On Windows a caller running inside
+/// a job without `JOB_OBJECT_LIMIT_BREAKAWAY_OK` rejects
+/// `CREATE_BREAKAWAY_FROM_JOB` with `ERROR_ACCESS_DENIED` (os error 5); that
+/// error retries once with the compat configuration so the child stays inside
+/// the caller's job instead of failing to start.
+pub fn spawn_detached_service(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    configure_detached_service_command(command)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    match command.spawn() {
+        Err(error) if is_job_breakaway_denied(&error) => {
+            configure_detached_service_command_compat(command)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            command.spawn()
+        }
+        result => result,
+    }
+}
+
+// `ERROR_ACCESS_DENIED` only signals a rejected breakaway on Windows; on other
+// platforms errno 5 is `EIO`, so the retry path stays Windows-only.
+#[cfg(target_os = "windows")]
+fn is_job_breakaway_denied(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(windows::Win32::Foundation::ERROR_ACCESS_DENIED.0)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_job_breakaway_denied(_error: &std::io::Error) -> bool {
+    false
+}
+
 #[cfg(target_os = "windows")]
 fn configure_detached_service_command_impl(
     command: &mut std::process::Command,

@@ -88,15 +88,16 @@ export class WebHarnessPreferences {
       default: { provider: string; model: string; reasoningEffort?: string };
       groups: ModelGroup[];
     },
-  >(catalog: T, snapshot = this.get().catch(() => undefined)) {
+  >(catalog: T, snapshot = this.get().catch(() => undefined), projectHarnessId?: string) {
     const external = await snapshot;
     if (external) {
       const favorites = external.values.favorites;
       const configurationFor = (harnessId: string) =>
         external.values.newThread?.byHarness[harnessId];
       const preferred =
-        catalog.groups.find((group) => group.id === external.values.newThread?.lastHarness) ??
-        catalog.groups.find((group) => group.id === catalog.default.provider);
+        catalog.groups.find(
+          (group) => group.id === (projectHarnessId ?? external.values.newThread?.lastHarness),
+        ) ?? catalog.groups.find((group) => group.id === catalog.default.provider);
       const selectionFor = (
         group: ModelGroup,
         fallbackModelId?: string,

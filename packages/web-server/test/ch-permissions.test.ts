@@ -16,7 +16,7 @@ import { draftPermissionMode } from "../src/draft-configuration.ts";
 import { WebHarnessPreferences } from "../src/harness-preferences.ts";
 import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
-import { Workspaces } from "../src/workspaces.ts";
+import { nativeProjectWorkspaceId, Workspaces } from "../src/workspaces.ts";
 import { FakeChHost } from "./support/ch-host.ts";
 import { nativeCodex } from "./support/native-codex.ts";
 
@@ -74,6 +74,12 @@ function setup(t: TestContext, preferencesAvailable = true) {
           { id: "other", name: "Other Harness", version: "1" },
         ],
       } as T;
+    if (method === "thread/metadata/update") {
+      const thread = host.threads.get(String(params.threadId));
+      assert.ok(thread);
+      thread.projectId = String(params.projectId);
+      return { thread: structuredClone(thread) } as T;
+    }
     const result = await request<T>(method, params);
     if (method === "thread/start") {
       const { thread } = result as { thread: { id: string } };
@@ -86,9 +92,11 @@ function setup(t: TestContext, preferencesAvailable = true) {
   };
   const events = new EventHub(root);
   const preferences = new WebHarnessPreferences(host, events);
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, root);
   const sessions = new ChSessions(
     host,
-    new Workspaces(new DataDir(join(root, "web")), root),
+    workspaces,
     events,
     undefined,
     undefined,
@@ -119,8 +127,74 @@ function setup(t: TestContext, preferencesAvailable = true) {
     }
     throw new Error("Native permission controls did not load");
   };
-  return { root, host, store, preferences, sessions, call, controls };
+  return { root, host, store, preferences, sessions, call, controls, workspaces, data, rpc };
 }
+
+it("persists and applies a project Harness default when opening Web drafts", async (t) => {
+  const f = setup(t);
+  const project = { id: "project", name: "Project", rootPaths: [f.root] };
+  const workspaceId = nativeProjectWorkspaceId(project.id);
+  f.workspaces.syncNativeProjects([project], new Map(), {});
+  await f.preferences.remember("fake", { model: { id: "native" }, permissionModeId: "read-only" });
+  await f.preferences.remember("codex", { model: { id: "gpt-5.4" } });
+  const openDraft = (workspaceId?: string) =>
+    f.call<{ sessionId: string }>("session/create", { request: { workspaceId } });
+  const readSelection = async (sessionId: string) =>
+    (
+      await f.call<{ values: { modelSelection: { next: { provider: string; model: string } } } }>(
+        "session/projections",
+        { request: { sessionId } },
+      )
+    ).values.modelSelection.next;
+
+  const { sessionId: previous } = await openDraft(workspaceId);
+  await f.call("workspace/defaultHarness", { request: { workspaceId, harnessId: "fake" } });
+  const reopened = new Workspaces(f.data, f.root);
+  reopened.syncNativeProjects([{ ...project, name: "Renamed Project" }], new Map(), {});
+  assert.equal(reopened.defaultHarnessId(workspaceId), "fake");
+
+  const reuse = await f.rpc.dispatch("session/create", {
+    args: { request: { workspaceId, sessionId: previous } },
+  });
+  assert.ok(!reuse.ok);
+  assert.equal(reuse.error.code, "session/writer-held");
+  assert.equal((await readSelection(previous)).provider, "codex");
+
+  const { sessionId } = await openDraft(workspaceId);
+  assert.deepEqual(await readSelection(sessionId), { provider: "fake", model: "native" });
+  assert.equal((await f.controls(sessionId)).permissions.currentValue, "read-only");
+  assert.equal((await f.store.get()).values.newThread?.lastHarness, "codex");
+  assert.equal((await readSelection((await openDraft()).sessionId)).provider, "codex");
+  await f.call("session/prompt", {
+    request: { sessionId, content: [{ type: "text", text: "isolated project prompt" }] },
+  });
+  const start = f.host.requests.find(({ method }) => method === "thread/start");
+  assert.ok(start);
+  assert.equal(decodeHarnessPluginRoute(start.params.model)?.harnessId, "fake");
+  assert.equal([...f.host.threads.values()][0]?.projectId, project.id);
+
+  const request = f.host.request.bind(f.host);
+  f.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/harness/inspect" && params.harnessId === "fake") {
+      return {
+        status: "notInstalled",
+        error: { code: "unavailable", message: "Harness removed", retryable: false },
+      } as T;
+    }
+    return request<T>(method, params);
+  };
+  await f.sessions.catalog.inspect("fake", undefined, true);
+  assert.equal((await readSelection((await openDraft(workspaceId)).sessionId)).provider, "codex");
+  const config = await f.call<{ harnessId: string; harnesses: { id: string }[] }>(
+    "workspace/defaultHarness",
+    { request: { workspaceId } },
+  );
+  assert.equal(config.harnessId, "fake");
+  assert.ok(!config.harnesses.some(({ id }) => id === "fake"));
+
+  await f.call("workspace/defaultHarness", { request: { workspaceId, harnessId: null } });
+  assert.equal((await readSelection((await openDraft(workspaceId)).sessionId)).provider, "codex");
+});
 
 for (const preferred of [undefined, "removed-mode", ":workspace"])
   it(`submits the displayed Codex permission on creation and Harness switch with preference ${preferred}`, async (t) => {

@@ -15,6 +15,7 @@ import {
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
+  harnessIdSchema,
   harnessPluginRouteSchema,
   harnessModelSelectionStateSchema,
   harnessModelRefFromKey,
@@ -84,6 +85,7 @@ interface Draft {
   id: string;
   cwd?: string;
   projectId?: string;
+  projectHarnessId?: string;
   selection: ModelSelection;
   permissionModeId?: string;
   createdAt: number;
@@ -970,11 +972,16 @@ export class ChSessions {
     const request = requestOf<{ cwd?: string; workspaceId?: string; sessionId?: string }>(args);
     const workspace = request.workspaceId ? this.workspaces.get(request.workspaceId) : undefined;
     const cwd = request.cwd ?? workspace?.path;
-    const projectId =
-      workspace?.projectId ??
+    const project =
+      workspace ??
       (cwd && this.workspaces.usesNativeProjects
-        ? this.workspaces.byPath(resolve(cwd))?.projectId
+        ? this.workspaces.byPath(resolve(cwd))
         : undefined);
+    const projectId = project?.projectId;
+    const projectHarnessId =
+      !configuration && project
+        ? (this.workspaces.defaultHarnessId(project.workspaceId) ?? undefined)
+        : undefined;
     if ((request.workspaceId !== undefined || request.cwd !== undefined) && !cwd)
       throw new RpcError("workspace/invalid-path", "Choose a valid computer working directory.");
     const id = request.sessionId ?? `draft-${randomUUID()}`;
@@ -986,14 +993,19 @@ export class ChSessions {
       !existing.started &&
       existing.cwd === cwd &&
       existing.projectId === projectId
-    )
+    ) {
+      if (!configuration && existing.projectHarnessId !== projectHarnessId)
+        throw new RpcError("session/writer-held", "Start a new draft with the project default.", {
+          sessionId: id,
+        });
       return { sessionId: id, agentPreset: "standard" };
+    }
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
     const preferences = configuration ? undefined : this.preferences?.get().catch(() => undefined);
     const selection =
       configuration?.selection ??
-      (await this.catalog.models(false, undefined, preferences)).default;
+      (await this.catalog.models(false, undefined, preferences, projectHarnessId)).default;
     if (!selection)
       throw new RpcError(
         "host/no-harness",
@@ -1003,6 +1015,7 @@ export class ChSessions {
       id,
       ...(cwd ? { cwd } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(projectHarnessId ? { projectHarnessId } : {}),
       selection,
       createdAt: Date.now(),
     };
@@ -1506,6 +1519,38 @@ export class ChSessions {
       };
     });
     rpc.register("session/create", (args) => this.create(args));
+    rpc.register("workspace/defaultHarness", async (args) => {
+      const request = requestOf<{ workspaceId?: unknown; harnessId?: unknown }>(args);
+      if (typeof request?.workspaceId !== "string" || !request.workspaceId)
+        throw new RpcError("workspace/invalid-request", "Choose a project.");
+      const { workspaceId, harnessId } = request;
+      if (
+        harnessId !== undefined &&
+        harnessId !== null &&
+        !harnessIdSchema.safeParse(harnessId).success
+      )
+        throw new RpcError("workspace/invalid-request", "Choose a valid Harness.");
+      if (harnessId === null) {
+        this.workspaces.setDefaultHarnessId(workspaceId, null);
+        return {};
+      }
+      this.workspaces.defaultHarnessId(workspaceId);
+      const catalog = await this.catalog.models().catch((error: unknown) => {
+        if (error instanceof RpcError && error.code === "host/no-harness") return undefined;
+        throw error;
+      });
+      const harnesses =
+        catalog?.groups
+          .filter((group) => group.models.length > 0)
+          .map(({ id, name }) => ({ id, name })) ?? [];
+      if (typeof harnessId === "string") {
+        if (!harnesses.some((option) => option.id === harnessId))
+          throw new RpcError("workspace/harness-unavailable", "This Harness is unavailable.");
+        this.workspaces.setDefaultHarnessId(workspaceId, harnessId);
+        return {};
+      }
+      return { harnessId: this.workspaces.defaultHarnessId(workspaceId), harnesses };
+    });
     rpc.register("session/fork", async (args) => {
       const request = requestOf<{ sessionId: string; atSeq?: number }>(args);
       if (

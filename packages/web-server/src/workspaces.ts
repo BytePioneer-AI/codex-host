@@ -48,6 +48,8 @@ function insertSessionId(ids: readonly string[], sessionId: string, beforeId?: s
 }
 
 interface WorkspaceState {
+  /** Web defaults keyed by the stable local Workspace ID. */
+  defaultHarnessIds?: Record<string, string>;
   /** Web-created assignments keyed by the Host-qualified Web Session ID. */
   remoteProjectIds?: Record<string, string>;
   items: WorkspaceView[];
@@ -699,6 +701,21 @@ export class Workspaces {
     return (this.nativeWorkspaces ?? this.state.items).find(
       (item) => item.workspaceId === workspaceId,
     );
+  }
+
+  defaultHarnessId(workspaceId: string): string | null {
+    this.require(workspaceId);
+    return this.state.defaultHarnessIds?.[workspaceId] ?? null;
+  }
+
+  setDefaultHarnessId(workspaceId: string, harnessId: string | null): void {
+    if (this.defaultHarnessId(workspaceId) === harnessId) return;
+    const defaultHarnessIds = { ...this.state.defaultHarnessIds };
+    if (harnessId === null) delete defaultHarnessIds[workspaceId];
+    else defaultHarnessIds[workspaceId] = harnessId;
+    const state = { ...this.state, defaultHarnessIds };
+    this.data.writeJson(FILE, state);
+    this.state = state;
   }
 
   byPath(path: string): WorkspaceView | undefined {

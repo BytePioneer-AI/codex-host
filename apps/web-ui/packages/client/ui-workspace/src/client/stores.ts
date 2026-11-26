@@ -35,6 +35,8 @@ type WorkspaceViewState = {
    * section, which also covers views persisted before sections could fold.
    */
   sectionExpansion?: Record<string, boolean>;
+  /** Workspace IDs in pin order for this browser. */
+  pinnedWorkspaceIds?: string[];
   /** Saved manual root order per Workspace group plus the browser-local flat-list account. */
   sessionOrderByAccount: Record<string, string[]>;
   /** Archived-row visibility for the current page; page startup resets it to 'default'. */
@@ -79,6 +81,7 @@ type WorkspaceViewActions = {
     expanded: boolean,
   ) => void;
   setSectionExpanded: (draft: WorkspaceViewState, key: string, expanded: boolean) => void;
+  setWorkspacePinned: (draft: WorkspaceViewState, id: string, pinned: boolean) => void;
   retainAccountKeys: (draft: WorkspaceViewState, workspaceKeys: readonly string[]) => void;
   syncSessionOrders: (
     draft: WorkspaceViewState,
@@ -174,6 +177,12 @@ export function createWorkspaceViewStore(): EngineStoreHandle<
       },
       setSectionExpanded: (d, key: string, expanded: boolean) => {
         d.sectionExpansion = { ...d.sectionExpansion, [key]: expanded };
+      },
+      setWorkspacePinned: (d, id, pinned) => {
+        const ids = d.pinnedWorkspaceIds ?? [];
+        if (ids.includes(id) === pinned) return;
+        d.pinnedWorkspaceIds = pinned ? [id, ...ids] : ids.filter((key) => key !== id);
+        if (pinned) d.sectionExpansion = { ...d.sectionExpansion, [PINNED_SECTION_KEY]: true };
       },
       retainAccountKeys: (d, workspaceKeys: readonly string[]) => {
         const retained = new Set(workspaceKeys);

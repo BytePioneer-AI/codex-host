@@ -348,6 +348,7 @@ function computeWorkspaceParents(
   workspaces: readonly WorkspaceView[],
   nestWorkspaces: boolean,
   sectionOf: ReadonlyMap<string, string>,
+  pinnedWorkspaceIds: ReadonlySet<string>,
 ): Map<string, WorkspaceId | undefined> {
   if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
   const scopeOf = (workspace: WorkspaceView) =>
@@ -361,6 +362,7 @@ function computeWorkspaceParents(
   }
   return new Map<string, WorkspaceId | undefined>(
     workspaces.map((workspace) => {
+      if (pinnedWorkspaceIds.has(workspace.workspaceId)) return [workspace.workspaceId, undefined];
       const keysByPath = pathsByScope.get(scopeOf(workspace));
       const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
       return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
@@ -424,6 +426,8 @@ type SessionTreeProps = Pick<
     setSectionExpanded: (key: string, expanded: boolean) => void;
     /** Save a drag order and select Manual. */
     setSessionOrder: (accountKey: string, order: readonly string[]) => void;
+    pinnedWorkspaceIds: readonly string[];
+    setWorkspacePinned: (id: WorkspaceId, pinned: boolean) => void;
     /** Registry-global pin and archive sets plus the archived-visibility choice. */
     rowState: SessionRowState;
     nativeSections: readonly WorkspaceThreadSection[];
@@ -506,6 +510,8 @@ function SessionTree({
   sectionExpansion,
   setSectionExpanded,
   setSessionOrder,
+  pinnedWorkspaceIds,
+  setWorkspacePinned,
   home,
   t,
   revealSessionId,
@@ -550,24 +556,28 @@ function SessionTree({
     current === undefined || !workspaceReady
       ? undefined
       : owningGroupKey(ownWorkspaces, threadView.rootId(current));
-  // Desktop's section order owns the Workspaces placed in a native section: they render there
-  // instead of under Workspaces, and neither drag reorder nor tree nesting crosses a section.
-  const sectionOf = useMemo(() => {
+  const pinnedWorkspaces = useMemo(() => new Set(pinnedWorkspaceIds), [pinnedWorkspaceIds]);
+  const nativeSectionOf = useMemo(() => {
     const owners = new Map<string, string>();
     for (const section of nativeSections)
       for (const id of section.workspaceIds ?? []) if (!owners.has(id)) owners.set(id, section.id);
     return owners;
   }, [nativeSections]);
+  const sectionOf = useMemo(() => {
+    const owners = new Map(nativeSectionOf);
+    for (const id of pinnedWorkspaces) owners.set(id, PINNED_SECTION_KEY);
+    return owners;
+  }, [nativeSectionOf, pinnedWorkspaces]);
   const parents = useMemo(
-    () => computeWorkspaceParents(workspaces, nestWorkspaces, sectionOf),
-    [nestWorkspaces, sectionOf, workspaces],
+    () => computeWorkspaceParents(workspaces, nestWorkspaces, nativeSectionOf, pinnedWorkspaces),
+    [nestWorkspaces, nativeSectionOf, pinnedWorkspaces, workspaces],
   );
   const reorderParents = useMemo(
     () =>
       allWorkspaces === workspaces
         ? parents
-        : computeWorkspaceParents(allWorkspaces, nestWorkspaces, sectionOf),
-    [allWorkspaces, nestWorkspaces, parents, sectionOf, workspaces],
+        : computeWorkspaceParents(allWorkspaces, nestWorkspaces, nativeSectionOf, pinnedWorkspaces),
+    [allWorkspaces, nestWorkspaces, nativeSectionOf, parents, pinnedWorkspaces, workspaces],
   );
   const expandedGroups = useMemo(() => {
     const ancestorKeys = new Set<string | undefined>(parents.values());
@@ -690,19 +700,22 @@ function SessionTree({
   const workspaceRoots = rootGroups.filter(
     (group) => group.key !== UNGROUPED_KEY && !sectionOf.has(group.key),
   );
-  // Each native section lists its Workspaces in Desktop's order, not the Web Workspace order.
+  const rootsByKey = useMemo(
+    () => new Map(rootGroups.map((group) => [group.key, group])),
+    [rootGroups],
+  );
+  const pinnedGroups = pinnedWorkspaceIds.flatMap((id) => rootsByKey.get(id) ?? []);
   const sectionRoots = useMemo(() => {
-    const roots = new Map(rootGroups.map((group) => [group.key, group]));
     return new Map(
       nativeSections.map((section) => [
         section.id,
         (section.workspaceIds ?? []).flatMap((id) => {
-          const group = roots.get(id);
+          const group = rootsByKey.get(id);
           return group !== undefined && sectionOf.get(id) === section.id ? [group] : [];
         }),
       ]),
     );
-  }, [nativeSections, rootGroups, sectionOf]);
+  }, [nativeSections, rootsByKey, sectionOf]);
   const collapsedWorkspaces = workspaceWindow(
     workspaceRoots,
     WORKSPACE_INITIAL_ROWS,
@@ -710,6 +723,23 @@ function SessionTree({
   );
   const shownWorkspaceRoots = allWorkspacesShown ? workspaceRoots : collapsedWorkspaces.rows;
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
+  const revealRoot = revealGroup === undefined ? undefined : rootKeyOf.get(revealGroup);
+  const revealPinnedWorkspace = revealRoot !== undefined && pinnedWorkspaces.has(revealRoot);
+  useEffect(() => {
+    if (!revealPinnedWorkspace) return;
+    if (!pinnedSectionExpanded) setSectionExpanded(PINNED_SECTION_KEY, true);
+    for (let key = revealGroup; key !== undefined; key = parents.get(key)) {
+      if (!expandedGroups.includes(key)) setGroupExpanded(key, true);
+    }
+  }, [
+    expandedGroups,
+    parents,
+    pinnedSectionExpanded,
+    revealGroup,
+    revealPinnedWorkspace,
+    setGroupExpanded,
+    setSectionExpanded,
+  ]);
   const nativeLayout = useMemo(
     () =>
       nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
@@ -733,8 +763,9 @@ function SessionTree({
       ),
     [list, rowState, statuses, forestRoots],
   );
+  const showPinnedSection = pinnedRows.length > 0 || pinnedGroups.length > 0;
   const rowKeys: string[] = [];
-  if (pinnedRows.length > 0) {
+  if (showPinnedSection) {
     rowKeys.push(`section:${PINNED_SECTION_KEY}`);
     if (pinnedSectionExpanded)
       for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
@@ -751,6 +782,7 @@ function SessionTree({
   };
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId;
+    const pinned = pinnedWorkspaces.has(group.key);
     const children = childrenByParent.get(group.key) ?? [];
     const sectioned = sectionOf.has(group.key);
     const compatibleDrag =
@@ -912,22 +944,11 @@ function SessionTree({
               }
             }}
             drag={workspaceDragProps}
-            actions={
-              group.workspaceId === undefined
-                ? undefined
-                : {
-                    rename: () => {
-                      /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
-                      if (group.workspaceId !== undefined)
-                        onRenameRequest(group.workspaceId, group.label);
-                    },
-                    delete: () => {
-                      /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
-                      if (group.workspaceId !== undefined)
-                        onDeleteRequest(group.workspaceId, group.label);
-                    },
-                  }
-            }
+            pin={{ pinned, toggle: () => setWorkspacePinned(workspaceId, !pinned) }}
+            actions={{
+              rename: () => onRenameRequest(workspaceId, group.label),
+              delete: () => onDeleteRequest(workspaceId, group.label),
+            }}
           />
         )}
         {childRows.length > 0 && <div role="group">{childRows}</div>}
@@ -1044,6 +1065,9 @@ function SessionTree({
     );
   };
 
+  const pinnedGroupRows = pinnedSectionExpanded
+    ? pinnedGroups.map((group) => renderGroup(group, 0))
+    : undefined;
   // A native section shows its own Threads, then its Workspaces, before any later section.
   const sectionGroupRows = new Map<string, ReactNode[]>();
   for (const section of nativeLayout) {
@@ -1057,22 +1081,23 @@ function SessionTree({
   if (
     !hostScopeFiltered &&
     groups.length === 0 &&
-    pinnedRows.length === 0 &&
+    !showPinnedSection &&
     nativeSections.length === 0
   )
     rowKeys.push("empty");
   // Recents keeps the tail: the Workspace section ends with its own reveal
   // control rather than an unbounded run of folders, and folding that section
   // leaves Recents in place.
-  const showWorkspacesSection = workspaceRoots.length > 0 || hostScopeFiltered;
+  const showFilterEmptyHint =
+    hostScopeFiltered && workspaceRoots.length === 0 && pinnedGroups.length === 0;
+  const showWorkspacesSection = workspaceRoots.length > 0 || showFilterEmptyHint;
   const workspaceListHasLeadingChrome =
-    showWorkspacesSection || pinnedRows.length > 0 || nativeLayout.length > 0;
+    showWorkspacesSection || showPinnedSection || nativeLayout.length > 0;
   const workspaceDropAtListStart =
     !workspaceListHasLeadingChrome &&
     shownWorkspaceRoots[0]?.workspaceId !== undefined &&
     workspaceDrag?.over?.id === shownWorkspaceRoots[0].workspaceId &&
     workspaceDrag.over.half === "before";
-  const showFilterEmptyHint = hostScopeFiltered && workspaceRoots.length === 0;
   const groupRows: ReactNode[] = [];
   if (showWorkspacesSection) rowKeys.push(`section:${WORKSPACES_SECTION_KEY}`);
   if (workspacesSectionExpanded) {
@@ -1127,6 +1152,7 @@ function SessionTree({
       >
         <PinnedSection
           rows={pinnedRows}
+          hasWorkspaces={pinnedGroups.length > 0}
           currentId={current}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
@@ -1139,7 +1165,9 @@ function SessionTree({
             setSectionExpanded(PINNED_SECTION_KEY, !pinnedSectionExpanded);
           }}
           t={t}
-        />
+        >
+          {pinnedGroupRows}
+        </PinnedSection>
         <NativeSections
           sections={nativeLayout}
           groupRows={sectionGroupRows}
@@ -1155,7 +1183,7 @@ function SessionTree({
         />
         {!hostScopeFiltered &&
           groups.length === 0 &&
-          pinnedRows.length === 0 &&
+          !showPinnedSection &&
           nativeSections.length === 0 && (
             <EmptySessions
               rowState={rowState}
@@ -1184,6 +1212,7 @@ function SessionTree({
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
 const NO_THREAD_SECTIONS: readonly WorkspaceThreadSection[] = [];
+const NO_PINNED_WORKSPACE_IDS: readonly string[] = [];
 
 function nativeSectionLayout(
   sections: readonly WorkspaceThreadSection[],
@@ -1681,6 +1710,7 @@ function WorkspaceBrowserContent({
   const groupExpansion = useStore((s) => s.groupExpansion);
   const threadView = useThreadTreeView();
   const sectionExpansion = useStore((s) => s.sectionExpansion);
+  const pinnedWorkspaceIds = useStore((s) => s.pinnedWorkspaceIds ?? NO_PINNED_WORKSPACE_IDS);
   const sessionOrderByAccount = useStore((s) => s.sessionOrderByAccount);
   // Archived sessions are not openable: the row stays visible under the
   // filter but a click explains instead of navigating.
@@ -2280,6 +2310,7 @@ function WorkspaceBrowserContent({
     setDeleteError(null);
     deleteWorkspace(deleteTarget.workspaceId)
       .then(() => {
+        actions.setWorkspacePinned(deleteTarget.workspaceId, false);
         // Keep the confirmation pending until this component has rendered the
         // committed list projection without the deleted id. Closing earlier
         // exposes one stale React frame to the next Create Workspace gesture.
@@ -2600,6 +2631,8 @@ function WorkspaceBrowserContent({
               sectionExpansion={sectionExpansion}
               setSectionExpanded={actions.setSectionExpanded}
               setSessionOrder={saveSessionOrder}
+              pinnedWorkspaceIds={pinnedWorkspaceIds}
+              setWorkspacePinned={actions.setWorkspacePinned}
               rowState={rowState}
               nativeSections={nativeSections}
               onLeaveArchivedOnly={leaveArchivedOnly}

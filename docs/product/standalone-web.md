@@ -611,6 +611,8 @@ Web 侧栏与空会话主视觉共用 `ui-brand-official` 提供的原版“抱�
 
 ### 置顶与 Desktop 同步
 
+Web 的「按工作区」和「工作区树」视图支持置顶本机或远程工作区。可从工作区行的图钉按钮或「…」菜单操作，触屏使用菜单。最近置顶的工作区排在「置顶」区的工作区首位，位于置顶会话之后。工作区继续显示其会话，树形视图中的子工作区也随它移动。取消置顶后，工作区按原有顺序回到工作区列表、父工作区或 Desktop 自定义分区。工作区置顶保存在当前浏览器，刷新后恢复。Desktop 的项目分区和会话置顶由各自原有的状态管理。
+
 共享来源统一调用 Host 的 `codexhost/thread/pins/list` / `codexhost/thread/pins/set`，不调用 Renderer 的置顶服务。Host 复用原生 `threadSection/list`、`thread/list(section_position)` 和既有外部 Thread 分区移动逻辑；内置 Pinned 分区使用原生协议的保留标识，并通过原生查询确认存在，不按显示名称猜测或自行创建分区。官方 Codex Thread 的分区成员与顺序由官方 app-server 持久化，Host 通过 `thread/read` 确认当前分区，通过 `thread/section/move` 修改；外部 Thread 的归属与排序锚点只保存于 Mapping Store 的分区记录。`pins/list` 始终读取官方 Pinned 分区并合并可见外部成员，即使没有任何外部置顶也返回官方成员，和 Desktop 的原生 Thread 查询共用同一混合顺序；不修改 `.codex-global-state.json`，不创建镜像会话。展示未归档的本机官方 Codex 与 canonical external Threads 的置顶，不聚合远程 Threads。
 
 Web 侧栏读取本机 Codex Desktop 的自定义分区，并按原生成员顺序显示。置顶仍由内置分区管理。可通过会话菜单把未置顶、未归档的本机 Codex 会话移入自定义分区或移回无分区。分区名称在 Desktop 管理，Web 在刷新会话目录时同步。翻页首次读到的分区成员摘要会推送给其他已连接浏览器，普通分页新行只返回给发起请求的浏览器。

@@ -434,20 +434,19 @@ export class ChSessions {
     this.workspaces.addCatalogMembers(workspaceId, [...members.keys()]);
     const localArchives = new Set(this.workspaces.localArchivedSessionIds());
     const included = this.tree.withAncestors(members.keys());
-    for (const id of rows.keys()) {
+    for (const [id, row] of rows) {
       if (!included.has(id)) continue;
-      if (archiveChanges.get(id) ?? archived.has(id)) localArchives.add(id);
+      // A supplemented ancestor may omit archive state on thread/read.
+      const isArchived =
+        archived.has(id) || (!indexed.has(id) && (row.archived ?? localArchives.has(id)));
+      if (archiveChanges.get(id) ?? isArchived) localArchives.add(id);
       else localArchives.delete(id);
     }
     this.workspaces.setReferenceArchives([...localArchives].sort());
     const workspaceItems = await timing.measure("summaries", () =>
       Promise.all(
         [...rows.values()]
-          .filter(
-            (row) =>
-              included.has(row.id) &&
-              (includeArchived || !(archiveChanges.get(row.id) ?? archived.has(row.id))),
-          )
+          .filter((row) => included.has(row.id) && (includeArchived || !localArchives.has(row.id)))
           .map((row) => this.summary(row, ownership.get(row.id))),
       ),
     );

@@ -358,6 +358,10 @@ it("keeps cross-project ancestors in the scoped reply and publishes section disc
   });
   assert.ok(inclusive.items.some((row) => row.sessionId === parent.id));
   assert.ok(inclusive.archivedSessionIds.includes(parent.id));
+  delete parent.archived;
+  const live = await f.list({ cursor: nextCursor, workspaceId: workspace.workspaceId });
+  assert.ok(live.archivedSessionIds.includes(parent.id));
+  assert.ok(!live.items.some((row) => row.sessionId === parent.id));
   await f.list();
   assert.deepEqual(
     f.emitted.flatMap(({ event, args }) =>

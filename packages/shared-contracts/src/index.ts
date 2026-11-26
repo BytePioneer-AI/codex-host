@@ -355,6 +355,7 @@ export {
   updatePhaseSchema,
   updateSemanticVersionSchema,
   updateStartResultSchema,
+  npmDownloadProgressSchema,
   updateStatusResultSchema,
   updateStatusSchema,
 } from "./updates.js";

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { UpdateStatus } from "@codexhost/shared-contracts";
 import { runUpdateCommand, updateFromCommand } from "../src/update-cli.js";
 import type { ConsoleUpdates, ConsoleUpdateTarget } from "../src/updates.js";
 import { createHostUpdates } from "../src/host-client.js";
@@ -8,6 +9,14 @@ const target: ConsoleUpdateTarget = {
   appDirectory: "/unused",
   runtimeDescriptorPath: null,
   codexhostRunning: false,
+};
+
+const prepared: UpdateStatus = {
+  version: "1.1.0",
+  installation: "npm",
+  phase: "prepared",
+  updatedAt: 1,
+  error: null,
 };
 
 function fixture() {
@@ -22,16 +31,12 @@ function fixture() {
     status: null,
     error: null,
   });
-  const start = vi.fn<ConsoleUpdates["start"]>().mockResolvedValue({
-    status: {
-      version: "1.1.0",
-      installation: "npm",
-      phase: "prepared",
-      updatedAt: 1,
-      error: null,
-    },
-  });
-  return { check, start, status: vi.fn<ConsoleUpdates["status"]>() };
+  const start = vi.fn<ConsoleUpdates["start"]>().mockResolvedValue({ status: prepared });
+  return {
+    check,
+    start,
+    status: vi.fn<ConsoleUpdates["status"]>().mockResolvedValue({ status: null }),
+  };
 }
 
 describe("update command", () => {
@@ -53,6 +58,70 @@ describe("update command", () => {
     await runUpdateCommand(target, updates, write);
     expect(updates.start).toHaveBeenCalledWith(target);
     expect(write).toHaveBeenLastCalledWith(expect.stringContaining("background updater"));
+  });
+
+  it("follows an accepted npm download until the packages are ready", async () => {
+    const updates = fixture();
+    const downloading: UpdateStatus = { ...prepared, phase: "downloading" };
+    updates.start.mockResolvedValue({
+      status: { ...downloading, npmDownload: { completed: 0, total: 2 } },
+    });
+    updates.status
+      .mockResolvedValueOnce({
+        status: { ...downloading, npmDownload: { completed: 1, total: 2 } },
+      })
+      .mockResolvedValue({ status: prepared });
+    const write = vi.fn();
+
+    await runUpdateCommand(target, updates, write);
+
+    expect(write.mock.calls.map(([message]) => message).slice(2)).toEqual([
+      "Downloading update... 0/2 npm packages ready",
+      "Downloading update... 1/2 npm packages ready",
+      "Download complete.",
+      expect.stringContaining("background updater"),
+    ]);
+  });
+
+  it("shows byte progress while the standalone command waits for handoff", async () => {
+    const updates = fixture();
+    const handoff = Promise.withResolvers<Awaited<ReturnType<ConsoleUpdates["start"]>>>();
+    updates.start.mockReturnValue(handoff.promise);
+    const installer = { ...prepared, installation: "macos-dmg" } as const;
+    updates.status.mockResolvedValue({
+      status: {
+        ...installer,
+        phase: "downloading",
+        downloadedBytes: 8 * 1024 ** 2,
+        totalBytes: 16 * 1024 ** 2,
+      },
+    });
+    const output: string[] = [];
+    const command = runUpdateCommand(target, updates, (message) => {
+      output.push(message);
+      if (message.startsWith("Downloading update")) handoff.resolve({ status: installer });
+    });
+
+    await command;
+
+    expect(output.slice(2)).toEqual([
+      "Downloading update... 50% (8.0 MiB / 16.0 MiB)",
+      "Download complete.",
+      expect.stringContaining("background updater"),
+    ]);
+  });
+
+  it("reports an asynchronous download failure without printing completion", async () => {
+    const updates = fixture();
+    updates.start.mockResolvedValue({ status: { ...prepared, phase: "downloading" } });
+    updates.status.mockResolvedValue({
+      status: { ...prepared, phase: "failed", error: "Registry unavailable" },
+    });
+    const write = vi.fn();
+
+    await expect(runUpdateCommand(target, updates, write)).rejects.toThrow("Registry unavailable");
+    expect(write.mock.calls.map(([message]) => message)).not.toContain("Download complete.");
+    expect(write).toHaveBeenLastCalledWith("Downloading update...", true);
   });
 
   it("does not start an update when already current", async () => {

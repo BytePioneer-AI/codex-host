@@ -118,6 +118,34 @@ mod tests {
     }
 
     #[test]
+    fn window_chrome_allows_the_same_loopback_origins_as_session_activation() {
+        use tauri::utils::acl::{RemoteUrlPattern, capability::Capability};
+
+        let capability: Capability =
+            serde_json::from_str(include_str!("../capabilities/window-chrome.json")).unwrap();
+        let session: Capability =
+            serde_json::from_str(include_str!("../capabilities/desktop-session.json")).unwrap();
+        assert_eq!(capability.webviews, ["main"]);
+        assert!(capability.windows.is_empty());
+        let origin_patterns = capability.remote.unwrap().urls;
+        assert_eq!(origin_patterns, session.remote.unwrap().urls);
+        let allowed = origin_patterns
+            .iter()
+            .map(|pattern| pattern.parse::<RemoteUrlPattern>().unwrap())
+            .collect::<Vec<_>>();
+        for (address, expected) in [
+            ("http://[::1]:4400/?session=thread", true),
+            ("http://[::1]:4401/?token=fixture", true),
+            ("http://[::2]:4401/", false),
+            ("http://localhost.example.com:4400/", false),
+            ("https://[::1]:4400/", false),
+        ] {
+            let url = Url::parse(address).unwrap();
+            assert_eq!(allowed.iter().any(|pattern| pattern.test(&url)), expected);
+        }
+    }
+
+    #[test]
     fn initialization_script_defines_shell_bridges_before_dom_root_access_and_gates_embedded_keys()
     {
         let script = initialization_script(125, "boot-test-1");

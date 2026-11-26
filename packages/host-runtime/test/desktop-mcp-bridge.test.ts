@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { request as httpRequest, ServerResponse } from "node:http";
+import { createServer, request as httpRequest, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,7 +33,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
-async function setup(options: { detachedSessionTimeoutMs?: number } = {}) {
+async function setup(options: { detachedSessionTimeoutMs?: number; sseKeepAliveMs?: number } = {}) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "desktop-mcp-test-")));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const events = path.join(root, "events.jsonl");
@@ -1001,3 +1001,253 @@ it("drains tool output before the tool host exits", async () => {
   expect(bytes.length).toBe(payloadSize);
   expect(bytes.every((byte) => byte === 0x78)).toBe(true);
 });
+
+it("exits within the terminate deadline when DELETE hangs on EOF and lets the server reap the session", async () => {
+  const f = await setup({ detachedSessionTimeoutMs: 300 });
+  const upstream = new URL(String((f.config.args as string[])[2]));
+  const authorization = String((f.config.args as string[])[3]);
+  const getConnected = Promise.withResolvers<undefined>();
+  const deleteReceived = Promise.withResolvers<undefined>();
+  const proxy = createServer((req, res) => {
+    if (req.method === "DELETE") {
+      deleteReceived.resolve(undefined);
+      req.resume();
+      return;
+    }
+    const headers = { ...req.headers, host: upstream.host };
+    const upstreamReq = httpRequest(
+      {
+        hostname: upstream.hostname,
+        port: upstream.port,
+        path: req.url,
+        method: req.method,
+        headers,
+      },
+      (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        if (req.method === "GET" && upstreamRes.statusCode === 200) {
+          res.flushHeaders();
+          getConnected.resolve(undefined);
+        }
+        upstreamRes.pipe(res);
+      },
+    );
+    upstreamReq.on("error", () => {
+      if (!res.destroyed) res.destroy();
+    });
+    res.once("close", () => {
+      upstreamReq.destroy();
+    });
+    req.pipe(upstreamReq);
+  });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  cleanup.push(
+    () =>
+      new Promise<void>((resolve) => {
+        proxy.closeAllConnections();
+        proxy.close(() => resolve());
+      }),
+  );
+  const bound = proxy.address();
+  if (bound === null || typeof bound === "string") throw new Error("Proxy has no address");
+  const proxyUrl = `http://127.0.0.1:${bound.port}${upstream.pathname}`;
+
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const messages = new JsonLineCollector(output);
+  const connection = runDesktopMcpClient(
+    [proxyUrl, authorization],
+    { input, output },
+    { terminateTimeoutMs: 150 },
+  );
+  cleanup.push(async () => {
+    input.end();
+    await connection;
+  });
+  input.write(JSON.stringify(initializationRequest) + "\n");
+  await messages.waitFor((message) => message.id === 0, 10_000);
+  input.write(
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n",
+  );
+  await getConnected.promise;
+  input.write(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "echo", arguments: {} },
+    }) + "\n",
+  );
+  const reply = await messages.waitFor((message) => message.id === 1, 10_000);
+  const pid = Number(
+    jsonObjectSchema.parse(jsonObjectSchema.parse(reply.result).structuredContent).pid,
+  );
+  const started = Date.now();
+  input.end();
+  await deleteReceived.promise;
+  expect(await connection).toBe(0);
+  expect(Date.now() - started).toBeLessThan(2_000);
+  await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 6_000 });
+}, 20_000);
+
+it("reaps stalled standalone SSE sessions without interrupting long-running POST tool calls", async () => {
+  const timeout = 250;
+  const f = await setup({ detachedSessionTimeoutMs: timeout, sseKeepAliveMs: 50 });
+  const url = String((f.config.args as string[])[2]);
+  const jsonHeaders = {
+    ...f.headers(),
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+  };
+  const parseSseData = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
+  async function initializeSession() {
+    const initialized = await fetch(url, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(initializationRequest),
+    });
+    expect(initialized.status).toBe(200);
+    await initialized.text();
+    const sessionId = initialized.headers.get("mcp-session-id");
+    if (!sessionId) throw new Error("Missing MCP session ID");
+    const ack = await fetch(url, {
+      method: "POST",
+      headers: { ...jsonHeaders, "mcp-session-id": sessionId },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }),
+    });
+    expect(ack.status).toBe(202);
+    const echo = await fetch(url, {
+      method: "POST",
+      headers: { ...jsonHeaders, "mcp-session-id": sessionId },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "echo", arguments: {} },
+      }),
+    });
+    expect(echo.status).toBe(200);
+    const [message] = parseSseData(await echo.text());
+    const pid = Number(
+      jsonObjectSchema.parse(jsonObjectSchema.parse(message?.result).structuredContent).pid,
+    );
+    return { sessionId, pid };
+  }
+  function openStandaloneSse(sessionId: string) {
+    const req = httpRequest(url, {
+      method: "GET",
+      headers: {
+        ...f.headers(),
+        accept: "text/event-stream",
+        "mcp-session-id": sessionId,
+      },
+    });
+    req.on("error", () => {});
+    req.end();
+    cleanup.push(async () => {
+      req.destroy();
+    });
+    return req;
+  }
+
+  // 1. Healthy standalone SSE sends keepalives, reconnects cleanly, and stalls trigger reap.
+  const first = await initializeSession();
+  const sse1 = openStandaloneSse(first.sessionId);
+  const [sse1Res] = (await once(sse1, "response")) as [import("node:http").IncomingMessage];
+  expect(sse1Res.statusCode).toBe(200);
+  const keepAliveSeen = Promise.withResolvers<undefined>();
+  sse1Res.on("data", (chunk: Buffer) => {
+    if (chunk.toString("utf8").includes(": keepalive")) keepAliveSeen.resolve(undefined);
+  });
+  await keepAliveSeen.promise;
+  await new Promise((resolve) => setTimeout(resolve, timeout + 150));
+  expect(() => process.kill(first.pid, 0)).not.toThrow();
+
+  // Closing GET SSE must synchronously free the standalone slot so immediate reconnect succeeds.
+  sse1.destroy();
+  await once(sse1, "close");
+  const originalWrite = ServerResponse.prototype.write;
+  let stallWrites = false;
+  const writeSpy = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+    this: ServerResponse,
+    ...args: unknown[]
+  ) {
+    if (
+      stallWrites &&
+      this.req.method === "GET" &&
+      this.req.headers["mcp-session-id"] === first.sessionId
+    ) {
+      return false;
+    }
+    return (originalWrite as (...callArgs: unknown[]) => boolean).apply(this, args);
+  });
+  try {
+    const sse2 = openStandaloneSse(first.sessionId);
+    const [sse2Res] = (await once(sse2, "response")) as [import("node:http").IncomingMessage];
+    expect(sse2Res.statusCode).toBe(200);
+    sse2Res.resume();
+    stallWrites = true;
+    await vi.waitFor(() => expect(() => process.kill(first.pid, 0)).toThrow(), { timeout: 6_000 });
+  } finally {
+    writeSpy.mockRestore();
+  }
+
+  // 2. An in-flight POST tool call must stay alive past detachedSessionTimeoutMs even after SSE drops.
+  const second = await initializeSession();
+  const sse = openStandaloneSse(second.sessionId);
+  const [sseRes] = (await once(sse, "response")) as [import("node:http").IncomingMessage];
+  expect(sseRes.statusCode).toBe(200);
+  const elicitationId = Promise.withResolvers<string>();
+  let sseBuffer = "";
+  sseRes.on("data", (chunk: Buffer) => {
+    sseBuffer += chunk.toString("utf8");
+    for (const message of parseSseData(sseBuffer)) {
+      if (message.method === "elicitation/create" && typeof message.id === "string") {
+        elicitationId.resolve(message.id);
+      }
+    }
+  });
+  const longToolCall = fetch(url, {
+    method: "POST",
+    headers: { ...jsonHeaders, "mcp-session-id": second.sessionId },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "ask", arguments: { input: "slow-tool" } },
+    }),
+  });
+  const questionId = await elicitationId.promise;
+  sse.destroy();
+  await once(sse, "close");
+
+  // Wait well past detachedSessionTimeoutMs while the POST tool call is still running.
+  await new Promise((resolve) => setTimeout(resolve, timeout * 3));
+  expect(() => process.kill(second.pid, 0)).not.toThrow();
+
+  const answer = await fetch(url, {
+    method: "POST",
+    headers: { ...jsonHeaders, "mcp-session-id": second.sessionId },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: questionId,
+      result: { action: "accept", content: { allow: true } },
+    }),
+  });
+  expect(answer.status).toBe(202);
+  const completed = await longToolCall;
+  expect(completed.status).toBe(200);
+  const [toolReply] = parseSseData(await completed.text());
+  expect(jsonObjectSchema.parse(toolReply?.result).structuredContent).toEqual({
+    action: "accept",
+    content: { allow: true },
+  });
+
+  // Once the POST finishes with no SSE attached, the session is reaped normally.
+  await vi.waitFor(() => expect(() => process.kill(second.pid, 0)).toThrow(), { timeout: 6_000 });
+}, 20_000);

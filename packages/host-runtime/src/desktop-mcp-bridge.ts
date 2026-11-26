@@ -33,6 +33,8 @@ import {
 const MAX_MCP_REQUEST_BYTES = 16 * 1024 * 1024;
 // A live client keeps its standalone SSE stream open and reconnects it within seconds.
 const DETACHED_SESSION_TIMEOUT_MS = 30_000;
+const SSE_KEEP_ALIVE_MS = 15_000;
+const TERMINATE_SESSION_TIMEOUT_MS = 2_000;
 
 interface Profile {
   id: string;
@@ -54,13 +56,19 @@ class DesktopMcpSession {
   readonly #queued: JSONRPCMessage[] = [];
   #outgoing = Promise.resolve();
   #standaloneReady = false;
+  #standaloneGeneration = 0;
   #closing?: Promise<void>;
   #starting?: Promise<void>;
   readonly #detachedTimeoutMs: number;
   #connections = 0;
   #detached?: NodeJS.Timeout;
 
-  constructor(profile: Profile, remove: () => void, detachedTimeoutMs: number) {
+  constructor(
+    profile: Profile,
+    remove: () => void,
+    detachedTimeoutMs: number,
+    sseKeepAliveMs: number,
+  ) {
     this.#detachedTimeoutMs = detachedTimeoutMs;
     this.#stdio = new StdioClientTransport({
       command: process.execPath,
@@ -81,6 +89,7 @@ class DesktopMcpSession {
         profile.sessions.set(id, this);
       },
       onsessionclosed: () => this.close(),
+      keepAliveMs: sseKeepAliveMs,
     });
     this.http.onmessage = (message) => {
       if ("method" in message && "id" in message) this.#pending.add(message.id);
@@ -149,14 +158,18 @@ class DesktopMcpSession {
   async handle(request: Request, body?: unknown): Promise<Response> {
     const response = await this.http.handleRequest(request, { parsedBody: body });
     if (request.method === "GET" && response.status === 200) {
+      const generation = ++this.#standaloneGeneration;
+      const closeStandalone = () => {
+        if (this.#standaloneGeneration !== generation) return;
+        this.#standaloneReady = false;
+        this.http.closeStandaloneSSEStream();
+      };
+      if (request.signal.aborted) {
+        closeStandalone();
+        return response;
+      }
       this.#standaloneReady = true;
-      request.signal.addEventListener(
-        "abort",
-        () => {
-          this.#standaloneReady = false;
-        },
-        { once: true },
-      );
+      request.signal.addEventListener("abort", closeStandalone, { once: true });
       await this.#flush();
     }
     return response;
@@ -309,6 +322,7 @@ export async function createDesktopMcpBridge(options: {
   environment: NodeJS.ProcessEnv;
   native?: { executable: string; arguments: readonly string[] };
   detachedSessionTimeoutMs?: number;
+  sseKeepAliveMs?: number;
 }): Promise<DesktopMcpBridge | undefined> {
   let nodeReplExecutable: string | undefined;
   try {
@@ -407,9 +421,18 @@ export async function createDesktopMcpBridge(options: {
       response.writeHead(401, { "www-authenticate": "Bearer" }).end();
       return;
     }
+    const sseKeepAliveMs = options.sseKeepAliveMs ?? SSE_KEEP_ALIVE_MS;
+    const attachResponse = (target: DesktopMcpSession) => {
+      const release = target.attach();
+      if (response.closed || response.destroyed) {
+        release();
+      } else {
+        response.once("close", release);
+      }
+    };
     const id = request.headers["mcp-session-id"];
     let session = typeof id === "string" ? profile.sessions.get(id) : undefined;
-    if (session) response.once("close", session.attach());
+    if (session) attachResponse(session);
     let body: Record<string, unknown> | undefined;
     if (request.method === "POST") {
       try {
@@ -421,13 +444,15 @@ export async function createDesktopMcpBridge(options: {
     }
     const initializing = session === undefined;
     const controller = new AbortController();
-    response.once("close", () => {
-      if (!response.writableEnded) {
-        controller.abort();
-        if (initializing) void session?.close().catch(() => undefined);
-      }
-    });
-    if (response.destroyed) return;
+    const onResponseClose = () => {
+      controller.abort();
+      if (!response.writableEnded && initializing) void session?.close().catch(() => undefined);
+    };
+    if (response.closed || response.destroyed) {
+      onResponseClose();
+      return;
+    }
+    response.once("close", onResponseClose);
     if (!session) {
       if (id !== undefined || request.method !== "POST" || body?.method !== "initialize") {
         response.writeHead(id === undefined ? 400 : 404).end();
@@ -439,10 +464,11 @@ export async function createDesktopMcpBridge(options: {
           sessions.delete(created);
         },
         options.detachedSessionTimeoutMs ?? DETACHED_SESSION_TIMEOUT_MS,
+        sseKeepAliveMs,
       );
       sessions.add(created);
       session = created;
-      response.once("close", session.attach());
+      attachResponse(session);
     }
     if (initializing) await session.start();
     if (controller.signal.aborted) {
@@ -463,19 +489,71 @@ export async function createDesktopMcpBridge(options: {
       body,
     );
     if (initializing && result.status >= 400) await session.close();
+    if (response.closed || response.destroyed) {
+      await result.body?.cancel().catch(() => undefined);
+      return;
+    }
     response.writeHead(result.status, Object.fromEntries(result.headers));
     if (!result.body) {
       response.end();
       return;
     }
+    const isStandaloneSse = request.method === "GET" && result.status === 200;
     const readable = Readable.fromWeb(result.body as unknown as NodeReadableStream<Uint8Array>);
-    response.once("close", () => {
-      readable.destroy();
-    });
-    readable.on("error", () => {
-      response.destroy();
-    });
-    readable.pipe(response);
+    const destroyResponse = () => {
+      if (!response.destroyed) response.destroy();
+    };
+    response.on("error", destroyResponse);
+    readable.on("error", destroyResponse);
+    if (isStandaloneSse) {
+      request.socket?.setKeepAlive(true, sseKeepAliveMs);
+      response.flushHeaders();
+      let stallTimer: NodeJS.Timeout | undefined;
+      const clearStallTimer = () => {
+        clearTimeout(stallTimer);
+        stallTimer = undefined;
+      };
+      const onDrain = () => {
+        clearStallTimer();
+        if (!response.closed && !response.destroyed && !readable.destroyed) readable.resume();
+      };
+      response.once("close", () => {
+        clearStallTimer();
+        response.off("drain", onDrain);
+        readable.destroy();
+      });
+      readable.on("data", (chunk: Buffer | Uint8Array) => {
+        if (response.closed || response.destroyed || response.writableEnded) {
+          readable.destroy();
+          return;
+        }
+        let ok: boolean;
+        try {
+          ok = response.write(chunk, (error) => {
+            if (error) destroyResponse();
+          });
+        } catch {
+          destroyResponse();
+          return;
+        }
+        if (!ok) {
+          readable.pause();
+          clearStallTimer();
+          stallTimer = setTimeout(destroyResponse, sseKeepAliveMs).unref();
+          response.once("drain", onDrain);
+        }
+      });
+      readable.once("end", () => {
+        clearStallTimer();
+        response.off("drain", onDrain);
+        if (!response.writableEnded && !response.destroyed) response.end();
+      });
+    } else {
+      response.once("close", () => {
+        readable.destroy();
+      });
+      readable.pipe(response);
+    }
   }
 
   const server = createServer((request, response) => {
@@ -521,6 +599,7 @@ export async function runDesktopMcpClient(
     input: process.stdin,
     output: process.stdout,
   },
+  options: { terminateTimeoutMs?: number } = {},
 ): Promise<number> {
   const [url, authorization] = arguments_;
   if (!url || !authorization) throw new Error("Desktop MCP connection is unavailable");
@@ -558,6 +637,11 @@ export async function runDesktopMcpClient(
   http.onerror = failed;
   stdio.onerror = failed;
   const inputClosed = () => done.resolve(0);
+  const listenSignals = streams.input === process.stdin;
+  if (listenSignals) {
+    process.once("SIGINT", inputClosed);
+    process.once("SIGTERM", inputClosed);
+  }
   input.once("end", inputClosed);
   input.once("close", inputClosed);
   if (input.readableEnded || input.destroyed) inputClosed();
@@ -566,10 +650,29 @@ export async function runDesktopMcpClient(
     await stdio.start();
     return await done.promise;
   } finally {
+    if (listenSignals) {
+      process.off("SIGINT", inputClosed);
+      process.off("SIGTERM", inputClosed);
+    }
     input.off("end", inputClosed);
     input.off("close", inputClosed);
-    await http.terminateSession().catch(() => undefined);
-    await http.close();
+    const terminateTimeoutMs = options.terminateTimeoutMs ?? TERMINATE_SESSION_TIMEOUT_MS;
+    let terminateTimer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        http.terminateSession().catch(() => undefined),
+        new Promise<void>((resolve) => {
+          terminateTimer = setTimeout(resolve, terminateTimeoutMs).unref();
+        }),
+      ]);
+    } finally {
+      clearTimeout(terminateTimer);
+    }
+    try {
+      await http.close();
+    } catch {
+      // Continue destroying local streams even if HTTP transport shutdown throws.
+    }
     input.destroy();
     streams.input.destroy();
     await stdio.close();

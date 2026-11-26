@@ -70,6 +70,7 @@ interface HarnessIndex {
 interface HarnessCache {
   sources: Map<string, CachedSource>;
   persistedAtMs: number;
+  persistAttemptedAtMs: number;
   dirty: boolean;
   index: HarnessIndex | null;
 }
@@ -468,7 +469,8 @@ export class UsageStatistics {
         ({ id, fingerprint }) => cache.sources.get(id)?.fingerprint !== fingerprint,
       );
       this.#progress.read += ids.length - pending.length;
-      let checkpointFromMs = cache.persistedAtMs || this.#now();
+      let checkpointFromMs =
+        Math.max(cache.persistedAtMs, cache.persistAttemptedAtMs) || this.#now();
       let yieldedAtMs = performance.now();
       try {
         for await (const result of readUsageStatisticsSources(capability, pending, signal)) {
@@ -484,7 +486,8 @@ export class UsageStatistics {
           this.#progress.read += 1;
           if (cache.dirty && this.#now() - checkpointFromMs >= PERSIST_INTERVAL_MS) {
             await this.#persist(harness, cache);
-            checkpointFromMs = cache.persistedAtMs || this.#now();
+            checkpointFromMs =
+              Math.max(cache.persistedAtMs, cache.persistAttemptedAtMs) || this.#now();
             yieldedAtMs = performance.now();
           } else if (performance.now() - yieldedAtMs >= 12) {
             // Large histories are parsed in pieces; other Host requests run in between.
@@ -505,7 +508,10 @@ export class UsageStatistics {
         }
       }
       if (failed) this.#failures.set(harness, failed);
-      if (this.#now() - cache.persistedAtMs >= PERSIST_INTERVAL_MS)
+      if (
+        this.#now() - Math.max(cache.persistedAtMs, cache.persistAttemptedAtMs) >=
+        PERSIST_INTERVAL_MS
+      )
         await this.#persist(harness, cache);
     }
     this.#refreshedAtMs = this.#now();
@@ -514,7 +520,13 @@ export class UsageStatistics {
   #cache(harness: string): HarnessCache {
     let cache = this.#caches.get(harness);
     if (!cache) {
-      cache = { sources: new Map(), persistedAtMs: 0, dirty: false, index: null };
+      cache = {
+        sources: new Map(),
+        persistedAtMs: 0,
+        persistAttemptedAtMs: 0,
+        dirty: false,
+        index: null,
+      };
       this.#caches.set(harness, cache);
     }
     return cache;
@@ -608,9 +620,12 @@ export class UsageStatistics {
       cache.dirty = false;
       await writeFile(temporary, JSON.stringify({ version: CACHE_VERSION, sources }));
       await rename(temporary, file);
-      cache.persistedAtMs = this.#now();
+      const persistedAtMs = this.#now();
+      cache.persistedAtMs = persistedAtMs;
+      cache.persistAttemptedAtMs = persistedAtMs;
     } catch (error) {
       cache.dirty = true;
+      cache.persistAttemptedAtMs = this.#now();
       this.#options.diagnose?.(`Usage statistics cache for ${harness}: ${message(error)}`);
     } finally {
       await rm(temporary, { force: true }).catch(() => undefined);

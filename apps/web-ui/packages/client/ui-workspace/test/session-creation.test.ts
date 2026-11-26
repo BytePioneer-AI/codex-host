@@ -26,7 +26,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function createHarness() {
+function createHarness(placement: Partial<Pick<IWorkspaces, "pinSession" | "unpinSession">> = {}) {
   const sessionA = SessionId("session-a");
   const sessionB = SessionId("session-b");
   const ws1 = "ws-1" as WorkspaceId;
@@ -154,6 +154,7 @@ function createHarness() {
 
   const workspaces: Partial<IWorkspaces> = {
     list: workspacesStore,
+    ...placement,
   };
 
   const conversation = {
@@ -238,6 +239,36 @@ function createHarness() {
     },
   };
 }
+
+it("reports busy for pin and unpin without sending or replaying either request", async () => {
+  const requests: [string, SessionId][] = [];
+  const { ctx, service, sessionA } = createHarness({
+    async pinSession(id) {
+      requests.push(["pin", id]);
+    },
+    async unpinSession(id) {
+      requests.push(["unpin", id]);
+    },
+  });
+  try {
+    assert.ok(service.sessionMoves.tryAcquire(sessionA));
+    try {
+      assert.equal(await service.pinSession(sessionA), "busy");
+      assert.equal(await service.unpinSession(sessionA), "busy");
+      assert.deepEqual(requests, []);
+    } finally {
+      service.sessionMoves.release(sessionA);
+    }
+    assert.equal(await service.pinSession(sessionA), "applied");
+    assert.equal(await service.unpinSession(sessionA), "applied");
+    assert.deepEqual(requests, [
+      ["pin", sessionA],
+      ["unpin", sessionA],
+    ]);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
 
 it("switches immediately to creating state, hands off pending draft on success, and supports retry on failure", async () => {
   const h = createHarness();

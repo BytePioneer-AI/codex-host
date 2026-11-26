@@ -3004,6 +3004,7 @@ export class AppServerHost {
       this.#nativeProjectIds = new Map();
     }
     const cache = this.#nativeProjectIds;
+    const reads = new Map<string, Promise<string | null | undefined>>();
     const checkOwner = () => {
       if (!this.#isProjectOwner(generation)) throw new OfficialAdmissionError("unavailable");
     };
@@ -3021,16 +3022,25 @@ export class AppServerHost {
           }
           try {
             const projectId = await read;
-            if (projectId === undefined || cache.get(id) === read) projects.set(id, projectId);
-            if (projectId !== undefined) return;
+            if (cache.get(id) !== read) return;
+            projects.set(id, projectId);
+            reads.set(id, read);
           } catch {
             // Failed rows cannot supply a binding or the legacy navigation assignment.
+            if (cache.get(id) === read) cache.delete(id);
           }
-          if (cache.get(id) === read) cache.delete(id);
         }),
       );
     }
-    if (!this.#isProjectOwner(generation)) projects.clear();
+    const ownerCurrent = this.#isProjectOwner(generation);
+    for (const [id, read] of reads) {
+      if (cache.get(id) !== read) {
+        projects.delete(id);
+        continue;
+      }
+      if (projects.get(id) === undefined) cache.delete(id);
+    }
+    if (!ownerCurrent) projects.clear();
     return projects;
   }
 

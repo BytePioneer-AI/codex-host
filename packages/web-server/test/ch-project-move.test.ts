@@ -22,10 +22,11 @@ import {
 import { Workspaces, type WorkspaceView } from "../src/workspaces.ts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
 import { FakeChHost } from "./support/ch-host.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
-function setup(t: TestContext, host: FakeChHost) {
+function setup(t: TestContext, host: FakeChHost, sessionId = "moving") {
   const root = mkdtempSync(join(tmpdir(), "ch-project-move-"));
-  const row = host.add("moving", join(root, "source"));
+  const row = host.add(sessionId, join(root, "source"));
   host.projectSnapshot.projects.push({
     id: "target",
     name: "Target",
@@ -629,6 +630,78 @@ it(
   },
 );
 
+it("refreshes move bindings on a standalone project change", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = new FakeChChannel();
+  const { list, move, subscribe } = setup(t, host);
+  assert.ok((await list()).ok);
+  t.mock.timers.tick(100);
+  await immediate();
+  const frames = await subscribe("workspace/follow", {});
+  host.projectSnapshot.projects.pop();
+  for (const listener of host.listeners)
+    listener({
+      type: "projects-changed",
+      cursor: { epoch: host.epoch, sequence: ++host.sequence },
+    });
+  t.mock.timers.tick(100);
+  await immediate();
+  const initial = baselineProjects(frames[0]);
+  assert.ok(Array.isArray(initial));
+  assert.deepEqual(frames.at(-1), { type: "localProjects", localProjects: initial.slice(0, 1) });
+  assert.equal((await move()).ok, false);
+});
+
+it("allows a project move after unarchive even when the official Thread is off the catalog page", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = nativeCodex(new FakeChChannel());
+  const { row, call, list, move, workspaces } = setup(t, host, "native-moving");
+  row.modelProvider = "openai";
+  row.archived = true;
+  host.archivedIds.add(row.id);
+  const request = host.request.bind(host);
+  let writes = 0;
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, params);
+    writes++;
+    host.projectSnapshot.assignments[row.id] = "target";
+    return { status: "confirmed", projectId: "target" } as T;
+  };
+  const linked = await call("session/list", { sessionId: row.id });
+  assert.ok(linked.ok, linked.ok ? undefined : linked.error.message);
+  assert.ok((await list()).ok);
+  assert.equal((await move()).ok, false);
+  assert.equal(writes, 0);
+
+  host.threads.delete(row.id);
+  host.archivedIds.delete(row.id);
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const projects = host.projects.bind(host);
+  t.mock.method(host, "projects", async () => {
+    const snapshot = await projects();
+    entered.resolve(undefined);
+    await release.promise;
+    return snapshot;
+  });
+  const refreshing = list();
+  try {
+    await Promise.race([
+      entered.promise,
+      refreshing.then((reply) =>
+        assert.fail(`Catalog settled before project read: ${JSON.stringify(reply)}`),
+      ),
+    ]);
+    host.changed(row.id, "thread/unarchived");
+  } finally {
+    release.resolve(undefined);
+  }
+  assert.ok((await refreshing).ok);
+  assert.equal(workspaces.isArchived(row.id), false);
+  assert.deepEqual(await move(), { ok: true, value: { status: "confirmed", projectId: "target" } });
+  assert.equal(writes, 1);
+});
+
 it("keeps a concurrent direct-link Thread without restoring a removed catalog row", async (t) => {
   const host = new FakeChHost();
   const { root, row, call, list, workspaces } = setup(t, host);
@@ -787,6 +860,12 @@ it(
       return { status: "confirmed", projectId: "target" } as T;
     };
     const service = await startFakeChChannel(serviceHost, directory, "service");
+    let closing: Promise<void> | undefined;
+    const closeService = () => (closing ??= service.close());
+    t.after(async () => {
+      release.resolve(undefined);
+      await closeService();
+    });
     const client = await createChHostClient({ directory });
     t.after(() => client.close());
     const lost = assert.rejects(
@@ -796,8 +875,11 @@ it(
         "hostCode" in error.details &&
         error.details.hostCode === -32093,
     );
-    await submitted.promise;
-    await service.close();
+    await Promise.race([
+      submitted.promise,
+      lost.then(() => assert.fail("Project move ended before the old owner received it")),
+    ]);
+    await closeService();
     release.resolve(undefined);
     await lost;
     const desktopHost = new FakeChChannel();

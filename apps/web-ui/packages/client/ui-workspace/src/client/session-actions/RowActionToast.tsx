@@ -114,6 +114,8 @@ function plainNoticeText(
       return t("toast.pinFailed", { message: toast.message });
     case "unpinFailed":
       return t("toast.unpinFailed", { message: toast.message });
+    case "pinBusy":
+      return t("toast.pinBusy");
     case "defaultWorkspaceFailed":
       return t("defaultWorkspace.failed");
     case "archivedNotOpenable":

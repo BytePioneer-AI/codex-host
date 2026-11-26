@@ -15,6 +15,7 @@ import {
   OfficialRuntimeScope,
 } from "../src/codex-runtime/official-runtime-scope.js";
 import { PINNED_THREAD_SECTION_ID } from "../src/external-thread-pins.js";
+import { OfficialRequestBroker } from "../src/official-request-broker.js";
 import {
   createFixture,
   JsonLineCollector,
@@ -33,8 +34,27 @@ const SECTION = { id: "research", name: "Research", appearance: null };
 const cleanup: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
-  for (const close of cleanup.splice(0).reverse()) await close();
+  const errors: unknown[] = [];
+  for (const close of cleanup.splice(0).reverse()) {
+    try {
+      await close();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, "Project move fixture cleanup failed");
 });
+
+function waitForStage<T>(stage: Promise<T>, operation: Promise<unknown>): Promise<T> {
+  return Promise.race([
+    stage,
+    operation.then((result) => {
+      throw new Error(
+        `Operation settled before reaching the expected stage: ${JSON.stringify(result)}`,
+      );
+    }),
+  ]);
+}
 
 async function setup(
   options: {
@@ -123,6 +143,8 @@ async function setup(
       case "thread/read":
         if (params.threadId === "unreadable")
           return { error: { code: -32093, message: "Read unavailable" } };
+        if (params.threadId !== thread.id)
+          return { error: { code: -32600, message: "Thread not found" } };
         return options.write === "malformed-readback" && nativeWrites({ requests }).length > 0
           ? { result: { thread: { ...thread, id: "unexpected-thread" } } }
           : { result: { thread } };
@@ -327,7 +349,12 @@ describe("Host client project move", () => {
       context.requests.slice(0, writeIndex),
       context.requests.slice(writeIndex + 1),
     ]) {
-      expect(requests).toContainEqual(expect.objectContaining({ method: "thread/read" }));
+      expect(requests).toContainEqual(
+        expect.objectContaining({
+          method: "thread/read",
+          params: { threadId: NATIVE_THREAD, includeTurns: false },
+        }),
+      );
     }
     expect(context.thread).toMatchObject({
       projectId: NATIVE_PROJECT,
@@ -388,6 +415,36 @@ describe("Host client project move", () => {
     }
   });
 
+  it("does not publish a binding invalidated while another Thread read is pending", async () => {
+    const context = await setup();
+    expect((await workspace(context, [NATIVE_THREAD])).assignments[NATIVE_THREAD]).toBe(
+      OLD_GUI_PROJECT,
+    );
+    const notified = Promise.withResolvers<undefined>();
+    const unsubscribe = context.fixture.host.clientEvents.subscribe((event) => {
+      if (event.type === "changed" && event.method === "thread/project/updated")
+        notified.resolve(undefined);
+    });
+    const blocked = context.pauseNext("thread/read");
+    const reading = workspace(context, [NATIVE_THREAD, "unreadable"]);
+    try {
+      const reply = await waitForStage(blocked, reading);
+      try {
+        context.thread.projectId = null;
+        context.notify("thread/project/updated", { threadId: NATIVE_THREAD, projectId: null });
+        await notified.promise;
+      } finally {
+        reply();
+      }
+      const snapshot = await reading;
+      expect(snapshot.assignments).not.toHaveProperty(NATIVE_THREAD);
+      expect(snapshot.projectMoveBindings?.assignments).not.toHaveProperty(NATIVE_THREAD);
+      expect((await workspace(context, [NATIVE_THREAD])).projectless).toContain(NATIVE_THREAD);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("does not write if the official Thread is already in the destination", async () => {
     const context = await setup({ thread: { projectId: NATIVE_PROJECT } });
     await expect(move(context, NATIVE_THREAD)).resolves.toEqual(confirmed);
@@ -398,7 +455,7 @@ describe("Host client project move", () => {
     const context = await setup();
     const target = context.pauseNext("project/read");
     const first = move(context, NATIVE_THREAD);
-    const reply = await target;
+    const reply = await waitForStage(target, first);
     const queued = move(context, NATIVE_THREAD);
     reply();
     await context.scope.stop();
@@ -415,15 +472,42 @@ describe("Host client project move", () => {
       const context = await setup();
       const written = context.pauseNext("thread/metadata/update");
       const moving = move(context, NATIVE_THREAD);
-      let late = await written;
+      let late = await waitForStage(written, moving);
       if (stage === "readback") {
         const reading = context.pauseNext("thread/read");
         late();
-        late = await reading;
+        late = await waitForStage(reading, moving);
       }
-      // Deliver a matching reply but retire its owner before the reader consumes it.
-      late();
-      await context.scope.stop();
+      const request = context.requests.at(-1);
+      expect(request).toMatchObject({
+        id: expect.any(String),
+        method: stage === "write" ? "thread/metadata/update" : "thread/read",
+      });
+      const matched = Promise.withResolvers<unknown>();
+      let stopping: Promise<void> | undefined;
+      const handle = OfficialRequestBroker.prototype.handle;
+      const observer = vi
+        .spyOn(OfficialRequestBroker.prototype, "handle")
+        .mockImplementation(function (this: OfficialRequestBroker, value) {
+          const pendingBefore = this.pendingCount;
+          const handled = handle.call(this, value);
+          if (handled && this.pendingCount < pendingBefore) {
+            matched.resolve(value);
+            // Retire after correlation, before the awaiting owner resumes.
+            stopping = context.scope.stop();
+          }
+          return handled;
+        });
+      try {
+        late();
+        expect(await waitForStage(matched.promise, moving)).toMatchObject({
+          id: request?.id,
+          result: { thread: { id: NATIVE_THREAD, projectId: NATIVE_PROJECT } },
+        });
+      } finally {
+        observer.mockRestore();
+        await stopping;
+      }
       await context.scope.start();
       await expect(moving).resolves.toEqual({ result: { status: "unknown" } });
       expect(nativeWrites(context)).toHaveLength(1);
@@ -464,6 +548,15 @@ describe("Host client project move", () => {
     const context = await setup({ write: "ambiguous" });
     await expect(move(context, NATIVE_THREAD)).resolves.toEqual(confirmed);
     expect(nativeWrites(context)).toHaveLength(1);
+    const writeIndex = context.requests.findIndex(
+      ({ method }) => method === "thread/metadata/update",
+    );
+    expect(context.requests.slice(writeIndex + 1)).toContainEqual(
+      expect.objectContaining({
+        method: "thread/read",
+        params: { threadId: NATIVE_THREAD, includeTurns: false },
+      }),
+    );
   });
 
   it("preserves an explicit native rejection as an RPC error", async () => {
@@ -667,7 +760,7 @@ describe("Host client project move", () => {
     });
     const paused = context.pauseNext(method);
     const moving = move(context, NATIVE_THREAD);
-    const reply = await paused;
+    const reply = await waitForStage(paused, moving);
     try {
       context.notify("project/changed", { projectId: NATIVE_PROJECT, changeType: "deleted" });
       await observed.promise;
@@ -689,7 +782,7 @@ describe("Host client project move", () => {
     const context = await setup(options);
     const paused = context.pauseNext("thread/metadata/update");
     const moving = move(context, NATIVE_THREAD);
-    const reply = await paused;
+    const reply = await waitForStage(paused, moving);
     options.projectId = OLD_NATIVE_PROJECT;
     reply();
     await expect(moving).resolves.toEqual({ result: { status: "unknown" } });
@@ -780,7 +873,7 @@ describe("Host client project move", () => {
     const before = await context.mappingStore.getThread(id);
     const moving = move(context, id);
     try {
-      await entered.promise;
+      await waitForStage(entered.promise, moving);
       await context.scope.stop();
       await context.scope.start();
     } finally {
@@ -807,7 +900,7 @@ describe("Host client project move", () => {
     });
     const moving = move(context, id);
     try {
-      await reading.promise;
+      await waitForStage(reading.promise, moving);
       await context.scope.stop();
       await context.scope.start();
     } finally {
@@ -839,6 +932,11 @@ describe("Host client project move", () => {
       }),
     );
     const before = await context.mappingStore.getThread(id);
+    expect(before).toMatchObject({
+      state: "ready",
+      ephemeral: true,
+      nativeSessionRef: { nativeSessionId: expect.any(String) },
+    });
     await expect(move(context, id)).resolves.toHaveProperty("error");
     expect(await context.mappingStore.getThread(id)).toEqual(before);
     expect(nativeWrites(context)).toEqual([]);

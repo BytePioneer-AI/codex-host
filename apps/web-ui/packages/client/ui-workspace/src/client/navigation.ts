@@ -136,13 +136,15 @@ export interface UiWorkspace {
    * reads the memberships current at completion, so reorders that landed
    * while the Host call was pending keep their positions.
    * @param sessionId - Session to pin.
+   * @returns `"busy"` if another placement operation owns the Session; nothing is sent.
    */
-  pinSession(sessionId: SessionId): Promise<void>;
+  pinSession(sessionId: SessionId): Promise<"applied" | "busy">;
   /**
    * Unpin a Session on the Host; saved positions stay as they are.
    * @param sessionId - Session to unpin.
+   * @returns `"busy"` if another placement operation owns the Session; nothing is sent.
    */
-  unpinSession(sessionId: SessionId): Promise<void>;
+  unpinSession(sessionId: SessionId): Promise<"applied" | "busy">;
   /**
    * Open the Host-native directory picker.
    * @returns the selected directory, or null when cancelled.
@@ -638,8 +640,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     await this.workspaces.unarchiveSession(sessionId);
   }
 
-  async pinSession(sessionId: SessionId): Promise<void> {
-    if (!this.sessionMoves.tryAcquire(sessionId)) return;
+  async pinSession(sessionId: SessionId): Promise<"applied" | "busy"> {
+    if (!this.sessionMoves.tryAcquire(sessionId)) return "busy";
     try {
       await this.workspaces.pinSession(sessionId);
       const { items, pinnedSessionIds, archivedSessionIds } = this.workspaces.list.getSnapshot();
@@ -651,15 +653,17 @@ class UiWorkspaceService extends Service implements UiWorkspace {
           archivedSessionIds,
         }),
       );
+      return "applied";
     } finally {
       this.sessionMoves.release(sessionId);
     }
   }
 
-  async unpinSession(sessionId: SessionId): Promise<void> {
-    if (!this.sessionMoves.tryAcquire(sessionId)) return;
+  async unpinSession(sessionId: SessionId): Promise<"applied" | "busy"> {
+    if (!this.sessionMoves.tryAcquire(sessionId)) return "busy";
     try {
       await this.workspaces.unpinSession(sessionId);
+      return "applied";
     } finally {
       this.sessionMoves.release(sessionId);
     }

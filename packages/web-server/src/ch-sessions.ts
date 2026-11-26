@@ -632,15 +632,17 @@ export class ChSessions {
       const row = rows.get(id);
       if (row) rows.set(id, { ...row, projectId });
     }
-    this.threads.replaceHarnesses(ownership);
-    this.rows = rows;
-    timing.count("visibleRows", rows.size);
-    this.syncWorkspace(timing, projects);
     // Notifications received during catalog or ancestor reads supersede their membership.
     for (const [id, archived] of archiveChanges) {
       if (archived) archivedIds.add(id);
       else archivedIds.delete(id);
+      const row = rows.get(id);
+      if (row) rows.set(id, { ...row, archived });
     }
+    this.threads.replaceHarnesses(ownership);
+    this.rows = rows;
+    timing.count("visibleRows", rows.size);
+    this.syncWorkspace(timing, projects);
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
@@ -1507,6 +1509,8 @@ export class ChSessions {
 
   private updateArchive(id: string, archived: boolean): void {
     this.refreshingArchiveChanges?.set(id, archived);
+    const row = this.rows.get(id);
+    if (row) this.rows.set(id, { ...row, archived });
     const ids = new Set(this.workspaces.localArchivedSessionIds());
     if (archived) ids.add(id);
     else ids.delete(id);
@@ -1570,13 +1574,10 @@ export class ChSessions {
 
   private async readThread(id: string) {
     const owner = await this.owner(id);
-    const { thread } = await this.host.request<{ thread: ChThread & { archived?: boolean } }>(
-      "thread/read",
-      {
-        threadId: id,
-        includeTurns: false,
-      },
-    );
+    const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
+      threadId: id,
+      includeTurns: false,
+    });
     if (thread.id !== id || (owner.owner === "external" && thread.modelProvider !== "codexhost"))
       throw new RpcError("session/ownership-unconfirmed", "Thread identity was not confirmed.");
     return { thread, harnessId: owner.harnessId };
@@ -1729,7 +1730,7 @@ export class ChSessions {
         row.parentThreadId ||
         row.canAcceptDirectInput === false ||
         this.tree.parent(threadId) ||
-        ("archived" in row && row.archived === true) ||
+        row.archived === true ||
         this.workspaces.isArchived(threadId) ||
         this.workspaces.pinnedSessionIds().includes(threadId)
       )

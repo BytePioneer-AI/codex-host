@@ -368,6 +368,7 @@ export type RowToast =
   | { kind: "unarchiveFailed"; message: string }
   | { kind: "pinFailed"; message: string }
   | { kind: "unpinFailed"; message: string }
+  | { kind: "pinBusy" }
   | { kind: "archivedNotOpenable" }
   | { kind: "defaultWorkspaceFailed" }
   | { kind: "sessionLinkCopied" }

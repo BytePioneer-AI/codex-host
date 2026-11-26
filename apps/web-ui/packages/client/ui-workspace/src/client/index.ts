@@ -384,20 +384,30 @@ export function apply(ctx: Context): void {
     // Pin failures surface as a notice: nothing else on the surface moves, so
     // a silent failure would read as a dead action.
     pinSession: (sessionId) => {
-      uiWorkspace.pinSession(sessionId).catch((error: unknown) => {
-        notify({
-          kind: "pinFailed",
-          message: error instanceof Error ? error.message : String(error),
+      uiWorkspace
+        .pinSession(sessionId)
+        .then((result) => {
+          if (result === "busy") notify({ kind: "pinBusy" });
+        })
+        .catch((error: unknown) => {
+          notify({
+            kind: "pinFailed",
+            message: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
     },
     unpinSession: (sessionId) => {
-      uiWorkspace.unpinSession(sessionId).catch((error: unknown) => {
-        notify({
-          kind: "unpinFailed",
-          message: error instanceof Error ? error.message : String(error),
+      uiWorkspace
+        .unpinSession(sessionId)
+        .then((result) => {
+          if (result === "busy") notify({ kind: "pinBusy" });
+        })
+        .catch((error: unknown) => {
+          notify({
+            kind: "unpinFailed",
+            message: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
     },
   });
   const runArchive = async (

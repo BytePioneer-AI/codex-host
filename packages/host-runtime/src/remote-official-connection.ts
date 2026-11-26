@@ -27,7 +27,7 @@ function errorMessage(error: unknown): string {
  */
 export async function createRemoteOfficialAppServerConnection(
   endpoint: string,
-  options: { capabilityToken?: string } = {},
+  options: { capabilityToken?: string; handshakeTimeoutMs?: number } = {},
 ): Promise<OfficialAppServerConnection> {
   const describeError = options.capabilityToken
     ? (): string => "Private official connection failed"
@@ -48,6 +48,7 @@ export async function createRemoteOfficialAppServerConnection(
     // The native Codex daemon client uses tokio-tungstenite without offering
     // permessage-deflate. Keep the same handshake for every private listener.
     perMessageDeflate: false,
+    handshakeTimeout: options.handshakeTimeoutMs,
     ...(options.capabilityToken === undefined
       ? {}
       : { headers: { Authorization: `Bearer ${options.capabilityToken}` } }),

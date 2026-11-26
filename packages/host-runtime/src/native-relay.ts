@@ -75,6 +75,7 @@ export function sharedNativeBackend(dataDirectory: string): OwnedOfficialBackend
       throw new Error("Independent native Host unavailable");
     return createRemoteOfficialAppServerConnection(`ws://127.0.0.1:${descriptor.port}/v1/native`, {
       capabilityToken: descriptor.token,
+      handshakeTimeoutMs: 5_000,
     });
   };
   return {

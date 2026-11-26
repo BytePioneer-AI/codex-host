@@ -251,7 +251,7 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
       ? [`export CODEXHOST_SHARED_DATA_DIR=${shellQuote(manifest.sharedDataDirectory)}`]
       : []),
     "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
-    ...(manifest.nativeHost ? ["export CODEXHOST_SSH_NATIVE_HOST='shared'"] : []),
+    `export CODEXHOST_SSH_NATIVE_HOST='${manifest.nativeHost ?? "ssh"}'`,
     ...(manifest.executionSession
       ? [`export CODEXHOST_REMOTE_EXECUTION_SESSION=${shellQuote(manifest.executionSession)}`]
       : []),

@@ -291,7 +291,7 @@ export class HarnessDelegationCoordinator {
         startInput,
         (model, inspected) =>
           this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
-        parent.cwd === selectedCwd ? parent.projectId : undefined,
+        parent.cwd && path.relative(parent.cwd, selectedCwd) === "" ? parent.projectId : undefined,
       );
       return {
         ...result,

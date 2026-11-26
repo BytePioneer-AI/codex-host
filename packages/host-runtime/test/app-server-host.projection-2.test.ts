@@ -1398,6 +1398,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
   it.each([
     { cwd: "/synthetic", expected: "project-a" },
+    { cwd: "/synthetic/", expected: "project-a" },
     { cwd: "/elsewhere", expected: undefined },
   ])(
     "preserves the external parent's project when delegating Codex in $cwd",

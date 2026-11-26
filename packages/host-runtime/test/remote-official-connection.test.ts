@@ -32,6 +32,30 @@ async function readFrame(stream: Readable): Promise<string> {
 }
 
 describe("remote official app-server connection", () => {
+  it("aborts the socket when a native relay handshake stalls", async () => {
+    const server = createServer();
+    const disconnected = Promise.withResolvers<void>();
+    server.on("upgrade", (_request, socket) => {
+      socket.resume();
+      socket.on("end", () => socket.end());
+      socket.once("close", disconnected.resolve);
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+      await expect(
+        createRemoteOfficialAppServerConnection(`ws://127.0.0.1:${address.port}/v1/native`, {
+          capabilityToken: "fixture",
+          handshakeTimeoutMs: 200,
+        }),
+      ).rejects.toThrow("Private official connection failed");
+      await disconnected.promise;
+    } finally {
+      server.close();
+    }
+  });
+
   it("preserves history responses larger than 128 MiB and keeps the connection usable", async () => {
     const server = createServer();
     const webSockets = new WebSocketServer({ server });

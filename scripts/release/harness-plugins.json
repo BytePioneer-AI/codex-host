@@ -19,7 +19,8 @@
     "packages/adapters/kimi-code",
     "packages/adapters/zcode",
     "packages/adapters/copilot",
-    "packages/adapters/codex-usage"
+    "packages/adapters/codex-usage",
+    "packages/adapters/omo"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",

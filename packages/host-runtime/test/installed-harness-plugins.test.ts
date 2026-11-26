@@ -33,6 +33,7 @@ const classes = {
   qoder: "QoderAdapter",
   "qoder-cn": "QoderAdapter",
   zcode: "ZcodeAdapter",
+  omo: "OmoAdapter",
 };
 
 const unavailable: HarnessInspection = {
@@ -94,6 +95,7 @@ describe("installed Harness composition", () => {
       ["hermes", "CODEXHOST_HERMES_COMMAND"],
       ["qoder", "CODEXHOST_QODER_COMMAND"],
       ["qoder-cn", "CODEXHOST_QODERCN_COMMAND"],
+      ["omo", "CODEXHOST_OMO_COMMAND"],
     ];
     let registry: Awaited<ReturnType<typeof load>>;
     beforeAll(async () => {

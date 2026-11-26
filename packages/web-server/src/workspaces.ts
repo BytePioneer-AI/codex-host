@@ -710,9 +710,12 @@ export class Workspaces {
 
   setDefaultHarnessId(workspaceId: string, harnessId: string | null): void {
     if (this.defaultHarnessId(workspaceId) === harnessId) return;
-    const defaultHarnessIds = { ...this.state.defaultHarnessIds };
-    if (harnessId === null) delete defaultHarnessIds[workspaceId];
-    else defaultHarnessIds[workspaceId] = harnessId;
+    const defaultHarnessIds =
+      harnessId === null
+        ? Object.fromEntries(
+            Object.entries(this.state.defaultHarnessIds ?? {}).filter(([id]) => id !== workspaceId),
+          )
+        : { ...this.state.defaultHarnessIds, [workspaceId]: harnessId };
     const state = { ...this.state, defaultHarnessIds };
     this.data.writeJson(FILE, state);
     this.state = state;

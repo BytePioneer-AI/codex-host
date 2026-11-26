@@ -828,7 +828,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       summary.cwd === workspace.path &&
       !workspaces.archivedSessionIds.includes(summary.id)
     ) {
-      sessionId = await this.reuseBlank(workspace.workspaceId, summary.id);
+      sessionId = await this.tryReuseBlank(workspace.workspaceId, summary.id);
     }
     if (sessionId === undefined && workspaces.canStartProjectless && summary === undefined) {
       sessionId = await this.reuseOrCreateProjectlessBlank();

@@ -205,7 +205,13 @@ export function ProjectRowItem({
   onToggle: () => void;
   onCreate: () => void;
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
-  actions?: { rename: () => void; defaultHarness: () => void; delete: () => void } | undefined;
+  actions?:
+    | {
+        rename: () => void;
+        defaultHarness: (returnFocusTo: HTMLElement | null) => void;
+        delete: () => void;
+      }
+    | undefined;
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined;
   /** Whether to show remote host accent rail and tag when viewing multiple hosts. */
@@ -233,6 +239,7 @@ export function ProjectRowItem({
   const showRemoteIndicator = showHost && row.workspaceId !== undefined && row.remote !== undefined;
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const workspaceMenuItems = [
     { id: "rename", label: t("rename"), icon: <IconEditOutlineRegular /> },
     {
@@ -325,7 +332,7 @@ export function ProjectRowItem({
             onSelect={(id) => {
               setMenuOpen(false);
               if (id === "rename") actions.rename();
-              if (id === "defaultHarness") actions.defaultHarness();
+              if (id === "defaultHarness") actions.defaultHarness(menuTriggerRef.current);
               if (id === "delete") actions.delete();
             }}
             portal
@@ -333,6 +340,7 @@ export function ProjectRowItem({
             getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
             anchor={
               <button
+                ref={menuTriggerRef}
                 type="button"
                 className={css.iconButton}
                 aria-label={t("actions.workspace.aria", { name: label })}

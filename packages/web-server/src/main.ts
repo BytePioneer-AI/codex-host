@@ -91,7 +91,7 @@ import type { SessionListTiming } from "./session-list-timing.ts";
 import { WebAssets, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
-import { nativeProjectCommands } from "./ch-project-commands.ts";
+import { adoptWebWorkspaces, nativeProjectCommands } from "./ch-project-commands.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
 import { serveFileUpload } from "./ch-file-upload-http.ts";
@@ -426,6 +426,12 @@ workspaces.register(
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
+void adoptWebWorkspaces(chHost, workspaces, () => sessions.refreshProjects(), data).catch(
+  (error: unknown) => {
+    // Nothing is recorded on failure, so the next start tries again.
+    console.warn("[workspaces] could not adopt Web workspaces as projects", error);
+  },
+);
 let peerEpoch: string | undefined = chHost.realtime ? undefined : randomUUID();
 const peerEpochWaiters = new Set<() => void>();
 const stopEpoch = chHost.realtime?.subscribe((event) => {

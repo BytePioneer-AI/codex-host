@@ -14,7 +14,7 @@ import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../sr
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
 import { projectGroupRoot } from "../src/ch-project-groups.ts";
-import { nativeProjectCommands } from "../src/ch-project-commands.ts";
+import { adoptWebWorkspaces, nativeProjectCommands } from "../src/ch-project-commands.ts";
 import { peerEndpoint } from "../src/peer-manifest.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { nativeCodex } from "./support/native-codex.ts";
@@ -1042,6 +1042,62 @@ it("workspace mirror: keeps a deleted Desktop workspace out of Web until explici
   const restored = new Workspaces(data, cwd, true);
   restored.syncReferencedSessions(references, groups, new Set(), projects.projects);
   assert.equal(restored.ownerOf(thread.id)?.path, cwd);
+});
+
+it("adopts folders opened in Web as native projects once native projects are in use", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-adopt-web-workspaces-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const opened = join(home, "work", "opened");
+  const existing = join(home, "existing");
+  const gone = join(home, "gone");
+  for (const folder of [opened, existing, gone]) mkdirSync(folder, { recursive: true });
+  const host = new FakeChHost();
+  host.projectSnapshot.projects = [
+    { id: "home", name: "Home", rootPaths: [home] },
+    { id: "existing", name: "Existing", rootPaths: [existing] },
+  ];
+  host.add("in-opened", join(opened, "src"), "In opened", false);
+  host.projectSnapshot.projectless.splice(0);
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, home, true);
+  for (const folder of [opened, existing, gone]) workspaces.create(folder);
+  rmSync(gone, { recursive: true });
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  const created: string[] = [];
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method !== "project/create") return request<T>(method, params);
+    const rootPaths = (params.roots as Array<{ path: string }>).map((entry) => entry.path);
+    const project = {
+      id: `adopted-${String(created.length)}`,
+      name: String(params.name),
+      rootPaths,
+    };
+    created.push(...rootPaths);
+    host.projectSnapshot.projects.push(project);
+    return { project } as T;
+  };
+  const adopt = () => adoptWebWorkspaces(host, workspaces, () => sessions.refreshProjects(), data);
+
+  await adopt();
+  assert.deepEqual(created, [], "the compatible catalog keeps Web Workspaces as they are");
+
+  host.projectSnapshot.nativeProjects = true;
+  await sessions.refreshProjects();
+  assert.equal(workspaces.ownerOf("in-opened")?.projectId, "home");
+  const compatibleState = readFileSync(data.path("workspaces.json"), "utf8");
+  await adopt();
+  assert.deepEqual(created, [opened], "only an existing folder without a project is adopted");
+  assert.equal(workspaces.ownerOf("in-opened")?.path, opened);
+
+  host.projectSnapshot.projects = host.projectSnapshot.projects.filter(
+    (project) => !project.id.startsWith("adopted-"),
+  );
+  await adopt();
+  assert.deepEqual(created, [opened], "a project removed later is not created again");
+  assert.equal(readFileSync(data.path("workspaces.json"), "utf8"), compatibleState);
 });
 
 it("shares native project changes and keeps removed projects' sessions in the Web catalog", async (t) => {

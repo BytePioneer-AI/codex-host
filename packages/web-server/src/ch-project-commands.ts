@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { ChHostClient } from "./ch-host-client.ts";
+import type { DataDir } from "./store.ts";
 import { RpcError } from "./transport.ts";
 import { nativeProjectWorkspaceId, type ProjectCommands, type Workspaces } from "./workspaces.ts";
 
@@ -116,4 +117,38 @@ export function nativeProjectCommands(
         };
       }),
   };
+}
+
+const ADOPTED_WEB_WORKSPACES = "adopted-web-workspaces.json";
+
+/**
+ * Give folders opened as Workspaces in Web a native project, once.
+ * Before native projects, such a folder was a Workspace only in Web. The native catalog lists
+ * Codex projects alone, so the folder would vanish and its Threads would move to whichever
+ * project root contains them. A project removed afterwards is not created again.
+ * @param refresh Reads the current native catalog into `workspaces`.
+ * @param data Web data directory; records that adoption ran, leaving the Workspace file as is.
+ */
+export async function adoptWebWorkspaces(
+  host: Pick<ChHostClient, "request">,
+  workspaces: Workspaces,
+  refresh: () => Promise<void>,
+  data: DataDir,
+): Promise<void> {
+  if (data.readJson<unknown>(ADOPTED_WEB_WORKSPACES, undefined) !== undefined) return;
+  await refresh();
+  // The compatible catalog still shows these Workspaces itself.
+  if (!workspaces.usesNativeProjects) return;
+  const adopted: string[] = [];
+  for (const path of workspaces.unadoptedWebWorkspacePaths()) {
+    if (!(await stat(path).catch(() => undefined))?.isDirectory()) continue;
+    await host.request("project/create", {
+      name: basename(path) || path,
+      roots: [{ path }],
+      idempotencyKey: randomUUID(),
+    });
+    adopted.push(path);
+  }
+  data.writeJson(ADOPTED_WEB_WORKSPACES, { paths: adopted });
+  if (adopted.length > 0) await refresh();
 }

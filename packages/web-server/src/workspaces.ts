@@ -710,6 +710,22 @@ export class Workspaces {
   }
 
   /**
+   * Folders opened as Workspaces in Web that no native project lists as a root. Paths are
+   * compared as the platform compares them, so a different letter case on Windows is the same
+   * folder.
+   */
+  unadoptedWebWorkspacePaths(): string[] {
+    const same = (left: string, right: string) => relative(left, right) === "";
+    const taken = [...this.nativeRoots.values()].flat();
+    const paths: string[] = [];
+    for (const item of this.state.items) {
+      if (item.origin !== "web" || this.state.deletedPaths?.includes(item.path)) continue;
+      if (![...taken, ...paths].some((path) => same(path, item.path))) paths.push(item.path);
+    }
+    return paths;
+  }
+
+  /**
    * The folder whose Threads a local Workspace lists, without the folders of nested local
    * Workspaces, which list their own Threads. Remote or unknown Workspaces have none.
    */

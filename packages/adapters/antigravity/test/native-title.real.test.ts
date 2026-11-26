@@ -42,6 +42,9 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
     }
     throw new Error("Timed out waiting for Antigravity output");
   }
+  function normalizeExpectedTitle(value: string): string {
+    return value.replaceAll("\0", "").trim().replace(/\s+/g, " ");
+  }
   it("restores a stored native title on lazy resume without spawning acp", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-title-resume-"));
     const summaries = new DatabaseSync(path.join(agyRoot, "conversation_summaries.db"), {
@@ -49,17 +52,22 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
     });
     let stored: { conversation_id: string; title: string } | undefined;
     try {
-      stored = summaries
+      const candidates = summaries
         .prepare(
           `SELECT conversation_id, title FROM conversation_summaries
            WHERE parent_conversation_id = '' AND title != '' AND status = 'CASCADE_RUN_STATUS_IDLE'
-           ORDER BY last_modified_time DESC LIMIT 1`,
+           ORDER BY last_modified_time DESC LIMIT 20`,
         )
-        .get() as { conversation_id: string; title: string } | undefined;
+        .all() as Array<{ conversation_id: string; title: string }>;
+      stored = candidates.find((row) => {
+        const normalized = normalizeExpectedTitle(row.title);
+        return normalized.length > 0 && normalized.length <= 4096;
+      });
     } finally {
       summaries.close();
     }
     expect(stored?.title, "expected a titled idle native conversation").toBeTruthy();
+    const expectedTitle = normalizeExpectedTitle(stored?.title ?? "");
     let transports = 0;
     const adapter = new AntigravityAdapter({
       environment: {
@@ -93,7 +101,7 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
       );
       if (titled.kind !== "event" || titled.event.type !== "session.title.changed")
         throw new Error("Missing title event");
-      expect(titled.event.title).toBe(stored?.title);
+      expect(titled.event.title).toBe(expectedTitle);
       expect(transports).toBe(0);
       await session.close();
     } finally {
@@ -104,6 +112,7 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
 
   it("reports the live native title for a new session after one real prompt", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-title-create-"));
+    const liveTitles: string[] = [];
     const adapter = new AntigravityAdapter({
       environment: {
         ...process.env,
@@ -111,6 +120,23 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
         CODEXHOST_THREAD_ID: randomUUID(),
       },
       commandTimeoutMs: 120_000,
+      createTransport: (options) => {
+        const transport = new AntigravityAcpTransport(options);
+        const setSessionEventHandler = transport.setSessionEventHandler.bind(transport);
+        transport.setSessionEventHandler = (handler) => {
+          setSessionEventHandler(
+            handler
+              ? (event) => {
+                  if (event.type === "session.info" && typeof event.title === "string") {
+                    liveTitles.push(event.title);
+                  }
+                  handler(event);
+                }
+              : null,
+          );
+        };
+        return transport;
+      },
     });
     const prompt =
       "This is a synthetic isolated integration test for CodexHost; responses are automated test data. Do not use any tools. Reply with exactly: AGY_TITLE_OK";
@@ -124,7 +150,17 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
       if (!opened.ok) throw new Error(opened.error.message);
       session = opened.value;
       consuming = (async () => {
-        for await (const output of session.outputs) outputs.push(output);
+        for await (const output of session.outputs) {
+          outputs.push(output);
+          if (
+            !createdNativeSessionId &&
+            output.kind === "event" &&
+            output.event.type === "session.state.changed" &&
+            output.event.state.nativeRef?.nativeSessionId
+          ) {
+            createdNativeSessionId = output.event.state.nativeRef.nativeSessionId;
+          }
+        }
       })();
       const turnId = hostTurnIdSchema.parse(randomUUID());
       stage = "prompt";
@@ -146,7 +182,7 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
       if (completed.kind !== "event" || completed.event.type !== "turn.completed")
         throw new Error("Missing completion");
       expect(completed.event.outcome.status).toBe("succeeded");
-      if (session instanceof AntigravitySession)
+      if (!createdNativeSessionId && session instanceof AntigravitySession)
         createdNativeSessionId = session.nativeRef?.nativeSessionId;
       stage = "title";
       const titled = await waitFor(
@@ -158,6 +194,7 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
       const title = titled.event.title;
       expect(title.trim()).not.toBe("");
       expect(title).not.toContain("AGY_TITLE_OK");
+      expect(liveTitles.map(normalizeExpectedTitle)).toContain(title);
       const stateIndex = outputs.findIndex(
         (output) =>
           output.kind === "event" &&
@@ -168,51 +205,64 @@ describe.skipIf(!RUN_REAL)("Antigravity real native titles", () => {
       expect(outputs.indexOf(titled)).toBeGreaterThan(stateIndex);
       stage = "passed";
     } finally {
-      await adapter.close();
-      await consuming;
-      if (createdNativeSessionId) {
-        for (const suffix of ["", "-wal", "-shm"]) {
-          await rm(path.join(agyRoot, "conversations", `${createdNativeSessionId}.db${suffix}`), {
-            force: true,
-          }).catch(() => undefined);
-        }
-        await rm(path.join(agyRoot, "brain", createdNativeSessionId), {
-          recursive: true,
-          force: true,
-        }).catch(() => undefined);
+      try {
+        if (!createdNativeSessionId && session instanceof AntigravitySession)
+          createdNativeSessionId = session.nativeRef?.nativeSessionId;
+        await adapter.close();
+        await consuming;
+      } finally {
         try {
-          const summaries = new DatabaseSync(path.join(agyRoot, "conversation_summaries.db"));
-          summaries
-            .prepare("DELETE FROM conversation_summaries WHERE conversation_id = ?")
-            .run(createdNativeSessionId);
-          summaries.close();
-        } catch {
-          // Best-effort cleanup of synthetic test conversation row.
+          if (createdNativeSessionId) {
+            for (const suffix of ["", "-wal", "-shm"]) {
+              await rm(
+                path.join(agyRoot, "conversations", `${createdNativeSessionId}.db${suffix}`),
+                { force: true },
+              ).catch(() => undefined);
+            }
+            await rm(path.join(agyRoot, "brain", createdNativeSessionId), {
+              recursive: true,
+              force: true,
+            }).catch(() => undefined);
+            try {
+              const summaries = new DatabaseSync(path.join(agyRoot, "conversation_summaries.db"));
+              try {
+                summaries
+                  .prepare("DELETE FROM conversation_summaries WHERE conversation_id = ?")
+                  .run(createdNativeSessionId);
+              } finally {
+                summaries.close();
+              }
+            } catch {
+              // Best-effort cleanup of synthetic test conversation row.
+            }
+          }
+          const evidence = process.env.CODEXHOST_ANTIGRAVITY_TITLE_EVIDENCE_DIR;
+          if (evidence) {
+            await mkdir(evidence, { recursive: true });
+            await writeFile(
+              path.join(evidence, `${Date.now()}-${stage.replaceAll(" ", "-")}.json`),
+              JSON.stringify(
+                {
+                  stage,
+                  createdNativeSessionId,
+                  liveTitles,
+                  titles: outputs.flatMap((output) =>
+                    output.kind === "event" && output.event.type === "session.title.changed"
+                      ? [{ title: output.event.title }]
+                      : [],
+                  ),
+                  outputs,
+                },
+                null,
+                2,
+              ),
+              "utf8",
+            );
+          }
+        } finally {
+          await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
         }
       }
-      const evidence = process.env.CODEXHOST_ANTIGRAVITY_TITLE_EVIDENCE_DIR;
-      if (evidence) {
-        await mkdir(evidence, { recursive: true });
-        await writeFile(
-          path.join(evidence, `${Date.now()}-${stage.replaceAll(" ", "-")}.json`),
-          JSON.stringify(
-            {
-              stage,
-              createdNativeSessionId,
-              titles: outputs.flatMap((output) =>
-                output.kind === "event" && output.event.type === "session.title.changed"
-                  ? [{ title: output.event.title }]
-                  : [],
-              ),
-              outputs,
-            },
-            null,
-            2,
-          ),
-          "utf8",
-        );
-      }
-      await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 360_000);
 });

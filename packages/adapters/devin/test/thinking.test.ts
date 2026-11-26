@@ -139,6 +139,7 @@ describe("Devin native Thinking discovery", () => {
         },
       });
       const catalog = devinCatalog(info());
+      expect(catalog.thinkingOptionsScope).toBe("activeModel");
       expect(catalog.models[0]?.supportedThinkingOptionIds).toEqual([low, high]);
       expect(catalog.models[1]).not.toHaveProperty("supportedThinkingOptionIds");
       await adapter.inspect();
@@ -542,6 +543,44 @@ describe("Devin create/resume Thinking hints", () => {
       }
     },
   );
+  it("applies Thinking after switching from a default Model without a thought selector", async () => {
+    vi.spyOn(DevinTransport.prototype, "open").mockImplementation(async function (
+      this: DevinTransport,
+    ) {
+      this.sessionId = nativeRef.nativeSessionId;
+      return withoutThinking();
+    });
+    const close = vi.spyOn(DevinTransport.prototype, "close").mockResolvedValue();
+    const switched = info(thinking(["new"], "new"), "other-low");
+    const configure = vi
+      .spyOn(DevinTransport.prototype, "configure")
+      .mockResolvedValue({ configOptions: switched.configOptions });
+    const adapter = new DevinAdapter({ environment: {} });
+    try {
+      const inspected = await adapter.inspect();
+      expect(inspected).toMatchObject({
+        status: "ready",
+        capabilities: { configuration: { selectThinkingOption: false } },
+        catalog: { thinkingOptionsScope: "activeModel" },
+      });
+      const result = await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        model: devinModelRef("other-low"),
+        thinkingOptionId: devinThinkingOptionId("new"),
+      });
+      expect(configure.mock.calls).toEqual([
+        [modelId, "other-low"],
+        [thinkingId, "new"],
+      ]);
+      expect(result.ok && result.value.initialState.effectiveThinkingOptionId).toBe(
+        devinThinkingOptionId("new"),
+      );
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      await adapter.close();
+    }
+  });
   it.each(["create", "resume"] as const)(
     "returns typed unsupported for %s hints on an old CLI",
     async (kind) => {

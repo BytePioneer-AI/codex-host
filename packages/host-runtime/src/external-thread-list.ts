@@ -94,7 +94,14 @@ function includesExternalRecord(
   sectionId: string | null,
   hasSubmittedTurn: boolean,
 ): boolean {
-  if ((record.state !== "ready" || !record.nativeSessionRef) && !hasSubmittedTurn) return false;
+  const hasPendingInjection =
+    record.state === "creating" && (record.pendingInjectedText?.length ?? 0) > 0;
+  if (
+    (record.state !== "ready" || !record.nativeSessionRef) &&
+    !hasSubmittedTurn &&
+    !hasPendingInjection
+  )
+    return false;
   // Rollback retains old records for historical links, but only rebound children
   // belong to the parent's current Native Session (including nested children).
   let current = record;

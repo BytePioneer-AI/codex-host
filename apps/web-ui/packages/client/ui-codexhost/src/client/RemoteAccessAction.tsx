@@ -31,9 +31,19 @@ export function RemoteAccessAction({
     label: t("remoteAccess"),
     onClick: () => openSection("codexhost-connect-devices"),
     icon: (
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="6" y="2" width="12" height="20" rx="3" stroke="currentColor" strokeWidth="1.6" />
-        <path d="M10 5h4M11 19h2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="6" y="2.5" width="12" height="19" rx="3.5" />
+        <path d="M10.25 5.5h3.5M10.75 18.5h2.5" />
       </svg>
     ),
   });

@@ -15,11 +15,31 @@ function referencesNpmBin(shim: string, name: string, bin: string): boolean {
   return text.includes(`%dp0%/${target}"`) || text.includes(`%~dp0/${target}"`);
 }
 
+export interface NpmInstallationOptions {
+  /** Release line that supersedes an older package name; its registry entry is authoritative. */
+  successor?: string;
+  /** Package allowed to run its postinstall script (e.g. to place a platform binary). */
+  allowScripts?: string;
+}
+
+function withAllowedScripts(environment: NodeJS.ProcessEnv, allowScripts?: string) {
+  if (!allowScripts) return environment;
+  const existing = environment.npm_config_allow_scripts?.trim();
+  if (!existing) return { ...environment, npm_config_allow_scripts: allowScripts };
+  const entries = existing
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (entries.includes(allowScripts)) return environment;
+  return { ...environment, npm_config_allow_scripts: [...entries, allowScripts].join(",") };
+}
+
 /** Match the CLI's real package, never a different npm prefix found by chance on PATH. */
 export async function npmInstallation(
   command: string,
   packages: readonly string[],
   environment: NodeJS.ProcessEnv,
+  options: NpmInstallationOptions = {},
 ) {
   let selected = await realpath(command);
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(selected)) {
@@ -54,6 +74,7 @@ export async function npmInstallation(
     if (metadata?.name && packages.includes(metadata.name)) {
       const name = metadata.name;
       const currentVersion = installationVersion(metadata.version);
+      const tracked = options.successor && options.successor !== name ? options.successor : name;
       const segments = name.split("/");
       let modules = directory;
       for (let index = 0; index < segments.length; index++) modules = path.dirname(modules);
@@ -105,7 +126,7 @@ export async function npmInstallation(
         latest: async () => {
           const data = JSON.parse(
             await fetchInstallationText(
-              `https://registry.npmjs.org/${encodeURIComponent(name)}/latest`,
+              `https://registry.npmjs.org/${encodeURIComponent(tracked)}/latest`,
             ),
           ) as { version?: string };
           return installationVersion(data.version);
@@ -113,12 +134,34 @@ export async function npmInstallation(
         update: async (version: string) => {
           if (!canUpdate || !npm)
             throw new Error("Use the original package manager to update this installation");
-          await runInstallationCommand(
-            npm.executable,
-            ["install", "--global", "--prefix", prefix, `${name}@${installationVersion(version)}`],
-            env,
-            300_000,
-          );
+          const targetVersion = installationVersion(version);
+          const migrating = tracked !== name;
+          // Two global packages claiming the same bin collide with EEXIST, and removing
+          // the predecessor afterward unlinks the successor's bin in the same prefix.
+          if (migrating)
+            await runInstallationCommand(
+              npm.executable,
+              ["uninstall", "--global", "--prefix", prefix, name],
+              env,
+              300_000,
+            );
+          try {
+            await runInstallationCommand(
+              npm.executable,
+              ["install", "--global", "--prefix", prefix, `${tracked}@${targetVersion}`],
+              withAllowedScripts(env, options.allowScripts),
+              300_000,
+            );
+          } catch (error) {
+            if (migrating)
+              await runInstallationCommand(
+                npm.executable,
+                ["install", "--global", "--prefix", prefix, `${name}@${currentVersion}`],
+                env,
+                300_000,
+              ).catch(() => undefined);
+            throw error;
+          }
         },
       };
     }

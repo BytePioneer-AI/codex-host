@@ -4,6 +4,7 @@ import {
   delegationMentionPath,
   formatDelegationMentionLink,
   harnessCommandMentionPath,
+  harnessCommandReferences,
   restoreHarnessCommandMentions,
   stripDelegationMentions,
 } from "../src/index.js";
@@ -85,5 +86,93 @@ describe("Harness command carrier", () => {
     const text = "[@Claude Code](subagent://codexhost.claude-code) /usage";
     expect(restoreHarnessCommandMentions(text)).toBe(text);
     expect(stripDelegationMentions(`${link("/review")}`).mentions).toEqual([]);
+  });
+
+  it("extracts validated command references and ignores malformed or non-command links", () => {
+    const first = link("/plan");
+    const second = link("/frontend-design:frontend-design");
+    const angle = `[@/a(b)](<${harnessCommandMentionPath("/a(b)")}>)`;
+    const skillCmd = link("$build");
+    const text = `Run ${first} then ${second}, ${angle}, and ${skillCmd}`;
+    expect(harnessCommandReferences(text)).toEqual([
+      {
+        start: text.indexOf(first),
+        end: text.indexOf(first) + first.length,
+        invocation: "/plan",
+        label: "/plan",
+        text: first,
+      },
+      {
+        start: text.indexOf(second),
+        end: text.indexOf(second) + second.length,
+        invocation: "/frontend-design:frontend-design",
+        label: "/frontend-design:frontend-design",
+        text: second,
+      },
+      {
+        start: text.indexOf(angle),
+        end: text.indexOf(angle) + angle.length,
+        invocation: "/a(b)",
+        label: "/a(b)",
+        text: angle,
+      },
+      {
+        start: text.indexOf(skillCmd),
+        end: text.indexOf(skillCmd) + skillCmd.length,
+        invocation: "$build",
+        label: "$build",
+        text: skillCmd,
+      },
+    ]);
+
+    for (const invalid of [
+      "[@/bad](subagent://codexhost-command.%E0%A4%A)",
+      "[@/bad](subagent://codexhost-command.two%20words)",
+      "[@/bad](subagent://codexhost-command.)",
+      "[@/bad](subagent://codexhost-command.%2Fplan)",
+      "[@/bad](<subagent://codexhost-command.plan)",
+      "[@/bad](subagent://codexhost-command.plan>)",
+      "[@/bad](<subagent://codexhost-command.plan>>)",
+      "[@Antigravity](subagent://codexhost.antigravity)",
+      "[/plan](https://example.com)",
+    ]) {
+      expect(harnessCommandReferences(invalid)).toEqual([]);
+      expect(restoreHarnessCommandMentions(invalid)).toBe(invalid);
+    }
+  });
+
+  it("handles unclosed prefixes, adjacent carriers, and large inputs in linear time without swallowing prose", () => {
+    const plan = link("/plan");
+    const review = link("/review");
+
+    // Unclosed [@ prefix must not swallow prose before a following valid carrier.
+    const withUnclosed = `[@unclosed prose ${plan}`;
+    expect(harnessCommandReferences(withUnclosed)).toEqual([
+      {
+        start: withUnclosed.indexOf(plan),
+        end: withUnclosed.length,
+        invocation: "/plan",
+        label: "/plan",
+        text: plan,
+      },
+    ]);
+    expect(restoreHarnessCommandMentions(withUnclosed)).toBe("/plan [@unclosed prose");
+
+    // Adjacent carriers without whitespace both parse and restore cleanly.
+    const adjacent = `${plan}${review}`;
+    expect(harnessCommandReferences(adjacent).map((ref) => ref.invocation)).toEqual([
+      "/plan",
+      "/review",
+    ]);
+    expect(restoreHarnessCommandMentions(adjacent)).toBe("/plan");
+
+    // Large adversarial unclosed prefixes stay linear (no O(n^2) backtracking).
+    const adversarial = `${"[@".repeat(20_000)} ${plan}`;
+    const startedAt = performance.now();
+    const refs = harnessCommandReferences(adversarial);
+    const elapsedMs = performance.now() - startedAt;
+    expect(refs).toHaveLength(1);
+    expect(refs[0]?.invocation).toBe("/plan");
+    expect(elapsedMs).toBeLessThan(250);
   });
 });

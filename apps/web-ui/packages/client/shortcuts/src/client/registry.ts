@@ -12,6 +12,7 @@ import {
   resolveShortcutDefault,
 } from "../protocol.ts";
 import type {
+  ShortcutBinding,
   ShortcutCommandId,
   ShortcutConfigSnapshot,
   ShortcutDefinition,
@@ -25,6 +26,7 @@ import type {
   ShortcutGesture,
   ShortcutFixedCommand,
   ShortcutFixedCatalogEntry,
+  Shortcuts,
 } from "./types.ts";
 
 /** Dispatch consumption is independent of later business-operation success. */
@@ -202,6 +204,37 @@ export class ShortcutRegistry {
     });
     this.state.set({ config, catalog });
     this.refreshFixedLabels();
+  }
+
+  /**
+   * Normalize one candidate binding and compute keycaps, platform issues, and active conflicts.
+   * @param binding - candidate binding, or null for unbound.
+   * @returns normalized presentation and conflicting command IDs across editable and fixed catalogs.
+   */
+  describeBinding(binding: ShortcutBinding | null): ReturnType<Shortcuts["describeBinding"]> {
+    const normalized = binding === null ? null : normalizeBinding(binding, this.platform);
+    return {
+      binding: normalized,
+      keys: presentBinding(normalized, this.platform).keys,
+      issue: normalized === null ? null : bindingIssue(normalized, this.runtime, this.platform),
+      conflicts:
+        normalized === null
+          ? []
+          : [
+              ...this.catalog
+                .getSnapshot()
+                .filter(
+                  (row) => row.binding !== null && overlappingBindings(row.binding, normalized),
+                )
+                .map((row) => row.id),
+              ...this.fixedCatalog
+                .getSnapshot()
+                .filter((row) =>
+                  row.bindings.some((reserved) => overlappingBindings(reserved, normalized)),
+                )
+                .map((row) => row.id),
+            ],
+    };
   }
 
   /**

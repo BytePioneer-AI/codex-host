@@ -6,9 +6,9 @@
  * carrier (domain encoding in contract/slots.ts PendingQuestion); copy rides
  * the standard locale seat. Export discipline: packages/client/AGENTS.md.
  *
- * One entry, two presentations: the composer renders a request with a
- * `plan-review` intent as the plan decision card and every other request as
- * the generic question flow. Both use the same carrier and composer seat.
+ * One entry, three presentations: requests with a `plan-review` or `approval`
+ * intent render their dedicated decision cards, and every other request takes
+ * the generic question flow. All use the same carrier and composer seat.
  */
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { InboxWireState } from "@deepseek-ai/dsh-agent/types";
@@ -44,6 +44,7 @@ import { QuestionReplyView } from "./QuestionReplyView.tsx";
 import { en, zh, type QuestionKey } from "./locales.ts";
 
 export type {
+  ApprovalReview,
   PendingQuestion,
   PlanReview,
   QuestionAnswer,
@@ -432,7 +433,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-user-questions: dictionaries");
   const questionDraftStore = createQuestionDraftStore();
   const registerPendingInteraction = ctx.uiSession.registerPendingInteraction<PendingQuestion>(
-    (pending) => (pending.kind === "plan-review" ? 2 : 1),
+    (pending) => (pending.kind === "approval" ? 0 : pending.kind === "plan-review" ? 2 : 1),
   );
   const cards = new QuestionCards(registerPendingInteraction);
   ctx.effect(

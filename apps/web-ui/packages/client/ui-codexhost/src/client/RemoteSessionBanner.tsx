@@ -11,10 +11,9 @@ import {
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
-import { peerIdFromRemoteHostId } from "@codexhost/shared-contracts";
+import { peerIdFromRemoteHostId, resolveRemotePeerColor } from "@codexhost/shared-contracts";
 import { remotePeersApi } from "./api.ts";
 import { dispatchRemotePeersUpdated } from "./remote-peers-events.ts";
-import { RemoteHostIcon } from "./RemoteHostIcon.tsx";
 import css from "./RemoteSessionBanner.module.css";
 
 export interface RemoteSessionBannerFace {
@@ -32,11 +31,16 @@ type ChipProps = PropsRuntime<"conversation.input.left"> &
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-function basenameOf(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/u, "");
-  if (!trimmed) return path;
-  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  return slash === -1 ? trimmed : trimmed.slice(slash + 1) || trimmed;
+function RemoteGlobeIcon({ color }: { color: string }) {
+  return (
+    <span className={css.chipGlobe} data-color={color} aria-hidden="true">
+      <svg viewBox="0 0 12 12" width="12.5" height="12.5" fill="none">
+        <circle cx="6" cy="6" r="4.6" stroke="currentColor" strokeWidth="1.2" />
+        <ellipse cx="6" cy="6" rx="2.1" ry="4.6" stroke="currentColor" strokeWidth="1.05" />
+        <path d="M1.6 6h8.8" stroke="currentColor" strokeWidth="1.05" />
+      </svg>
+    </span>
+  );
 }
 
 function useSessionWorkspace(
@@ -52,15 +56,15 @@ function useSessionWorkspace(
   );
 }
 
-/** Borderless ambient chip placed in `conversation.input.left` when a remote session is online. */
-export function RemoteSessionChip({ sessionId, workspaces, t }: ChipProps): ReactNode {
+/** Borderless minimal remote host indicator placed in `conversation.input.left` when online. */
+export function RemoteSessionChip({ sessionId, workspaces }: ChipProps): ReactNode {
   const workspace = useSessionWorkspace(workspaces, sessionId);
   const remote = workspace?.remote;
   if (workspace === undefined || remote === undefined || remote.state !== "connected") {
     return null;
   }
 
-  const folderName = workspace.title || basenameOf(workspace.path);
+  const remoteColor = resolveRemotePeerColor(remote.hostId, remote.color);
   const fullLocation = workspace.path
     ? `${remote.displayName} · ${workspace.path}`
     : remote.displayName;
@@ -75,16 +79,8 @@ export function RemoteSessionChip({ sessionId, workspaces, t }: ChipProps): Reac
         role="status"
         aria-label={fullLocation}
       >
-        <RemoteHostIcon size={12} className={css.hostIcon} />
+        <RemoteGlobeIcon color={remoteColor} />
         <span className={css.chipHost}>{remote.displayName}</span>
-        {folderName !== "" && (
-          <>
-            <span className={css.chipSep} aria-hidden="true">
-              ·
-            </span>
-            <span className={css.chipWorkspace}>{folderName}</span>
-          </>
-        )}
       </span>
     </Tooltip>
   );

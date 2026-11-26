@@ -5,6 +5,7 @@ import {
   clientSnapshotRequestSchema,
   CLIENT_REQUEST_LIMIT_BYTES,
   isHostExtensionManagementMethod,
+  PEER_DELEGATION_CHANNEL_METHOD,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import { compressResponse } from "./compression.ts";
@@ -118,6 +119,15 @@ export async function serveChClientGateway(
       typeof input.params === "object" &&
       !Array.isArray(input.params)
     ) {
+      if (input.method === PEER_DELEGATION_CHANNEL_METHOD) {
+        await reply(403, {
+          error: {
+            code: -32601,
+            message: "Peer delegation must use /api/peer/v1/delegation",
+          },
+        });
+        return;
+      }
       if ((!authenticated || safeMode) && isHostExtensionManagementMethod(input.method)) {
         await reply(403, {
           error: {

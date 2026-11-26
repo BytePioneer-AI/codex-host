@@ -1,19 +1,23 @@
+mod instance;
 mod launcher;
 mod navigation;
 mod readiness;
 mod tray;
+mod zoom;
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use url::Url;
 
+use instance::{Activation, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
 use readiness::{ShellReady, WebEvent, WebReady};
+use zoom::{ZoomController, ZoomState, percent_to_scale};
 
 const MAIN: &str = "main";
 
@@ -73,6 +77,9 @@ struct Shell {
     view: Mutex<View>,
     ensure_web: Sender<()>,
     locale: String,
+    zoom: Arc<Mutex<ZoomController>>,
+    zoom_op: tauri::async_runtime::Mutex<()>,
+    zoom_persist: Arc<Mutex<Option<u16>>>,
 }
 
 fn navigation_for(app: &AppHandle, url: &Url) -> Navigation {
@@ -86,21 +93,31 @@ fn navigation_for(app: &AppHandle, url: &Url) -> Navigation {
     }
 }
 
+fn permission_response(page: &Page, kind: PermissionKind) -> PermissionResponse {
+    if matches!(page, Page::Web) && kind == PermissionKind::Microphone {
+        PermissionResponse::Allow
+    } else {
+        PermissionResponse::Default
+    }
+}
+
 fn navigate(app: &AppHandle, url: Url) {
-    if let Some(window) = app.get_webview_window(MAIN) {
-        if window.navigate(url).is_err() {
-            eprintln!("CodexHost: could not navigate the desktop window");
-        }
+    if let Some(window) = app.get_webview_window(MAIN)
+        && window.navigate(url).is_err()
+    {
+        eprintln!("CodexHost: could not navigate the desktop window");
     }
 }
 
 fn navigate_loading(app: &AppHandle, status: Status) {
     let mut url = embedded(LOADING);
-    url.set_query(Some(match status {
-        Status::Starting => "status=starting",
-        Status::Reconnecting => "status=reconnecting",
-        Status::Error => "status=error",
-    }));
+    let status_param = match status {
+        Status::Starting => "starting",
+        Status::Reconnecting => "reconnecting",
+        Status::Error => "error",
+    };
+    let zoom = app.state::<Shell>().zoom.lock().unwrap().percent();
+    url.set_query(Some(&format!("status={status_param}&zoom={zoom}")));
     // Reload the bundled page on state changes, so getState works without polling.
     navigate(app, url);
 }
@@ -232,7 +249,10 @@ pub(crate) fn show_onboarding(app: &AppHandle) {
     view.page = Page::Onboarding;
     view.pending_route = None;
     drop(view);
-    navigate(app, embedded(ONBOARDING));
+    let zoom = shell.zoom.lock().unwrap().percent();
+    let mut url = embedded(ONBOARDING);
+    url.set_query(Some(&format!("zoom={zoom}")));
+    navigate(app, url);
     set_visible(app, true);
 }
 
@@ -403,25 +423,104 @@ fn window_chrome_state(window: tauri::WebviewWindow) -> WindowChromeState {
     }
 }
 
+#[tauri::command]
+fn window_zoom_get(shell: State<'_, Shell>) -> ZoomState {
+    shell.zoom.lock().unwrap().state()
+}
+
+fn persist_latest_zoom(
+    zoom: &Arc<Mutex<ZoomController>>,
+    persisted: &Arc<Mutex<Option<u16>>>,
+    data_dir: &std::path::Path,
+) {
+    let mut last_persisted = persisted.lock().unwrap();
+    let percent = zoom.lock().unwrap().percent();
+    if *last_persisted == Some(percent) {
+        return;
+    }
+    match zoom::persist(data_dir, percent) {
+        Ok(_) => *last_persisted = Some(percent),
+        Err(error) => eprintln!("CodexHost: could not save desktop shell zoom: {error}"),
+    }
+}
+
+async fn apply_zoom_update(
+    window: tauri::WebviewWindow,
+    shell: &Shell,
+    resolve: impl FnOnce(&ZoomController) -> Result<u16, String>,
+) -> Result<ZoomState, String> {
+    let _op = shell.zoom_op.lock().await;
+    let next_percent = {
+        let controller = shell.zoom.lock().unwrap();
+        let next = resolve(&controller)?;
+        if next == controller.percent() {
+            return Ok(controller.state());
+        }
+        next
+    };
+    window
+        .set_zoom(percent_to_scale(next_percent))
+        .map_err(|error| error.to_string())?;
+    let (state, changed) = shell.zoom.lock().unwrap().commit(next_percent);
+    if changed {
+        let zoom = shell.zoom.clone();
+        let persisted = shell.zoom_persist.clone();
+        let data_dir = shell.launcher.data_dir.clone();
+        drop(tauri::async_runtime::spawn_blocking(move || {
+            persist_latest_zoom(&zoom, &persisted, &data_dir);
+        }));
+    }
+    Ok(state)
+}
+
+#[tauri::command]
+async fn window_zoom_step(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    delta: i8,
+) -> Result<ZoomState, String> {
+    apply_zoom_update(window, &shell, |controller| controller.resolve_step(delta)).await
+}
+
+#[tauri::command]
+async fn window_zoom_set(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    percent: u16,
+) -> Result<ZoomState, String> {
+    apply_zoom_update(window, &shell, |controller| controller.resolve_set(percent)).await
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = Options::from_env()?;
+    let activation = if options.onboarding {
+        Activation::Onboarding
+    } else {
+        Activation::Show
+    };
+    let (instance, activations) = match instance::claim(&options.data_dir, activation)? {
+        Claim::Primary {
+            instance,
+            activations,
+        } => (instance, activations),
+        Claim::Forwarded => return Ok(()),
+    };
     let launcher = Arc::new(Launcher::new(&std::env::current_exe()?, options.data_dir));
+    let zoom_controller = ZoomController::load(&launcher.data_dir);
+    let initial_zoom_percent = zoom_controller.percent();
+    let boot_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let boot_id = format!("{}-{boot_nanos}", std::process::id());
+    let zoom = Arc::new(Mutex::new(zoom_controller));
+    let zoom_persist = Arc::new(Mutex::new(Some(initial_zoom_percent)));
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en".into());
     let (ensure_web, requests) = mpsc::channel();
     let onboarding = options.onboarding;
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
-            let handle = app.clone();
-            let wants_onboarding = args.iter().any(|arg| arg == "--onboarding");
-            let _ = app.run_on_main_thread(move || {
-                if wants_onboarding {
-                    show_onboarding(&handle);
-                } else {
-                    show_main(&handle, None);
-                }
-            });
-        }))
         .plugin(tauri_plugin_dialog::init())
+        .manage(instance)
         .manage(Shell {
             launcher: launcher.clone(),
             view: Mutex::new(View {
@@ -435,6 +534,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }),
             ensure_web,
             locale: locale.clone(),
+            zoom,
+            zoom_op: tauri::async_runtime::Mutex::new(()),
+            zoom_persist,
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -447,14 +549,17 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window_minimize,
             window_toggle_maximize,
             window_close,
-            window_chrome_state
+            window_chrome_state,
+            window_zoom_get,
+            window_zoom_step,
+            window_zoom_set
         ])
         .on_window_event(|window, event| {
-            if window.label() == MAIN {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    set_visible(window.app_handle(), false);
-                }
+            if window.label() == MAIN
+                && let WindowEvent::CloseRequested { api, .. } = event
+            {
+                api.prevent_close();
+                set_visible(window.app_handle(), false);
             }
         })
         .setup(move |app| {
@@ -466,6 +571,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let app_handle = app.handle().clone();
             let popup_app = app_handle.clone();
             let navigation_app = app_handle.clone();
+            let permission_app = app_handle.clone();
             let path = if onboarding { ONBOARDING } else { LOADING };
             let builder = WebviewWindowBuilder::new(
                 app,
@@ -476,7 +582,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .inner_size(1140.0, 800.0)
             .min_inner_size(400.0, 320.0)
             .visible(false)
-            .initialization_script(navigation::initialization_script());
+            // Keep HTML5 drag-and-drop active in WKWebView/WebView2 (thread references, row reorder, file drops).
+            .disable_drag_drop_handler()
+            .initialization_script(navigation::initialization_script(
+                initial_zoom_percent,
+                &boot_id,
+            ));
             #[cfg(target_os = "windows")]
             let builder = builder.decorations(false).shadow(true);
             #[cfg(target_os = "macos")]
@@ -484,6 +595,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true);
             builder
+                .on_permission_request(move |_, kind| {
+                    let shell = permission_app.state::<Shell>();
+                    let view = shell.view.lock().unwrap();
+                    permission_response(&view.page, kind)
+                })
                 .on_navigation(move |url| match navigation_for(&navigation_app, url) {
                     Navigation::Embedded | Navigation::Web => true,
                     Navigation::Browser => {
@@ -508,6 +624,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            let initial_scale = app.state::<Shell>().zoom.lock().unwrap().scale();
+            if let Some(window) = app.get_webview_window(MAIN)
+                && let Err(error) = window.set_zoom(initial_scale)
+            {
+                eprintln!("CodexHost: could not apply initial desktop shell zoom: {error}");
+            }
             tray::install(&app_handle, &locale)?;
             let ready = ShellReady::publish(&launcher.data_dir)?;
             app.manage(ready);
@@ -527,10 +649,33 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .build(tauri::generate_context!())?;
+    let activation_app = app.handle().clone();
+    std::thread::Builder::new()
+        .name("instance-activations".into())
+        .spawn(move || {
+            while let Ok(activation) = activations.recv() {
+                let handle = activation_app.clone();
+                let delivered = activation_app.run_on_main_thread(move || match activation {
+                    Activation::Onboarding => show_onboarding(&handle),
+                    Activation::Show => show_main(&handle, None),
+                });
+                if delivered.is_err() {
+                    eprintln!("CodexHost: could not deliver a desktop window activation");
+                    break;
+                }
+            }
+        })?;
     app.run(|app, event| match event {
         RunEvent::Exit => {
+            if let Some(shell) = app.try_state::<Shell>() {
+                // Flush any queued or in-flight zoom update before exiting (no-op if unchanged).
+                persist_latest_zoom(&shell.zoom, &shell.zoom_persist, &shell.launcher.data_dir);
+            }
             if let Some(ready) = app.try_state::<ShellReady>() {
                 ready.remove_if_owned();
+            }
+            if let Some(instance) = app.try_state::<PrimaryInstance>() {
+                instance.shutdown();
             }
         }
         #[cfg(target_os = "macos")]
@@ -542,7 +687,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Page, Status};
+    use tauri::webview::{PermissionKind, PermissionResponse};
+
+    use super::{Page, Status, permission_response};
 
     #[test]
     fn onboarding_and_dormant_ignore_background_web_events() {
@@ -552,5 +699,28 @@ mod tests {
         assert!(Page::Loading(Status::Reconnecting, None).accepts_web_events());
         assert!(Page::Loading(Status::Error, Some("err".into())).accepts_web_events());
         assert!(Page::Web.accepts_web_events());
+    }
+
+    #[test]
+    fn grants_microphone_permission_only_for_live_web_page() {
+        assert_eq!(
+            permission_response(&Page::Web, PermissionKind::Microphone),
+            PermissionResponse::Allow
+        );
+        assert_eq!(
+            permission_response(&Page::Onboarding, PermissionKind::Microphone),
+            PermissionResponse::Default
+        );
+        assert_eq!(
+            permission_response(
+                &Page::Loading(Status::Starting, None),
+                PermissionKind::Microphone
+            ),
+            PermissionResponse::Default
+        );
+        assert_eq!(
+            permission_response(&Page::Web, PermissionKind::Camera),
+            PermissionResponse::Default
+        );
     }
 }

@@ -49,6 +49,8 @@ export function createMacosShellInfoPlist(version) {
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>CodexHost uses the microphone for voice input.</string>
 </dict>
 </plist>
 `;

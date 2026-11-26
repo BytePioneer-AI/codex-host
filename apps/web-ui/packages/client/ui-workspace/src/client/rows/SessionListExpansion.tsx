@@ -10,6 +10,7 @@ type Props = Pick<WorkspaceBrowserProps, "loadMoreSessions" | "t"> & {
   hasMore?: boolean;
   loading?: boolean;
   workspaceHistory?: NonNullable<SessionListState["workspaceHistory"]>[string];
+  workspaceId?: Parameters<WorkspaceBrowserProps["loadMoreSessions"]>[0];
   fillWorkspace?: boolean;
   expanded?: boolean;
   expand?: () => void;
@@ -23,6 +24,7 @@ export function SessionListExpansion({
   hasMore,
   loading,
   workspaceHistory,
+  workspaceId,
   fillWorkspace,
   expanded,
   expand,
@@ -31,9 +33,8 @@ export function SessionListExpansion({
   t,
 }: Props) {
   useEffect(() => {
-    if (fillWorkspace && (workspaceHistory === "search" || workspaceHistory === "continue"))
-      loadMoreSessions();
-  }, [fillWorkspace, workspaceHistory, loadMoreSessions]);
+    if (fillWorkspace) loadMoreSessions(workspaceId);
+  }, [fillWorkspace, loadMoreSessions, workspaceId]);
   if (hiddenCount === 0 && !hasMore && !collapse) return null;
   const fetching = hiddenCount === 0 && hasMore && loading;
   const searchLabel =
@@ -55,7 +56,7 @@ export function SessionListExpansion({
         if (hiddenCount > 0) expand?.();
         else if (hasMore) {
           expand?.();
-          loadMoreSessions();
+          loadMoreSessions(workspaceId);
         } else collapse?.();
       }}
     >

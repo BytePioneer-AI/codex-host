@@ -225,6 +225,15 @@
   gap: 10px;
 }
 
+.actionWrap {
+  display: inline-flex;
+  flex: none;
+}
+
+.actionWrap > .action:disabled {
+  pointer-events: none;
+}
+
 .status {
   flex: none;
   color: var(--dsw-alias-label-tertiary);

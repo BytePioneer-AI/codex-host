@@ -114,6 +114,8 @@ export type {
   ComposerAttachmentsProps,
   ComposerFileAttachment,
   ComposerImageAttachment,
+  RestoredQueuedAttachment,
+  RestoredQueuedMessage,
   DraftFileUpload,
   DraftFileUploads,
   ComposerBarInjected,

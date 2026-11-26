@@ -100,6 +100,32 @@ export function defaultProjections(): Record<string, unknown> {
   };
 }
 
+function sameProjectionValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (!sameProjectionValue(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const protoA = Object.getPrototypeOf(a);
+  if (protoA !== Object.getPrototypeOf(b) || (protoA !== Object.prototype && protoA !== null)) {
+    return false;
+  }
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  const bKeys = Object.keys(bRecord);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.hasOwn(bRecord, key)) return false;
+    if (!sameProjectionValue(aRecord[key], bRecord[key])) return false;
+  }
+  return true;
+}
+
 export class SessionLog {
   readonly events: WireEvent[];
   readonly projections: Record<string, unknown>;
@@ -220,6 +246,9 @@ export class SessionLog {
   }
 
   setProjection(key: string, value: unknown): void {
+    if (Object.hasOwn(this.projections, key) && sameProjectionValue(this.projections[key], value)) {
+      return;
+    }
     this.projections[key] = value;
     this.data.writeJson(this.projectionFile, this.projections);
     this.onProjection(this.header.id, key, value, Math.max(this.lastSeq, 0));

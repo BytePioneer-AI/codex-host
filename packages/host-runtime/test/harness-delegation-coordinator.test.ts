@@ -21,6 +21,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import { boundDelegationToken } from "../src/bearer-token.js";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
@@ -439,6 +440,10 @@ describe("HarnessDelegationCoordinator", () => {
         executionPolicy: "unattended-full-access",
         environment: {
           ...environment,
+          CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(
+            environment.CODEXHOST_RUNTIME_TOKEN,
+            started.threadId,
+          ),
           CODEXHOST_THREAD_ID: started.threadId,
         },
       });
@@ -468,6 +473,10 @@ describe("HarnessDelegationCoordinator", () => {
         kind: "resume",
         environment: {
           ...environment,
+          CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(
+            environment.CODEXHOST_RUNTIME_TOKEN,
+            started.threadId,
+          ),
           CODEXHOST_THREAD_ID: started.threadId,
         },
         nativeRef: { harnessId: "workbuddy" },
@@ -1048,7 +1057,11 @@ describe("HarnessDelegationCoordinator", () => {
       projector.project({
         type: "item.started",
         turnId,
-        item: { type: "reasoning", itemId: hostItemIdSchema.parse("r1"), text: "live reasoning" },
+        item: {
+          type: "reasoning",
+          itemId: hostItemIdSchema.parse("r1"),
+          text: "live reasoning. still streaming",
+        },
       });
       projector.project({
         type: "item.started",
@@ -1084,7 +1097,11 @@ describe("HarnessDelegationCoordinator", () => {
       expect(document.turns[1]).toEqual(projector.snapshotTurn());
       expect(document.turns[1].items).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ type: "reasoning", summary: ["live reasoning"] }),
+          // A settled first sentence titles the part; the open body keeps growing.
+          expect.objectContaining({
+            type: "reasoning",
+            summary: ["**live reasoning**\n\nstill streaming"],
+          }),
           expect.objectContaining({
             type: "commandExecution",
             command: "ls",

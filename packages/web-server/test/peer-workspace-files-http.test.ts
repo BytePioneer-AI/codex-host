@@ -169,14 +169,18 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
         const metadata = JSON.parse(String(form.get("metadata"))) as {
           type: string;
           rpcId: string;
-          result: { ok: boolean };
-          attachments: Array<{ part: string }>;
+          result: { ok: boolean; value: Record<string, unknown> };
+          attachments: Array<{ path: string[]; codec: string; part: string }>;
         };
         assert.equal(metadata.type, "server-response");
         assert.equal(metadata.rpcId, "rpc-bytes-1");
         assert.equal(metadata.result.ok, true);
+        assert.equal(Object.hasOwn(metadata.result.value, "data"), true);
+        assert.equal(metadata.result.value.data, null);
         const attachment = metadata.attachments[0];
         assert.ok(attachment);
+        assert.deepEqual(attachment.path, ["data"]);
+        assert.equal(attachment.codec, "bytes");
         const part = form.get(attachment.part);
         assert.ok(part instanceof Blob);
         assert.deepEqual(Buffer.from(await part.arrayBuffer()), binaryBytes);
@@ -192,16 +196,23 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
         const officeForm = await officeRes.formData();
         const officeMeta = JSON.parse(String(officeForm.get("metadata"))) as {
           rpcId: string;
-          result: { ok: boolean; value: { generation: string; missingFonts: string[] } };
-          attachments: Array<{ part: string }>;
+          result: {
+            ok: boolean;
+            value: { data: unknown; generation: string; missingFonts: string[] };
+          };
+          attachments: Array<{ path: string[]; codec: string; part: string }>;
         };
         assert.equal(officeMeta.rpcId, "rpc-office-1");
         assert.equal(officeMeta.result.ok, true);
+        assert.equal(Object.hasOwn(officeMeta.result.value, "data"), true);
+        assert.equal(officeMeta.result.value.data, null);
         assert.equal(officeMeta.result.value.generation, "peer-gen-1");
         assert.deepEqual(officeMeta.result.value.missingFonts, ["PingFang SC"]);
         assert.deepEqual(officeInputBytes, Buffer.from("PK\x03\x04fake-docx"));
         const pdfAttachment = officeMeta.attachments[0];
         assert.ok(pdfAttachment);
+        assert.deepEqual(pdfAttachment.path, ["data"]);
+        assert.equal(pdfAttachment.codec, "bytes");
         const pdfPart = officeForm.get(pdfAttachment.part);
         assert.ok(pdfPart instanceof Blob);
         assert.deepEqual(Buffer.from(await pdfPart.arrayBuffer()), fakePdf);
@@ -232,41 +243,64 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
         assert.equal(unknownJson.result.ok, false);
         assert.equal(unknownJson.result.error?.code, "gateway/lookup-not-found");
 
-        // 8. Rejects paths outside workspaceRoot
+        // 8. Allows regular files outside workspaceRoot (matching local preview), while rejecting UNC paths and outside directory listing
         for (const args of [
           { workspaceFileScopeId: "thread-1", path: outsideFile },
           { workspaceFileScopeId: "thread-1", path: "../secret.txt" },
+        ]) {
+          const res = await rpcCall("rpc-outside-file", "workspaceFiles/read", {
+            ...args,
+            range: {},
+          });
+          const json = (await res.json()) as {
+            result: { ok: boolean; value?: { text: string } };
+          };
+          assert.equal(json.result.ok, true);
+          assert.equal(json.result.value?.text, "top-secret");
+        }
+
+        const outsideList = await rpcCall("rpc-outside-list", "workspaceFiles/list", {
+          workspaceFileScopeId: "thread-1",
+          path: "..",
+        });
+        assert.equal(
+          ((await outsideList.json()) as { result: { error?: { code: string } } }).result.error
+            ?.code,
+          "workspace-file/outside-workspace",
+        );
+
+        for (const args of [
           { workspaceFileScopeId: "thread-1", path: "\\\\server\\share\\file.txt" },
           { workspaceFileScopeId: "thread-1", path: "//server/share/file.txt" },
         ]) {
-          const res = await rpcCall("rpc-outside", "workspaceFiles/stat", args);
+          const res = await rpcCall("rpc-unc", "workspaceFiles/stat", args);
           const json = (await res.json()) as { result: { ok: boolean; error?: { code: string } } };
           assert.equal(json.result.ok, false);
           assert.equal(json.result.error?.code, "workspace-file/outside-workspace");
         }
 
-        // 9. Rejects baseFile traversal & outside baseFile
-        const baseTraversal = await rpcCall("rpc-base-escape", "workspaceFiles/readBytes", {
+        // 9. Allows baseFile outside workspaceRoot & relative reads from it (e.g. artifact HTML assets)
+        const baseOutsideRead = await rpcCall("rpc-base-outside", "workspaceFiles/readBytes", {
           workspaceFileScopeId: "thread-1",
           path: "../../secret.txt",
           options: { baseFile: "docs/page.html" },
         });
-        assert.equal(
-          ((await baseTraversal.json()) as { result: { error?: { code: string } } }).result.error
-            ?.code,
-          "workspace-file/outside-workspace",
-        );
+        assert.equal(baseOutsideRead.status, 200);
+        const baseOutsideForm = await baseOutsideRead.formData();
+        const baseOutsideBlob = baseOutsideForm.get("bytes-0");
+        assert.ok(baseOutsideBlob instanceof Blob);
+        assert.equal(await baseOutsideBlob.text(), "top-secret");
 
-        const outsideBase = await rpcCall("rpc-outside-base", "workspaceFiles/readBytes", {
+        const outsideBaseFile = await rpcCall("rpc-outside-base", "workspaceFiles/readBytes", {
           workspaceFileScopeId: "thread-1",
           path: "secret.txt",
           options: { baseFile: outsideFile },
         });
-        assert.equal(
-          ((await outsideBase.json()) as { result: { error?: { code: string } } }).result.error
-            ?.code,
-          "workspace-file/outside-workspace",
-        );
+        assert.equal(outsideBaseFile.status, 200);
+        const outsideBaseForm = await outsideBaseFile.formData();
+        const outsideBaseBlob = outsideBaseForm.get("bytes-0");
+        assert.ok(outsideBaseBlob instanceof Blob);
+        assert.equal(await outsideBaseBlob.text(), "top-secret");
 
         // 10. Rejects control characters / NUL
         const nulRes = await rpcCall("rpc-nul", "workspaceFiles/stat", {
@@ -278,7 +312,7 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
           "gateway/bad-request",
         );
 
-        // 11. Download GET & HEAD with UTF-8 filename + refusal outside workspace
+        // 11. Download GET & HEAD with UTF-8 filename + allows regular files outside workspace
         const dlQuery = new URLSearchParams({ threadId: "thread-1", path: "报告.docx" });
         const headRes = await fetch(
           `${baseUrl}/api/peer/v1/workspace-files/download?${dlQuery.toString()}`,
@@ -304,11 +338,11 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
           Buffer.from("PK\x03\x04fake-docx"),
         );
 
-        const escapeDl = await fetch(
+        const outsideDl = await fetch(
           `${baseUrl}/api/peer/v1/workspace-files/download?${new URLSearchParams({ threadId: "thread-1", path: "../secret.txt" })}`,
         );
-        assert.equal(escapeDl.status, 403);
-        assert.equal(escapeDl.headers.get(PEER_WORKSPACE_FILES_HEADER), "1");
+        assert.equal(outsideDl.status, 200);
+        assert.equal(await outsideDl.text(), "top-secret");
       },
     );
   } finally {
@@ -317,7 +351,7 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
 });
 
 test(
-  "TOCTOU regression: parent directory swapped to outside symlink between validation and open is rejected across read, readBytes, Office, list, and download",
+  "TOCTOU regression: parent directory swapped to outside symlink between validation and list is rejected",
   { skip: process.platform === "win32" },
   async () => {
     const outer = await mkdtemp(join(tmpdir(), "codexhost-peer-toctou-"));
@@ -330,15 +364,7 @@ test(
     await writeFile(join(subDir, "doc.docx"), "safe-inside-content");
     await writeFile(join(outsideDir, "doc.docx"), "SECRET-OUTSIDE-CONTENT");
 
-    let officeConvertCalled = 0;
     let swapped = false;
-    const resetSubDir = async () => {
-      if (!swapped) return;
-      await rm(subDir, { force: true });
-      await rename(backupDir, subDir);
-      swapped = false;
-    };
-
     const fsOps: PeerWorkspaceFsOps = {
       lstat,
       stat,
@@ -347,8 +373,6 @@ test(
       readdir,
       platform: process.platform,
       async beforeOpen() {
-        // Deterministically replace workspace/sub with a symlink to outsideDir right after
-        // path validation succeeds and right before the actual open/readdir happens.
         if (!swapped) {
           await rename(subDir, backupDir);
           await symlink(outsideDir, subDir);
@@ -362,55 +386,8 @@ test(
         {
           resolveWorkspaceRoot: () => workspace,
           fsOps,
-          dsh: {
-            async convertOffice(request, signal) {
-              officeConvertCalled += 1;
-              await request.source.read(signal, 1024 * 1024);
-              throw new Error("should not reach convertOffice");
-            },
-          },
         },
         async (baseUrl) => {
-          for (const method of [
-            "workspaceFiles/read",
-            "workspaceFiles/readBytes",
-            "workspaceFiles/stat",
-            "officeToPdf/render",
-          ] as const) {
-            await resetSubDir();
-            const res = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                type: "client-request",
-                rpcId: `toctou-${method}`,
-                method,
-                payload: {
-                  args: {
-                    workspaceFileScopeId: "thread-1",
-                    path: "sub/doc.docx",
-                    ...(method === "workspaceFiles/read" ? { range: {} } : {}),
-                    ...(method === "workspaceFiles/readBytes" ? { options: {} } : {}),
-                    ...(method === "officeToPdf/render" ? { priority: "foreground" } : {}),
-                  },
-                },
-              }),
-            });
-            assert.equal(res.status, 200);
-            const json = (await res.json()) as {
-              result: { ok: boolean; error?: { code: string } };
-            };
-            assert.equal(json.result.ok, false, `${method} must reject TOCTOU parent swap`);
-            assert.equal(
-              json.result.error?.code,
-              "workspace-file/outside-workspace",
-              `${method} returned wrong code`,
-            );
-          }
-          assert.equal(officeConvertCalled, 0, "Office converter must never receive swapped file");
-
-          // workspaceFiles/list also rejects TOCTOU parent swap
-          await resetSubDir();
           const listRes = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -426,17 +403,6 @@ test(
           };
           assert.equal(listJson.result.ok, false);
           assert.equal(listJson.result.error?.code, "workspace-file/outside-workspace");
-
-          // download also rejects TOCTOU parent swap with 403
-          await resetSubDir();
-          const dlRes = await fetch(
-            `${baseUrl}/api/peer/v1/workspace-files/download?${new URLSearchParams({
-              threadId: "thread-1",
-              path: "sub/doc.docx",
-            })}`,
-          );
-          assert.equal(dlRes.status, 403);
-          assert.ok(!(await dlRes.text()).includes("SECRET-OUTSIDE-CONTENT"));
         },
       );
     } finally {
@@ -574,7 +540,7 @@ test("Peer early abort cancels resolveWorkspaceRoot before starting Office conve
 });
 
 test(
-  "Peer workspace-files enforces symlink escape rejection consistently across preview, Office, and download",
+  "Peer workspace-files rejects direct file symlinks while keeping directory listing confined",
   { skip: process.platform === "win32" },
   async () => {
     const outer = await mkdtemp(join(tmpdir(), "codexhost-peer-symlink-"));
@@ -601,63 +567,53 @@ test(
           },
         },
         async (baseUrl) => {
-          for (const method of ["workspaceFiles/stat", "officeToPdf/render"]) {
-            for (const target of [
-              "file-escape.docx",
-              "dir-escape/leak.docx",
-              "dir-escape/missing.docx",
-            ]) {
-              const res = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  type: "client-request",
-                  rpcId: "sym-1",
-                  method,
-                  payload: {
-                    args: {
-                      workspaceFileScopeId: "thread-1",
-                      path: target,
-                      priority: "foreground",
-                    },
+          // Direct file symlinks (final component) are rejected as not-regular-file
+          for (const [method, target] of [
+            ["workspaceFiles/stat", "file-escape.docx"],
+            ["workspaceFiles/stat", "internal-link.txt"],
+            ["officeToPdf/render", "file-escape.docx"],
+          ] as const) {
+            const res = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                type: "client-request",
+                rpcId: "sym-file",
+                method,
+                payload: {
+                  args: {
+                    workspaceFileScopeId: "thread-1",
+                    path: target,
+                    priority: "foreground",
                   },
-                }),
-              });
-              const json = (await res.json()) as {
-                result: { ok: boolean; error?: { code: string } };
-              };
-              assert.equal(json.result.ok, false);
-              assert.equal(json.result.error?.code, "workspace-file/outside-workspace");
-            }
+                },
+              }),
+            });
+            const json = (await res.json()) as {
+              result: { ok: boolean; error?: { code: string } };
+            };
+            assert.equal(json.result.ok, false);
+            assert.equal(json.result.error?.code, "workspace-file/not-regular-file");
           }
-          assert.equal(
-            officeCalled,
-            0,
-            "Office converter must never be invoked for escaping symlinks",
-          );
+          assert.equal(officeCalled, 0, "Office converter must not convert direct symlinks");
 
-          const internalRpc = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
+          // Directory listing still confines symlinked directories outside workspace
+          const escapedList = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               type: "client-request",
-              rpcId: "sym-internal",
-              method: "workspaceFiles/stat",
-              payload: { args: { workspaceFileScopeId: "thread-1", path: "internal-link.txt" } },
+              rpcId: "sym-dir",
+              method: "workspaceFiles/list",
+              payload: { args: { workspaceFileScopeId: "thread-1", path: "dir-escape" } },
             }),
           });
           assert.equal(
-            ((await internalRpc.json()) as { result: { error?: { code: string } } }).result.error
+            ((await escapedList.json()) as { result: { error?: { code: string } } }).result.error
               ?.code,
-            "workspace-file/not-regular-file",
+            "workspace-file/outside-workspace",
           );
 
-          for (const target of ["file-escape.docx", "dir-escape/leak.docx"]) {
-            const dl = await fetch(
-              `${baseUrl}/api/peer/v1/workspace-files/download?${new URLSearchParams({ threadId: "thread-1", path: target })}`,
-            );
-            assert.equal(dl.status, 403);
-          }
           const internalDl = await fetch(
             `${baseUrl}/api/peer/v1/workspace-files/download?${new URLSearchParams({ threadId: "thread-1", path: "internal-link.txt" })}`,
           );
@@ -670,7 +626,7 @@ test(
   },
 );
 
-test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects UNC and cross-drive paths", async () => {
+test("validatePeerWorkspacePath handles Windows /D:/... drive prefix, allows cross-drive regular files, and rejects UNC and drive-relative paths", async () => {
   const dirs = new Set(["D:\\", "D:\\work", "D:\\work\\docs"]);
   const files = new Set([
     "D:\\work\\docs\\report.docx",
@@ -736,8 +692,17 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
     kind: "file",
     fsOps,
   });
-  assert.equal(crossDrive.ok, false);
-  if (!crossDrive.ok) assert.equal(crossDrive.code, "workspace-file/outside-workspace");
+  assert.equal(crossDrive.ok, true);
+  if (crossDrive.ok) assert.equal(crossDrive.realPath, "C:\\Windows\\win.ini");
+
+  const crossDriveDir = await validatePeerWorkspacePath({
+    workspaceRoot: "D:\\work",
+    path: "/C:/Windows",
+    kind: "directory",
+    fsOps,
+  });
+  assert.equal(crossDriveDir.ok, false);
+  if (!crossDriveDir.ok) assert.equal(crossDriveDir.code, "workspace-file/outside-workspace");
 
   for (const unc of ["\\\\fileserver\\share\\doc.docx", "//fileserver/share/doc.docx"]) {
     const res = await validatePeerWorkspacePath({

@@ -5,6 +5,7 @@ import type {
   HostThreadSnapshot,
   HostTurnSnapshot,
 } from "@codexhost/harness-adapter";
+import { sessionImportTitle } from "@codexhost/harness-adapter/session-import";
 import {
   hostItemIdSchema,
   nativeCheckpointRefSchema,
@@ -180,6 +181,11 @@ export class HermesGatewayHistory {
     if (typeof data.physicalSessionId !== "string")
       throw new Error("Missing Hermes storage identity");
     return data.physicalSessionId;
+  }
+
+  async readTitle(): Promise<string | null> {
+    const data = await this.#run({ operation: "title" });
+    return sessionImportTitle(data.title);
   }
 
   async ensureCreated(input: {

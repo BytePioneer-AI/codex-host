@@ -9,6 +9,9 @@ use std::ptr::null;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::System::Threading::{PROCESS_SYNCHRONIZE, WaitForSingleObject};
+
 type Handle = *mut c_void;
 
 const INVALID_HANDLE_VALUE: Handle = -1_isize as Handle;
@@ -308,13 +311,17 @@ pub fn terminate_process_instance(
 
 pub fn terminate_process(process_id: u32, exit_code: u32) -> io::Result<()> {
     unsafe {
-        let process = OpenProcess(PROCESS_TERMINATE, 0, process_id);
+        let process = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE.0, 0, process_id);
         if process.is_null() {
             return Err(io::Error::last_os_error());
         }
         let result = TerminateProcess(process, exit_code);
         let error = if result == 0 {
-            Some(io::Error::last_os_error())
+            let error = io::Error::last_os_error();
+            // Windows also reports access denied for an already terminated process.
+            let already_exited = error.raw_os_error() == Some(ERROR_ACCESS_DENIED.0 as i32)
+                && handle_has_exited(process);
+            (!already_exited).then_some(error)
         } else {
             None
         };
@@ -324,6 +331,22 @@ pub fn terminate_process(process_id: u32, exit_code: u32) -> io::Result<()> {
             None => Ok(()),
         }
     }
+}
+
+pub fn process_has_exited(process_id: u32) -> bool {
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE.0, 0, process_id);
+        if process.is_null() {
+            return false;
+        }
+        let exited = handle_has_exited(process);
+        CloseHandle(process);
+        exited
+    }
+}
+
+fn handle_has_exited(process: Handle) -> bool {
+    unsafe { WaitForSingleObject(HANDLE(process), 0) == WAIT_OBJECT_0 }
 }
 
 pub fn atomic_replace_file(source: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
@@ -394,10 +417,27 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::atomic_replace_file;
+    use super::{atomic_replace_file, terminate_process};
 
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+
+    #[test]
+    fn terminating_an_exited_process_succeeds_while_its_handle_is_open() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 0"])
+            .spawn()
+            .expect("start an independent process");
+        assert!(
+            child
+                .wait()
+                .expect("wait for the process to exit")
+                .success()
+        );
+
+        terminate_process(child.id(), 1).expect("the process already exited");
+        assert!(!crate::process_exists(child.id()));
+    }
 
     #[test]
     fn retries_atomic_replace_while_a_transient_reader_blocks_deletion() {

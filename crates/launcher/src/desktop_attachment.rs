@@ -1,5 +1,6 @@
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::collections::{HashMap, HashSet};
+#[cfg(not(unix))]
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
@@ -156,8 +157,10 @@ pub(super) fn wait_for_host_chain_outcome(
     timeout: Duration,
     stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
 ) -> Result<HostChainWaitOutcome, Box<dyn Error>> {
-    let nodes =
-        host_runtime_node_candidates(options.node.clone(), env::var_os(crate::NPM_NODE_PATH_ENV));
+    let nodes = host_runtime_node_candidates(
+        options.node.clone(),
+        crate::installation_layout::inherited_npm_node(),
+    );
     wait_for_host_chain_with_observer(
         desktop,
         &options.shim,
@@ -169,12 +172,8 @@ pub(super) fn wait_for_host_chain_outcome(
     )
 }
 
-/// The Shim runs the Host Runtime on the Node selected at launch
-/// (`options.node`, the Desktop cua_node in installer layouts) — but on
-/// npm-managed installs it overrides the Host Runtime to
-/// `CODEXHOST_NPM_NODE_PATH` (the npm wrapper's `process.execPath`). Readiness
-/// must accept that Node too, or the wait blocks on a late, unrelated Desktop
-/// `cua_node` helper instead of the actual Host Runtime process.
+/// Installed npm launches may also use the wrapper's Node. Count it alongside
+/// the Node selected at launch when checking the Host process chain.
 pub(super) fn host_runtime_node_candidates(
     default_node: PathBuf,
     npm_node: Option<OsString>,

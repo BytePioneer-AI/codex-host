@@ -6,6 +6,7 @@ function nativePermissionButton(
   options: {
     target?: string;
     includeOwner?: boolean;
+    ownerDepth?: number;
     codexhost?: boolean;
     hasMenu?: boolean;
   } = {},
@@ -27,12 +28,17 @@ function nativePermissionButton(
           },
           return: null,
         };
+  let parent: { memoizedProps: Record<string, unknown>; return: unknown } | null = owner;
+  const intermediateLayers = Math.max(0, (options.ownerDepth ?? 1) - 1);
+  for (let index = 0; index < intermediateLayers; index += 1) {
+    parent = { memoizedProps: {}, return: parent };
+  }
   const fiber = {
     memoizedProps: {
       "data-composer-navigation-target": target,
       "aria-haspopup": options.hasMenu === false ? "dialog" : "menu",
     },
-    return: owner,
+    return: parent,
   };
   const element = {
     hasAttribute(name: string) {
@@ -53,6 +59,9 @@ function nativePermissionButton(
 describe("versioned native Permission Mode control ownership", () => {
   it("accepts the reviewed semantic trigger and Composer ownership chain", () => {
     expect(isNativePermissionModeControlCandidate(nativePermissionButton())).toBe(true);
+    expect(isNativePermissionModeControlCandidate(nativePermissionButton({ ownerDepth: 65 }))).toBe(
+      true,
+    );
   });
 
   it("does not identify by visible label or a partial DOM match", () => {

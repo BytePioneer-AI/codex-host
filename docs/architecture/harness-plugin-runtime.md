@@ -303,7 +303,7 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 
 权限模式和命令目录可提供 `localizations: { [locale]: { label?, description? } }`。公共 `localizeHarnessPresentation` 按精确 locale、语言、原文逐字段回退；不根据模式 ID、英文文案或 `/compact` 推断语义。插件拥有翻译、原生动态目录的已知文案映射及版本兼容，未知原生文案保留原样。元数据不允许覆盖 ID、危险标记、参数或执行行为，限制 locale 数量、键和文本长度。`atCreate` 的锁定提示属于通用能力说明，不点名某个 Harness。
 
-Thread 用量快照可选提供 `composerIndicators`（最多 2 个、ID 唯一），目前只支持 `{ kind: "countdown", id, expiresAtUnix, label?, tooltip? }`。文本复用 `HarnessLocalizedText`（英文回退；标签最多 256 字符、提示最多 1024 字符），仅供安全展示，不含动作或回调。Renderer 在外部 Harness 的权限控件旁以时钟和剩余分钟显示，每分钟本地刷新，过期隐藏，空间不足时优先让位于公共控件；官方 Codex Thread 不显示。Claude Code 仅在原生账号额度可用时提供提示词缓存倒计时，采用 Host 侧主会话最近一次 assistant 响应时间加固定一小时；恢复 Session 时读取原生历史时间，不从页面加载时重新计时。
+Thread 用量快照可选提供 `composerIndicators`（最多 2 个、ID 唯一），目前只支持 `{ kind: "countdown", id, expiresAtUnix, label?, tooltip? }`。文本复用 `HarnessLocalizedText`（英文回退；标签最多 256 字符、提示最多 1024 字符），仅供安全展示，不含动作或回调。Desktop Renderer 在外部 Harness 的权限控件旁、Standalone Web 在输入框下方状态栏（`HostUsageDock`）中以时钟和剩余分钟显示，本地定时刷新，过期隐藏，空间不足时优先让位于公共控件；官方 Codex Thread 不显示。Claude Code 仅在原生账号额度可用时提供提示词缓存倒计时，采用 Host 侧主会话最近一次 assistant 响应时间加固定一小时；恢复 Session 时读取原生历史时间，不从页面加载时重新计时。
 
 Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和命令。Web 等客户端需要在各自展示入口使用该函数，不能继续只读取 `label`；本主线不包含独立 Web UI 的适配。安装更新的专属说明使用 `localizeHarnessText`，安全展示文本与诊断错误分开，不能以原始 `message` 替代 `notice`。
 

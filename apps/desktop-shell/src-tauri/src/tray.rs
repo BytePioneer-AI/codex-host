@@ -15,14 +15,14 @@ fn run_action(
     let launcher = app.state::<Shell>().launcher.clone();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(message) = launcher_action(launcher.clone(), action).await {
-            if !launcher.is_stopping() {
-                app.dialog()
-                    .message(message)
-                    .title("CodexHost")
-                    .kind(MessageDialogKind::Error)
-                    .show(|_| {});
-            }
+        if let Err(message) = launcher_action(launcher.clone(), action).await
+            && !launcher.is_stopping()
+        {
+            app.dialog()
+                .message(message)
+                .title("CodexHost")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
         }
     });
 }

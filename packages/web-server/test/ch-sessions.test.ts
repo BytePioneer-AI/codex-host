@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
@@ -14,6 +14,8 @@ import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../sr
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
 import { projectGroupRoot } from "../src/ch-project-groups.ts";
+import { nativeProjectCommands } from "../src/ch-project-commands.ts";
+import { peerEndpoint } from "../src/peer-manifest.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { nativeCodex } from "./support/native-codex.ts";
 
@@ -1042,6 +1044,474 @@ it("workspace mirror: keeps a deleted Desktop workspace out of Web until explici
   assert.equal(restored.ownerOf(thread.id)?.path, cwd);
 });
 
+it("shares native project changes and keeps removed projects' sessions in the Web catalog", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-project-sync-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cwd = join(root, "folder");
+  mkdirSync(cwd);
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [
+    { id: "owned", name: "Desktop", rootPaths: [cwd, join(root, "second")] },
+  ];
+  const selected = host.add("selected", join(root, "worktree"), "Selected", false);
+  selected.projectId = "owned";
+  host.add("migrated", cwd, "Migrated", false);
+  host.projectSnapshot.assignments.migrated = "owned";
+  host.add("unassigned", cwd, "Unassigned", false);
+  // Desktop lists a Thread without a project or assignment under the project holding its cwd.
+  host.add("rooted", join(cwd, "src"), "Rooted", false);
+  host.projectSnapshot.projectless.splice(host.projectSnapshot.projectless.indexOf("rooted"), 1);
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, cwd, true);
+  workspaces.create(cwd); // An older Web row for the same folder has a different identity.
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "project/create") {
+      const project = {
+        id: "created",
+        name: String(params.name),
+        rootPaths: (params.roots as Array<{ path: string }>).map((entry) => entry.path),
+      };
+      host.projectSnapshot.projects.push(project);
+      return { project } as T;
+    }
+    if (method === "project/update") {
+      const project = host.projectSnapshot.projects.find((item) => item.id === params.projectId);
+      assert.ok(project);
+      project.name = String(params.name);
+      return { project } as T;
+    }
+    if (method === "project/delete") {
+      host.projectSnapshot.projects = host.projectSnapshot.projects.filter(
+        (item) => item.id !== params.projectId,
+      );
+      selected.projectId = null;
+      return {} as T;
+    }
+    return request<T>(method, params);
+  };
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(
+    rpc,
+    streams,
+    nativeProjectCommands(
+      host,
+      workspaces,
+      () => sessions.refreshProjects(),
+      (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+    ),
+  );
+  sessions.register(rpc, streams);
+  const call = async (method: string, params = {}) => {
+    const reply = await rpc.dispatch(method, { args: { request: params } });
+    assert.ok(reply.ok, reply.ok ? undefined : reply.error.message);
+    return reply.value;
+  };
+  await call("session/list");
+  assert.equal(workspaces.list().length, 1, "Native multi-root projects use one row");
+  const original = workspaces.ownerOf("selected");
+  assert.ok(original);
+  assert.equal(workspaces.ownerOf("migrated")?.workspaceId, original.workspaceId);
+  assert.equal(workspaces.ownerOf("rooted")?.workspaceId, original.workspaceId);
+  assert.equal(
+    workspaces.ownerOf("unassigned"),
+    undefined,
+    "Threads moved out of projects stay out",
+  );
+  const scope = workspaces.catalogScope(original.workspaceId);
+  assert.ok(scope && "projectId" in scope);
+  const owned = host.projectSnapshot.projects[0];
+  assert.ok(owned);
+  owned.name = "Desktop rename";
+  await sessions.refreshProjects();
+  assert.equal(workspaces.get(original.workspaceId)?.title, "Desktop rename");
+  const compatibleState = readFileSync(data.path("workspaces.json"), "utf8");
+  const peer = (await peerEndpoint(
+    "POST",
+    new URL("http://localhost/api/peer/v1/workspaces"),
+    { path: root, title: "Remote project" },
+    workspaces,
+    rpc,
+    "test-epoch",
+    "0.26.0",
+    [root],
+  )) as { workspaceId: string };
+  assert.equal(workspaces.get(peer.workspaceId)?.projectId, "created");
+  assert.equal(workspaces.get(peer.workspaceId)?.title, "Remote project");
+  assert.equal(readFileSync(data.path("workspaces.json"), "utf8"), compatibleState);
+  await call("workspace/rename", { workspaceId: original.workspaceId, title: "Web rename" });
+  assert.equal(
+    host.projectSnapshot.projects.find((project) => project.id === "owned")?.name,
+    "Web rename",
+  );
+  const history = structuredClone(selected.turns);
+  await call("workspace/delete", { workspaceId: original.workspaceId });
+  assert.equal(workspaces.ownerOf("selected"), undefined);
+  assert.equal(workspaces.ownerOf("migrated"), undefined);
+  assert.ok(existsSync(cwd));
+  assert.deepEqual(selected.turns, history);
+  const after = (await call("session/list")) as { items: Array<{ sessionId: string }> };
+  assert.ok(after.items.some((item) => item.sessionId === selected.id));
+});
+
+it("moves sessions between native projects only after Codex confirms, keeping Web order", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-project-move-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alphaRoot = join(root, "alpha");
+  const betaRoot = join(root, "beta");
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [
+    { id: "alpha", name: "Alpha", rootPaths: [alphaRoot] },
+    { id: "beta", name: "Beta", rootPaths: [betaRoot] },
+  ];
+  const first = host.add("first", alphaRoot, "First", false);
+  first.projectId = "alpha";
+  host.add("second", alphaRoot, "Second", false).projectId = "alpha";
+  host.add("other", betaRoot, "Other", false).projectId = "beta";
+  // A project ID Codex no longer lists falls back to the project holding the cwd.
+  host.add("stale", betaRoot, "Stale", false).projectId = "gone";
+  host.projectSnapshot.projectless = [];
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, alphaRoot, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  let rejectUpdate = false;
+  let staleRefresh: Promise<void> | undefined;
+  let holdCatalog = false;
+  const catalogCaptured = Promise.withResolvers<undefined>();
+  const releaseCatalog = Promise.withResolvers<undefined>();
+  t.after(() => releaseCatalog.resolve(undefined));
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/catalog/read" && holdCatalog) {
+      holdCatalog = false;
+      const snapshot = await request<T>(method, params);
+      catalogCaptured.resolve(undefined);
+      await releaseCatalog.promise;
+      return snapshot;
+    }
+    if (method === "thread/metadata/update") {
+      host.requests.push({ method, params: structuredClone(params) });
+      if (rejectUpdate) throw new Error("Project assignment failed");
+      assert.equal(params.threadId, first.id);
+      holdCatalog = true;
+      staleRefresh = sessions.refreshProjects();
+      await catalogCaptured.promise;
+      first.projectId = String(params.projectId);
+      return { thread: structuredClone(first) } as T;
+    }
+    return request<T>(method, params);
+  };
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(
+    rpc,
+    streams,
+    nativeProjectCommands(
+      host,
+      workspaces,
+      () => sessions.refreshProjects(),
+      (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+    ),
+  );
+  sessions.register(rpc, streams);
+  const dispatch = (method: string, params = {}) =>
+    rpc.dispatch(method, { args: { request: params } });
+  await dispatch("session/list");
+  const alpha = workspaces.byPath(alphaRoot);
+  const beta = workspaces.byPath(betaRoot);
+  assert.ok(alpha && beta);
+  assert.equal(workspaces.ownerOf("stale")?.workspaceId, beta.workspaceId);
+  const moves = () => host.requests.filter((entry) => entry.method === "thread/metadata/update");
+
+  const [top, bottom] = alpha.sessionIds;
+  assert.ok(top && bottom);
+  const reorder = await dispatch("workspace/insertSessionBefore", {
+    workspaceId: alpha.workspaceId,
+    sessionId: bottom,
+    beforeSessionId: top,
+  });
+  assert.ok(reorder.ok);
+  assert.equal(moves().length, 0, "Reordering inside a project does not reassign it");
+  await sessions.refreshProjects();
+  assert.deepEqual(workspaces.get(alpha.workspaceId)?.sessionIds, [bottom, top]);
+
+  rejectUpdate = true;
+  const rejected = await dispatch("workspace/insertSessionBefore", {
+    workspaceId: beta.workspaceId,
+    sessionId: "first",
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(workspaces.ownerOf("first")?.workspaceId, alpha.workspaceId);
+  assert.ok(!workspaces.get(beta.workspaceId)?.sessionIds.includes("first"));
+
+  rejectUpdate = false;
+  const moved = await dispatch("workspace/insertSessionBefore", {
+    workspaceId: beta.workspaceId,
+    sessionId: "first",
+    beforeSessionId: "other",
+  });
+  assert.ok(moved.ok, moved.ok ? undefined : moved.error.message);
+  assert.deepEqual(moves().at(-1)?.params, { threadId: "first", projectId: "beta" });
+  const placed = () => workspaces.list().filter((item) => item.sessionIds.includes("first"));
+  assert.deepEqual(
+    placed().map((item) => item.workspaceId),
+    [beta.workspaceId],
+  );
+  const betaIds = workspaces.get(beta.workspaceId)?.sessionIds ?? [];
+  assert.ok(betaIds.indexOf("first") < betaIds.indexOf("other"));
+  assert.ok(staleRefresh);
+  releaseCatalog.resolve(undefined);
+  await staleRefresh;
+  assert.deepEqual(
+    placed().map((item) => item.workspaceId),
+    [beta.workspaceId],
+    "A catalog snapshot read before confirmation cannot undo the move",
+  );
+  assert.deepEqual(workspaces.get(beta.workspaceId)?.sessionIds, betaIds);
+  await sessions.refreshProjects();
+  assert.deepEqual(
+    placed().map((item) => item.workspaceId),
+    [beta.workspaceId],
+    "The confirmed assignment survives a refresh",
+  );
+  assert.deepEqual(workspaces.get(beta.workspaceId)?.sessionIds, betaIds);
+});
+
+it("retries an unconfirmed project assignment on the started Thread without starting another", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-project-assign-retry-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alphaRoot = join(root, "alpha");
+  const betaRoot = join(root, "beta");
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [
+    { id: "alpha", name: "Alpha", rootPaths: [alphaRoot] },
+    { id: "beta", name: "Beta", rootPaths: [betaRoot] },
+  ];
+  host.add("existing", alphaRoot, "Existing", false).projectId = "alpha";
+  host.projectSnapshot.projectless = [];
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, alphaRoot, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  let rejectUpdate = true;
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/metadata/update") {
+      host.requests.push({ method, params: structuredClone(params) });
+      if (rejectUpdate) throw new Error("Project assignment failed");
+      const row = host.threads.get(String(params.threadId));
+      assert.ok(row);
+      row.projectId = String(params.projectId);
+      return { thread: structuredClone(row) } as T;
+    }
+    return request<T>(method, params);
+  };
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const dispatch = (method: string, params = {}) =>
+    rpc.dispatch(method, { args: { request: params } });
+  await dispatch("session/list");
+  const beta = workspaces.byPath(betaRoot);
+  assert.ok(beta);
+  const draft = await dispatch("session/create", { cwd: alphaRoot, workspaceId: beta.workspaceId });
+  assert.ok(draft.ok);
+  const { sessionId } = draft.value as { sessionId: string };
+  const prompt = (requestId: string) =>
+    dispatch("session/prompt", {
+      sessionId,
+      requestId,
+      content: [{ type: "text", text: "hello" }],
+      mode: "queue",
+    });
+  const count = (method: string) => host.requests.filter((entry) => entry.method === method).length;
+
+  const failed = await prompt("send-1");
+  assert.equal(failed.ok, false);
+  assert.equal(count("thread/start"), 1);
+  assert.equal(count("turn/start"), 0, "No message is sent before the project is confirmed");
+  const created = [...host.threads.values()].find((row) => row.id.startsWith("canonical-"));
+  assert.ok(created);
+  const memberships = () =>
+    workspaces.list().filter((workspace) => workspace.sessionIds.includes(created.id));
+  await sessions.refreshProjects();
+  assert.deepEqual(
+    memberships().map((workspace) => workspace.projectId),
+    ["alpha"],
+    "Before assignment, catalog refresh groups the Thread by its working directory",
+  );
+
+  rejectUpdate = false;
+  const sent = await prompt("send-2");
+  assert.ok(sent.ok, sent.ok ? undefined : sent.error.message);
+  assert.equal(count("thread/start"), 1, "The retry reuses the started Thread");
+  assert.equal(count("thread/metadata/update"), 2);
+  assert.equal(count("turn/start"), 1);
+  assert.equal(created.projectId, "beta");
+  assert.deepEqual(
+    memberships().map((workspace) => workspace.projectId),
+    ["beta"],
+  );
+});
+
+it("preserves mixed remote and native project workspace ordering without remote-read-only errors", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-remote-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alphaRoot = join(root, "alpha");
+  const betaRoot = join(root, "beta");
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [
+    { id: "alpha", name: "Alpha", rootPaths: [alphaRoot] },
+    { id: "beta", name: "Beta", rootPaths: [betaRoot] },
+  ];
+  host.projectSnapshot.projectless = [];
+  const moves: Array<{ projectId: string; beforeProjectId: string | null }> = [];
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "project/move") {
+      const projectId = String(params.projectId);
+      const beforeProjectId =
+        params.beforeProjectId === null ? null : String(params.beforeProjectId);
+      moves.push({ projectId, beforeProjectId });
+      const items = host.projectSnapshot.projects;
+      const moved = items.find((item) => item.id === projectId);
+      assert.ok(moved);
+      const rest = items.filter((item) => item.id !== projectId);
+      const idx =
+        beforeProjectId === null
+          ? rest.length
+          : rest.findIndex((item) => item.id === beforeProjectId);
+      rest.splice(idx < 0 ? rest.length : idx, 0, moved);
+      host.projectSnapshot.projects = rest;
+      return {} as T;
+    }
+    if (method === "project/delete") {
+      host.projectSnapshot.projects = host.projectSnapshot.projects.filter(
+        (item) => item.id !== params.projectId,
+      );
+      return {} as T;
+    }
+    return request<T>(method, params);
+  };
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, alphaRoot, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(
+    rpc,
+    streams,
+    nativeProjectCommands(
+      host,
+      workspaces,
+      () => sessions.refreshProjects(),
+      (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+    ),
+  );
+  sessions.register(rpc, streams);
+  const call = async (method: string, params = {}) => {
+    const reply = await rpc.dispatch(method, { args: { request: params } });
+    assert.ok(reply.ok, reply.ok ? undefined : reply.error.message);
+    return reply.value;
+  };
+  const remA = {
+    workspaceId: "remote-workspace:a",
+    path: "/remote/a",
+    title: "Remote A",
+    sessionIds: [],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    remote: { hostId: "remote-peer:a", displayName: "Peer A", state: "connected" },
+  };
+  const remB = {
+    workspaceId: "remote-workspace:b",
+    path: "/remote/b",
+    title: "Remote B",
+    sessionIds: [],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    remote: { hostId: "remote-peer:b", displayName: "Peer B", state: "connected" },
+  };
+  workspaces.setRemoteGroups([remA, remB]);
+  await call("session/list");
+  const alpha = workspaces.byPath(alphaRoot);
+  const beta = workspaces.byPath(betaRoot);
+  assert.ok(alpha && beta);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remA.workspaceId, remB.workspaceId, alpha.workspaceId, beta.workspaceId],
+  );
+
+  // Native-to-native reorder delegates to Codex project/move without locking displayOrder.
+  await call("workspace/insertBefore", {
+    workspaceId: beta.workspaceId,
+    beforeWorkspaceId: alpha.workspaceId,
+  });
+  assert.deepEqual(moves, [{ projectId: "beta", beforeProjectId: "alpha" }]);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remA.workspaceId, remB.workspaceId, beta.workspaceId, alpha.workspaceId],
+  );
+  assert.equal(
+    data.readJson<{ displayOrder?: string[] }>("workspaces.json", {}).displayOrder,
+    undefined,
+  );
+
+  // Dragging a native project before a remote workspace updates displayOrder without project/move.
+  await call("workspace/insertBefore", {
+    workspaceId: alpha.workspaceId,
+    beforeWorkspaceId: remA.workspaceId,
+  });
+  assert.equal(moves.length, 1);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [alpha.workspaceId, remA.workspaceId, remB.workspaceId, beta.workspaceId],
+  );
+  await sessions.refreshProjects();
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [alpha.workspaceId, remA.workspaceId, remB.workspaceId, beta.workspaceId],
+  );
+
+  // Dragging a remote workspace before a native project succeeds without workspace/remote-read-only.
+  await call("workspace/insertBefore", {
+    workspaceId: remB.workspaceId,
+    beforeWorkspaceId: alpha.workspaceId,
+  });
+  assert.equal(moves.length, 1);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remB.workspaceId, alpha.workspaceId, remA.workspaceId, beta.workspaceId],
+  );
+
+  // Subsequent native-to-native drag syncs both Codex project/move and persisted displayOrder.
+  await call("workspace/insertBefore", {
+    workspaceId: beta.workspaceId,
+    beforeWorkspaceId: alpha.workspaceId,
+  });
+  assert.deepEqual(moves.at(-1), { projectId: "beta", beforeProjectId: "alpha" });
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remB.workspaceId, beta.workspaceId, alpha.workspaceId, remA.workspaceId],
+  );
+
+  // Deleting a native project cleans its entry from displayOrder while keeping remote slots.
+  await call("workspace/delete", { workspaceId: alpha.workspaceId });
+  assert.deepEqual(data.readJson<{ displayOrder?: string[] }>("workspaces.json", {}).displayOrder, [
+    remB.workspaceId,
+    beta.workspaceId,
+    remA.workspaceId,
+  ]);
+});
+
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {
   const titles = projectRootTitles([
     { name: "app", rootPaths: ["/srv/app", "/"] },
@@ -1196,6 +1666,32 @@ it("groups assigned worktrees under their GUI project without changing execution
   assert.equal(projectGroupRoot(snapshot, "nested", join(root, "subdirectory")), root);
   assert.equal(projectGroupRoot(snapshot, "unselected", join(root, "generated")), undefined);
   assert.equal(projectGroupRoot(snapshot, "unknown", `${root}-other`), undefined);
+});
+
+it("keeps an assigned Thread with its own project when its folder is another project's first root", () => {
+  const home = resolve("computer", "chapter");
+  const shared = resolve("computer", "shared");
+  const extra = resolve("computer", "extra");
+  const snapshot = {
+    projects: [
+      { id: "owner", name: "Owner", rootPaths: [shared] },
+      { id: "chapter", name: "Chapter", rootPaths: [home, shared, extra] },
+    ],
+    assignments: { mine: "chapter", theirs: "owner", plain: "chapter" },
+    projectless: [],
+  };
+  assert.equal(projectGroupRoot(snapshot, "mine", join(shared, "notes")), home);
+  assert.equal(projectGroupRoot(snapshot, "theirs", shared), shared);
+  assert.equal(
+    projectGroupRoot(snapshot, "plain", extra),
+    extra,
+    "a root no project is named after stays its own Workspace",
+  );
+  assert.equal(
+    projectGroupRoot(snapshot, "unassigned", shared),
+    shared,
+    "without an assignment the folder decides",
+  );
 });
 
 it("uses existing Desktop routing without installing code, and does not retry rejected writes", async (t) => {

@@ -33,9 +33,11 @@ import {
   type AntigravityOpenAcpSessionInput,
   type AntigravityPromptInputPart,
   type AntigravityPromptResult,
+  type AntigravitySessionInteractionHandler,
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
+import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
@@ -105,10 +107,12 @@ class FakeTransport implements AntigravityAcpTransportLike {
     return this.options.skipPermissions === true;
   }
   eventHandler: AntigravitySessionEventHandler | null = null;
+  interactionHandler: AntigravitySessionInteractionHandler | null = null;
   queuedSessionEvents: AntigravityAcpEvent[] = [];
   handler?: AntigravityActivePromptHandler;
   parts?: readonly AntigravityPromptInputPart[];
   result = deferred<AntigravityPromptResult>();
+  steerResults: Array<ReturnType<typeof deferred<AntigravityPromptResult>>> = [];
   config = config();
   constructor(readonly options: AntigravityAcpTransportOptions) {}
   initialize = vi.fn(async (): Promise<InitializeResponse> => ({
@@ -118,6 +122,9 @@ class FakeTransport implements AntigravityAcpTransportLike {
   setSessionEventHandler(handler: AntigravitySessionEventHandler | null) {
     this.eventHandler = handler;
     if (handler) for (const event of this.queuedSessionEvents.splice(0)) handler(event);
+  }
+  setSessionInteractionHandler(handler: AntigravitySessionInteractionHandler | null) {
+    this.interactionHandler = handler;
   }
   openSession = vi.fn(async (input: AntigravityOpenAcpSessionInput) => {
     this.sessionId = input.sessionId ?? randomUUID();
@@ -145,6 +152,12 @@ class FakeTransport implements AntigravityAcpTransportLike {
       return this.result.promise;
     },
   );
+  steer = vi.fn((parts: readonly AntigravityPromptInputPart[]) => {
+    this.parts = parts;
+    const next = deferred<AntigravityPromptResult>();
+    this.steerResults.push(next);
+    return next.promise;
+  });
   cancel = vi.fn(async () => {});
   closeSession = vi.fn(async () => {
     this.sessionId = null;
@@ -414,6 +427,96 @@ describe("Antigravity ACP Session", () => {
       });
     },
   );
+  it("projects context window onto per-model native max_context_tokens across resume and model switches", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-context-native-window-"));
+    directories.push(home);
+    const nativeRef = ref();
+    const sessionId = nativeRef.nativeSessionId;
+    const log = path.join(
+      home,
+      ".gemini/antigravity-cli/brain",
+      sessionId,
+      ".system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(log), { recursive: true });
+    await writeFile(
+      log,
+      `${JSON.stringify({
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        step_index: 1,
+        model: "gemini-4-neon-xhigh",
+        input_tokens: 100,
+        cache_read_tokens: 50,
+        output_tokens: 20,
+      })}\n`,
+    );
+    await writeNativeTimingDatabase(home, [{ step: 1, maxContextTokens: 512_000 }], sessionId);
+    const { adapter } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    adapter.options.createTransport = (options) => {
+      const transport = new FakeTransport(options);
+      transport.config = [
+        {
+          id: "model",
+          category: "model",
+          name: "Model",
+          currentValue: "gemini-4-neon",
+          options: [
+            { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+            { value: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+          ],
+        },
+        {
+          id: "thought_level",
+          name: "Thinking",
+          currentValue: "xhigh",
+          options: [{ value: "xhigh", name: "XHigh" }],
+        },
+      ];
+      transport.queuedSessionEvents.push({
+        type: "usage.context",
+        used: 362_000,
+        size: 1_048_576,
+      });
+      return transport;
+    };
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", nativeRef, cwd: home }),
+    );
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
+    await session.refreshUsage();
+    const latestUsage = () =>
+      events(outputs)
+        .filter((event) => event.type === "session.usage.changed")
+        .at(-1)?.usage;
+    expect(latestUsage()).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+
+    // Switching to an unseen model falls back to ACP's reported size instead of leaking 512K.
+    expect(
+      await session.execute({ type: "model.select", model: model("claude-sonnet-5-5") }),
+    ).toEqual({ ok: true, value: { completed: true } });
+    expect(latestUsage()).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 1_048_576,
+      contextUsagePercent: (362_000 / 1_048_576) * 100,
+    });
+
+    // Switching back restores Gemini 4 Neon's verified native 512K limit immediately.
+    expect(await session.execute({ type: "model.select", model: model("gemini-4-neon") })).toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    expect(latestUsage()).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+  });
   it("marks missing derived history incomplete instead of publishing an empty zero-cost ledger", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-derived-usage-"));
     directories.push(home);
@@ -617,7 +720,7 @@ describe("Antigravity ACP Session", () => {
       ).toMatchObject(busy);
 
       const forked = adapter.open(request);
-      await vi.waitFor(() => expect(transports).toHaveLength(2));
+      await vi.waitFor(() => expect(transports).toHaveLength(2), { timeout: 10_000 });
       expect(transport.cancel).not.toHaveBeenCalled();
       answerStep(db, 5, "source-only answer");
       transport.result.resolve({ stopReason: "end_turn" });
@@ -916,6 +1019,89 @@ describe("Antigravity ACP Session", () => {
         .filter((event) => event.type === "item.completed")
         .map((event) => event.snapshot.item),
     ).toMatchObject([{ text: "new" }]);
+  });
+  it("routes a detached tool update after cancelling its successor Turn", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(session.hasBackgroundWork?.()).toBe(true);
+
+    transport.result = deferred();
+    const nextTransport = await start(session, transports, "t2");
+    await session.execute({ type: "turn.cancel", turnId: turnId("t2") });
+    nextTransport.handler?.onEvent({
+      type: "tool.update",
+      toolCallId: "background-tool",
+      status: "completed",
+      rawOutput: "done",
+    });
+    await vi.waitFor(() => expect(session.hasBackgroundWork?.()).toBe(false));
+    nextTransport.result.resolve({ stopReason: "cancelled" });
+    await completed(outputs, "t2");
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        turnId: "t1",
+        snapshot: expect.objectContaining({ outcome: { status: "succeeded" } }),
+      }),
+    );
+  });
+  it("does not complete a cancelled current Turn from a session-level tool update", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "cancelled-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    await session.execute({ type: "turn.cancel", turnId: turnId("t1") });
+    transport.eventHandler?.({
+      type: "tool.update",
+      toolCallId: "cancelled-tool",
+      status: "completed",
+      rawOutput: "late success",
+    });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).some(
+          (event) =>
+            event.type === "item.completed" &&
+            event.turnId === "t1" &&
+            event.snapshot.item.type === "commandExecution" &&
+            event.snapshot.outcome.status === "succeeded",
+        ),
+      ).toBe(false),
+    );
+    transport.result.resolve({ stopReason: "cancelled" });
+    await completed(outputs);
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).some(
+          (event) =>
+            event.type === "item.completed" &&
+            event.turnId === "t1" &&
+            event.snapshot.outcome.status === "cancelled",
+        ),
+      ).toBe(true),
+    );
   });
   it("waits for config confirmation before publishing the effective selection", async () => {
     const { adapter, transports } = fixture();
@@ -1275,6 +1461,55 @@ describe("Antigravity ACP Session", () => {
       }),
     ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     expect(transports).toHaveLength(3);
+  });
+  it("rejects a Skip permissions restart while background tools retain the old transport", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        permissionModeId: mode("default"),
+      }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(session.hasBackgroundWork?.()).toBe(true);
+
+    expect(
+      await session.execute({
+        type: "permissionMode.select",
+        permissionModeId: mode("dangerously-skip-permissions"),
+      }),
+    ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(transports).toHaveLength(1);
+    expect(transport.close).not.toHaveBeenCalled();
+
+    transport.eventHandler?.({
+      type: "tool.update",
+      toolCallId: "background-tool",
+      status: "completed",
+      rawOutput: "done",
+    });
+    await vi.waitFor(() => expect(session.hasBackgroundWork?.()).toBe(false));
+    expect(
+      (
+        await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: mode("dangerously-skip-permissions"),
+        })
+      ).ok,
+    ).toBe(true);
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(transports).toHaveLength(2);
   });
   it("restores the original connection after a failed Skip permissions restart", async () => {
     const transports: FakeTransport[] = [];
@@ -1657,6 +1892,275 @@ describe("ACP interaction round trips", () => {
       }),
     ).toMatchObject({ ok: false });
   });
+
+  it("cancels only the pending interaction of a failed tool", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    for (const toolCallId of ["failing-tool", "other-tool"]) {
+      transport.handler?.onEvent({
+        type: "tool.call",
+        toolCallId,
+        name: "ask_question",
+        args: { questions: [{ question: "Continue?" }] },
+        status: "in_progress",
+      });
+    }
+    const questionSchema = {
+      type: "object",
+      required: ["answer"],
+      properties: {
+        answer: { type: "string", oneOf: [{ const: "yes", title: "Yes" }] },
+      },
+    } as const;
+    const failingReply = required(transport.handler).onElicitation({
+      mode: "form",
+      sessionId: required(transport.sessionId),
+      toolCallId: "failing-tool",
+      message: "Failing?",
+      requestedSchema: questionSchema,
+    });
+    const otherReply = required(transport.handler).onElicitation({
+      mode: "form",
+      sessionId: required(transport.sessionId),
+      toolCallId: "other-tool",
+      message: "Other?",
+      requestedSchema: questionSchema,
+    });
+    await vi.waitFor(() =>
+      expect(outputs.filter((output) => output.kind === "interaction")).toHaveLength(2),
+    );
+    const interactions = outputs
+      .filter((output) => output.kind === "interaction")
+      .flatMap((output) =>
+        output.kind === "interaction" ? [output.interaction.interactionId] : [],
+      );
+    const failingInteraction = required(interactions[0]);
+    const otherInteraction = required(interactions[1]);
+
+    transport.handler?.onEvent({
+      type: "tool.update",
+      toolCallId: "failing-tool",
+      status: "failed",
+      rawOutput: "failed",
+    });
+    await vi.waitFor(() =>
+      expect(events(outputs).some((event) => event.type === "item.completed")).toBe(true),
+    );
+    const closedIndex = events(outputs).findIndex(
+      (event) => event.type === "interaction.closed" && event.interactionId === failingInteraction,
+    );
+    const completedIndex = events(outputs).findIndex((event) => event.type === "item.completed");
+    expect(closedIndex).toBeGreaterThanOrEqual(0);
+    expect(closedIndex).toBeLessThan(completedIndex);
+    expect(
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: failingInteraction,
+        response: { type: "question", answers: { answer: ["yes"] } },
+      }),
+    ).toMatchObject({ ok: false });
+    await expect(failingReply).resolves.toEqual({ action: "cancel" });
+    expect(events(outputs)).toContainEqual({
+      type: "interaction.closed",
+      interactionId: failingInteraction,
+      turnId: "t1",
+      reason: "cancelled",
+    });
+
+    expect(
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: otherInteraction,
+        response: { type: "question", answers: { answer: ["yes"] } },
+      }),
+    ).toMatchObject({ ok: true });
+    await expect(otherReply).resolves.toEqual({ action: "accept", content: { answer: "yes" } });
+  });
+
+  it("cancels a pending interaction when its tool completes", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "completed-tool",
+      name: "ask_question",
+      status: "in_progress",
+    });
+    const reply = required(transport.handler).onElicitation({
+      mode: "form",
+      sessionId: required(transport.sessionId),
+      toolCallId: "completed-tool",
+      message: "Complete?",
+      requestedSchema: { type: "object", properties: {} },
+    });
+    await vi.waitFor(() =>
+      expect(outputs.some((output) => output.kind === "interaction")).toBe(true),
+    );
+    transport.handler?.onEvent({
+      type: "tool.update",
+      toolCallId: "completed-tool",
+      status: "completed",
+    });
+    await expect(reply).resolves.toEqual({ action: "cancel" });
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({ type: "interaction.closed", reason: "cancelled" }),
+    );
+  });
+
+  it("cancels a permission callback that arrives after its Turn completes", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 10" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({ type: "item.detached", turnId: "t1" }),
+    );
+
+    const reply = transport.interactionHandler?.onPermission({
+      sessionId: required(transport.sessionId),
+      toolCall: { toolCallId: "background-tool", name: "run_command", kind: "execute" },
+      options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+    });
+    await expect(reply).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    expect(outputs.some((output) => output.kind === "interaction")).toBe(false);
+  });
+
+  it("projects a detached command update and releases its known tool owner", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-command",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(session.hasBackgroundWork?.()).toBe(true);
+
+    transport.eventHandler?.({
+      type: "tool.update",
+      toolCallId: "background-command",
+      status: "completed",
+      rawOutput: "done",
+    });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: expect.objectContaining({
+            item: expect.objectContaining({ type: "commandExecution" }),
+          }),
+        }),
+      ),
+    );
+    expect(session.hasBackgroundWork?.()).toBe(false);
+  });
+
+  it("keeps a prior Turn's detached question open and answerable when steering a later Turn", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports, "t1");
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "detached-question",
+      name: "ask_question",
+      args: { questions: [{ question: "Proceed?" }] },
+      status: "in_progress",
+    });
+    const questionReply = required(transport.handler).onElicitation({
+      mode: "form",
+      sessionId: required(transport.sessionId),
+      toolCallId: "detached-question",
+      message: "Proceed?",
+      requestedSchema: {
+        type: "object",
+        required: ["answer"],
+        properties: {
+          answer: { type: "string", oneOf: [{ const: "yes", title: "Yes" }] },
+        },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(outputs.filter((output) => output.kind === "interaction")).toHaveLength(1),
+    );
+    const questionInteractionId = required(
+      outputs.find((output) => output.kind === "interaction")?.interaction.interactionId,
+    );
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t1");
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({ type: "item.detached", turnId: "t1" }),
+    );
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "interaction.closed", interactionId: questionInteractionId }),
+    );
+
+    transport.result = deferred();
+    await start(session, transports, "t2");
+    await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+    const t2Permission = required(transport.handler).onPermission({
+      sessionId: required(transport.sessionId),
+      toolCall: { toolCallId: "t2-perm", title: "Run command" },
+      options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+    });
+    await vi.waitFor(() =>
+      expect(outputs.filter((output) => output.kind === "interaction")).toHaveLength(2),
+    );
+
+    expect(
+      await session.execute({
+        type: "turn.steer",
+        turnId: turnId("t2"),
+        input: [{ type: "text", text: "steer turn 2" }],
+      }),
+    ).toEqual({ ok: true, value: { accepted: true } });
+    await expect(t2Permission).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "interaction.closed", interactionId: questionInteractionId }),
+    );
+
+    expect(
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: questionInteractionId,
+        response: { type: "question", answers: { answer: ["yes"] } },
+      }),
+    ).toEqual({ ok: true, value: { accepted: true } });
+    await expect(questionReply).resolves.toEqual({
+      action: "accept",
+      content: { answer: "yes" },
+    });
+
+    transport.result.resolve({ stopReason: "end_turn" });
+    required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t2");
+  });
 });
 
 describe("inspection and errors", () => {
@@ -1681,32 +2185,53 @@ describe("inspection and errors", () => {
           },
         },
       };
-      await writeFile(
-        command,
-        `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`,
-      );
-      await chmod(command, 0o755);
+      const writeQuota = async (script: string) => {
+        await writeFile(command, script);
+        await chmod(command, 0o755);
+      };
+      const quotaScript = `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`;
+      await writeQuota(quotaScript);
+      let now = 100_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
       const { adapter, transports } = fixture({ command });
-      expect(adapter.credits()).toBeNull();
-      expect(await adapter.refreshCredits()).toMatchObject({
-        usedPercent: 25,
-        periodType: "five_hour",
-      });
-      const account = await adapter.inspectAccount();
-      expect(account?.credits).toMatchObject({ usedPercent: 25 });
-      expect(account?.credits).not.toHaveProperty("fetchedAt");
-      const { session } = await sessionOf(
-        await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
-      );
-      expect(await session.readAccountCredits?.()).toMatchObject({
-        scope: { id: "Claude and GPT Models" },
-        usedPercent: 0,
-        productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
-      });
-      expect(transports).toHaveLength(0);
-      await writeFile(command, "#!/bin/sh\nexit 1\n");
-      expect(await adapter.refreshCredits()).toBeNull();
-      expect(adapter.credits()).toBeNull();
+      try {
+        expect(adapter.credits()).toBeNull();
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+        const account = await adapter.inspectAccount();
+        expect(account?.credits).toMatchObject({ usedPercent: 25 });
+        expect(account?.credits).not.toHaveProperty("fetchedAt");
+        const { session } = await sessionOf(
+          await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
+        );
+        await writeQuota("#!/bin/sh\nexit 1\n");
+        now = 110_000;
+        expect(await session.readAccountCredits?.()).toMatchObject({
+          scope: { id: "Claude and GPT Models" },
+          usedPercent: 0,
+          productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
+        });
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+        expect(transports).toHaveLength(0);
+        expect(await adapter.inspectAccount()).toBeNull();
+        expect(adapter.credits()).toBeNull();
+        await writeQuota(quotaScript);
+        now = 140_000;
+        expect(await adapter.refreshCredits()).toBeNull();
+        now = 170_000;
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+      } finally {
+        clock.mockRestore();
+        await adapter.close();
+      }
     },
   );
   it("normalizes native faults and redacts diagnostics", () => {
@@ -2309,6 +2834,7 @@ describe("Antigravity idle wake Turns", () => {
         nativeTurnRef: { nativeTurnKey: "wake-2" },
         items: [{ item: { type: "agentMessage", text: "wake answer" } }],
       });
+      expect(events(outputs).some(({ type }) => type === "item.background.started")).toBe(false);
       transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
       transport.result = deferred();
       await start(session, [transport], "t2");
@@ -2637,6 +3163,252 @@ describe("Antigravity idle wake Turns", () => {
     }
   });
 
+  it("steers an active prompt via concurrent session/prompt without cancelling background work", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      expect(session.capabilities.steer).toBe(true);
+      const handler = required(transport.handler);
+      handler.onEvent({ type: "agent.text", text: "waiting on timer" });
+      // A pending approval from the superseded prompt closes cleanly when steer is accepted.
+      const stalePermission = handler.onPermission({
+        sessionId: required(transport.sessionId),
+        toolCall: { toolCallId: "perm-1", title: "Run command" },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      });
+      await vi.waitFor(() =>
+        expect(outputs.some((output) => output.kind === "interaction")).toBe(true),
+      );
+      const steered = await session.execute({
+        type: "turn.steer",
+        turnId: turnId("t1"),
+        input: [{ type: "text", text: "follow-up B" }],
+      });
+      expect(steered).toEqual({ ok: true, value: { accepted: true } });
+      expect(await stalePermission).toEqual({ outcome: { outcome: "cancelled" } });
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({ type: "interaction.closed", reason: "cancelled" }),
+      );
+      expect(transport.cancel).not.toHaveBeenCalled();
+      expect(transport.steer).toHaveBeenCalledWith([{ type: "text", text: "follow-up B" }]);
+      // The superseded initial prompt settles immediately; the Host Turn must remain open.
+      transport.result.resolve({
+        stopReason: "end_turn",
+        usage: { inputTokens: 10, outputTokens: 5, cachedWriteTokens: 2, totalTokens: 15 },
+      });
+      await setImmediate();
+      expect(session.capabilities.steer).toBe(true);
+      expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
+      handler.onEvent({ type: "agent.text", text: "reply B" });
+      userStep(db, 2, "follow-up B", "run-b");
+      handler.onResponse?.();
+      expect(session.capabilities.steer).toBe(false);
+      // Late steer after the wire response is refused so Host can start a fresh Turn.
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "too late" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      // Omitting cachedWriteTokens on the second prompt keeps merged cacheWriteInputTokens unknown.
+      required(transport.steerResults[0]).resolve({
+        stopReason: "end_turn",
+        usage: { inputTokens: 20, outputTokens: 7, totalTokens: 27 },
+      });
+      await completed(outputs, "t1");
+      expect(session.capabilities.steer).toBe(false);
+      const done = events(outputs).find(
+        (event) => event.type === "turn.completed" && event.turnId === "t1",
+      );
+      expect(done).toMatchObject({
+        type: "turn.completed",
+        turnId: "t1",
+        outcome: { status: "succeeded" },
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+      });
+      const finalUsage = events(outputs).findLast(
+        (event) => event.type === "session.usage.changed" && event.observedForTurnId === "t1",
+      );
+      expect(finalUsage).toMatchObject({
+        usage: { inputTokens: 30, outputTokens: 12, totalTokens: 42 },
+      });
+      expect(
+        finalUsage && finalUsage.type === "session.usage.changed" && finalUsage.usage
+          ? finalUsage.usage.cacheWriteInputTokens
+          : "missing",
+      ).toBeUndefined();
+      expect(
+        events(outputs).filter(
+          (event) => event.type === "item.completed" && event.snapshot.item.type === "agentMessage",
+        ),
+      ).toMatchObject([
+        { snapshot: { item: { text: "waiting on timer" } } },
+        { snapshot: { item: { text: "reply B" } } },
+      ]);
+      // Idle session refuses turn.steer.
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "idle" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("waits for a delayed steered WAL commit and keeps prior foreground compaction checkpoints", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, Date.now());
+      await moment();
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "delayed steer" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      const steerCreatedAtMs = Date.now();
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.handler).onResponse?.();
+      required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
+      // Commit steer's USER_INPUT after observeNativeTurnCount's initial 0ms read,
+      // along with a late compaction checkpoint belonging to the initial prompt's run.
+      setTimeout(() => {
+        userStep(db, 2, "delayed steer", "run-b");
+        stampStep(db, 2, steerCreatedAtMs);
+        checkpointStep(db, 3, { status: 3, run: "prompt", summary: "Late initial compaction" });
+      }, 40);
+      await completed(outputs, "t1");
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      ).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+        outcome: { status: "succeeded", checkpoint: { checkpointId: "turn-1" } },
+      });
+      expect(
+        events(outputs).filter(
+          (event) =>
+            event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+        ),
+      ).toMatchObject([
+        {
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-3" },
+            outcome: { status: "succeeded" },
+          },
+        },
+      ]);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("exposes dynamic steer capability across cancel and fails when a steered prompt rejects", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      expect(session.capabilities.steer).toBe(true);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "will fail" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.steerResults[0]).reject(
+        new AntigravityTransportError("unavailable", "steer prompt failed"),
+      );
+      await completed(outputs, "t1");
+      expect(session.capabilities.steer).toBe(false);
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      ).toMatchObject({
+        outcome: { status: "failed", error: { message: "steer prompt failed" } },
+      });
+
+      // Second turn: cancel flips capabilities.steer to false immediately and preserves prompt #0's checkpoint.
+      transport.result = deferred();
+      transport.steerResults = [];
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      expect(session.capabilities.steer).toBe(true);
+      userStep(db, 2, "second prompt", "run-2");
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t2"),
+          input: [{ type: "text", text: "cancelled steer" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      expect(await session.execute({ type: "turn.cancel", turnId: turnId("t2") })).toEqual({
+        ok: true,
+        value: { cancellationRequested: true },
+      });
+      expect(session.capabilities.steer).toBe(false);
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.steerResults[0]).resolve({ stopReason: "cancelled" });
+      await completed(outputs, "t2");
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t2"),
+      ).toMatchObject({
+        outcome: { status: "cancelled" },
+      });
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits compaction checkpoints committed inside an in-prompt wake run", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const beforePromptMs = Date.now() - 5_000;
+      systemStep(db, 2, "earlier-wake");
+      stampStep(db, 2, beforePromptMs);
+      checkpointStep(db, 3, { status: 3, run: "earlier-wake" });
+      userStep(db, 4, "hello", "fg-run");
+      const inPromptAtMs = Date.now();
+      systemStep(db, 5, "in-prompt-wake", "task_notification");
+      stampStep(db, 5, inPromptAtMs);
+      checkpointStep(db, 6, { status: 3, run: "in-prompt-wake", summary: "Wake compacted" });
+      transport.eventHandler?.({ type: "usage.context", used: 15_000, size: 200_000 });
+      await vi.waitFor(() =>
+        expect(
+          events(outputs).filter(
+            (event) =>
+              event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+          ),
+        ).toHaveLength(1),
+      );
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      const done = events(outputs).filter(
+        (event) =>
+          event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+      );
+      expect(done).toMatchObject([
+        {
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-6" },
+            outcome: { status: "succeeded" },
+          },
+        },
+      ]);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
   it.each(["close", "fault"])("does not publish an incomplete wake after %s", async (end) => {
     const { session, outputs, transport, db } = await setup();
     try {
@@ -2653,5 +3425,51 @@ describe("Antigravity idle wake Turns", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("rechecks cancellation before finishing native turn accounting", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    const countGate = deferred<number>();
+    const readCount = vi
+      .spyOn(nativeBoundaries, "observeNativeTurnCount")
+      .mockReturnValue(countGate.promise);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "unfinished-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await vi.waitFor(() => expect(readCount).toHaveBeenCalledOnce());
+
+    expect(await session.execute({ type: "turn.cancel", turnId: turnId("t1") })).toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    countGate.resolve(1);
+    await completed(outputs);
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.detached", turnId: "t1" }),
+    );
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        turnId: "t1",
+        snapshot: {
+          item: expect.objectContaining({ type: "commandExecution" }),
+          outcome: expect.objectContaining({ status: "cancelled" }),
+        },
+      }),
+    );
+    expect(events(outputs).find((event) => event.type === "turn.completed")).toMatchObject({
+      outcome: { status: "cancelled", checkpoint: { checkpointId: "turn-0" } },
+      nativeTurnRef: { nativeTurnKey: "turn-0" },
+    });
   });
 });

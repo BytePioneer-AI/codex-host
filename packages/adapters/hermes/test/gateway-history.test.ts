@@ -88,6 +88,40 @@ describe("Hermes durable gateway history", () => {
 // by default. Point the environment variable at an installed Hermes interpreter.
 const python = process.env.CODEXHOST_HERMES_NATIVE_TEST_PYTHON;
 describe.skipIf(!python)("Hermes installed SessionDB integration", () => {
+  it("reads finalized native titles but not derived placeholders", async () => {
+    if (!python) throw new Error("Missing Hermes native test interpreter");
+    const home = await mkdtemp(path.join(os.tmpdir(), "hermes-title-test-"));
+    const environment = { ...process.env, HERMES_HOME: home };
+    const history = new HermesGatewayHistory({
+      python,
+      cwd: home,
+      environment,
+      nativeSessionId: "s",
+    });
+    const writeTitle = async (source: "derived" | "llm") => {
+      await run(
+        python,
+        [
+          "-I",
+          "-c",
+          `from hermes_state import SessionDB
+with SessionDB() as db:
+    db.create_session(session_id='s', source='local')
+    assert db.set_auto_title('s', 'Trip budget', source='${source}')`,
+        ],
+        { cwd: home, env: environment },
+      );
+    };
+    try {
+      await writeTitle("derived");
+      await expect(history.readTitle()).resolves.toBeNull();
+      await writeTitle("llm");
+      await expect(history.readTitle()).resolves.toBe("Trip budget");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("opens, lists and derives sessions using the installed storage interface", async () => {
     if (!python) throw new Error("Missing Hermes native test interpreter");
     const home = await mkdtemp(path.join(os.tmpdir(), "hermes-storage-test-"));
@@ -136,7 +170,6 @@ db.close()`,
       await rm(home, { recursive: true, force: true });
     }
   }, 60_000);
-
   it("creates, reads, forks and rolls back complete tool history without changing its source", async () => {
     if (!python) throw new Error("Missing Hermes native test interpreter");
     const home = await mkdtemp(path.join(os.tmpdir(), "hermes-history-test-"));

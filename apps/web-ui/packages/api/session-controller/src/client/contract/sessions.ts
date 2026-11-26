@@ -181,4 +181,9 @@ export interface ISessions {
    * @returns the live binding, or undefined without a retained generation.
    */
   binding(id: SessionId): SessionBinding | undefined;
+  /**
+   * Approximate in-memory byte footprint of a currently retained Session,
+   * or `0` when the Session is not materialized.
+   */
+  estimatedBytes?(id: SessionId): number;
 }

@@ -242,8 +242,9 @@ export class SessionManager {
     if (session !== expected) return Promise.resolve();
     const view = session.captureView();
     if (view) {
-      const evicted = this.recentViews.remember(sessionId, view);
-      if (evicted) this.projectionStores.get(evicted)?.discard(WEB_FOLLOW_PROJECTION_KEYS);
+      for (const evicted of this.recentViews.remember(sessionId, view)) {
+        this.projectionStores.get(evicted)?.discard(WEB_FOLLOW_PROJECTION_KEYS);
+      }
     }
     this.sessions.delete(sessionId);
     this.addresses.delete(sessionId);

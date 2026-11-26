@@ -7,6 +7,7 @@ import {
   type WebToolOutputReference,
 } from "@codexhost/shared-contracts";
 import { ToolOutputCache } from "../tool-output.ts";
+import { estimateJournalBytes, estimateUnknownBytes } from "../memory-budget.ts";
 import type { InboxState, InboxTarget } from "@deepseek-ai/dsh-agent/types";
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import type {
@@ -198,6 +199,8 @@ export class Session implements SessionFace {
 
   /** Contiguous history and live tail consumed by Conversation assembly. */
   readonly eventSource = new MutableSessionEventSource();
+  private cachedProjectionBytesRevision = -1;
+  private cachedProjectionBytes = 0;
   private snapshotCache: SessionSnapshot;
   private readonly notifier: Notifier;
   /**
@@ -686,6 +689,20 @@ export class Session implements SessionFace {
   getSnapshot(): SessionSnapshot {
     this.notifier.ensureFresh();
     return this.snapshotCache;
+  }
+
+  /** Approximate in-memory footprint of this Session's event window, tool outputs, and projections. */
+  estimatedBytes(): number {
+    const projectionRevision = this.projections.revision;
+    if (this.cachedProjectionBytesRevision !== projectionRevision) {
+      this.cachedProjectionBytes = estimateUnknownBytes(this.projections.values());
+      this.cachedProjectionBytesRevision = projectionRevision;
+    }
+    const eventBytes =
+      this.eventSource.estimatedBytes > 0
+        ? this.eventSource.estimatedBytes
+        : estimateJournalBytes(this.cachedJournal);
+    return eventBytes + this.toolOutputs.estimatedBytes + this.cachedProjectionBytes;
   }
 
   /** Capture only display data before releasing the runtime and its transport. */

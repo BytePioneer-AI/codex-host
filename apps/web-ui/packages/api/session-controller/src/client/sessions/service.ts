@@ -606,6 +606,15 @@ export class ClientSessions implements ISessions {
     return this.scopes.get(id)?.binding;
   }
 
+  /**
+   * Approximate in-memory byte footprint of a currently retained Session.
+   * @param id - Session identity.
+   * @returns estimated bytes for the live Session, or `0` when not materialized.
+   */
+  estimatedBytes(id: SessionId): number {
+    return this.scopes.get(id)?.session.estimatedBytes() ?? 0;
+  }
+
   private retainScope(id: SessionId, source: SessionReferenceSource): ClientSessionReference {
     const record = this.scopes.get(id) ?? this.materializeScope(id);
     const previous = record.retention;

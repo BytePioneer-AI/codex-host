@@ -30,11 +30,12 @@ import {
   IconPlayOutlineRegular,
   PathLabel,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import { fileAddressFor, resolveWorkspacePath } from "@deepseek-ai/dsh-util-workspace-path";
+import { fileAddressFor } from "@deepseek-ai/dsh-util-workspace-path";
 import type { WorkspaceDirectoryEntry } from "@deepseek-ai/dsh-api-workspace-files/types";
 import { childPath } from "./face.ts";
 import type { FilesInjected } from "./face.ts";
 import type {} from "./locales.ts";
+import { filesRoot } from "./root.ts";
 import type { FilesTabState, createFilesStore } from "./store.ts";
 import css from "./FilesBody.module.css";
 
@@ -252,10 +253,8 @@ export function FilesBody({
   const remoteFilesReady =
     remoteHost != null && remoteHost.state === "connected" && remoteHost.workspaceFiles === true;
   const params = tab.navigation.params;
-  const root =
-    params !== undefined && "directory" in params
-      ? resolveWorkspacePath(cwd, params.directory)
-      : (cwd ?? (remoteFilesReady ? "." : undefined));
+  const directory = params !== undefined && "directory" in params ? params.directory : undefined;
+  const root = filesRoot(cwd, directory, remoteFilesReady);
   const stored = useStore((store) => store.byTab[tab.id]);
   const state = stored?.root === root ? stored : undefined;
   const bodyRef = useRef<HTMLDivElement>(null);

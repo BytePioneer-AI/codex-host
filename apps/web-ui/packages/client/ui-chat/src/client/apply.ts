@@ -12,11 +12,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar-right/client";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar-browser/client";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
-// The `file` entry of `SidebarRightResourceParamsMap`, which types `{ params: { line } }` below.
-import type {} from "@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client";
-import type {} from "@deepseek-ai/dsh-client-ui-sidebar-files/client";
 import {
-  fileAddressFor,
   isAbsoluteWorkspacePath,
   resolveWorkspacePath,
 } from "@deepseek-ai/dsh-util-workspace-path";
@@ -59,6 +55,7 @@ import {
   type ChatSettings,
 } from "../chat-settings.ts";
 import { LinkOpeningRow, type LinkOpeningRowInjected } from "./settings/LinkOpeningRow.tsx";
+import { openWorkspaceLink } from "./open-workspace-link.ts";
 import { useTurnDataValue } from "./chat/use-turn-data.ts";
 import { bindDisclosure } from "./chat/use-disclosure.ts";
 
@@ -286,7 +283,6 @@ export function apply(ctx: Context): void {
             },
             fileMentions: (owner: TurnTailOwnerProps) =>
               ctx.get("chatFileMentions")?.forClosing(owner, sessionId),
-            // Directories use Files; regular files keep their session-scoped resource and line.
             openFile: async (path, options) => {
               const cwd = ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd;
               if (options?.external || options?.reveal) {
@@ -304,23 +300,13 @@ export function apply(ctx: Context): void {
                 if (!result.ok) throw new Error(result.error.message);
                 return;
               }
-              const meta = await ctx.remote.workspaceFiles.stat(sessionId, path);
-              if (ctx.sidebarRight.mounted.getSnapshot() !== sessionId) return;
-              if (
-                !meta.ok &&
-                meta.error.code === "workspace-file/not-regular-file" &&
-                meta.error.details.kind === "directory"
-              ) {
-                ctx.sidebarRight.openTabIn(sessionId, "files", {
-                  params: { directory: meta.error.details.path },
-                });
-                return;
-              }
-              const url = fileAddressFor(sessionId, cwd, path);
-              ctx.sidebarRight.openResourceIn(
+              await openWorkspaceLink(
+                ctx.remote.workspaceFiles,
+                ctx.sidebarRight,
                 sessionId,
-                url,
-                options?.line === undefined ? undefined : { params: { line: options.line } },
+                cwd,
+                path,
+                options?.line,
               );
             },
             openSkill: (name) => {

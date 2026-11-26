@@ -75,6 +75,7 @@ import {
   deriveSearchResults,
   deriveThreadForest,
   orderByRecency,
+  orderWorkspacesByRecency,
   owningGroupKey,
   owningParentFolder,
   pinCurrentBlank,
@@ -399,10 +400,13 @@ type SessionTreeProps = Pick<
     list: SessionListState;
     /** Host account home for POSIX hover-path abbreviation. */
     home?: string | undefined;
-    /** Workspaces in Host group order with browser-projected Session order (may be host-scoped). */
+    /** Workspaces in display order with browser-projected Session order (may be host-scoped). */
     workspaces: readonly WorkspaceView[];
-    /** Complete unfiltered Workspaces in Host order for cross-host drag-reorder anchor resolution. */
+    /** Complete unfiltered display order, including siblings hidden by the Host filter. */
     allWorkspaces?: readonly WorkspaceView[];
+    /** Host order used to resolve a drop while displaying Workspaces by recency. */
+    manualWorkspaces?: readonly WorkspaceView[] | undefined;
+    onWorkspaceReordered: () => void;
     /** Per Workspace, the projected roots that are there only through a descendant. */
     linkedRoots: ReadonlyMap<string, ReadonlySet<SessionId>>;
     /** Browser-projected order for Sessions outside every Workspace. */
@@ -486,6 +490,8 @@ function SessionTree({
   open,
   workspaces,
   allWorkspaces = workspaces,
+  manualWorkspaces,
+  onWorkspaceReordered,
   linkedRoots,
   ungroupedSessionIds,
   rowState,
@@ -639,17 +645,23 @@ function SessionTree({
     if (workspaceDropCommitted.current) return;
     workspaceDropCommitted.current = true;
     setWorkspaceDrag(null);
-    const resolved = resolveWorkspaceDropAnchor(allWorkspaces, activeDrag.workspaceId, over, {
-      sectionOf,
-      parents: reorderParents,
-    });
-    if (resolved === null) return;
-    insertWorkspaceBefore(
-      activeDrag.workspaceId,
-      resolved.beforeWorkspaceId as WorkspaceId | undefined,
-    ).catch((reason: unknown) => {
-      console.warn("workspace reorder rejected:", reason);
-    });
+    const context = { sectionOf, parents: reorderParents };
+    const { workspaceId } = activeDrag;
+    const displayDrop = resolveWorkspaceDropAnchor(allWorkspaces, workspaceId, over, context);
+    if (displayDrop === null) return;
+    const manualDrop =
+      manualWorkspaces === undefined
+        ? displayDrop
+        : resolveWorkspaceDropAnchor(manualWorkspaces, workspaceId, over, context);
+    if (manualDrop === null) {
+      onWorkspaceReordered();
+      return;
+    }
+    insertWorkspaceBefore(workspaceId, manualDrop.beforeWorkspaceId as WorkspaceId | undefined)
+      .then(onWorkspaceReordered)
+      .catch((reason: unknown) => {
+        console.warn("workspace reorder rejected:", reason);
+      });
   };
   const childrenByParent = useMemo(() => {
     const rendered = new Set(groups.map((group) => group.key));
@@ -1728,9 +1740,13 @@ function WorkspaceBrowserContent({
     () => threadTreeOrderSource(list, rowState, threadView.forest),
     [list, rowState, threadView.forest],
   );
+  const workspaceDisplayOrder = useMemo(
+    () => (orderBy === "updated" ? orderWorkspacesByRecency(workspaces, list.byId) : workspaces),
+    [orderBy, workspaces, list.byId],
+  );
   const projectedWorkspaces = useMemo(
     () =>
-      workspaces.map((workspace) => {
+      workspaceDisplayOrder.map((workspace) => {
         const { memberIds, linkedRootIds } = workspaceTreeMembers(
           workspace.sessionIds,
           threadOrder,
@@ -1757,7 +1773,7 @@ function WorkspaceBrowserContent({
           linkedRootIds,
         };
       }),
-    [currentBlank, threadOrder, orderBy, orderState, sessionOrderByAccount, workspaces],
+    [currentBlank, threadOrder, orderBy, orderState, sessionOrderByAccount, workspaceDisplayOrder],
   );
   const orderedWorkspaces = useMemo(
     () => projectedWorkspaces.map(({ workspace }) => workspace),
@@ -2589,6 +2605,10 @@ function WorkspaceBrowserContent({
               renderSlot={renderSlot}
               workspaces={scopedWorkspaces}
               allWorkspaces={orderedWorkspaces}
+              manualWorkspaces={orderBy === "updated" ? workspaces : undefined}
+              onWorkspaceReordered={() =>
+                actions.setOrderBy("manual", activeSessionOrders, orderSource)
+              }
               linkedRoots={linkedRoots}
               ungroupedSessionIds={orderedUngroupedSessionIds}
               canStartProjectless={canStartProjectless}

@@ -1049,9 +1049,10 @@ it("adopts folders opened in Web as native projects once native projects are in 
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, "home");
   const opened = join(home, "work", "opened");
+  const later = join(home, "work", "later");
   const existing = join(home, "existing");
   const gone = join(home, "gone");
-  for (const folder of [opened, existing, gone]) mkdirSync(folder, { recursive: true });
+  for (const folder of [opened, later, existing, gone]) mkdirSync(folder, { recursive: true });
   const host = new FakeChHost();
   host.projectSnapshot.projects = [
     { id: "home", name: "Home", rootPaths: [home] },
@@ -1061,15 +1062,17 @@ it("adopts folders opened in Web as native projects once native projects are in 
   host.projectSnapshot.projectless.splice(0);
   const data = new DataDir(join(root, "web"));
   const workspaces = new Workspaces(data, home, true);
-  for (const folder of [opened, existing, gone]) workspaces.create(folder);
+  for (const folder of [opened, later, existing, gone]) workspaces.create(folder);
   rmSync(gone, { recursive: true });
   const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
   t.after(() => sessions.close());
   const created: string[] = [];
+  let offline = true;
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     if (method !== "project/create") return request<T>(method, params);
     const rootPaths = (params.roots as Array<{ path: string }>).map((entry) => entry.path);
+    if (offline && rootPaths[0] === later) throw new Error("offline");
     const project = {
       id: `adopted-${String(created.length)}`,
       name: String(params.name),
@@ -1088,15 +1091,23 @@ it("adopts folders opened in Web as native projects once native projects are in 
   await sessions.refreshProjects();
   assert.equal(workspaces.ownerOf("in-opened")?.projectId, "home");
   const compatibleState = readFileSync(data.path("workspaces.json"), "utf8");
-  await adopt();
+  await assert.rejects(adopt(), /offline/);
   assert.deepEqual(created, [opened], "only an existing folder without a project is adopted");
+  await sessions.refreshProjects();
   assert.equal(workspaces.ownerOf("in-opened")?.path, opened);
 
+  // The user removes an adopted project before the interrupted adoption is retried.
+  host.projectSnapshot.projects = host.projectSnapshot.projects.filter(
+    (project) => !project.id.startsWith("adopted-"),
+  );
+  offline = false;
+  await adopt();
+  assert.deepEqual(created, [opened, later], "a retry resumes without recreating a removed one");
   host.projectSnapshot.projects = host.projectSnapshot.projects.filter(
     (project) => !project.id.startsWith("adopted-"),
   );
   await adopt();
-  assert.deepEqual(created, [opened], "a project removed later is not created again");
+  assert.deepEqual(created, [opened, later], "a finished adoption never runs again");
   assert.equal(readFileSync(data.path("workspaces.json"), "utf8"), compatibleState);
 });
 

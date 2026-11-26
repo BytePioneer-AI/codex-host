@@ -1609,7 +1609,7 @@ export class AppServerHost {
               ? [{ harness: adapter.harnessId, capability: adapter.usageStatistics }]
               : [],
         ),
-      () => this.#repository.list(),
+      () => this.#repository.listSummaries(),
     );
   }
 

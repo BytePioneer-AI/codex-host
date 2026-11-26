@@ -678,6 +678,136 @@ describe("UsageStatistics", () => {
     stats.close();
   });
 
+  it("checkpoints parsed sources to disk periodically before a long Harness scan finishes", async () => {
+    let now = NOW;
+    const third = Promise.withResolvers<HarnessUsageEntry[]>();
+    const secondDone = Promise.withResolvers<undefined>();
+    const sources: HarnessUsageSource[] = [
+      { id: "first", fingerprint: "1" },
+      { id: "second", fingerprint: "1" },
+      { id: "third", fingerprint: "1" },
+    ];
+    const capability: HarnessUsageStatisticsCapability = {
+      listSources: async () => sources,
+      readSource: async (id) => {
+        if (id === "first") return [entry("e1")];
+        if (id === "second") {
+          await new Promise((resolve) => setImmediate(resolve));
+          now += 61_000;
+          return [entry("e2")];
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+        secondDone.resolve(undefined);
+        return third.promise;
+      },
+    };
+    const cacheFile = path.join(directory, "usage-statistics", "v8", "codex-usage.json");
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
+    stats.attach(() => [{ harness: "codex-usage", capability }]);
+    try {
+      await stats.get("all");
+      await secondDone.promise;
+      await vi.waitFor(
+        async () => {
+          const persisted = await readFile(cacheFile, "utf8");
+          expect(persisted).toContain('"e1"');
+          expect(persisted).toContain('"e2"');
+        },
+        { timeout: 500 },
+      );
+      third.resolve([entry("e3")]);
+      await stats.settled();
+      expect((await stats.get("all")).totals.requests).toBe(3);
+    } finally {
+      stats.close();
+    }
+  });
+
+  it("backs off for the persist interval after a failed checkpoint write and retries while staying dirty", async () => {
+    let now = NOW;
+    const firstFailed = Promise.withResolvers<undefined>();
+    const diagnose = vi.fn(() => {
+      firstFailed.resolve(undefined);
+    });
+    let sources: HarnessUsageSource[] = [{ id: "seed", fingerprint: "1" }];
+    const second = Promise.withResolvers<HarnessUsageEntry[]>();
+    const third = Promise.withResolvers<HarnessUsageEntry[]>();
+    const fourth = Promise.withResolvers<HarnessUsageEntry[]>();
+    const fifth = Promise.withResolvers<HarnessUsageEntry[]>();
+    const capability: HarnessUsageStatisticsCapability = {
+      listSources: async () => sources,
+      readSource: async (id) => {
+        if (id === "seed") return [entry("seed")];
+        if (id === "first") return [entry("e1")];
+        if (id === "second") return second.promise;
+        if (id === "third") return third.promise;
+        if (id === "fourth") return fourth.promise;
+        return fifth.promise;
+      },
+    };
+    const cacheFile = path.join(directory, "usage-statistics", "v8", "codex-usage.json");
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+      diagnose,
+    });
+    stats.attach(() => [{ harness: "codex-usage", capability }]);
+    try {
+      await settledGet(stats);
+      expect(await readFile(cacheFile, "utf8")).toContain('"seed"');
+
+      // Block rename onto the cache path with a non-empty directory so checkpoint persist fails.
+      await rm(cacheFile);
+      await mkdir(path.join(cacheFile, "blocker"), { recursive: true });
+      sources = [
+        { id: "seed", fingerprint: "1" },
+        { id: "first", fingerprint: "1" },
+        { id: "second", fingerprint: "1" },
+        { id: "third", fingerprint: "1" },
+        { id: "fourth", fingerprint: "1" },
+        { id: "fifth", fingerprint: "1" },
+      ];
+      now += 61_000;
+      await stats.get("all");
+      await firstFailed.promise;
+      expect(diagnose).toHaveBeenCalledTimes(1);
+
+      // Within the 60s interval after the failed attempt, later sources must not retry persisting.
+      now += 30_000;
+      second.resolve([entry("e2")]);
+      third.resolve([entry("e3")]);
+      await vi.waitFor(async () => expect((await stats.get("all")).totals.requests).toBe(4));
+      expect(diagnose).toHaveBeenCalledTimes(1);
+
+      // Once 60s have passed since the failed attempt, dirty state triggers a retry that persists.
+      await rm(cacheFile, { recursive: true, force: true });
+      now += 30_000;
+      fourth.resolve([entry("e4")]);
+      await vi.waitFor(
+        async () => {
+          const persisted = await readFile(cacheFile, "utf8");
+          expect(persisted).toContain('"seed"');
+          expect(persisted).toContain('"e1"');
+          expect(persisted).toContain('"e2"');
+          expect(persisted).toContain('"e3"');
+        },
+        { timeout: 1_000 },
+      );
+
+      fifth.resolve([entry("e5")]);
+      await stats.settled();
+      expect(diagnose).toHaveBeenCalledTimes(1);
+      expect((await stats.get("all")).totals.requests).toBe(6);
+    } finally {
+      stats.close();
+    }
+  });
+
   it("reparses unchanged native sources instead of retaining a v7 cache", async () => {
     const storage = new FakeStorage(
       new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),
@@ -887,6 +1017,7 @@ it("uses persisted Desktop titles by Harness/native identity and reflects rename
     );
     expect(renamed.totals).toEqual(initial.totals);
     expect(storage.reads).toEqual(reads);
+    const fullThreadsSpy = vi.spyOn(fixture.mappingStore, "listThreads");
     await fixture.mappingStore.setTitle(record.hostThreadId, "");
     expect((await usageStatistics.get("all")).sessions).toContainEqual(
       expect.objectContaining({
@@ -895,7 +1026,10 @@ it("uses persisted Desktop titles by Harness/native identity and reflects rename
         title: "Raw first prompt",
       }),
     );
-    vi.spyOn(fixture.mappingStore, "listThreads").mockRejectedValueOnce(new Error("unavailable"));
+    expect(fullThreadsSpy).not.toHaveBeenCalled();
+    vi.spyOn(fixture.mappingStore, "listThreadSummaries").mockRejectedValueOnce(
+      new Error("unavailable"),
+    );
     expect((await usageStatistics.get("all")).sessions).toContainEqual(
       expect.objectContaining({
         harness: "pi",

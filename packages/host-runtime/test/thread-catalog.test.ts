@@ -324,9 +324,9 @@ describe("source-separated Thread catalog", () => {
   it.each(["folder", "project", "migrated", "rooted"] as const)(
     "reads on for a scoped %s until a page holds its Thread, the branch ends, or the bound",
     async (scopeKind) => {
-      // Row 120 lies in an excluded nested folder; row 250 is the folder's only Thread.
+      // Native projects need an exact root match. Folder scopes also accept descendants.
       const cwdOf = (n: number) =>
-        n === 250 ? "/work/app/src" : n === 120 ? "/work/app/nested" : "/work/other";
+        n === 250 ? "/work/app" : n === 120 || n === 121 ? "/work/app/nested" : "/work/other";
       const nativeRows = Array.from({ length: 2_000 }, (_, n) => ({
         ...row(`native-${n}`, 5_000 - n),
         cwd: cwdOf(n),

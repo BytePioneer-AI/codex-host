@@ -27,7 +27,7 @@
 | [`architecture/external-thread-side-chats.md`](architecture/external-thread-side-chats.md) | 外部 Thread 的侧边聊天：挂靠 Fork、来源运行中的 Fork、边界消息暂存并随下一个 Turn 交付，以及列表、历史与删除规则；修改侧边聊天或 Fork 时阅读。 |
 | [`architecture/cross-harness-handoff.md`](architecture/cross-harness-handoff.md) | 跨 Harness 上下文交接：16 KB 规则打包、`codexhost/thread/handoff` 四向双通道注入、跨官方/外部元数据持久化，以及 Web 与 Desktop 的入口和交接分割线；修改跨 Agent 交接时阅读。 |
 | [`architecture/host-client-channel.md`](architecture/host-client-channel.md) | GUI、Web 与 App 共享原生 Codex／外部 Harness 的生命周期、认证通道、事件驱动快照、交互仲裁及恢复边界。 |
-| [OpenSpec：状态刷新与轮询优化](../openspec/changes/reduce-redundant-state-polling/proposal.md) | Web 目录与组织状态分别校验，远程设置页和 Console 按可见性降频；查看方案、实现进度与验收边界时阅读。 |
+| [OpenSpec：状态刷新与轮询优化](../openspec/changes/archive/2026-11-12-reduce-redundant-state-polling/proposal.md) | Web 目录与组织状态分别校验，远程设置页和 Console 按可见性降频；查看方案、实现进度与验收边界时阅读。 |
 | [`architecture/gui-web-shared-state-design.md`](architecture/gui-web-shared-state-design.md) | 共享 Host 的官方 Codex 与外部 Thread 所有权、存储边界、启动发现及生命周期；不提供旧 standalone 迁移。 |
 | [`architecture/external-thread-media.md`](architecture/external-thread-media.md) | 外部 Thread 中本地图片的 Desktop 加载条件、Agent 消息媒体路径改写和用户消息图片附件还原；修改媒体显示或排查图片不显示时阅读。 |
 | [`architecture/delegation-titles.md`](architecture/delegation-titles.md) | 委派子会话标题、子任务显示名、创建快照与重试边界。 |

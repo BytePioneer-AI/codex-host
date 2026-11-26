@@ -7,20 +7,37 @@ use codexhost_platform::configure_background_command;
 
 const CLI_PACKAGE: &str = "@codexhost/cli";
 
-/// Returns the package specs for `npm install --global`, or `None` when that npm does
-/// not own this installation.
-///
-/// npm places the platform package inside `@codexhost/cli`, where installing the CLI
-/// replaces it. A platform package installed as its own global package (the startup
-/// version-mismatch command does this) is only replaced when npm is given its name.
-/// Restart runs `package_root`, so any other layout cannot be updated in place.
-pub(crate) fn install_specs(
+pub(crate) struct GlobalInstallation {
+    platform_package: String,
+    nested_platform_root: PathBuf,
+    global_platform_root: PathBuf,
+}
+
+impl GlobalInstallation {
+    pub(crate) fn required_specs(&self, version: &str) -> [String; 2] {
+        [
+            format!("{CLI_PACKAGE}@{version}"),
+            format!("{}@{version}", self.platform_package),
+        ]
+    }
+
+    pub(crate) fn resolved_platform_root(&self) -> &Path {
+        // The npm launcher resolves its own node_modules before the global sibling.
+        if self.nested_platform_root.join("package.json").is_file() {
+            &self.nested_platform_root
+        } else {
+            &self.global_platform_root
+        }
+    }
+}
+
+/// Finds the supported platform package locations when this npm owns the installation.
+pub(crate) fn global_installation(
     node: &Path,
     npm_cli: &Path,
     launcher: &Path,
     package_root: &Path,
-    version: &str,
-) -> Result<Option<Vec<String>>, Box<dyn Error>> {
+) -> Result<Option<GlobalInstallation>, Box<dyn Error>> {
     let mut command = Command::new(node);
     command.arg(npm_cli).args(["root", "--global"]);
     configure_background_command(&mut command);
@@ -37,16 +54,36 @@ pub(crate) fn install_specs(
             .ok_or("Invalid npm launcher path")?
             .to_path_buf(),
     );
-    let mut specs = vec![format!("{CLI_PACKAGE}@{version}")];
-    if package_root.parent().and_then(Path::parent) == Some(global_root.as_path()) {
-        specs.push(format!(
-            "{}@{version}",
-            platform_package_name(&package_root)?
-        ));
-    } else if !(cli_root.parent().and_then(Path::parent) == Some(global_root.as_path())
-        && package_root.starts_with(cli_root.join("node_modules")))
+    let platform_package = platform_package_name(&package_root)?;
+    let global_cli_root = global_root.join(CLI_PACKAGE);
+    let nested_platform_root = global_cli_root.join("node_modules").join(&platform_package);
+    let global_platform_root = global_root.join(&platform_package);
+    if package_root != global_platform_root
+        && (cli_root != global_cli_root || package_root != nested_platform_root)
     {
         return Ok(None);
+    }
+    Ok(Some(GlobalInstallation {
+        platform_package,
+        nested_platform_root,
+        global_platform_root,
+    }))
+}
+
+/// The SSH updater restarts the same payload path, so keep its existing npm layout.
+pub(crate) fn install_specs(
+    node: &Path,
+    npm_cli: &Path,
+    launcher: &Path,
+    package_root: &Path,
+    version: &str,
+) -> Result<Option<Vec<String>>, Box<dyn Error>> {
+    let Some(installation) = global_installation(node, npm_cli, launcher, package_root)? else {
+        return Ok(None);
+    };
+    let mut specs = Vec::from(installation.required_specs(version));
+    if canonical(package_root.to_path_buf()) == installation.nested_platform_root {
+        specs.pop();
     }
     Ok(Some(specs))
 }

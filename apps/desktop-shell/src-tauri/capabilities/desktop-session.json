@@ -6,5 +6,9 @@
   "remote": {
     "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*", "http://[\\:\\:1]:*/*"]
   },
-  "permissions": ["allow-desktop-session-claim", "allow-desktop-session-opened"]
+  "permissions": [
+    "allow-desktop-session-claim",
+    "allow-desktop-session-opened",
+    "allow-desktop-session-discarded"
+  ]
 }

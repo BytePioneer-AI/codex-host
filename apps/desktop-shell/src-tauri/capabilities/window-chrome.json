@@ -4,7 +4,7 @@
   "webviews": ["main"],
   "local": true,
   "remote": {
-    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*", "http://[\\:\\:1]:*/*"]
   },
   "permissions": [
     "allow-window-start-dragging",

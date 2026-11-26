@@ -3,14 +3,18 @@ mod launcher;
 mod navigation;
 mod readiness;
 mod session_activation;
+#[cfg(windows)]
+mod session_dispatch;
 mod tray;
 mod visibility;
 mod zoom;
 
 use std::io::{self, Write};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
@@ -21,7 +25,9 @@ use instance::{Activation, ActivationDelivery, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
 use readiness::{ShellReady, WebEvent, WebReady};
-use session_activation::{Recovery, SessionActivation, wake_script};
+use session_activation::{
+    Abandon, Admission, Scheduling, SessionActivation, SessionClaim, SessionReceipt, wake_script,
+};
 use visibility::{WindowVisibility, WindowVisibilityState, compute_window_hidden};
 use zoom::{ZoomController, ZoomState, percent_to_scale};
 
@@ -81,7 +87,7 @@ struct View {
 
 impl View {
     fn open_route(&mut self, route: &'static str) -> Option<Url> {
-        self.session.clear();
+        self.session.clear_unclaimed();
         if matches!(self.page, Page::Web) {
             let mut login = self.last_login.clone()?;
             login.set_fragment(Some(route));
@@ -92,14 +98,14 @@ impl View {
         }
     }
 
-    fn connect(&mut self, mut login: Url) -> Url {
+    fn connect(&mut self, mut login: Url) -> (Url, Option<u64>) {
         self.page = Page::Web;
         self.last_login = Some(login.clone());
         if let Some(route) = self.pending_route.take() {
             login.set_fragment(Some(route));
         }
-        self.session.connect(&mut login);
-        login
+        let generation = self.session.connect(&mut login);
+        (login, generation)
     }
 
     fn accepts_session_page(&self, url: &Url) -> bool {
@@ -117,27 +123,77 @@ struct Shell {
     ensure_web: Sender<()>,
     locale: String,
     visibility: Mutex<WindowVisibility>,
+    deferred_session: Mutex<Option<DeferredSession>>,
     zoom: Arc<Mutex<ZoomController>>,
     zoom_op: tauri::async_runtime::Mutex<()>,
     zoom_persist: Arc<Mutex<Option<u16>>>,
 }
 
-fn navigation_for(app: &AppHandle, url: &Url) -> Navigation {
-    let shell = app.state::<Shell>();
-    let view = shell.view.lock().unwrap();
+fn navigation_for(view: &mut View, url: &Url, admit: bool) -> Navigation {
     match classify(url, view.last_login.as_ref()) {
-        Navigation::Web
-            if matches!(view.page, Page::Web)
-                && view.session.allows_navigation(url) != Some(false) =>
-        {
-            Navigation::Web
+        Navigation::Web if matches!(view.page, Page::Web) => {
+            if view.session.allows_navigation(url, admit) == Some(false) {
+                Navigation::Block
+            } else {
+                Navigation::Web
+            }
         }
-        // Do not export a stale shell session navigation to the browser, even if the
-        // replacement service has a different origin.
+        // Do not export a stale shell session navigation to the browser.
         Navigation::Web => Navigation::Block,
-        Navigation::Browser if view.session.allows_navigation(url).is_some() => Navigation::Block,
+        Navigation::Browser if view.session.allows_navigation(url, false).is_some() => {
+            Navigation::Block
+        }
         decision => decision,
     }
+}
+
+enum TopLevelNavigation {
+    #[cfg(any(windows, test))]
+    Native { id: u64, redirected: bool },
+    #[cfg(not(windows))]
+    Portable,
+}
+
+fn handle_navigation(
+    view: &Mutex<View>,
+    url: &Url,
+    source: TopLevelNavigation,
+    open_external: impl FnOnce(&Url),
+) -> bool {
+    let decision = {
+        let mut view = view.lock().unwrap();
+        let (allowed, redirected) = match source {
+            #[cfg(any(windows, test))]
+            TopLevelNavigation::Native { id, redirected } => (
+                view.session.native_login_allows(id, url, redirected),
+                redirected,
+            ),
+            #[cfg(not(windows))]
+            TopLevelNavigation::Portable => (view.session.portable_login_allows(url), false),
+        };
+        if !allowed {
+            Navigation::Block
+        } else {
+            match navigation_for(&mut view, url, true) {
+                // A superseded authentication redirect must not acquire a new browser.
+                Navigation::Browser if redirected => Navigation::Block,
+                decision => decision,
+            }
+        }
+    };
+    match decision {
+        Navigation::Embedded | Navigation::Web => true,
+        Navigation::Browser => {
+            open_external(url);
+            false
+        }
+        Navigation::Block => false,
+    }
+}
+
+fn popup_navigation(app: &AppHandle, url: &Url) -> Navigation {
+    let shell = app.state::<Shell>();
+    navigation_for(&mut shell.view.lock().unwrap(), url, false)
 }
 
 fn permission_response(page: &Page, kind: PermissionKind) -> PermissionResponse {
@@ -202,22 +258,87 @@ fn web_event(app: &AppHandle, event: WebEvent) {
     }
     let status = match event {
         WebEvent::Connected(ready) => {
-            let url = view.connect(ready.login_url);
+            let (url, generation) = view.connect(ready.login_url);
             drop(view);
-            navigate(app, url);
+            if let Some(generation) = generation {
+                navigate_session_login(app, url, generation);
+                sync_session_notice(app);
+                schedule_session_followup(app, generation);
+            } else {
+                navigate(app, url);
+            }
             return;
         }
         WebEvent::Reconnecting => {
+            view.session.cancel_candidate();
             view.page = Page::Loading(Status::Reconnecting, None);
             Status::Reconnecting
         }
         WebEvent::Error(message) => {
+            view.session.cancel_candidate();
             view.page = Page::Loading(Status::Error, Some(message));
             Status::Error
         }
     };
     drop(view);
     navigate_loading(app, status);
+}
+
+const SESSION_LOGIN_LIMIT: Duration = Duration::from_secs(10);
+
+fn navigate_session_login(app: &AppHandle, url: Url, generation: u64) {
+    #[cfg(windows)]
+    let not_scheduled = app
+        .get_webview_window(MAIN)
+        .is_none_or(|window| session_dispatch::navigate(&window, url) == Scheduling::NotScheduled);
+    #[cfg(not(windows))]
+    let not_scheduled = !navigate(app, url);
+    if not_scheduled {
+        app.state::<Shell>()
+            .view
+            .lock()
+            .unwrap()
+            .session
+            .finish_login(generation, false);
+        return;
+    }
+    schedule_on_main(app, SESSION_LOGIN_LIMIT, move |app| {
+        app.state::<Shell>()
+            .view
+            .lock()
+            .unwrap()
+            .session
+            .expire_login(generation);
+    });
+}
+
+#[cfg(windows)]
+fn observe_session_login(window: &tauri::WebviewWindow) -> Scheduling {
+    let started = window.app_handle().clone();
+    let completed = started.clone();
+    session_dispatch::observe_navigation(
+        window,
+        move |id, url, redirected| {
+            handle_navigation(
+                &started.state::<Shell>().view,
+                url,
+                TopLevelNavigation::Native { id, redirected },
+                open_browser,
+            )
+        },
+        move |id, succeeded| {
+            let finished = completed
+                .state::<Shell>()
+                .view
+                .lock()
+                .unwrap()
+                .session
+                .native_login_completed(id, succeeded);
+            if finished {
+                wake_pending_session(&completed);
+            }
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -365,8 +486,8 @@ fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
 }
 
 enum SessionDispatch {
-    Pending,
-    Live { origin: String, generation: u64 },
+    Pending(u64),
+    Live { login: Url, generation: u64 },
 }
 
 fn prepare_session(
@@ -374,27 +495,35 @@ fn prepare_session(
     session_id: String,
     show_window: impl FnOnce() -> Result<(), String>,
     start_web: impl FnOnce() -> bool,
-) -> Option<SessionDispatch> {
-    let start = match view.lock().unwrap().page {
-        Page::Dormant | Page::Onboarding => true,
-        Page::Loading(Status::Error, _) => return None,
-        _ => false,
+) -> Result<SessionDispatch, Admission> {
+    let start = {
+        let view = view.lock().unwrap();
+        match view.page {
+            Page::Dormant | Page::Onboarding => true,
+            Page::Loading(Status::Error, _) => return Err(Admission::Rejected),
+            Page::Web => view.session.login_needs_retry() && !view.session.has_claim(),
+            _ => false,
+        }
     };
-    show_window().ok()?;
+    show_window().map_err(|_| Admission::Rejected)?;
     if start && !start_web() {
-        return None;
+        return Err(Admission::Rejected);
     }
     let mut view = view.lock().unwrap();
-    let origin = if matches!(view.page, Page::Web) {
-        Some(view.last_login.as_ref()?.origin().ascii_serialization())
+    let login = if matches!(view.page, Page::Web) {
+        Some(view.last_login.clone().ok_or(Admission::Rejected)?)
     } else {
         None
     };
-    view.pending_route = None;
-    let generation = view.session.queue(session_id, origin.is_some());
-    Some(match origin {
-        Some(origin) => SessionDispatch::Live { origin, generation },
-        None => SessionDispatch::Pending,
+    let joins_login = view.session.login_in_flight();
+    let generation = view
+        .session
+        .stage(session_id, login.is_some())
+        .ok_or(Admission::Unknown)?;
+    Ok(match login {
+        Some(_) if joins_login => SessionDispatch::Pending(generation),
+        Some(login) => SessionDispatch::Live { login, generation },
+        None => SessionDispatch::Pending(generation),
     })
 }
 
@@ -415,98 +544,393 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
     if let Some(url) = url {
         navigate(app, url);
     }
+    sync_session_notice(app);
     let _ = set_visible(app, true);
 }
 
 const SESSION_PROBE_DELAY: Duration = Duration::from_millis(500);
+const SESSION_NOTICE_DELAY: Duration = Duration::from_secs(2);
+const SESSION_WAIT_LIMIT: Duration = Duration::from_millis(700);
 
-fn recover_session(app: &AppHandle, generation: u64, scheduled: bool) -> bool {
-    let shell = app.state::<Shell>();
-    let recovery = {
-        let mut view = shell.view.lock().unwrap();
-        if !matches!(view.page, Page::Web) || shell.launcher.is_stopping() {
-            return scheduled;
+fn finish_session(view: &Mutex<View>, generation: u64, scheduling: Scheduling) -> Admission {
+    let mut view = view.lock().unwrap();
+    let outcome = view.session.finish(generation, scheduling);
+    if outcome == Admission::Accepted {
+        view.pending_route = None;
+    }
+    outcome
+}
+
+#[cfg(any(windows, test))]
+fn dispatch_live_session(
+    view: &Mutex<View>,
+    login: Url,
+    generation: u64,
+    schedule_eval: impl FnOnce() -> Scheduling,
+    schedule_navigation: impl FnOnce(Url) -> Scheduling,
+    wake: impl FnOnce(),
+) -> Admission {
+    let eval = schedule_eval();
+    let scheduling = if eval == Scheduling::Scheduled {
+        eval
+    } else {
+        let url = view.lock().unwrap().session.stage_url(generation, login);
+        match url.map_or(Scheduling::Unknown, schedule_navigation) {
+            Scheduling::NotScheduled if eval == Scheduling::Unknown => Scheduling::Unknown,
+            navigation => navigation,
         }
-        let View {
-            last_login,
-            session,
-            ..
-        } = &mut *view;
-        last_login
-            .as_ref()
-            .and_then(|login| session.recover(generation, login))
     };
-    match recovery {
-        Some(Recovery::Probe(script)) => {
-            if let Some(window) = app.get_webview_window(MAIN) {
-                let _ = window.eval(script);
-            }
-            true
+    let outcome = finish_session(view, generation, scheduling);
+    if outcome == Admission::Accepted {
+        wake();
+    }
+    outcome
+}
+
+#[cfg(not(windows))]
+fn dispatch_portable_session(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    script: String,
+    origin: &str,
+    generation: u64,
+    reply: Option<Sender<bool>>,
+) -> Admission {
+    let origin = serde_json::to_string(origin).expect("Web origin is a JSON string");
+    let proof = format!(
+        "(() => {{ if (location.origin !== {origin} || typeof window.__codexhostOpenDesktopSession !== 'function') return false; {script} return true; }})()"
+    );
+    let handle = app.clone();
+    let reply = Arc::new(Mutex::new(reply));
+    let callback_reply = reply.clone();
+    let _ = window.eval_with_callback(proof, move |result| {
+        if result != "true" {
+            return;
         }
-        Some(Recovery::Navigate(url)) => {
-            // A scheduled live wake already produced acceptance. Keep the target on
-            // failure so the next Connected can use a fresh login URL.
-            if navigate(app, url) || scheduled {
-                true
-            } else {
-                shell.view.lock().unwrap().session.clear();
-                false
-            }
+        let app = handle.clone();
+        let callback_reply = callback_reply.clone();
+        let _ = handle.run_on_main_thread(move || {
+            complete_portable_dispatch(&app, generation, Scheduling::Scheduled, &callback_reply);
+        });
+    });
+    // Only the callback can confirm this candidate; dispatch alone cannot replace A.
+    schedule_on_main(app, SESSION_PROBE_DELAY, move |app| {
+        complete_portable_dispatch(app, generation, Scheduling::Unknown, &reply);
+    });
+    Admission::Unknown
+}
+
+#[cfg(not(windows))]
+fn complete_portable_dispatch(
+    app: &AppHandle,
+    generation: u64,
+    scheduling: Scheduling,
+    reply: &Mutex<Option<Sender<bool>>>,
+) {
+    let shell = app.state::<Shell>();
+    match resolve_portable_dispatch(&shell.view, generation, scheduling, reply) {
+        Admission::Accepted => {
+            wake_session(app, generation);
+            sync_session_notice(app);
+            schedule_session_followup(app, generation);
         }
-        None => scheduled,
+        _ if scheduling == Scheduling::Unknown => wake_pending_session(app),
+        _ => (),
     }
 }
 
-fn show_session(app: &AppHandle, session_id: String) -> bool {
+#[cfg(any(not(windows), test))]
+fn resolve_portable_dispatch(
+    view: &Mutex<View>,
+    generation: u64,
+    scheduling: Scheduling,
+    reply: &Mutex<Option<Sender<bool>>>,
+) -> Admission {
+    send_session_reply(
+        finish_session(view, generation, scheduling),
+        reply.lock().unwrap().take(),
+    )
+}
+
+fn schedule_on_main(
+    app: &AppHandle,
+    delay: Duration,
+    action: impl FnOnce(&AppHandle) + Send + 'static,
+) {
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(delay);
+        let on_main = app.clone();
+        let _ = app.run_on_main_thread(move || action(&on_main));
+    }));
+}
+
+fn session_notice_label(locale: &str) -> &'static str {
+    if locale.starts_with("zh") {
+        "通知会话打开状态未确认，请在当前窗口查看"
+    } else {
+        "Notification session opening unconfirmed. Check this window."
+    }
+}
+
+fn sync_session_notice(app: &AppHandle) {
+    let shell = app.state::<Shell>();
+    let unconfirmed = shell.view.lock().unwrap().session.is_unconfirmed();
+    if let Some(window) = app.get_webview_window(MAIN) {
+        let notice = unconfirmed.then(|| session_notice_label(&shell.locale));
+        if let Some(text) = notice {
+            let _ = window.set_title(&format!("CodexHost — {text}"));
+        } else {
+            let _ = window.set_title("CodexHost");
+        }
+        #[cfg(windows)]
+        if let Ok(notice) = serde_json::to_string(&notice) {
+            let _ = window.eval(format!(
+                "window.__codexhostSetDesktopSessionNotice?.({notice});"
+            ));
+        }
+    }
+    tray::set_session_notice(app, unconfirmed);
+}
+
+fn wake_session(app: &AppHandle, generation: u64) {
+    let shell = app.state::<Shell>();
+    let wake = {
+        let view = shell.view.lock().unwrap();
+        view.last_login.as_ref().and_then(|url| {
+            view.session
+                .wake_url_only(generation)
+                .filter(|_| matches!(view.page, Page::Web))
+                .map(|url_only| {
+                    wake_script(&url.origin().ascii_serialization(), generation, url_only)
+                })
+        })
+    };
+    if let (Some(window), Some(wake)) = (app.get_webview_window(MAIN), wake) {
+        let _ = window.eval(wake);
+    }
+}
+
+fn wake_pending_session(app: &AppHandle) {
+    let previous = app
+        .state::<Shell>()
+        .view
+        .lock()
+        .unwrap()
+        .session
+        .pending_generation();
+    if let Some(previous) = previous {
+        wake_session(app, previous);
+    }
+}
+
+fn schedule_session_followup(app: &AppHandle, generation: u64) {
+    schedule_on_main(app, SESSION_PROBE_DELAY, move |app| {
+        wake_session(app, generation)
+    });
+    schedule_on_main(app, SESSION_NOTICE_DELAY, move |app| {
+        app.state::<Shell>()
+            .view
+            .lock()
+            .unwrap()
+            .session
+            .mark_unconfirmed(generation);
+        sync_session_notice(app);
+    });
+}
+
+fn show_session(app: &AppHandle, session_id: String, reply: Option<Sender<bool>>) -> Admission {
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
-        return false;
+        return send_session_reply(Admission::Rejected, reply);
     }
-    let Some(live) = prepare_session(
+    let dispatch = match prepare_session(
         &shell.view,
         session_id,
         || set_visible(app, true),
         || begin_web(app, true),
-    ) else {
-        return false;
+    ) {
+        Ok(dispatch) => dispatch,
+        Err(outcome) => return send_session_reply(outcome, reply),
     };
-    let SessionDispatch::Live { origin, generation } = live else {
-        return true;
+    let (outcome, generation) = match dispatch {
+        SessionDispatch::Pending(generation) => (
+            finish_session(&shell.view, generation, Scheduling::Scheduled),
+            generation,
+        ),
+        SessionDispatch::Live { login, generation } => {
+            let origin = login.origin().ascii_serialization();
+            let script = wake_script(&origin, generation, false);
+            let Some(window) = app.get_webview_window(MAIN) else {
+                return send_session_reply(
+                    finish_session(&shell.view, generation, Scheduling::NotScheduled),
+                    reply,
+                );
+            };
+            if !window
+                .url()
+                .is_ok_and(|current| current.origin() == login.origin())
+            {
+                let outcome = finish_session(&shell.view, generation, Scheduling::Unknown);
+                wake_pending_session(app);
+                return send_session_reply(outcome, reply);
+            }
+            #[cfg(not(windows))]
+            return dispatch_portable_session(app, &window, script, &origin, generation, reply);
+            #[cfg(windows)]
+            let outcome = dispatch_live_session(
+                &shell.view,
+                login,
+                generation,
+                || session_dispatch::eval(&window, script),
+                |url| session_dispatch::navigate(&window, url),
+                || wake_session(app, generation),
+            );
+            #[cfg(windows)]
+            (outcome, generation)
+        }
     };
-    let scheduled = app
-        .get_webview_window(MAIN)
-        .is_some_and(|window| window.eval(wake_script(&origin, generation)).is_ok());
-    if !scheduled {
-        return recover_session(app, generation, false);
+    if outcome == Admission::Accepted {
+        sync_session_notice(app);
+        schedule_session_followup(app, generation);
+    } else {
+        wake_pending_session(app);
     }
-    let app = app.clone();
-    drop(tauri::async_runtime::spawn_blocking(move || {
-        std::thread::sleep(SESSION_PROBE_DELAY);
-        let on_main = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            recover_session(&on_main, generation, true);
+    send_session_reply(outcome, reply)
+}
+
+struct DeferredSession {
+    session_id: String,
+    reply: Sender<bool>,
+    until: Instant,
+}
+
+fn send_session_reply(outcome: Admission, reply: Option<Sender<bool>>) -> Admission {
+    if let Some(reply) = reply {
+        match outcome {
+            Admission::Accepted => {
+                let _ = reply.send(true);
+            }
+            Admission::Rejected => {
+                let _ = reply.send(false);
+            }
+            Admission::Unknown => (),
+        }
+    }
+    outcome
+}
+
+fn forward_session(app: &AppHandle, session_id: String, reply: Sender<bool>) {
+    let shell = app.state::<Shell>();
+    let held = {
+        let view = shell.view.lock().unwrap();
+        if view.session.is_discarding() {
+            return; // Do not queue behind an explicit abandonment.
+        }
+        view.session.has_claim()
+    };
+    if held {
+        let mut waiting = shell.deferred_session.lock().unwrap();
+        if waiting.is_some() {
+            return; // A full waiting slot is not an explicit rejection.
+        }
+        *waiting = Some(DeferredSession {
+            session_id,
+            reply,
+            until: Instant::now() + SESSION_WAIT_LIMIT,
         });
-    }));
-    true
+        drop(waiting);
+        schedule_on_main(app, SESSION_WAIT_LIMIT, resume_forwarded_session);
+    } else {
+        resume_forwarded_session(app);
+        show_session(app, session_id, Some(reply));
+    }
+}
+
+fn take_deferred_session(
+    waiting: &mut Option<DeferredSession>,
+    held: bool,
+    now: Instant,
+) -> Option<DeferredSession> {
+    if waiting.as_ref().is_some_and(|request| now >= request.until) {
+        waiting.take(); // Drop the reply: the instance reports unknown.
+    }
+    if held { None } else { waiting.take() }
+}
+
+fn resume_forwarded_session(app: &AppHandle) {
+    let shell = app.state::<Shell>();
+    let held = shell.view.lock().unwrap().session.has_claim();
+    let ready = take_deferred_session(
+        &mut shell.deferred_session.lock().unwrap(),
+        held,
+        Instant::now(),
+    );
+    if let Some(request) = ready {
+        show_session(app, request.session_id, Some(request.reply));
+    }
+}
+
+fn begin_session_abandonment(
+    view: &Mutex<View>,
+    waiting: &Mutex<Option<DeferredSession>>,
+) -> Option<Abandon> {
+    let disposition = view.lock().unwrap().session.abandon_unconfirmed()?;
+    if matches!(disposition, Abandon::AwaitDocument) {
+        // Waiting clicks are unknown, not a new intent to open after cancellation.
+        waiting.lock().unwrap().take();
+    }
+    Some(disposition)
+}
+
+pub(crate) fn abandon_session(app: &AppHandle) {
+    let shell = app.state::<Shell>();
+    match begin_session_abandonment(&shell.view, &shell.deferred_session) {
+        Some(Abandon::AwaitDocument) => (),
+        Some(Abandon::Unclaimed) => {
+            sync_session_notice(app);
+            return;
+        }
+        None => return,
+    }
+    probe_session_bridge(app);
+    schedule_on_main(app, SESSION_PROBE_DELAY, probe_session_bridge);
+}
+
+fn probe_session_bridge(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN) {
+        let _ = window.eval("window.__codexhostRefreshDesktopSession?.();");
+    }
 }
 
 #[tauri::command]
 fn desktop_session_claim(
     window: tauri::WebviewWindow,
     shell: State<'_, Shell>,
-    generation: String,
+    generation: Option<String>,
     document: String,
-) -> Option<String> {
-    let generation = generation.parse().ok()?;
+) -> SessionClaim {
     if document.len() != 36 || shell.launcher.is_stopping() {
-        return None;
+        return SessionClaim::Unavailable;
     }
-    let url = window.url().ok()?;
+    let Ok(url) = window.url() else {
+        return SessionClaim::Retry;
+    };
     let mut view = shell.view.lock().unwrap();
-    if window.label() != MAIN || !view.accepts_session_page(&url) {
-        return None;
+    if window.label() != MAIN {
+        return SessionClaim::Unavailable;
     }
-    view.session.claim(generation, document)
+    if !view.accepts_session_page(&url) {
+        return SessionClaim::Retry;
+    }
+    match generation {
+        Some(generation) => generation
+            .parse()
+            .map_or(SessionClaim::Unavailable, |generation| {
+                view.session.claim(generation, document)
+            }),
+        None => view.session.ready(&document),
+    }
 }
 
 #[tauri::command]
@@ -515,14 +939,52 @@ fn desktop_session_opened(
     shell: State<'_, Shell>,
     generation: String,
     document: String,
-) {
-    let (Ok(generation), Ok(url)) = (generation.parse(), window.url()) else {
-        return;
+) -> SessionReceipt {
+    confirm_session_receipt(window, shell, generation, document, false)
+}
+
+#[tauri::command]
+fn desktop_session_discarded(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    generation: String,
+    document: String,
+) -> SessionReceipt {
+    confirm_session_receipt(window, shell, generation, document, true)
+}
+
+fn confirm_session_receipt(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    generation: String,
+    document: String,
+    discarded: bool,
+) -> SessionReceipt {
+    let Ok(generation) = generation.parse() else {
+        return SessionReceipt::Unavailable;
+    };
+    if window.label() != MAIN || document.len() != 36 {
+        return SessionReceipt::Unavailable;
+    }
+    let Ok(url) = window.url() else {
+        return SessionReceipt::Retry;
     };
     let mut view = shell.view.lock().unwrap();
-    if window.label() == MAIN && view.accepts_session_page(&url) {
-        view.session.opened(generation, &document);
+    let current = view.accepts_session_page(&url);
+    let result = view
+        .session
+        .receipt(generation, &document, discarded, current);
+    if result == SessionReceipt::Confirmed {
+        drop(view);
+        let app = window.app_handle().clone();
+        let _ = window.run_on_main_thread(move || {
+            sync_session_notice(&app);
+            if !discarded {
+                resume_forwarded_session(&app);
+            }
+        });
     }
+    result
 }
 
 pub(crate) fn show_onboarding(app: &AppHandle) {
@@ -533,12 +995,13 @@ pub(crate) fn show_onboarding(app: &AppHandle) {
     let mut view = shell.view.lock().unwrap();
     view.page = Page::Onboarding;
     view.pending_route = None;
-    view.session.clear();
+    view.session.clear_unclaimed();
     drop(view);
     let zoom = shell.zoom.lock().unwrap().percent();
     let mut url = embedded(ONBOARDING);
     url.set_query(Some(&format!("zoom={zoom}")));
     navigate(app, url);
+    sync_session_notice(app);
     let _ = set_visible(app, true);
 }
 
@@ -675,6 +1138,7 @@ async fn choose_surface(
 struct WindowChromeState {
     maximized: bool,
     fullscreen: bool,
+    desktop_session_notice: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -706,10 +1170,17 @@ fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn window_chrome_state(window: tauri::WebviewWindow) -> WindowChromeState {
+fn window_chrome_state(window: tauri::WebviewWindow, shell: State<'_, Shell>) -> WindowChromeState {
     WindowChromeState {
         maximized: window.is_maximized().unwrap_or(false),
         fullscreen: window.is_fullscreen().unwrap_or(false),
+        desktop_session_notice: shell
+            .view
+            .lock()
+            .unwrap()
+            .session
+            .is_unconfirmed()
+            .then(|| session_notice_label(&shell.locale)),
     }
 }
 
@@ -882,6 +1353,7 @@ fn run_primary(
             ensure_web,
             locale: locale.clone(),
             visibility: Mutex::new(WindowVisibility::new(true)),
+            deferred_session: Mutex::new(None),
             zoom,
             zoom_op: tauri::async_runtime::Mutex::new(()),
             zoom_persist,
@@ -897,6 +1369,7 @@ fn run_primary(
             window_minimize,
             desktop_session_claim,
             desktop_session_opened,
+            desktop_session_discarded,
             window_toggle_maximize,
             window_close,
             window_chrome_state,
@@ -959,6 +1432,7 @@ fn run_primary(
             }
             let app_handle = app.handle().clone();
             let popup_app = app_handle.clone();
+            #[cfg(not(windows))]
             let navigation_app = app_handle.clone();
             let permission_app = app_handle.clone();
             let path = if onboarding { ONBOARDING } else { LOADING };
@@ -977,6 +1451,39 @@ fn run_primary(
                 initial_zoom_percent,
                 &boot_id,
             ));
+            #[cfg(windows)]
+            let navigation_ready = Arc::new(AtomicBool::new(false));
+            #[cfg(windows)]
+            let builder = {
+                let ready = navigation_ready.clone();
+                builder.on_navigation(move |url| {
+                    ready.load(Ordering::Relaxed) || classify(url, None) == Navigation::Embedded
+                })
+            };
+            #[cfg(not(windows))]
+            let builder = builder.on_navigation(move |url| {
+                handle_navigation(
+                    &navigation_app.state::<Shell>().view,
+                    url,
+                    TopLevelNavigation::Portable,
+                    open_browser,
+                )
+            });
+            #[cfg(not(windows))]
+            let builder = builder.on_page_load(|window, payload| {
+                if payload.event() == tauri::webview::PageLoadEvent::Started {
+                    let shell = window.state::<Shell>();
+                    let finished = shell
+                        .view
+                        .lock()
+                        .unwrap()
+                        .session
+                        .portable_login_loaded(payload.url());
+                    if finished {
+                        wake_pending_session(window.app_handle());
+                    }
+                }
+            });
             #[cfg(target_os = "windows")]
             let builder = builder.decorations(false).shadow(true);
             #[cfg(target_os = "macos")]
@@ -989,21 +1496,13 @@ fn run_primary(
                     let view = shell.view.lock().unwrap();
                     permission_response(&view.page, kind)
                 })
-                .on_navigation(move |url| match navigation_for(&navigation_app, url) {
-                    Navigation::Embedded | Navigation::Web => true,
-                    Navigation::Browser => {
-                        open_browser(url);
-                        false
-                    }
-                    Navigation::Block => false,
-                })
                 .on_new_window(move |url, _features| {
-                    match navigation_for(&popup_app, &url) {
+                    match popup_navigation(&popup_app, &url) {
                         Navigation::Browser => open_browser(&url),
                         Navigation::Web => {
                             let app = popup_app.clone();
                             let _ = popup_app.run_on_main_thread(move || {
-                                if navigation_for(&app, &url) == Navigation::Web {
+                                if popup_navigation(&app, &url) == Navigation::Web {
                                     navigate(&app, url);
                                 }
                             });
@@ -1013,6 +1512,16 @@ fn run_primary(
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            #[cfg(windows)]
+            {
+                let window = app.get_webview_window(MAIN).expect("main window was built");
+                if observe_session_login(&window) != Scheduling::Scheduled {
+                    return Err(
+                        io::Error::other("Cannot install desktop Web navigation policy").into(),
+                    );
+                }
+                navigation_ready.store(true, Ordering::Relaxed);
+            }
             let initial_scale = app.state::<Shell>().zoom.lock().unwrap().scale();
             if let Some(window) = app.get_webview_window(MAIN)
                 && let Err(error) = window.set_zoom(initial_scale)
@@ -1032,11 +1541,12 @@ fn run_primary(
                     });
                 })?;
             if let Some(session_id) = initial_session {
-                if !begin_web(&app_handle, false) || !show_session(&app_handle, session_id) {
-                    return Err(
-                        io::Error::other("Desktop session activation was not accepted").into(),
-                    );
-                }
+                let admission = if begin_web(&app_handle, false) {
+                    show_session(&app_handle, session_id, None)
+                } else {
+                    Admission::Rejected
+                };
+                confirm_session_setup(admission, reject_on_failure.0.as_deref())?;
             } else {
                 show_main(&app_handle, None);
                 if !onboarding {
@@ -1062,9 +1572,8 @@ fn run_primary(
                     Activation::Onboarding => show_onboarding(&handle),
                     Activation::Show => show_main(&handle, None),
                     Activation::ShowSession(id) => {
-                        let accepted = show_session(&handle, id);
                         if let Some(reply) = session_reply {
-                            let _ = reply.send(accepted);
+                            forward_session(&handle, id, reply);
                         }
                     }
                 });
@@ -1102,6 +1611,26 @@ fn run_primary(
         RunEvent::Reopen { .. } => show_main(app, None),
         _ => (),
     });
+    Ok(())
+}
+
+fn confirm_session_setup<W: Write>(
+    admission: Admission,
+    reply: Option<&SessionLaunchReply<W>>,
+) -> io::Result<()> {
+    match admission {
+        Admission::Accepted => (),
+        Admission::Rejected => {
+            return Err(io::Error::other(
+                "Desktop session activation was not accepted",
+            ));
+        }
+        Admission::Unknown => {
+            if let Some(reply) = reply {
+                reply.send(SessionLaunchOutcome::DeliveryUnknown);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1143,15 +1672,19 @@ impl<W: Write> Drop for RejectUnfinishedSessionLaunch<W> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
 
     use tauri::webview::{PermissionKind, PermissionResponse};
     use url::Url;
 
     use super::{
-        Page, Recovery, RejectUnfinishedSessionLaunch, SessionActivation, SessionDispatch,
-        SessionLaunchOutcome, SessionLaunchReply, Status, View, permission_response,
-        prepare_session, wake_script,
+        Abandon, Admission, DeferredSession, Page, RejectUnfinishedSessionLaunch, Scheduling,
+        SessionActivation, SessionClaim, SessionDispatch, SessionLaunchOutcome, SessionLaunchReply,
+        SessionReceipt, Status, TopLevelNavigation, View, begin_session_abandonment,
+        confirm_session_setup, dispatch_live_session, finish_session, handle_navigation,
+        permission_response, prepare_session, resolve_portable_dispatch, take_deferred_session,
+        wake_script,
     };
 
     #[test]
@@ -1196,6 +1729,21 @@ mod tests {
     }
 
     #[test]
+    fn unknown_primary_setup_is_not_overridden_by_ready_or_exit() {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let reply = Arc::new(SessionLaunchReply::new(output.reopen().unwrap()));
+        {
+            let _reject_if_unready = RejectUnfinishedSessionLaunch(Some(reply.clone()));
+            confirm_session_setup(Admission::Unknown, Some(reply.as_ref())).unwrap();
+            reply.send(SessionLaunchOutcome::Accepted);
+        }
+        assert_eq!(
+            std::fs::read(output.path()).unwrap().as_slice(),
+            b"unknown\n"
+        );
+    }
+
+    #[test]
     fn unknown_forwarded_session_emits_one_terminal_reply() {
         let output = tempfile::NamedTempFile::new().unwrap();
         let reply = Arc::new(SessionLaunchReply::new(output.reopen().unwrap()));
@@ -1218,91 +1766,664 @@ mod tests {
         }
     }
 
+    fn accept(view: &mut View, session_id: &str, live: bool) -> u64 {
+        let generation = view.session.stage(session_id.into(), live).unwrap();
+        assert_eq!(
+            view.session.finish(generation, Scheduling::Scheduled),
+            Admission::Accepted
+        );
+        generation
+    }
+
+    fn granted(session_id: &str) -> SessionClaim {
+        SessionClaim::Granted {
+            session_id: session_id.into(),
+        }
+    }
+
     #[test]
-    fn notification_session_uses_the_live_login_and_survives_reconnect() {
+    fn unclaimed_notification_session_uses_the_fresh_login_on_reconnect() {
         let old_login = Url::parse("http://127.0.0.1:4400/?token=old").unwrap();
         let new_login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
         let mut view = session_view(Page::Loading(Status::Starting, None), None);
         let thread = "thread/一?x=#";
-        view.session.queue(thread.into(), false);
-        let first = view.connect(old_login);
+        accept(&mut view, thread, false);
+        let (first, Some(old_generation)) = view.connect(old_login) else {
+            panic!("first delivery")
+        };
         assert_eq!(
             first.as_str(),
             "http://127.0.0.1:4400/?token=old&session=thread%2F%E4%B8%80%3Fx%3D%23&desktopSessionGeneration=2"
         );
-        assert_eq!(view.session.allows_navigation(&first), Some(true));
-        assert_eq!(
-            view.session.claim(2, "old-document".into()).as_deref(),
-            Some(thread)
-        );
+        assert_eq!(view.session.allows_navigation(&first, false), Some(true));
         view.page = Page::Loading(Status::Reconnecting, None);
-        let reconnected = view.connect(new_login.clone());
+        let (reconnected, Some(generation)) = view.connect(new_login.clone()) else {
+            panic!("second delivery")
+        };
         assert_eq!(
             reconnected.as_str(),
             "http://127.0.0.1:4401/?token=new&session=thread%2F%E4%B8%80%3Fx%3D%23&desktopSessionGeneration=3"
         );
-        assert_eq!(view.session.allows_navigation(&first), Some(false));
-        assert_eq!(view.session.allows_navigation(&reconnected), Some(true));
-        view.session.opened(2, "old-document");
+        assert_eq!(view.session.allows_navigation(&first, false), Some(false));
         assert_eq!(
-            view.session.claim(3, "new-document".into()).as_deref(),
-            Some(thread)
+            view.session.allows_navigation(&reconnected, false),
+            Some(true)
         );
-        view.session.opened(3, "old-document");
-        assert_eq!(view.session.allows_navigation(&reconnected), Some(true));
-        view.session.opened(3, "new-document");
-        assert_eq!(view.connect(new_login.clone()), new_login);
+        assert_eq!(view.session.wake_url_only(generation), Some(true));
+        assert_eq!(
+            view.session.ready("new-document"),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            view.session.claim(old_generation, "old-document".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            view.session.claim(generation, "new-document".into()),
+            granted(thread)
+        );
+        assert_eq!(
+            view.session
+                .receipt(generation, "new-document", false, true),
+            SessionReceipt::Confirmed
+        );
+        assert_eq!(view.connect(new_login.clone()), (new_login, None));
     }
 
     #[test]
-    fn tray_route_supersedes_live_fallback_even_if_the_same_session_is_requested_again() {
-        let login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
-        let mut view = session_view(Page::Web, Some(login.clone()));
-        let earlier = view.session.queue("thread".into(), true);
-        let settings = view.open_route("connect-devices").unwrap();
+    fn reconnect_does_not_replay_a_claimed_session_with_no_ack() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=old").unwrap();
+        let new_login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
+        let mut view = session_view(Page::Web, Some(login));
+        let generation = accept(&mut view, "thread", true);
         assert_eq!(
-            settings.as_str(),
+            view.session.claim(generation, "D1".into()),
+            granted("thread")
+        );
+        assert_eq!(
+            view.session.claim(generation, "D2".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            view.session.claim(generation, "D1".into()),
+            granted("thread")
+        );
+        assert_eq!(
+            wake_script("http://127.0.0.1:4400", generation, false),
+            r#"if (location.origin === "http://127.0.0.1:4400") window.__codexhostOpenDesktopSession?.('1', false);"#
+        );
+        assert_eq!(view.connect(new_login.clone()), (new_login, None));
+        assert_eq!(
+            view.session.claim(generation, "D2".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            view.session.claim(generation, "D1".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(view.session.ready("D2"), SessionClaim::Unavailable);
+        assert_eq!(view.session.wake_url_only(generation), None);
+        assert_eq!(
+            view.session.receipt(generation, "D2", false, true),
+            SessionReceipt::Unavailable
+        );
+        assert!(view.session.stage("next".into(), true).is_none());
+        assert_eq!(
+            view.session.receipt(generation, "D1", false, false),
+            SessionReceipt::Retry
+        );
+        assert!(view.session.has_claim());
+        assert_eq!(
+            view.session.receipt(generation, "D1", false, true),
+            SessionReceipt::Confirmed
+        );
+        assert!(view.session.stage("next".into(), true).is_some());
+    }
+
+    #[test]
+    fn candidate_preserves_the_current_target_until_dispatch_is_accepted() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        use Scheduling::{NotScheduled, Scheduled, Unknown};
+        for (eval, navigate, over_gate, expected) in [
+            (NotScheduled, NotScheduled, false, Admission::Rejected),
+            (NotScheduled, NotScheduled, true, Admission::Unknown),
+            (NotScheduled, Scheduled, true, Admission::Accepted),
+            (Scheduled, NotScheduled, false, Admission::Accepted),
+            (Unknown, NotScheduled, false, Admission::Unknown),
+            (NotScheduled, Unknown, false, Admission::Unknown),
+        ] {
+            let view = Mutex::new(session_view(Page::Web, Some(login.clone())));
+            let (a, b) = {
+                let mut view = view.lock().unwrap();
+                let a = accept(&mut view, "A", true);
+                view.pending_route = Some("connect-devices");
+                let b = view.session.stage("B".into(), true).unwrap();
+                (a, b)
+            };
+            let mut woke = false;
+            assert_eq!(
+                dispatch_live_session(
+                    &view,
+                    login.clone(),
+                    b,
+                    || {
+                        let mut view = view.lock().unwrap();
+                        assert_eq!(view.session.claim(b, "page".into()), SessionClaim::Retry);
+                        assert_eq!(view.pending_route, Some("connect-devices"));
+                        eval
+                    },
+                    |url| {
+                        assert_ne!(eval, Scheduled);
+                        assert_eq!(
+                            url.as_str(),
+                            "http://127.0.0.1:4400/?session=B&desktopSessionGeneration=2"
+                        );
+                        let mut view = view.lock().unwrap();
+                        if over_gate {
+                            assert_eq!(view.session.allows_navigation(&url, true), Some(true));
+                        }
+                        assert_eq!(view.session.claim(b, "page".into()), SessionClaim::Retry);
+                        navigate
+                    },
+                    || {
+                        let mut view = view.lock().unwrap();
+                        assert_eq!(view.session.claim(b, "page".into()), granted("B"));
+                        assert_eq!(
+                            view.session.claim(a, "page".into()),
+                            SessionClaim::Unavailable
+                        );
+                        assert!(view.pending_route.is_none());
+                        woke = true;
+                    }
+                ),
+                expected
+            );
+            assert_eq!(woke, expected == Admission::Accepted);
+            if !woke {
+                let mut view = view.lock().unwrap();
+                assert_eq!(view.pending_route, Some("connect-devices"));
+                assert_eq!(
+                    view.session.claim(b, "page".into()),
+                    SessionClaim::Unavailable
+                );
+                assert_eq!(view.session.claim(a, "page".into()), granted("A"));
+            }
+        }
+    }
+
+    #[test]
+    fn live_activation_does_not_supersede_a_pending_login_navigation() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        let mut view = session_view(Page::Loading(Status::Starting, None), None);
+        accept(&mut view, "A", false);
+        let (initial, a) = view.connect(login);
+        let a = a.unwrap();
+        let view = Mutex::new(view);
+
+        assert!(matches!(
+            prepare_session(&view, "B".into(), || Ok(()), || false),
+            Err(Admission::Unknown)
+        ));
+        let mut view = view.into_inner().unwrap();
+        assert_eq!(view.session.allows_navigation(&initial, true), Some(true));
+        assert!(view.session.native_login_allows(10, &initial, false));
+        assert!(!view.session.native_login_completed(9, false));
+        let redirected =
+            Url::parse("http://127.0.0.1:4400/?session=A&desktopSessionGeneration=2").unwrap();
+        assert_eq!(
+            view.session.allows_navigation(&redirected, true),
+            Some(true)
+        );
+        assert!(view.session.native_login_allows(10, &redirected, true));
+        assert!(view.session.native_login_completed(10, true));
+        assert!(!view.session.login_needs_retry());
+        assert_eq!(view.session.claim(a, "boot-page".into()), granted("A"));
+        assert_eq!(
+            view.session.receipt(a, "boot-page", false, true),
+            SessionReceipt::Confirmed
+        );
+        assert!(view.session.stage("B".into(), true).is_some());
+    }
+
+    #[test]
+    fn abandoning_an_unclaimed_login_target_does_not_cancel_auth_navigation() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        let mut view = session_view(Page::Loading(Status::Starting, None), None);
+        accept(&mut view, "A", false);
+        let (initial, a) = view.connect(login);
+        let a = a.unwrap();
+        view.session.mark_unconfirmed(a);
+        assert!(matches!(
+            view.session.abandon_unconfirmed(),
+            Some(Abandon::Unclaimed)
+        ));
+        let view = Mutex::new(view);
+        let Ok(SessionDispatch::Pending(b)) = prepare_session(
+            &view,
+            "B".into(),
+            || Ok(()),
+            || panic!("reuse in-flight login"),
+        ) else {
+            panic!("B should queue behind the original authentication");
+        };
+        assert_eq!(
+            finish_session(&view, b, Scheduling::Scheduled),
+            Admission::Accepted
+        );
+        let mut view = view.into_inner().unwrap();
+        assert_eq!(view.session.allows_navigation(&initial, true), Some(true));
+        assert!(view.session.native_login_allows(10, &initial, false));
+        assert_eq!(
+            view.session.claim(b, "old-page".into()),
+            SessionClaim::Retry
+        );
+        let redirected =
+            Url::parse("http://127.0.0.1:4400/?session=A&desktopSessionGeneration=2").unwrap();
+        assert_eq!(
+            view.session.allows_navigation(&redirected, true),
+            Some(true)
+        );
+        assert!(view.session.native_login_allows(10, &redirected, true));
+        assert!(view.session.native_login_completed(10, true));
+        assert_eq!(view.session.claim(b, "boot-page".into()), granted("B"));
+        assert_eq!(
+            view.session.claim(a, "boot-page".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            view.session.allows_navigation(&redirected, true),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn failed_login_allows_the_next_click_to_request_fresh_authentication() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        for end in [
+            "native rejection",
+            "canceled",
+            "unexpected redirect",
+            "missing callback",
+        ] {
+            let mut view = session_view(Page::Loading(Status::Starting, None), None);
+            accept(&mut view, "A", false);
+            let (initial, a) = view.connect(login.clone());
+            let a = a.unwrap();
+            match end {
+                "native rejection" => assert!(view.session.finish_login(a, false)),
+                "canceled" => {
+                    assert!(view.session.native_login_allows(10, &initial, false));
+                    assert!(view.session.native_login_completed(10, false));
+                }
+                "unexpected redirect" => {
+                    assert!(view.session.native_login_allows(10, &initial, false));
+                    let unexpected = Url::parse("http://127.0.0.1:4400/wrong").unwrap();
+                    assert!(!view.session.native_login_allows(10, &unexpected, true));
+                    assert!(view.session.native_login_completed(10, true));
+                }
+                _ => {
+                    view.session.expire_login(a);
+                    assert_eq!(view.session.allows_navigation(&initial, true), Some(true));
+                }
+            }
+            let view = Mutex::new(view);
+            let Ok(SessionDispatch::Pending(b)) = prepare_session(
+                &view,
+                "B".into(),
+                || Ok(()),
+                || {
+                    view.lock().unwrap().page = Page::Loading(Status::Starting, None);
+                    true
+                },
+            ) else {
+                panic!("{end} must not block the next click");
+            };
+            assert_eq!(
+                finish_session(&view, b, Scheduling::Scheduled),
+                Admission::Accepted
+            );
+            let mut view = view.into_inner().unwrap();
+            let (fresh, generation) = view.connect(login.clone());
+            assert!(
+                fresh
+                    .query_pairs()
+                    .any(|(name, value)| name == "session" && value == "B")
+            );
+            assert!(generation.is_some());
+            assert_eq!(
+                view.session.claim(a, "stale".into()),
+                SessionClaim::Unavailable
+            );
+            view.session.expire_login(a);
+            assert!(view.session.login_in_flight());
+        }
+    }
+
+    #[test]
+    fn joined_login_failure_keeps_the_previous_document_from_claiming() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=fixture").unwrap();
+        for completion_arrived in [true, false] {
+            let mut view = session_view(Page::Loading(Status::Starting, None), None);
+            accept(&mut view, "A", false);
+            let (initial, a) = view.connect(login.clone());
+            assert!(view.session.native_login_allows(1, &initial, false));
+            view.session.mark_unconfirmed(a.unwrap());
+            assert!(matches!(
+                view.session.abandon_unconfirmed(),
+                Some(Abandon::Unclaimed)
+            ));
+            let view = Mutex::new(view);
+            let Ok(SessionDispatch::Pending(b)) = prepare_session(
+                &view,
+                "B".into(),
+                || Ok(()),
+                || panic!("join existing login"),
+            ) else {
+                panic!("B must join the in-flight login");
+            };
+            assert_eq!(
+                finish_session(&view, b, Scheduling::Scheduled),
+                Admission::Accepted
+            );
+            {
+                let mut view = view.lock().unwrap();
+                let old_page = Url::parse("http://127.0.0.1:4400/").unwrap();
+                assert!(view.accepts_session_page(&old_page));
+                assert_eq!(
+                    view.session.claim(b, "old-page".into()),
+                    SessionClaim::Retry
+                );
+                if completion_arrived {
+                    assert!(view.session.native_login_completed(1, false));
+                } else {
+                    view.session.cancel_candidate();
+                }
+                assert_eq!(view.session.ready("old-page"), SessionClaim::Unavailable);
+                assert_eq!(view.session.wake_url_only(b), None);
+                assert_eq!(
+                    view.session.claim(b, "old-page".into()),
+                    SessionClaim::Unavailable
+                );
+                assert_eq!(view.connect(login.clone()), (login.clone(), None));
+                assert_eq!(
+                    view.session.claim(b, "old-page".into()),
+                    SessionClaim::Unavailable
+                );
+            }
+
+            let Ok(SessionDispatch::Pending(retry)) = prepare_session(
+                &view,
+                "B".into(),
+                || Ok(()),
+                || {
+                    view.lock().unwrap().page = Page::Loading(Status::Starting, None);
+                    true
+                },
+            ) else {
+                panic!("an explicit click must request authentication");
+            };
+            assert_eq!(
+                finish_session(&view, retry, Scheduling::Scheduled),
+                Admission::Accepted
+            );
+            let mut view = view.into_inner().unwrap();
+            let (initial, generation) = view.connect(login.clone());
+            let generation = generation.unwrap();
+            let redirect = Url::parse(&format!(
+                "http://127.0.0.1:4400/?session=B&desktopSessionGeneration={generation}"
+            ))
+            .unwrap();
+            assert!(view.session.native_login_allows(2, &initial, false));
+            assert!(view.session.native_login_allows(2, &redirect, true));
+            assert!(view.session.native_login_completed(2, true));
+            assert_eq!(
+                view.session.claim(b, "old-page".into()),
+                SessionClaim::Unavailable
+            );
+            assert_eq!(
+                view.session.claim(generation, "new-page".into()),
+                granted("B")
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_handoff_blocks_login_redirects_but_preserves_direct_external_links() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=fixture").unwrap();
+        let external = Url::parse("https://example.test/path").unwrap();
+        let redirect =
+            Url::parse("http://127.0.0.1:4400/?session=A&desktopSessionGeneration=2").unwrap();
+        for expected_redirect in [false, true] {
+            let mut view = session_view(Page::Loading(Status::Starting, None), None);
+            accept(&mut view, "A", false);
+            let (initial, _) = view.connect(login.clone());
+            let view = Mutex::new(view);
+            let mut opened = Vec::new();
+            let mut navigate = |url, id, redirected| {
+                handle_navigation(
+                    &view,
+                    url,
+                    TopLevelNavigation::Native { id, redirected },
+                    |external| opened.push(external.clone()),
+                )
+            };
+
+            assert!(navigate(&initial, 1, false));
+            // An unrelated direct link still goes through the browser handoff.
+            assert!(!navigate(&external, 2, false));
+            // No generation or session metadata from the original request survives this redirect.
+            let destination = if expected_redirect {
+                &redirect
+            } else {
+                &external
+            };
+            assert_eq!(navigate(destination, 1, true), expected_redirect);
+            assert!(
+                view.lock()
+                    .unwrap()
+                    .session
+                    .native_login_completed(1, expected_redirect)
+            );
+            // A late native redirect after the reservation is gone cannot be handed off either.
+            assert!(!navigate(&external, 1, true));
+            assert_eq!(opened, [external.clone()]);
+        }
+    }
+
+    #[test]
+    fn portable_execution_proof_and_timeout_share_the_original_reply() {
+        for first in [Scheduling::Scheduled, Scheduling::Unknown] {
+            let view = Mutex::new(session_view(Page::Web, None));
+            let b = view
+                .lock()
+                .unwrap()
+                .session
+                .stage("B".into(), true)
+                .unwrap();
+            let (send, receive) = mpsc::channel();
+            let reply = Mutex::new(Some(send));
+            let result = resolve_portable_dispatch(&view, b, first, &reply);
+            let (later, expected) = if first == Scheduling::Scheduled {
+                assert!(receive.try_recv().unwrap());
+                (Scheduling::Unknown, Admission::Accepted)
+            } else {
+                (Scheduling::Scheduled, Admission::Unknown)
+            };
+            assert_eq!(result, expected);
+            assert_eq!(
+                resolve_portable_dispatch(&view, b, later, &reply),
+                Admission::Unknown
+            );
+            assert_eq!(receive.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+            let mut view = view.into_inner().unwrap();
+            assert_eq!(
+                view.session.claim(b, "page".into()),
+                if first == Scheduling::Scheduled {
+                    granted("B")
+                } else {
+                    SessionClaim::Unavailable
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn late_admitted_navigation_can_deliver_only_the_preserved_url_target() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        let mut current = session_view(Page::Web, Some(login.clone()));
+        let a = current.session.stage("A".into(), true).unwrap();
+        let a_url = current.session.stage_url(a, login.clone()).unwrap();
+        assert_eq!(
+            current.session.finish(a, Scheduling::Scheduled),
+            Admission::Accepted
+        );
+        assert_eq!(current.session.allows_navigation(&a_url, true), Some(true));
+        assert_eq!(current.session.ready("old"), SessionClaim::Unavailable);
+        let b = current.session.stage("B".into(), true).unwrap();
+        let view = Mutex::new(current);
+        assert_eq!(
+            dispatch_live_session(
+                &view,
+                login,
+                b,
+                || Scheduling::NotScheduled,
+                |url| {
+                    let mut current = view.lock().unwrap();
+                    assert_eq!(current.session.allows_navigation(&url, true), Some(true));
+                    Scheduling::NotScheduled
+                },
+                || panic!("B must not wake as the committed target"),
+            ),
+            Admission::Unknown
+        );
+        let mut current = view.into_inner().unwrap();
+        assert_eq!(
+            current.session.claim(b, "late-document".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            current.session.ready("late-document"),
+            SessionClaim::Wake {
+                generation: a.to_string()
+            }
+        );
+        assert_eq!(current.session.wake_url_only(a), Some(false));
+        assert_eq!(
+            current.session.claim(a, "late-document".into()),
+            granted("A")
+        );
+    }
+
+    #[test]
+    fn tray_route_supersedes_an_unclaimed_notification_without_reviving_it() {
+        let login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
+        let mut view = session_view(Page::Web, Some(login));
+        let earlier = accept(&mut view, "thread", true);
+        assert_eq!(
+            view.open_route("connect-devices").unwrap().as_str(),
             "http://127.0.0.1:4401/?token=new#connect-devices"
         );
-        assert!(view.session.recover(earlier, &login).is_none());
-        assert!(view.session.claim(earlier, "old-document".into()).is_none());
-
-        let latest = view.session.queue("thread".into(), true);
-        assert!(view.session.recover(earlier, &login).is_none());
-        let Some(Recovery::Navigate(url)) = view.session.recover(latest, &login) else {
-            panic!("an unclaimed live wake needs URL fallback");
-        };
+        let latest = accept(&mut view, "thread", true);
         assert_eq!(
-            url.as_str(),
-            "http://127.0.0.1:4401/?token=new&session=thread&desktopSessionGeneration=3"
+            view.session.claim(earlier, "old-document".into()),
+            SessionClaim::Unavailable
         );
-        assert!(view.session.claim(latest, "old-document".into()).is_none());
+        assert_eq!(
+            view.session.claim(latest, "new-document".into()),
+            granted("thread")
+        );
     }
 
     #[test]
-    fn missing_page_ack_probes_the_claimed_generation_without_navigating() {
-        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
-        let mut session = SessionActivation::default();
-        let generation = session.queue("thread".into(), true);
+    fn claimed_target_blocks_the_waiter_until_release_or_unknown_timeout() {
+        let mut view = session_view(Page::Web, None);
+        let generation = accept(&mut view, "A", true);
+        assert_eq!(view.session.claim(generation, "D1".into()), granted("A"));
+        let now = Instant::now();
+        let (reply, outcome) = mpsc::channel();
+        let mut waiting = Some(DeferredSession {
+            session_id: "B".into(),
+            reply,
+            until: now + Duration::from_secs(1),
+        });
+        assert!(take_deferred_session(&mut waiting, view.session.has_claim(), now).is_none());
         assert_eq!(
-            session.claim(generation, "document".into()).as_deref(),
-            Some("thread")
+            view.session.receipt(generation, "D1", false, true),
+            SessionReceipt::Confirmed
         );
-        let Some(Recovery::Probe(script)) = session.recover(generation, &login) else {
-            panic!("a claimed wake cannot fall back to navigation");
-        };
-        assert_eq!(script, wake_script("http://127.0.0.1:4400", generation));
+        let next = take_deferred_session(&mut waiting, view.session.has_claim(), now).unwrap();
+        assert_eq!(next.session_id, "B");
+        assert_eq!(outcome.try_recv(), Err(mpsc::TryRecvError::Empty));
         assert_eq!(
-            script,
-            r#"if (location.origin === "http://127.0.0.1:4400") window.__codexhostOpenDesktopSession?.('1');"#
+            view.session.claim(generation, "D1".into()),
+            SessionClaim::Unavailable
         );
-        assert!(session.claim(generation, "other-document".into()).is_none());
+
+        let generation = accept(&mut view, "A", true);
+        assert_eq!(view.session.claim(generation, "D1".into()), granted("A"));
+        let (reply, outcome) = mpsc::channel();
+        let mut waiting = Some(DeferredSession {
+            session_id: "expired".into(),
+            reply,
+            until: now,
+        });
+        assert!(take_deferred_session(&mut waiting, view.session.has_claim(), now).is_none());
+        assert_eq!(outcome.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+        assert_eq!(view.session.claim(generation, "D1".into()), granted("A"));
+    }
+
+    #[test]
+    fn abandonment_waits_for_the_document_and_drops_already_waiting_clicks() {
+        let mut view = session_view(Page::Web, None);
+        let a = accept(&mut view, "A", true);
+        assert_eq!(view.session.claim(a, "D1".into()), granted("A"));
+        view.session.mark_unconfirmed(a);
+        let view = Mutex::new(view);
+        let (reply, outcome) = mpsc::channel();
+        let waiting = Mutex::new(Some(DeferredSession {
+            session_id: "B".into(),
+            reply,
+            until: Instant::now() + Duration::from_secs(1),
+        }));
+        assert!(matches!(
+            begin_session_abandonment(&view, &waiting),
+            Some(Abandon::AwaitDocument)
+        ));
+        assert_eq!(outcome.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+
+        let mut view = view.into_inner().unwrap();
+        assert!(view.session.is_discarding());
+        assert!(view.session.stage("B".into(), true).is_none());
+        assert_eq!(view.session.ready("D2"), SessionClaim::Unavailable);
         assert_eq!(
-            session.claim(generation, "document".into()).as_deref(),
-            Some("thread")
+            view.session.ready("D1"),
+            SessionClaim::Discard {
+                generation: a.to_string()
+            }
         );
-        session.opened(generation, "document");
-        assert!(session.recover(generation, &login).is_none());
+        assert_eq!(
+            view.session.claim(a, "D1".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            view.session.receipt(a, "D1", false, true),
+            SessionReceipt::Retry
+        );
+        assert_eq!(
+            view.session.receipt(a, "D2", true, true),
+            SessionReceipt::Unavailable
+        );
+        assert_eq!(
+            view.session.receipt(a, "D1", true, false),
+            SessionReceipt::Retry
+        );
+        assert!(view.session.has_claim());
+        assert_eq!(
+            view.session.receipt(a, "D1", true, true),
+            SessionReceipt::Confirmed
+        );
+        assert!(view.session.stage("fresh click".into(), true).is_some());
+        assert!(waiting.into_inner().unwrap().is_none());
     }
 
     #[test]
@@ -1310,17 +2431,17 @@ mod tests {
         let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
         for page in [Page::Web, Page::Loading(Status::Starting, None)] {
             let view = Mutex::new(session_view(page, Some(login.clone())));
-            view.lock().unwrap().session.queue("first".into(), false);
-            assert!(
+            accept(&mut view.lock().unwrap(), "first", false);
+            assert!(matches!(
                 prepare_session(
                     &view,
                     "rejected".into(),
                     || Err("window did not restore".into()),
                     || panic!("do not start Web after a window failure"),
-                )
-                .is_none()
-            );
-            let url = view.lock().unwrap().connect(login.clone());
+                ),
+                Err(Admission::Rejected)
+            ));
+            let (url, _) = view.lock().unwrap().connect(login.clone());
             assert_eq!(
                 url.query_pairs()
                     .find(|(name, _)| name == "session")
@@ -1330,20 +2451,25 @@ mod tests {
             );
         }
         let view = Mutex::new(session_view(Page::Loading(Status::Error, None), None));
-        assert!(
+        assert!(matches!(
             prepare_session(
                 &view,
                 "rejected".into(),
                 || panic!("an error page must not take over the notification"),
                 || panic!("an error page declines rather than starting Web"),
-            )
-            .is_none()
-        );
-        assert_eq!(view.lock().unwrap().connect(login.clone()), login);
-        assert!(matches!(
-            prepare_session(&view, "accepted".into(), || Ok(()), || false),
-            Some(SessionDispatch::Live { .. })
+            ),
+            Err(Admission::Rejected)
         ));
+        assert_eq!(view.lock().unwrap().connect(login.clone()), (login, None));
+        let Ok(SessionDispatch::Live { generation, .. }) =
+            prepare_session(&view, "accepted".into(), || Ok(()), || false)
+        else {
+            panic!("live session should be eligible to dispatch");
+        };
+        assert_eq!(
+            finish_session(&view, generation, Scheduling::Scheduled),
+            Admission::Accepted
+        );
     }
 
     #[test]

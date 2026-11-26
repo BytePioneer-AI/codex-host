@@ -26,6 +26,7 @@ fn main() {
             "open_web_browser",
             "desktop_session_claim",
             "desktop_session_opened",
+            "desktop_session_discarded",
             "window_start_dragging",
             "window_minimize",
             "window_toggle_maximize",

@@ -495,7 +495,20 @@ function __codexhostDesktopShellInit(config) {
     );
   };
 
+  let sessionNotice = "";
+  let sessionNoticeRevision = 0;
+  let renderSessionNotice = () => {};
+
+  if (isWindows) {
+    window.__codexhostSetDesktopSessionNotice = (text) => {
+      sessionNoticeRevision++;
+      sessionNotice = typeof text === "string" ? text : "";
+      renderSessionNotice();
+    };
+  }
+
   const syncChromeState = () => {
+    const noticeRevision = sessionNoticeRevision;
     const req = invoke("window_chrome_state");
     if (!req || typeof req.then !== "function") return;
     req
@@ -503,6 +516,10 @@ function __codexhostDesktopShellInit(config) {
         if (!state || typeof state !== "object") return;
         maximized = Boolean(state.maximized);
         updateMaxIcon();
+        if (isWindows && noticeRevision === sessionNoticeRevision) {
+          sessionNotice = state.desktopSessionNotice ?? "";
+          renderSessionNotice();
+        }
         const root = document.documentElement;
         if (!root) return;
         if (state.fullscreen) root.setAttribute("data-fullscreen", "");
@@ -530,6 +547,9 @@ function __codexhostDesktopShellInit(config) {
         ?.catch?.(() => {});
     });
     window.addEventListener("resize", () => syncChromeState());
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) syncChromeState();
+    });
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", syncChromeState, { once: true });
     } else {
@@ -565,6 +585,44 @@ function __codexhostDesktopShellInit(config) {
           transform: scale(var(--dsh-windows-caption-scale, 1));
           -webkit-app-region: no-drag;
         }
+        .session-notice {
+          position: absolute;
+          right: 100%;
+          top: 0;
+          height: 100%;
+          width: max-content;
+          max-width: calc(100vw - var(--dsh-windows-caption-width, 138px) - 190px);
+          align-content: center;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          padding-inline: 8px;
+          box-sizing: border-box;
+          font: menu;
+          color: var(--cap-fg);
+          pointer-events: none;
+        }
+        .session-notice-icon { display: none; }
+        @media (max-width: 580px) {
+          .session-notice {
+            width: 28px;
+            max-width: none;
+            padding: 0;
+            pointer-events: auto;
+            text-align: center;
+          }
+          .session-notice-label {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip-path: inset(50%);
+          }
+          .session-notice-icon {
+            display: inline;
+            font-weight: bold;
+          }
+        }
         button {
           width: 46px;
           height: 36px;
@@ -585,6 +643,22 @@ function __codexhostDesktopShellInit(config) {
         button.close:hover { background: #c42b1c; color: #ffffff; }
         button.close:active { background: #b22619; color: #ffffff; }
       `;
+      const notice = document.createElement("span");
+      notice.className = "session-notice";
+      notice.setAttribute("role", "status");
+      const noticeLabel = document.createElement("span");
+      noticeLabel.className = "session-notice-label";
+      const noticeIcon = document.createElement("span");
+      noticeIcon.className = "session-notice-icon";
+      noticeIcon.textContent = "⚠";
+      noticeIcon.setAttribute("aria-hidden", "true");
+      notice.append(noticeLabel, noticeIcon);
+      renderSessionNotice = () => {
+        noticeLabel.textContent = sessionNotice;
+        notice.title = sessionNotice;
+        notice.hidden = !sessionNotice;
+      };
+      renderSessionNotice();
       const bar = document.createElement("div");
       bar.className = "bar";
       const minBtn = document.createElement("button");
@@ -620,7 +694,7 @@ function __codexhostDesktopShellInit(config) {
       closeBtn.addEventListener("click", () => invoke("window_close")?.catch?.(() => {}));
 
       bar.append(minBtn, maxBtn, closeBtn);
-      shadow.append(style, bar);
+      shadow.append(style, notice, bar);
       document.body.appendChild(host);
 
       const syncTheme = () => {

@@ -6,7 +6,15 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::launcher::{Launcher, Surface};
 use crate::readiness::ShellReady;
-use crate::{Shell, launcher_action, show_main};
+use crate::{Shell, abandon_session, launcher_action, show_main};
+
+struct SessionNotice(MenuItem<tauri::Wry>);
+
+pub(crate) fn set_session_notice(app: &AppHandle, unconfirmed: bool) {
+    if let Some(notice) = app.try_state::<SessionNotice>() {
+        let _ = notice.0.set_enabled(unconfirmed);
+    }
+}
 
 fn run_action(
     app: &AppHandle,
@@ -97,6 +105,16 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
         label("打开官方 Codex Desktop", "Open Official Codex Desktop"),
     )?;
     let connect = item("connect", label("手机与远程连接", "Phone & Remote Access"))?;
+    let abandon = MenuItem::with_id(
+        app,
+        "abandon-session",
+        label(
+            "放弃待确认的通知会话",
+            "Discard Unconfirmed Notification Session",
+        ),
+        false,
+        None::<&str>,
+    )?;
     let native_default = item("native-default", label("自有桌面窗口", "CodexHost Window"))?;
     let official_default = item(
         "official-default",
@@ -120,6 +138,7 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
         app,
         &[
             &show,
+            &abandon,
             &official,
             &first_separator,
             &connect,
@@ -147,6 +166,7 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app, None),
+            "abandon-session" => abandon_session(app),
             "official" => run_action(app, Launcher::open_codex),
             "connect" => show_main(app, Some("connect-devices")),
             "native-default" => {
@@ -161,5 +181,6 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
             _ => (),
         })
         .build(app)?;
+    app.manage(SessionNotice(abandon));
     Ok(())
 }

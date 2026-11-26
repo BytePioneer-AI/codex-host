@@ -707,10 +707,13 @@ export function apply(ctx: ClientContext): void {
     if (sessionId === null) return;
     url.searchParams.delete("session");
     const generation = url.searchParams.get(desktopSessionGenerationQuery);
-    if (desktopPage) url.searchParams.delete(desktopSessionGenerationQuery);
+    if (desktopPage) {
+      if (generation !== null) desktopPage.readUrlGeneration(generation);
+      url.searchParams.delete(desktopSessionGenerationQuery);
+    }
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     if (desktopPage && generation !== null) {
-      void desktopPage.wake(generation);
+      void desktopPage.wake(generation, true);
     } else {
       face.openSession(sessionId);
     }
@@ -722,6 +725,7 @@ export function apply(ctx: ClientContext): void {
       face.openSession(data.sessionId);
   };
   if (desktopPage) {
+    void desktopPage.ready();
     ctx.effect(() => desktopPage.dispose, "ui-codexhost: desktop session activations");
   } else if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", onMessage);

@@ -2,119 +2,670 @@ use url::Url;
 
 const GENERATION_QUERY: &str = "desktopSessionGeneration";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 enum Delivery {
     WaitingForWeb,
     Live,
+    LoginUrl,
+    AfterLogin,
+    LoginFailed,
     Url,
+    PreviousDocument,
 }
 
 struct Pending {
+    generation: u64,
     session_id: String,
     delivery: Delivery,
     document: Option<String>,
+    unconfirmed: bool,
+    discarding: bool,
+}
+
+impl Pending {
+    fn apply_to(&self, login: &mut Url) {
+        login
+            .query_pairs_mut()
+            .append_pair("session", &self.session_id)
+            .append_pair(GENERATION_QUERY, &self.generation.to_string());
+    }
+}
+
+struct Candidate {
+    target: Pending,
+    destination: Option<Url>,
+    admitted: bool,
+}
+
+struct LoginNavigation {
+    generation: u64,
+    url: Url,
+    expired: bool,
+    #[cfg(any(windows, test))]
+    native_id: Option<u64>,
+    #[cfg(any(windows, test))]
+    expected: bool,
+}
+
+impl LoginNavigation {
+    fn authenticated_url(&self, url: &Url) -> bool {
+        self.url.origin() == url.origin()
+            && self.url.path() == url.path()
+            && self.url.fragment() == url.fragment()
+            && self
+                .url
+                .query_pairs()
+                .filter(|(name, _)| name != "token")
+                .eq(url.query_pairs())
+    }
 }
 
 #[derive(Default)]
 pub(super) struct SessionActivation {
     generation: u64,
     pending: Option<Pending>,
+    candidate: Option<Candidate>,
+    login_navigation: Option<LoginNavigation>,
+    login_failed: bool,
 }
 
-pub(super) enum Recovery {
-    Probe(String),
-    Navigate(Url),
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Admission {
+    Accepted,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Scheduling {
+    Scheduled,
+    NotScheduled,
+    Unknown,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum SessionReceipt {
+    Confirmed,
+    Retry,
+    Unavailable,
+}
+
+pub(super) enum Abandon {
+    Unclaimed,
+    AwaitDocument,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(super) enum SessionClaim {
+    Granted { session_id: String },
+    Wake { generation: String },
+    Discard { generation: String },
+    Retry,
+    Unavailable,
 }
 
 impl SessionActivation {
-    pub(super) fn queue(&mut self, session_id: String, live: bool) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
-        self.pending = Some(Pending {
-            session_id,
-            delivery: if live {
-                Delivery::Live
-            } else {
-                Delivery::WaitingForWeb
-            },
-            document: None,
-        });
+    fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
         self.generation
     }
 
-    pub(super) fn clear(&mut self) {
-        self.pending = None;
-    }
-
-    pub(super) fn connect(&mut self, login: &mut Url) {
-        if let Some(pending) = &mut self.pending {
-            self.generation = self.generation.wrapping_add(1);
-            pending.delivery = Delivery::Url;
-            pending.document = None;
-            login
-                .query_pairs_mut()
-                .append_pair("session", &pending.session_id)
-                .append_pair(GENERATION_QUERY, &self.generation.to_string());
-        }
-    }
-
-    pub(super) fn recover(&mut self, generation: u64, login: &Url) -> Option<Recovery> {
-        let pending = self.pending.as_ref()?;
-        if self.generation != generation || pending.delivery != Delivery::Live {
+    pub(super) fn stage(&mut self, session_id: String, live: bool) -> Option<u64> {
+        if self.has_claim()
+            || self.candidate.is_some()
+            || (self.pending.is_some() && self.login_in_flight())
+        {
             return None;
         }
-        if pending.document.is_some() {
-            return Some(Recovery::Probe(wake_script(
-                &login.origin().ascii_serialization(),
+        let generation = self.next_generation();
+        self.candidate = Some(Candidate {
+            target: Pending {
                 generation,
-            )));
-        }
-        // No page was granted this request. Switching generations also makes a late claim fail.
-        let mut url = login.clone();
-        self.connect(&mut url);
-        Some(Recovery::Navigate(url))
+                session_id,
+                delivery: if self.login_in_flight() {
+                    Delivery::AfterLogin
+                } else if live {
+                    Delivery::Live
+                } else {
+                    Delivery::WaitingForWeb
+                },
+                document: None,
+                unconfirmed: false,
+                discarding: false,
+            },
+            destination: None,
+            admitted: false,
+        });
+        Some(generation)
     }
 
-    pub(super) fn claim(&mut self, generation: u64, document: String) -> Option<String> {
-        let pending = self.pending.as_mut()?;
-        if self.generation != generation || pending.delivery == Delivery::WaitingForWeb {
+    pub(super) fn stage_url(&mut self, generation: u64, mut url: Url) -> Option<Url> {
+        let candidate = self.candidate.as_mut()?;
+        if generation != candidate.target.generation {
             return None;
         }
-        match &pending.document {
-            Some(owner) if *owner != document => return None,
-            None => pending.document = Some(document),
-            _ => (),
-        }
-        Some(pending.session_id.clone())
+        // The live service already has a cookie; do not replay its login token.
+        url.set_query(None);
+        candidate.target.apply_to(&mut url);
+        candidate.target.delivery = Delivery::Url;
+        candidate.destination = Some(url.clone());
+        Some(url)
     }
 
-    pub(super) fn opened(&mut self, generation: u64, document: &str) {
-        if self.generation == generation
-            && self
+    pub(super) fn finish(&mut self, generation: u64, scheduling: Scheduling) -> Admission {
+        if !self
+            .candidate
+            .as_ref()
+            .is_some_and(|entry| entry.target.generation == generation)
+        {
+            return Admission::Unknown;
+        }
+        let candidate = self.candidate.take().unwrap();
+        if scheduling == Scheduling::Scheduled {
+            self.pending = Some(candidate.target);
+            Admission::Accepted
+        } else if candidate.admitted || scheduling == Scheduling::Unknown {
+            if candidate.admitted
+                && let Some(target) = &mut self.pending
+                && target.delivery == Delivery::Url
+                && target.document.is_none()
+            {
+                // The admitted navigation may replace the only bridge holding A's deep link.
+                target.delivery = Delivery::Live;
+            }
+            Admission::Unknown
+        } else {
+            Admission::Rejected
+        }
+    }
+
+    pub(super) fn clear_unclaimed(&mut self) {
+        self.candidate = None;
+        self.login_navigation = None;
+        if !self.has_claim() {
+            self.pending = None;
+        }
+        self.login_failed = false;
+    }
+
+    pub(super) fn cancel_candidate(&mut self) {
+        self.candidate = None;
+        self.login_navigation = None;
+        self.login_failed = false;
+        self.pause_joined_login();
+    }
+
+    fn pause_joined_login(&mut self) {
+        if let Some(target) = self.pending.as_mut()
+            && target.delivery == Delivery::AfterLogin
+        {
+            target.delivery = Delivery::LoginFailed;
+        }
+    }
+
+    pub(super) fn has_claim(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|target| target.document.is_some())
+    }
+
+    pub(super) fn is_discarding(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|target| target.discarding)
+    }
+
+    pub(super) fn login_in_flight(&self) -> bool {
+        self.login_navigation
+            .as_ref()
+            .is_some_and(|nav| !nav.expired)
+    }
+
+    pub(super) fn login_needs_retry(&self) -> bool {
+        self.login_failed
+            || self
                 .pending
                 .as_ref()
-                .and_then(|target| target.document.as_deref())
-                == Some(document)
+                .is_some_and(|target| target.delivery == Delivery::LoginFailed)
+            || self
+                .login_navigation
+                .as_ref()
+                .is_some_and(|nav| nav.expired)
+    }
+
+    pub(super) fn expire_login(&mut self, generation: u64) {
+        if let Some(nav) = self
+            .login_navigation
+            .as_mut()
+            .filter(|nav| nav.generation == generation)
         {
-            self.clear();
+            // Keep admitting a valid late redirect until another navigation supersedes it.
+            nav.expired = true;
         }
     }
 
-    pub(super) fn allows_navigation(&self, url: &Url) -> Option<bool> {
-        let mut pairs = url.query_pairs();
-        let (_, generation) = pairs.find(|(name, _)| name == GENERATION_QUERY)?;
-        Some(self.pending.as_ref().is_some_and(|pending| {
-            pending.delivery == Delivery::Url
-                && generation.parse::<u64>().ok() == Some(self.generation)
+    pub(super) fn finish_login(&mut self, generation: u64, authenticated: bool) -> bool {
+        if !self
+            .login_navigation
+            .as_ref()
+            .is_some_and(|nav| nav.generation == generation)
+        {
+            return false;
+        }
+        self.login_navigation = None;
+        self.login_failed = !authenticated;
+        if let Some(target) = self.pending.as_mut() {
+            match (&target.delivery, authenticated) {
+                (Delivery::LoginUrl, true) => target.delivery = Delivery::Url,
+                (Delivery::AfterLogin, true) => target.delivery = Delivery::Live,
+                (Delivery::LoginUrl, false) => target.delivery = Delivery::WaitingForWeb,
+                (Delivery::AfterLogin, false) => target.delivery = Delivery::LoginFailed,
+                _ => (),
+            }
+        }
+        true
+    }
+
+    #[cfg(any(windows, test))]
+    pub(super) fn native_login_allows(&mut self, id: u64, url: &Url, redirected: bool) -> bool {
+        let Some(nav) = &mut self.login_navigation else {
+            return true;
+        };
+        if !redirected && nav.native_id.is_none() && nav.url == *url {
+            nav.native_id = Some(id);
+            return true;
+        }
+        if nav.native_id != Some(id) {
+            return true;
+        }
+        nav.expected = redirected && nav.authenticated_url(url);
+        nav.expected
+    }
+
+    #[cfg(any(not(windows), test))]
+    pub(super) fn portable_login_allows(&mut self, url: &Url) -> bool {
+        let Some(nav) = &mut self.login_navigation else {
+            return true;
+        };
+        if nav.url == *url || nav.authenticated_url(url) {
+            return true;
+        }
+        let ordinary = (nav.expired || self.pending.is_none())
+            && nav.url.origin() == url.origin()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && !url
+                .query_pairs()
+                .any(|(name, _)| name == "token" || name == GENERATION_QUERY);
+        if ordinary {
+            // A normal same-origin navigation can supersede authentication,
+            // but the stale redirect still must not reach the system browser.
+            nav.expired = true;
+            self.pause_joined_login();
+        }
+        ordinary
+    }
+
+    #[cfg(any(windows, test))]
+    pub(super) fn native_login_completed(&mut self, id: u64, succeeded: bool) -> bool {
+        let Some(nav) = self
+            .login_navigation
+            .as_ref()
+            .filter(|nav| nav.native_id == Some(id))
+        else {
+            return false;
+        };
+        self.finish_login(nav.generation, succeeded && nav.expected)
+    }
+
+    #[cfg(any(not(windows), test))]
+    pub(super) fn portable_login_loaded(&mut self, url: &Url) -> bool {
+        let Some(nav) = self
+            .login_navigation
+            .as_ref()
+            .filter(|nav| nav.authenticated_url(url))
+        else {
+            return false;
+        };
+        let generation = nav.generation;
+        if nav.expired {
+            self.pause_joined_login();
+        }
+        self.finish_login(generation, true)
+    }
+
+    pub(super) fn connect(&mut self, login: &mut Url) -> Option<u64> {
+        self.candidate = None;
+        self.login_navigation = None;
+        self.login_failed = false;
+        let target = self.pending.as_mut()?;
+        if target.document.is_some() {
+            target.delivery = Delivery::PreviousDocument;
+            return None;
+        }
+        if target.delivery == Delivery::LoginFailed {
+            return None;
+        }
+        self.generation += 1;
+        target.generation = self.generation;
+        target.delivery = Delivery::LoginUrl;
+        target.unconfirmed = false;
+        target.apply_to(login);
+        self.login_navigation = Some(LoginNavigation {
+            generation: target.generation,
+            url: login.clone(),
+            expired: false,
+            #[cfg(any(windows, test))]
+            native_id: None,
+            #[cfg(any(windows, test))]
+            expected: false,
+        });
+        Some(target.generation)
+    }
+
+    pub(super) fn ready(&self, document: &str) -> SessionClaim {
+        if let Some(target) = &self.pending {
+            if target.discarding && target.document.as_deref() == Some(document) {
+                return SessionClaim::Discard {
+                    generation: target.generation.to_string(),
+                };
+            }
+            if target.delivery == Delivery::AfterLogin {
+                return SessionClaim::Retry;
+            }
+            if target.delivery == Delivery::Live
+                && target
+                    .document
+                    .as_deref()
+                    .is_none_or(|owner| owner == document)
+            {
+                return SessionClaim::Wake {
+                    generation: target.generation.to_string(),
+                };
+            }
+        }
+        SessionClaim::Unavailable
+    }
+
+    pub(super) fn claim(&mut self, generation: u64, document: String) -> SessionClaim {
+        if self
+            .candidate
+            .as_ref()
+            .is_some_and(|entry| entry.target.generation == generation)
+        {
+            return SessionClaim::Retry;
+        }
+        if self.pending.as_ref().is_some_and(|target| {
+            target.generation == generation && target.delivery == Delivery::AfterLogin
+        }) {
+            return SessionClaim::Retry;
+        }
+        let Some(target) = self
+            .pending
+            .as_mut()
+            .filter(|target| target.generation == generation)
+        else {
+            return SessionClaim::Unavailable;
+        };
+        if matches!(
+            target.delivery,
+            Delivery::WaitingForWeb | Delivery::PreviousDocument | Delivery::LoginFailed
+        ) {
+            return SessionClaim::Unavailable;
+        }
+        if target.discarding {
+            return SessionClaim::Unavailable;
+        }
+        match &target.document {
+            Some(owner) if *owner != document => return SessionClaim::Unavailable,
+            None if self.candidate.is_some() => return SessionClaim::Retry,
+            None => target.document = Some(document),
+            _ => (),
+        }
+        SessionClaim::Granted {
+            session_id: target.session_id.clone(),
+        }
+    }
+
+    pub(super) fn receipt(
+        &mut self,
+        generation: u64,
+        document: &str,
+        discarded: bool,
+        page_current: bool,
+    ) -> SessionReceipt {
+        let Some(target) = self.pending.as_ref().filter(|target| {
+            target.generation == generation && target.document.as_deref() == Some(document)
+        }) else {
+            return SessionReceipt::Unavailable;
+        };
+        if !page_current || (target.discarding && !discarded) {
+            return SessionReceipt::Retry;
+        }
+        if discarded && !target.discarding {
+            return SessionReceipt::Unavailable;
+        }
+        self.pending = None;
+        SessionReceipt::Confirmed
+    }
+
+    // URL wakes are restricted to the bridge that received that deep link. A
+    // wake issued just after navigate() must not let the previous page claim it.
+    pub(super) fn wake_url_only(&self, generation: u64) -> Option<bool> {
+        let target = self
+            .pending
+            .as_ref()
+            .filter(|target| target.generation == generation)?;
+        match target.delivery {
+            Delivery::Live => Some(false),
+            Delivery::LoginUrl | Delivery::Url => Some(true),
+            _ => None,
+        }
+    }
+
+    pub(super) fn pending_generation(&self) -> Option<u64> {
+        self.pending.as_ref().map(|target| target.generation)
+    }
+
+    pub(super) fn mark_unconfirmed(&mut self, generation: u64) {
+        if let Some(target) = self
+            .pending
+            .as_mut()
+            .filter(|target| target.generation == generation)
+        {
+            target.unconfirmed = true;
+        }
+    }
+
+    pub(super) fn is_unconfirmed(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|target| target.unconfirmed)
+    }
+
+    pub(super) fn abandon_unconfirmed(&mut self) -> Option<Abandon> {
+        let target = self.pending.as_mut().filter(|target| target.unconfirmed)?;
+        if target.document.is_some() {
+            target.discarding = true;
+            Some(Abandon::AwaitDocument)
+        } else {
+            self.pending = None;
+            Some(Abandon::Unclaimed)
+        }
+    }
+
+    pub(super) fn allows_navigation(&mut self, url: &Url, admit: bool) -> Option<bool> {
+        let (_, generation) = url
+            .query_pairs()
+            .find(|(name, _)| name == GENERATION_QUERY)?;
+        if let Some(login) = &self.login_navigation
+            && (login.url == *url || login.authenticated_url(url))
+        {
+            return Some(true);
+        }
+        if let Some(candidate) = &mut self.candidate
+            && candidate.destination.as_ref() == Some(url)
+        {
+            candidate.admitted |= admit;
+            return Some(true);
+        }
+        Some(self.pending.as_ref().is_some_and(|target| {
+            matches!(target.delivery, Delivery::LoginUrl | Delivery::Url)
+                && generation.parse::<u64>().ok() == Some(target.generation)
                 && url
                     .query_pairs()
-                    .any(|(name, value)| name == "session" && value == pending.session_id)
+                    .any(|(name, value)| name == "session" && value == target.session_id)
         }))
     }
 }
 
-pub(super) fn wake_script(origin: &str, generation: u64) -> String {
+pub(super) fn wake_script(origin: &str, generation: u64, url_only: bool) -> String {
     let origin = serde_json::to_string(origin).expect("Web origin is a JSON string");
     format!(
-        "if (location.origin === {origin}) window.__codexhostOpenDesktopSession?.('{generation}');"
+        "if (location.origin === {origin}) window.__codexhostOpenDesktopSession?.('{generation}', {url_only});"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_login_recovers_same_origin_navigation_without_reopening_the_handoff() {
+        let login = Url::parse("http://[::1]:4400/?token=fixture").unwrap();
+        let ordinary = Url::parse("http://[::1]:4400/settings?tab=general").unwrap();
+        let external = Url::parse("https://example.test/").unwrap();
+        let different_port = Url::parse("http://[::1]:4401/").unwrap();
+        let stale_session =
+            Url::parse("http://[::1]:4400/?session=stale&desktopSessionGeneration=99").unwrap();
+        let unexpected_token = Url::parse("http://[::1]:4400/settings?token=fixture").unwrap();
+
+        for (expired, redirect_before_recovery) in [(true, false), (true, true), (false, false)] {
+            let mut session = SessionActivation::default();
+            let a = session.stage("A".into(), false).unwrap();
+            assert_eq!(
+                session.finish(a, Scheduling::Scheduled),
+                Admission::Accepted
+            );
+            let mut initial = login.clone();
+            let a = session.connect(&mut initial).unwrap();
+            let redirect = Url::parse(&format!(
+                "http://[::1]:4400/?session=A&desktopSessionGeneration={a}"
+            ))
+            .unwrap();
+
+            assert!(session.portable_login_allows(&initial));
+            assert!(session.portable_login_allows(&redirect));
+            assert!(!session.portable_login_allows(&ordinary));
+            assert!(!session.portable_login_allows(&external));
+
+            session.mark_unconfirmed(a);
+            assert!(matches!(
+                session.abandon_unconfirmed(),
+                Some(Abandon::Unclaimed)
+            ));
+            let b = session.stage("B".into(), true).unwrap();
+            assert_eq!(
+                session.finish(b, Scheduling::Scheduled),
+                Admission::Accepted
+            );
+            assert_eq!(session.claim(b, "old-page".into()), SessionClaim::Retry);
+            if expired {
+                session.expire_login(a);
+            } else {
+                session.mark_unconfirmed(b);
+                assert!(matches!(
+                    session.abandon_unconfirmed(),
+                    Some(Abandon::Unclaimed)
+                ));
+            }
+
+            if redirect_before_recovery {
+                assert!(session.portable_login_allows(&redirect));
+                assert!(session.portable_login_loaded(&redirect));
+            }
+            assert!(session.portable_login_allows(&ordinary));
+            if !redirect_before_recovery {
+                assert_eq!(session.ready("old-page"), SessionClaim::Unavailable);
+                assert_eq!(
+                    session.claim(b, "old-page".into()),
+                    SessionClaim::Unavailable
+                );
+                assert!(!session.portable_login_allows(&external));
+                assert!(!session.portable_login_allows(&different_port));
+                assert!(!session.portable_login_allows(&stale_session));
+                assert!(!session.portable_login_allows(&unexpected_token));
+                assert!(!session.portable_login_loaded(&ordinary));
+                assert!(session.portable_login_allows(&redirect));
+                assert!(session.portable_login_loaded(&redirect));
+            }
+            assert_eq!(session.ready("old-page"), SessionClaim::Unavailable);
+            assert_eq!(
+                session.claim(b, "old-page".into()),
+                SessionClaim::Unavailable
+            );
+            assert_eq!(
+                session.claim(b, "late-page".into()),
+                SessionClaim::Unavailable
+            );
+            assert_eq!(session.pending_generation(), expired.then_some(b));
+            assert_eq!(session.connect(&mut login.clone()), None);
+        }
+    }
+
+    #[test]
+    fn portable_replacement_blocks_stale_redirects_before_its_first_hop() {
+        let login = Url::parse("http://[::1]:4400/?token=fixture").unwrap();
+        let ordinary = Url::parse("http://[::1]:4400/settings").unwrap();
+        let external = Url::parse("https://example.test/").unwrap();
+        let unexpected_token = Url::parse("http://[::1]:4400/?token=unexpected").unwrap();
+        let mut session = SessionActivation::default();
+        let reserve_login = |session: &mut SessionActivation, id: &str| {
+            let generation = session.stage(id.into(), false).unwrap();
+            assert_eq!(
+                session.finish(generation, Scheduling::Scheduled),
+                Admission::Accepted
+            );
+            let mut initial = login.clone();
+            let generation = session.connect(&mut initial).unwrap();
+            let redirect = Url::parse(&format!(
+                "http://[::1]:4400/?session={id}&desktopSessionGeneration={generation}"
+            ))
+            .unwrap();
+            (generation, initial, redirect)
+        };
+
+        let (a, first_hop, old_redirect) = reserve_login(&mut session, "A");
+        assert!(session.portable_login_allows(&first_hop));
+        session.expire_login(a);
+        assert!(session.portable_login_allows(&ordinary));
+
+        let (b, new_first_hop, new_redirect) = reserve_login(&mut session, "B");
+        assert!(!session.portable_login_allows(&external));
+        assert!(!session.portable_login_allows(&unexpected_token));
+        assert!(!session.portable_login_allows(&old_redirect));
+        assert!(!session.portable_login_loaded(&old_redirect));
+        assert!(!session.portable_login_allows(&ordinary));
+
+        assert!(session.portable_login_allows(&new_first_hop));
+        assert!(session.portable_login_allows(&new_redirect));
+        assert!(session.portable_login_loaded(&new_redirect));
+        assert!(session.portable_login_allows(&ordinary));
+        assert_eq!(
+            session.claim(a, "old-page".into()),
+            SessionClaim::Unavailable
+        );
+        assert_eq!(
+            session.claim(b, "new-page".into()),
+            SessionClaim::Granted {
+                session_id: "B".into()
+            }
+        );
+    }
 }

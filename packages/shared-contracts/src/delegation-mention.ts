@@ -9,13 +9,18 @@
  * Harness, so the raw link never leaks into a model turn.
  */
 export const DELEGATION_MENTION_PATH_PREFIX = "subagent://codexhost.";
+export const REMOTE_DELEGATION_MENTION_PATH_PREFIX = "subagent://codexhost-remote/";
 
 const HARNESS_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;
+const DELEGATION_HOST_ID_PATTERN = /^(?:local|remote-peer:[a-zA-Z0-9_-]{1,64})$/u;
 const MENTION_LINK_PATTERN =
-  /\[@([^\]\n]+)\]\(<?subagent:\/\/codexhost\.([a-z0-9][a-z0-9-]*)>?\)/gu;
+  /\[@([^\]\n]+)\]\((<)?(?:subagent:\/\/codexhost\.([a-z0-9][a-z0-9-]*)|subagent:\/\/codexhost-remote\/([A-Za-z0-9_%-]+)(?:\/([a-z0-9][a-z0-9-]*))?)(>)?\)/gu;
 
 export interface DelegationMention {
-  harnessId: string;
+  /** Target Harness ID; omitted for host-only remote delegation mentions. */
+  harnessId?: string;
+  /** Target remote Host ID (`remote-peer:<peerId>` or `local` before peer translation); omitted for current-host mentions. */
+  hostId?: string;
   label: string;
 }
 
@@ -24,6 +29,19 @@ export function delegationMentionPath(harnessId: string): string {
     throw new Error(`Invalid delegation mention Harness id: ${harnessId}`);
   }
   return `${DELEGATION_MENTION_PATH_PREFIX}${harnessId}`;
+}
+
+export function remoteDelegationMentionPath(hostId: string, harnessId?: string): string {
+  if (!DELEGATION_HOST_ID_PATTERN.test(hostId)) {
+    throw new Error(`Invalid delegation mention Host id: ${hostId}`);
+  }
+  if (harnessId !== undefined && !HARNESS_ID_PATTERN.test(harnessId)) {
+    throw new Error(`Invalid delegation mention Harness id: ${harnessId}`);
+  }
+  const encodedHost = encodeURIComponent(hostId);
+  return harnessId === undefined
+    ? `${REMOTE_DELEGATION_MENTION_PATH_PREFIX}${encodedHost}`
+    : `${REMOTE_DELEGATION_MENTION_PATH_PREFIX}${encodedHost}/${harnessId}`;
 }
 
 function sanitizeLabel(label: string): string {
@@ -36,7 +54,16 @@ function sanitizeLabel(label: string): string {
 
 /** Markdown carrier Desktop restores into a native agent mention chip. */
 export function formatDelegationMentionLink(mention: DelegationMention): string {
-  return `[@${sanitizeLabel(mention.label)}](${delegationMentionPath(mention.harnessId)})`;
+  const path =
+    mention.hostId !== undefined
+      ? remoteDelegationMentionPath(mention.hostId, mention.harnessId)
+      : (() => {
+          if (mention.harnessId === undefined) {
+            throw new Error("Delegation mention requires harnessId or hostId");
+          }
+          return delegationMentionPath(mention.harnessId);
+        })();
+  return `[@${sanitizeLabel(mention.label)}](${path})`;
 }
 
 export interface DelegationMentionRewrite {
@@ -53,11 +80,41 @@ export function stripDelegationMentions(text: string): DelegationMentionRewrite 
   const seen = new Set<string>();
   const rewritten = text.replace(
     MENTION_LINK_PATTERN,
-    (_match, label: string, harnessId: string) => {
+    (
+      fullMatch,
+      label: string,
+      openAngle: string | undefined,
+      localHarnessId: string | undefined,
+      rawRemoteHostId: string | undefined,
+      remoteHarnessId: string | undefined,
+      closeAngle: string | undefined,
+    ) => {
+      if (Boolean(openAngle) !== Boolean(closeAngle)) return fullMatch;
       const trimmed = label.trim();
-      if (!seen.has(harnessId)) {
-        seen.add(harnessId);
-        mentions.push({ harnessId, label: trimmed });
+      if (rawRemoteHostId !== undefined) {
+        let hostId: string;
+        try {
+          hostId = decodeURIComponent(rawRemoteHostId);
+        } catch {
+          return fullMatch;
+        }
+        if (!DELEGATION_HOST_ID_PATTERN.test(hostId)) return fullMatch;
+        const key = `remote:${hostId}:${remoteHarnessId ?? ""}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          mentions.push({
+            hostId,
+            ...(remoteHarnessId === undefined ? {} : { harnessId: remoteHarnessId }),
+            label: trimmed,
+          });
+        }
+        return `@${trimmed}`;
+      }
+      if (localHarnessId === undefined) return fullMatch;
+      const key = `local:${localHarnessId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        mentions.push({ harnessId: localHarnessId, label: trimmed });
       }
       return `@${trimmed}`;
     },

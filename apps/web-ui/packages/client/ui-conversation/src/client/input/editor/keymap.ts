@@ -29,8 +29,13 @@ function isSoftKeyboardEnter(): boolean {
  */
 import type { LexicalEditor } from "lexical";
 import {
+  $getSelection,
+  $isRangeSelection,
+  $isTextNode,
   COMMAND_PRIORITY_CRITICAL,
   KEY_ARROW_DOWN_COMMAND,
+  KEY_ARROW_LEFT_COMMAND,
+  KEY_ARROW_RIGHT_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
   KEY_ESCAPE_COMMAND,
@@ -128,6 +133,33 @@ export function registerComposerKeymap(
     editor.registerUpdateListener(syncComposition),
     editor.registerCommand(KEY_ARROW_UP_COMMAND, arrow("up"), COMMAND_PRIORITY_CRITICAL),
     editor.registerCommand(KEY_ARROW_DOWN_COMMAND, arrow("down"), COMMAND_PRIORITY_CRITICAL),
+    editor.registerCommand(
+      KEY_ARROW_RIGHT_COMMAND,
+      (event) => {
+        const atTokenEnd = editor.getEditorState().read(() => {
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection) || !selection.isCollapsed()) return false;
+          const anchor = selection.anchor;
+          const node = anchor.getNode();
+          if (!$isTextNode(node)) return true;
+          const nextChar = node.getTextContent().charAt(anchor.offset);
+          return nextChar === "" || /\s/u.test(nextChar);
+        });
+        return atTokenEnd ? arrow("right")(event) : false;
+      },
+      COMMAND_PRIORITY_CRITICAL,
+    ),
+    editor.registerCommand(
+      KEY_ARROW_LEFT_COMMAND,
+      (event) => {
+        const collapsed = editor.getEditorState().read(() => {
+          const selection = $getSelection();
+          return $isRangeSelection(selection) && selection.isCollapsed();
+        });
+        return collapsed ? arrow("left")(event) : false;
+      },
+      COMMAND_PRIORITY_CRITICAL,
+    ),
     // Tab settles the highlighted completion and passes without one, keeping
     // native focus traversal; Shift+Tab leaves the menu like Escape whenever it
     // is open, highlight or not, so the two Tab gestures never disagree about

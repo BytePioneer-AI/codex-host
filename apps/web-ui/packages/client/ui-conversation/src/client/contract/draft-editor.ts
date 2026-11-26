@@ -35,7 +35,8 @@ export interface DraftSnapshot {
 export type DraftInput = string | DraftSnapshot;
 
 /** Keyboard keys intercepted by an open trigger menu. */
-export type ArbitrateKey = "up" | "down" | "enter" | "escape" | "tab" | "tabBack";
+export type ArbitrateKey =
+  "up" | "down" | "left" | "right" | "enter" | "escape" | "tab" | "tabBack";
 
 /** Trigger-menu keyboard routing result. */
 export type ArbitrateOutcome = "consumed" | "pick-highlighted" | "pass";

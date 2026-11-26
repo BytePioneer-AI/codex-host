@@ -25,7 +25,7 @@ import { WorkspaceFileSearchCache } from "./workspace-file-search.ts";
 import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -466,7 +466,16 @@ const peerManager = new PeerHostManager(
     projector: (threadId) => peerAttachments.projector(threadId),
   },
 );
-peerManager.register(rpc);
+peerManager.register(rpc, {
+  localHostname: hostname(),
+  localDelegationAvailable: () =>
+    process.env.CODEXHOST_DISABLE_PEER_DELEGATION !== "1" &&
+    chHost.realtime?.peerDelegationSupported?.() === true,
+  localHarnesses: async () => {
+    const catalog = await sessions.catalog.models().catch(() => undefined);
+    return (catalog?.groups ?? []).map((group) => ({ id: group.id, name: group.name }));
+  },
+});
 const peerDelegationBridge = await startPeerDelegationBridge({
   peerManager,
   dataDirectory: displayDirectory,

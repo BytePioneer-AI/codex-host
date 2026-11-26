@@ -167,15 +167,19 @@ export function MenuView({
                   ? "up"
                   : event.key === "ArrowDown"
                     ? "down"
-                    : event.key === "Enter"
-                      ? "enter"
-                      : event.key === "Escape"
-                        ? "escape"
-                        : event.key === "Tab"
-                          ? event.shiftKey
-                            ? "tabBack"
-                            : "tab"
-                          : undefined;
+                    : event.key === "ArrowLeft"
+                      ? "left"
+                      : event.key === "ArrowRight"
+                        ? "right"
+                        : event.key === "Enter"
+                          ? "enter"
+                          : event.key === "Escape"
+                            ? "escape"
+                            : event.key === "Tab"
+                              ? event.shiftKey
+                                ? "tabBack"
+                                : "tab"
+                              : undefined;
               if (key === undefined) return;
               if (onSearchKey(key, event.nativeEvent.isComposing) !== "pass") {
                 event.preventDefault();
@@ -319,14 +323,14 @@ export function MenuView({
                           {/* Visual hint only: Tab drills the highlighted row (the
                                 keyboard twin of the chevron, which owns the aria label). */}
                           <span className={css.drillHintText} aria-hidden>
-                            {t("drill.hint")}
+                            {item.drillLabel ?? t("drill.hint")}
                           </span>
                           <kbd className={css.drillHint} aria-hidden>
                             {t("drill.key")}
                           </kbd>
                           <span
                             role="button"
-                            aria-label={t("drill.aria")}
+                            aria-label={item.drillLabel ?? t("drill.aria")}
                             className={css.drill}
                             // mousedown so the composer keeps focus, same as the row;
                             // stopPropagation keeps the row's settling pick out of it.

@@ -65,8 +65,6 @@ export interface HarnessError {
   code: HarnessErrorCode;
   message: string;
   retryable: boolean;
-  /** Optional provider-reported retry delay in milliseconds for rate-limited operations. */
-  retryAfterMs?: number;
   /** Optional ISO-8601 timestamp when the blocking quota window is expected to reset. */
   resetsAt?: string;
   diagnostic?: string;

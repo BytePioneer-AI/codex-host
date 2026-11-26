@@ -1056,6 +1056,10 @@ describe("Claude native Turn interpretation", () => {
     ).toEqual({ status: "failed", kind: "quotaExhausted", resetsAtUnix: 1_787_674_200 });
 
     const billing = new ClaudeNativeTurnAccumulator();
+    billing.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
     billing.consume(assistant("", "billing_error"));
     expect(
       billing.consume(result({ is_error: true, terminal_reason: "api_error" })).terminal,

@@ -144,7 +144,6 @@ it("validates rate-limit and quota-exhausted HarnessError payloads", () => {
       code: "rateLimited",
       message: "Claude Code rate limit reached",
       retryable: true,
-      retryAfterMs: 30_000,
     }).success,
   ).toBe(true);
   expect(
@@ -155,14 +154,6 @@ it("validates rate-limit and quota-exhausted HarnessError payloads", () => {
       resetsAt: "2026-08-26T16:10:00.000Z",
     }).success,
   ).toBe(true);
-  expect(
-    harnessErrorSchema.safeParse({
-      code: "rateLimited",
-      message: "bad retry",
-      retryable: true,
-      retryAfterMs: -1,
-    }).success,
-  ).toBe(false);
   expect(
     harnessErrorSchema.safeParse({
       code: "quotaExhausted",

@@ -671,7 +671,7 @@ export class ClaudeNativeTurnAccumulator {
     } else {
       const lastError = this.#assistantErrors.at(-1);
       if (lastError === "billing_error") {
-        terminal = failure("billing", this.#rejectedRateLimit?.resetsAtUnix);
+        terminal = failure("billing");
       } else if (
         this.#rejectedRateLimit !== null &&
         (lastError === undefined || lastError === "rate_limit")

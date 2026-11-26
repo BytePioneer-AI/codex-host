@@ -465,7 +465,6 @@ function transportFailure(kind: ClaudeTransportFailureKind, resetsAtUnix?: numbe
       code: "quotaExhausted",
       message: "Claude Code billing or credit limit reached",
       retryable: false,
-      ...(resetsAt ? { resetsAt } : {}),
     };
   }
   return {

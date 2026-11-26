@@ -244,7 +244,6 @@ export const harnessErrorSchema = z
     ]),
     message: z.string().max(65_536),
     retryable: z.boolean(),
-    retryAfterMs: z.number().finite().nonnegative().optional(),
     resetsAt: z
       .string()
       .min(1)

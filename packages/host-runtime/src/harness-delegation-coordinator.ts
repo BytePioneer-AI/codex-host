@@ -67,7 +67,12 @@ import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-ru
 const IMPLICIT_DEDUPLICATION_MS = 30_000;
 const NATIVE_REF_TIMEOUT_MS = 10_000;
 
-type ParentMetadata = { cwd?: string; title?: string; projectId?: string };
+type ParentMetadata = {
+  cwd?: string;
+  title?: string;
+  projectId?: string;
+  harnessId?: RoutedHarnessId;
+};
 type ReadDelegationDefault = (
   harnessId: RoutedHarnessId,
 ) => Promise<HarnessDelegationDefault | undefined>;
@@ -184,7 +189,7 @@ export class HarnessDelegationCoordinator {
   readonly #startOfficial: (
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
     resolveConfiguration: ResolveOfficialConfiguration,
-    readParentProject: () => Promise<string | undefined>,
+    readParent: () => Promise<{ harnessId: RoutedHarnessId; projectId?: string }>,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata | null>;
@@ -220,7 +225,7 @@ export class HarnessDelegationCoordinator {
     startOfficial(
       input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
       resolveConfiguration: ResolveOfficialConfiguration,
-      readParentProject: () => Promise<string | undefined>,
+      readParent: () => Promise<{ harnessId: RoutedHarnessId; projectId?: string }>,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata | null>;
@@ -302,9 +307,11 @@ export class HarnessDelegationCoordinator {
           this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
         async () => {
           const parent = inheritedParent ?? (await this.#parentMetadata(parentThreadId, "codex"));
-          return parent.cwd && path.relative(parent.cwd, selectedCwd) === ""
-            ? parent.projectId
-            : undefined;
+          const sameDirectory = parent.cwd && path.relative(parent.cwd, selectedCwd) === "";
+          return {
+            harnessId: parent.harnessId,
+            ...(sameDirectory && parent.projectId ? { projectId: parent.projectId } : {}),
+          };
         },
       );
       return {

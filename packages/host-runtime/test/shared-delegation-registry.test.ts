@@ -14,6 +14,7 @@ import { SharedThreadOwner } from "../src/shared-thread-owner.js";
 import {
   createFixture,
   JsonLineCollector,
+  readJsonLine,
   stopFixture,
   writeRequest,
 } from "./app-server-host-fixture.js";
@@ -120,6 +121,72 @@ async function setup() {
   const sharedParent = (started.result as { thread: { id: string } }).thread.id;
   return { registry, sharedApi, sshApi, sharedParent, legacyParent, nativeId, ssh, owner, store };
 }
+
+it("gets a shared external parent's project and lineage when the SSH viewer delegates Codex", async () => {
+  const owner = new SharedThreadOwner();
+  const origin = createFixture();
+  owner.input.pipe(origin.desktopInput);
+  origin.desktopOutput.pipe(owner.output);
+  cleanup.push(async () => {
+    owner.close();
+    await stopFixture(origin);
+  });
+  await origin.ready;
+  const peer = owner.connect();
+  cleanup.push(() => peer.close());
+  const parent = peer.request("thread/start", {
+    model: "codexhost/pi-native",
+    cwd: "/synthetic",
+    projectId: "project-a",
+  });
+  const lookup = await readJsonLine(origin.official.stdin);
+  expect(lookup).toMatchObject({ method: "project/read", params: { projectId: "project-a" } });
+  origin.official.stdout.write(
+    JSON.stringify({ id: lookup.id, result: { project: { id: "project-a" } } }) + "\n",
+  );
+  const reply = await parent;
+  expect(reply.error).toBeUndefined();
+  const sharedParent = (reply.result as { thread: { id: string } }).thread.id;
+  let api: DelegationControlRegistration | undefined;
+  const viewer = createFixture({
+    sharedThreads: new SharedThreadBridge({
+      connect: async () => owner.connect(),
+      delegateCreates: true,
+      diagnose: () => {},
+    }),
+    onDelegationApi(registration) {
+      api = registration;
+      return undefined;
+    },
+  });
+  cleanup.push(() => stopFixture(viewer));
+  await viewer.ready;
+  if (!api) throw new Error("Missing viewer registration");
+  const pending = api.start({ harnessId: "codex", parentThreadId: sharedParent, task: "Review" });
+  async function respond(method: string, response: Record<string, unknown>) {
+    const request = await readJsonLine(viewer.official.stdin);
+    expect(request.method).toBe(method);
+    viewer.official.stdout.write(JSON.stringify({ id: request.id, ...response }) + "\n");
+    return request.params;
+  }
+  expect(
+    await respond("thread/read", { error: { code: -32602, message: "Unknown native parent" } }),
+  ).toMatchObject({ threadId: sharedParent });
+  expect(await respond("thread/start", { result: { thread: { id: "child" } } })).toMatchObject({
+    cwd: "/synthetic",
+    projectId: "project-a",
+  });
+  await respond("thread/name/set", { result: {} });
+  await respond("turn/start", { result: { turn: { id: "turn" } } });
+  await expect(pending).resolves.toMatchObject({ threadId: "child", turnId: "turn" });
+  expect(
+    await viewer.mappingStore.getDelegationByChild(hostThreadIdSchema.parse("child")),
+  ).toMatchObject({
+    parentHostThreadId: sharedParent,
+    sourceHarnessId: "pi",
+    targetHarnessId: "codex",
+  });
+});
 
 it("selects only the SSH proxy for a shared parent with multiple attached clients", async () => {
   const { registry, sshApi, sharedParent, legacyParent, ssh, owner, store } = await setup();

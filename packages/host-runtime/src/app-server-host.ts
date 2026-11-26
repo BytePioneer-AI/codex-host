@@ -1343,10 +1343,11 @@ export class AppServerHost {
         ),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
-      startOfficial: (input, resolveConfiguration, readParentProject) =>
-        this.#startOfficialDelegation(input, resolveConfiguration, readParentProject),
+      startOfficial: (input, resolveConfiguration, readParent) =>
+        this.#startOfficialDelegation(input, resolveConfiguration, readParent),
       listOfficial: (input) => this.#listDelegationThreads(input),
-      officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
+      officialThreadMetadata: (threadId) =>
+        this.#readThreadMetadata(threadId, options.sharedThreads),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
       pendingQuestions: (threadId) => this.#pendingDelegationQuestions(threadId),
@@ -2927,19 +2928,31 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
-  async #readOfficialThreadMetadata(
+  async #readThreadMetadata(
     threadId: string,
-  ): Promise<{ cwd?: string; title?: string; projectId?: string } | null> {
-    const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
-    if (isRecord(response.error)) return null;
-    const result = isRecord(response.result) ? response.result : null;
-    const thread = result && isRecord(result.thread) ? result.thread : null;
+    sharedParents?: SharedThreadBridge,
+  ): Promise<{ cwd?: string; title?: string; projectId?: string; harnessId?: string } | null> {
+    const params = { threadId, includeTurns: false };
+    const readThread = (response: JsonObject | null) =>
+      response && isRecord(response.result) && isRecord(response.result.thread)
+        ? response.result.thread
+        : null;
+    const native = this.#requestOfficial("thread/read", params);
+    let thread = readThread(
+      await (sharedParents?.options.delegateCreates ? native.catch(() => null) : native),
+    );
+    let harnessId: string | undefined;
+    if (!thread && sharedParents?.options.delegateCreates) {
+      harnessId = (await sharedParents.ownership([threadId])).get(threadId);
+      if (harnessId) thread = readThread(await sharedParents.request("thread/read", params));
+    }
     if (!thread) return null;
     const title =
       typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
     return {
       ...(typeof thread.cwd === "string" && thread.cwd.trim() ? { cwd: thread.cwd } : {}),
       ...(typeof thread.projectId === "string" ? { projectId: thread.projectId } : {}),
+      ...(harnessId ? { harnessId } : {}),
       ...(typeof title === "string" && title.trim() ? { title } : {}),
     };
   }
@@ -3053,7 +3066,7 @@ export class AppServerHost {
       model: HarnessModelRef | undefined,
       inspected?: HarnessInspectResult,
     ) => ReturnType<typeof resolveDelegationConfiguration>,
-    readParentProject: () => Promise<string | undefined>,
+    readParent: () => Promise<{ harnessId: string; projectId?: string }>,
   ): Promise<DelegationStartResult> {
     let inspected: HarnessInspectResult | undefined;
     const requestedModel = input.officialModelArgument ?? input.model;
@@ -3122,13 +3135,13 @@ export class AppServerHost {
         },
       };
     }
-    const projectId = await readParentProject();
+    const parent = await readParent();
     const selection = await resolveConfiguration(explicitModel, inspected);
     const { model, thinkingOptionId } = selection;
     const nativeSelection = model ? officialCodexModelSelection(model) : undefined;
     const started = await this.#requestOfficial("thread/start", {
       cwd: input.cwd,
-      ...(projectId ? { projectId } : {}),
+      ...(parent.projectId ? { projectId: parent.projectId } : {}),
       ...nativeSelection,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
@@ -3145,12 +3158,11 @@ export class AppServerHost {
     let turnId: string;
     try {
       // Persist the delegation lineage before turn/start so hop enforcement closes the first-turn window.
-      const source = await this.#repository.find(input.parentThreadId);
       await this.#repository.createDelegation({
         delegationId,
         parentHostThreadId: hostThreadIdSchema.parse(input.parentThreadId),
         childHostThreadId: hostThreadIdSchema.parse(threadId),
-        sourceHarnessId: source?.harnessId ?? harnessIdSchema.parse("codex"),
+        sourceHarnessId: harnessIdSchema.parse(parent.harnessId),
         targetHarnessId: harnessIdSchema.parse("codex"),
         status: "creating",
         ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -4625,7 +4637,7 @@ export class AppServerHost {
       }
       let catalog: HarnessCommandCatalog;
       try {
-        const metadata = await this.#readOfficialThreadMetadata(params.data.threadId);
+        const metadata = await this.#readThreadMetadata(params.data.threadId);
         if (!metadata?.cwd) throw new Error("Codex Thread has no Skill workspace");
         const response = await this.#requestOfficial("skills/list", { cwds: [metadata.cwd] });
         if (isRecord(response.error)) throw new Error(String(response.error.message));

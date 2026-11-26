@@ -1,4 +1,5 @@
 import type { JsonObject } from "@codexhost/protocol-core";
+import path from "node:path";
 import {
   THREAD_TREE_SNAPSHOT_METHOD,
   THREAD_TREE_WATCH_METHOD,
@@ -7,6 +8,56 @@ import {
 import { expect, it, vi } from "vitest";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { ThreadTreeWatch } from "../src/thread-tree-watch.js";
+
+it("detects native archives on a cold watch even when status arrived first", async () => {
+  vi.useFakeTimers();
+  const codexHome = path.resolve("fixture-codex-home");
+  const send = vi.fn<(message: JsonObject) => Promise<void>>(async () => {});
+  const watch = new ThreadTreeWatch({
+    codexHome,
+    tree: { read: async () => ({ parents: { archived: "parent", active: "parent" } }) },
+    repository: { listSummaries: async () => [] },
+    events: new ClientChannelEvents(),
+    localStatus: () => undefined,
+    waiting: () => false,
+    readOfficial: async (id: string) => ({
+      result: {
+        thread: {
+          id,
+          status: { type: "notLoaded" },
+          path: path.join(
+            codexHome,
+            id === "archived" ? "archived_sessions" : "sessions",
+            `${id}.jsonl`,
+          ),
+        },
+      },
+    }),
+    send,
+    diagnose: (error: unknown) => {
+      throw error;
+    },
+  });
+  try {
+    watch.observe(
+      {
+        method: "thread/status/changed",
+        params: { threadId: "archived", status: { type: "idle" } },
+      },
+      true,
+    );
+    await watch.handle({ id: 1, method: THREAD_TREE_WATCH_METHOD, params: {} });
+    expect(
+      threadTreeWatchResultSchema.parse(send.mock.lastCall?.[0].result).snapshot.nodes,
+    ).toMatchObject({
+      archived: { archived: true, status: "idle" },
+      active: { archived: false },
+    });
+  } finally {
+    watch.close();
+    vi.useRealTimers();
+  }
+});
 
 it("reprobes official threads on reconnect and ignores reads from the retired generation", async () => {
   vi.useFakeTimers();
@@ -17,6 +68,7 @@ it("reprobes official threads on reconnect and ignores reads from the retired ge
   });
   let reconnected = false;
   const watch = new ThreadTreeWatch({
+    codexHome: path.resolve("fixture-codex-home"),
     tree: { read: async () => ({ parents: { official: "parent" } }) },
     repository: { listSummaries: async () => [] },
     events: new ClientChannelEvents(),
@@ -61,6 +113,7 @@ it("drops a deleted Thread from the next snapshot", async () => {
   const send = vi.fn<(message: JsonObject) => Promise<void>>(async () => {});
   const parents: Record<string, string> = { child: "parent" };
   const watch = new ThreadTreeWatch({
+    codexHome: path.resolve("fixture-codex-home"),
     tree: { read: async () => ({ parents: { ...parents } }) },
     repository: { listSummaries: async () => [] },
     events: new ClientChannelEvents(),

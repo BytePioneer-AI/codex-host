@@ -1,6 +1,6 @@
-import { open } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
+import { readDesktopGlobalState } from "@codexhost/desktop-control";
 import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   clientWorkspaceSnapshotSchema,
@@ -16,32 +16,7 @@ export async function readNativeWorkspaceSnapshot(
   nativeProjects?: ClientWorkspaceSnapshot["projects"],
 ): Promise<ClientWorkspaceSnapshot> {
   const codexHome = environment.CODEX_HOME ?? path.join(homedir(), ".codex");
-  const file = path.join(codexHome, ".codex-global-state.json");
-  let text: string;
-  try {
-    const handle = await open(file, "r");
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > 32 * 1024 * 1024)
-        throw new Error("Invalid or oversized native workspace metadata");
-      text = await handle.readFile("utf8");
-    } finally {
-      await handle.close();
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      return {
-        projects: nativeProjects ?? [],
-        ...(nativeProjects ? { nativeProjects: true } : {}),
-        assignments: {},
-        projectless: [],
-        pinned: [],
-      };
-    throw error;
-  }
-  if (Buffer.byteLength(text) > 32 * 1024 * 1024)
-    throw new Error("Native workspace metadata exceeds its read limit");
-  const parsed: unknown = JSON.parse(text);
+  const parsed = await readDesktopGlobalState(codexHome);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("Invalid native workspace metadata");
   const state = parsed as Record<string, unknown>;

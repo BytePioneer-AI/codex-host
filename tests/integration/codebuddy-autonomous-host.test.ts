@@ -1,130 +1,331 @@
-import { expect, it, vi } from "vitest";
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import type { JsonValue } from "@codexhost/protocol-core";
+import { describe, expect, it, vi } from "vitest";
+import type { JsonObject } from "@codexhost/protocol-core";
 import {
-  harnessIdSchema,
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   hostThreadIdSchema,
-  nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { CodeBuddyAdapter } from "../../packages/adapters/codebuddy/src/codebuddy-adapter.js";
-import { fixture } from "../../packages/adapters/codebuddy/test/fixtures.js";
-import { ExternalThreadRuntime } from "../../packages/host-runtime/src/external-thread-runtime.js";
-import type { ExternalThreadRepository } from "../../packages/host-runtime/src/external-thread-repository.js";
+import { fixture as nativeFixture } from "../../packages/adapters/codebuddy/test/fixtures.js";
 import {
-  ExternalTurnProjection,
-  type ExternalTurnProjectionHost,
-} from "../../packages/host-runtime/src/external-turn-projection.js";
+  createFixture,
+  messageParams,
+  method,
+  requestId,
+  startExternalThread,
+  stopFixture,
+  turnEvent,
+  writeRequest,
+} from "../../packages/host-runtime/test/app-server-host-fixture.js";
 
-it("projects a real CodeBuddy autonomous completion through the Host without persisting identity or pausing the queue", async () => {
-  const native = fixture(),
-    adapter = new CodeBuddyAdapter(native);
-  const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
-  if (!opened.ok) throw Error(opened.error.message);
-  try {
-    const harnessId = harnessIdSchema.parse("codebuddy"),
-      threadId = hostThreadIdSchema.parse("codebuddy-live");
-    const record = {
-      formatVersion: 1,
-      revision: 1,
-      hostThreadId: threadId,
-      createRequestId: "create-live",
-      harnessId,
-      state: "ready",
-      cwd: process.cwd(),
-      title: "CodeBuddy",
-      nativeSessionRef: nativeSessionRefSchema.parse({
-        harnessId,
-        nativeSessionId: "native-session",
-        formatVersion: 1,
-      }),
-      archived: false,
-      transportModelId: "native/model",
-      ephemeral: false,
-      historyMode: "legacy",
-      turnMappings: [],
-      createdAt: "2026-11-16T00:00:00.000Z",
-      updatedAt: "2026-11-16T00:00:00.000Z",
-    } as StoredThreadRecordV1;
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map([["codebuddy", adapter]]),
-      repository: {} as ExternalThreadRepository,
-      consumeOutputs: async () => undefined,
-      diagnose: (error) => {
-        throw error;
-      },
-    });
-    const thread = runtime.register({
-      record,
-      session: opened.value,
-      sessionId: threadId,
-      thread: { id: threadId },
-      turns: [],
-    });
-    const messages: JsonValue[] = [];
-    const host: ExternalTurnProjectionHost = {
-      writeJson: async (message) => {
-        messages.push(message);
-      },
-      repository: { getDelegationByChild: async () => null, setDelegationStatus: vi.fn() },
-      steering: { hasPending: () => false, terminal: vi.fn() },
-      queue: { pause: vi.fn(() => false) },
-      manualCompactionTurns: new WeakMap(),
-      foldSettledItem: (turn) => turn,
-      outputFailed: vi.fn(),
-      submitPrewarm: async () => false,
-      notifyExternalThreadStarted: async () => undefined,
-      touchThread: async () => undefined,
-      persistTerminalIdentity: vi.fn((current, event) =>
-        runtime.persistTerminalIdentity(current, event),
-      ),
-      retainFailedTurn: async () => undefined,
-      captureCompletedPreview: async () => undefined,
-      resolveDesktopApproval: async () => undefined,
-      resolveDesktopQuestion: async () => undefined,
-      retireSharedQuestions: vi.fn(),
-      setThreadStatus: async () => undefined,
-      forgetQueuedTurnStart: vi.fn(),
-      signalActiveWorkChanged: vi.fn(),
-      hasRunningSubagents: () => false,
-      publishExternalQueue: async () => undefined,
-      startNextQueuedExternalTurn: vi.fn(async () => undefined),
-    };
-    const projection = new ExternalTurnProjection(host),
-      client = native.clients[0];
-    if (!client) throw Error("Missing fixture client");
-    client.update({
-      sessionUpdate: "session_info_update",
-      _meta: { "codebuddy.ai/unsolicitedTurn": { requestId: "live", reason: "background_drain" } },
-    });
-    client.update({
-      sessionUpdate: "agent_message_chunk",
-      messageId: "answer",
-      content: { type: "text", text: "live answer" },
-    });
-    client.update({ sessionUpdate: "session_end", stopReason: "end_turn" });
-    await opened.value.close();
-    for await (const output of opened.value.outputs) {
-      if (
-        output.kind === "event" &&
-        "turnId" in output.event &&
-        output.event.type !== "usage.request.timing"
-      )
-        await projection.project(thread, output.event);
+type Native = ReturnType<typeof nativeFixture>;
+type Client = Native["clients"][number];
+
+const codeBuddyModel = encodeHarnessPluginRoute(
+  harnessPluginRouteSchema.parse({ harnessId: "codebuddy" }),
+);
+const text = (value: string) => [{ type: "text", text: value }];
+
+function announce(client: Client, requestIdValue = "live") {
+  client.update({
+    sessionUpdate: "session_info_update",
+    _meta: {
+      "codebuddy.ai/unsolicitedTurn": { requestId: requestIdValue, reason: "background_drain" },
+      "codebuddy.ai/requestId": requestIdValue,
+    },
+  });
+}
+
+function reply(client: Client, message: string, requestIdValue = "live") {
+  client.update({
+    sessionUpdate: "agent_message_chunk",
+    messageId: `${message}-answer`,
+    content: { type: "text", text: message },
+    _meta: { "codebuddy.ai/requestId": requestIdValue },
+  });
+}
+
+function end(client: Client, requestIdValue = "live") {
+  client.update({
+    sessionUpdate: "session_end",
+    stopReason: "end_turn",
+    _meta: { "codebuddy.ai/requestId": requestIdValue },
+  });
+}
+
+async function setup(readHistory?: Native["readHistory"]) {
+  const native = nativeFixture();
+  const adapter = new CodeBuddyAdapter({
+    ...native,
+    ...(readHistory ? { readHistory } : {}),
+  });
+  const host = createFixture({
+    additionalAdapters: new Map([["codebuddy", adapter]]),
+  });
+  const threadId = await startExternalThread(host, codeBuddyModel, 1, { cwd: process.cwd() });
+  const client = native.clients[0];
+  if (!client) throw new Error("Missing CodeBuddy fixture client");
+  let nextId = 10;
+  const request = async (methodName: string, params: JsonObject) => {
+    const id = nextId++;
+    writeRequest(host.desktopInput, { id, method: methodName, params });
+    return host.collector.waitFor((message) => requestId(message, id));
+  };
+  return { native, adapter, host, threadId, client, request };
+}
+
+describe("CodeBuddy autonomous Turns through AppServerHost", () => {
+  it("projects an idle autonomous Turn without persisting turn identity or disrupting later turns", async () => {
+    const { host, threadId, client, request } = await setup();
+    try {
+      announce(client);
+      reply(client, "live answer");
+      end(client);
+
+      const completed = await host.collector.waitFor((message) =>
+        method(message, "turn/completed"),
+      );
+      const turn = messageParams(completed).turn as JsonObject;
+      expect(turn).toMatchObject({ status: "completed" });
+      expect(
+        host.collector.messages.some(
+          (message) =>
+            method(message, "item/completed") &&
+            (messageParams(message).item as JsonObject)?.text === "live answer",
+        ),
+      ).toBe(true);
+      expect(
+        (await host.mappingStore.getThread(hostThreadIdSchema.parse(threadId)))?.turnMappings,
+      ).toEqual([]);
+
+      const started = await request("turn/start", {
+        threadId,
+        input: text("follow-up"),
+      });
+      expect(started).not.toHaveProperty("error");
+      const foregroundId = ((started.result as JsonObject).turn as JsonObject).id as string;
+      await expect(
+        host.collector.waitFor((message) => turnEvent(message, "turn/completed", foregroundId)),
+      ).resolves.toMatchObject({
+        params: { turn: { id: foregroundId, status: "completed" } },
+      });
+      expect(
+        (await host.mappingStore.getThread(hostThreadIdSchema.parse(threadId)))?.turnMappings,
+      ).toHaveLength(1);
+      expect(host.diagnosticOutput.read()?.toString() ?? "").toBe("");
+    } finally {
+      await stopFixture(host);
     }
-    expect(messages).toContainEqual(
-      expect.objectContaining({
-        method: "turn/completed",
-        params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }),
-      }),
-    );
-    expect(host.persistTerminalIdentity).not.toHaveBeenCalled();
-    expect(host.outputFailed).not.toHaveBeenCalled();
-    expect(host.queue.pause).not.toHaveBeenCalled();
-    expect(host.startNextQueuedExternalTurn).toHaveBeenCalledOnce();
-    expect(thread.turns).toEqual([]);
-    expect(thread.running).toBe(false);
-    expect(thread.activeTurnId).toBeNull();
-  } finally {
-    await adapter.close();
-  }
+  });
+
+  it.each(["open", "already-ended"] as const)(
+    "defers queued foreground advancement across a back-to-back %s autonomous drain and delivers the head once",
+    async (drainState) => {
+      const native = nativeFixture();
+      const entered = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      let reads = 0;
+      const adapter = new CodeBuddyAdapter({
+        ...native,
+        readHistory: async () => {
+          const contents = await native.readHistory();
+          if (++reads === 2) {
+            entered.resolve(undefined);
+            await release.promise;
+          }
+          return contents;
+        },
+      });
+      const host = createFixture({
+        additionalAdapters: new Map([["codebuddy", adapter]]),
+      });
+      try {
+        const threadId = await startExternalThread(host, codeBuddyModel, 1, { cwd: process.cwd() });
+        const client = native.clients[0];
+        if (!client) throw new Error("Missing CodeBuddy fixture client");
+        const promptSpy = vi.spyOn(client, "prompt");
+
+        writeRequest(host.desktopInput, {
+          id: 2,
+          method: "turn/start",
+          params: { threadId, input: text("hold") },
+        });
+        const firstResponse = await host.collector.waitFor((message) => requestId(message, 2));
+        const firstTurnId = ((firstResponse.result as JsonObject).turn as JsonObject).id as string;
+        await host.collector.waitFor((message) => turnEvent(message, "turn/started", firstTurnId));
+
+        writeRequest(host.desktopInput, {
+          id: 3,
+          method: "thread/queue/add",
+          params: { threadId, input: text("queued follow-up"), clientUserMessageId: "queued-1" },
+        });
+        const added = await host.collector.waitFor((message) => requestId(message, 3));
+        expect(added).not.toHaveProperty("error");
+
+        // Finish the foreground prompt, then announce a drain before the terminal snapshot resolves
+        // so the Adapter emits turn.completed and turn.autonomous.started back-to-back.
+        client.finishPending();
+        await entered.promise;
+        announce(client, "drain-1");
+        reply(client, "drain answer", "drain-1");
+        if (drainState === "already-ended") end(client, "drain-1");
+        release.resolve(undefined);
+
+        await expect(
+          host.collector.waitFor((message) => turnEvent(message, "turn/completed", firstTurnId)),
+        ).resolves.toMatchObject({
+          params: { turn: { id: firstTurnId, status: "completed" } },
+        });
+
+        const autonomousStarted = await host.collector.waitFor(
+          (message) =>
+            method(message, "turn/started") &&
+            ((messageParams(message).turn as JsonObject).id as string) !== firstTurnId,
+        );
+        const autonomousTurnId = (messageParams(autonomousStarted).turn as JsonObject).id as string;
+        await host.collector.waitFor(
+          (message) =>
+            method(message, "item/agentMessage/delta") &&
+            messageParams(message).turnId === autonomousTurnId,
+        );
+
+        if (drainState === "open") {
+          // Give any deferred queue start microtasks a turn while the drain is still active.
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          expect((await host.host.clientSnapshot(threadId)).queue).toMatchObject({
+            pausedReason: null,
+            items: [{ clientUserMessageId: "queued-1" }],
+          });
+          expect(
+            promptSpy.mock.calls.filter(([, input]) => input === "queued follow-up"),
+          ).toHaveLength(0);
+          end(client, "drain-1");
+        }
+
+        await expect(
+          host.collector.waitFor((message) =>
+            turnEvent(message, "turn/completed", autonomousTurnId),
+          ),
+        ).resolves.toMatchObject({
+          params: { turn: { id: autonomousTurnId, status: "completed" } },
+        });
+
+        const queuedStarted = await host.collector.waitFor(
+          (message) =>
+            method(message, "turn/started") &&
+            ![firstTurnId, autonomousTurnId].includes(
+              (messageParams(message).turn as JsonObject).id as string,
+            ),
+        );
+        const queuedTurnId = (messageParams(queuedStarted).turn as JsonObject).id as string;
+        await expect(
+          host.collector.waitFor((message) => turnEvent(message, "turn/completed", queuedTurnId)),
+        ).resolves.toMatchObject({
+          params: { turn: { id: queuedTurnId, status: "completed" } },
+        });
+
+        expect(
+          promptSpy.mock.calls.filter(([, input]) => input === "queued follow-up"),
+        ).toHaveLength(1);
+        await vi.waitFor(async () =>
+          expect((await host.host.clientSnapshot(threadId)).queue).toMatchObject({
+            items: [],
+            pausedReason: null,
+          }),
+        );
+        expect(
+          (await host.mappingStore.getThread(hostThreadIdSchema.parse(threadId)))?.turnMappings,
+        ).toHaveLength(2);
+        expect(host.diagnosticOutput.read()?.toString() ?? "").toBe("");
+      } finally {
+        release.resolve(undefined);
+        await stopFixture(host);
+      }
+    },
+  );
+
+  it("pauses the queued foreground Turn when an intervening autonomous drain is cancelled", async () => {
+    const native = nativeFixture();
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    let reads = 0;
+    const adapter = new CodeBuddyAdapter({
+      ...native,
+      readHistory: async () => {
+        const contents = await native.readHistory();
+        if (++reads === 2) {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+        return contents;
+      },
+    });
+    const host = createFixture({
+      additionalAdapters: new Map([["codebuddy", adapter]]),
+    });
+    try {
+      const threadId = await startExternalThread(host, codeBuddyModel, 1, { cwd: process.cwd() });
+      const client = native.clients[0];
+      if (!client) throw new Error("Missing CodeBuddy fixture client");
+      const promptSpy = vi.spyOn(client, "prompt");
+
+      writeRequest(host.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: text("hold") },
+      });
+      const firstResponse = await host.collector.waitFor((message) => requestId(message, 2));
+      const firstTurnId = ((firstResponse.result as JsonObject).turn as JsonObject).id as string;
+      await host.collector.waitFor((message) => turnEvent(message, "turn/started", firstTurnId));
+
+      writeRequest(host.desktopInput, {
+        id: 3,
+        method: "thread/queue/add",
+        params: { threadId, input: text("wait after cancel"), clientUserMessageId: "queued-stop" },
+      });
+      await host.collector.waitFor((message) => requestId(message, 3));
+
+      client.finishPending();
+      await entered.promise;
+      announce(client, "drain-cancel");
+      release.resolve(undefined);
+
+      await host.collector.waitFor((message) => turnEvent(message, "turn/completed", firstTurnId));
+      const autonomousStarted = await host.collector.waitFor(
+        (message) =>
+          method(message, "turn/started") &&
+          ((messageParams(message).turn as JsonObject).id as string) !== firstTurnId,
+      );
+      const autonomousTurnId = (messageParams(autonomousStarted).turn as JsonObject).id as string;
+
+      writeRequest(host.desktopInput, {
+        id: 4,
+        method: "turn/interrupt",
+        params: { threadId, turnId: autonomousTurnId },
+      });
+      await expect(
+        host.collector.waitFor((message) => requestId(message, 4)),
+      ).resolves.not.toHaveProperty("error");
+
+      end(client, "drain-cancel");
+      await expect(
+        host.collector.waitFor((message) => turnEvent(message, "turn/completed", autonomousTurnId)),
+      ).resolves.toMatchObject({
+        params: { turn: { id: autonomousTurnId, status: "interrupted" } },
+      });
+
+      await vi.waitFor(async () =>
+        expect((await host.host.clientSnapshot(threadId)).queue).toMatchObject({
+          pausedReason: "interrupted",
+          items: [{ clientUserMessageId: "queued-stop" }],
+        }),
+      );
+      expect(
+        promptSpy.mock.calls.filter(([, input]) => input === "wait after cancel"),
+      ).toHaveLength(0);
+    } finally {
+      release.resolve(undefined);
+      await stopFixture(host);
+    }
+  });
 });

@@ -12,6 +12,7 @@ import {
 } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type {
+  HarnessErrorCode,
   HarnessResult,
   HarnessSession,
   HostTextInput,
@@ -32,6 +33,7 @@ interface SteeringThread {
   id: string;
   running: boolean;
   activeTurnId: HostTurnId | null;
+  admittingTurnId?: HostTurnId | null;
   persistenceError: Error | null;
   session: {
     readonly capabilities: Pick<HarnessSessionCapabilities, "steer">;
@@ -81,6 +83,8 @@ export class ExternalSteerError extends Error {
     message: string,
     /** Set only where this operation proves the submitted input was not taken. */
     readonly notStarted = false,
+    /** Harness rejection code when the Harness explicitly refused the request. */
+    readonly harnessErrorCode?: HarnessErrorCode,
   ) {
     super(message);
   }
@@ -466,7 +470,7 @@ export class ExternalTurnSteering {
           -32074,
           "Previous External Turn identity could not be persisted",
         );
-      if (thread.running || thread.activeTurnId) {
+      if (thread.running || thread.activeTurnId || thread.admittingTurnId) {
         throw new ExternalSteerError(-32072, "Another External Turn started before replacement");
       }
       // Command discovery can await native data. Recheck cancellation after

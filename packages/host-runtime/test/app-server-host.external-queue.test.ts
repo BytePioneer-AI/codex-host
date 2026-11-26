@@ -779,4 +779,43 @@ describe("External Thread follow-up queue", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("pauses the queue when turn.start returns sessionBusy without an autonomous Turn occupying the Thread", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const runningTurnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/queue/add",
+        params: { threadId, input: text("blocked busy"), clientUserMessageId: "busy-1" },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 10));
+      session.rejectNextTurn({
+        code: "sessionBusy",
+        message: "Harness is busy without an autonomous Turn",
+        retryable: true,
+      });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", runningTurnId),
+      );
+      await vi.waitFor(async () =>
+        expect((await fixture.host.clientSnapshot(threadId)).queue).toMatchObject({
+          pausedReason: "failed",
+          items: [{ clientUserMessageId: "busy-1" }],
+        }),
+      );
+      expect(
+        execute.mock.calls.filter(
+          ([command]) => (command as { type: string }).type === "turn.start",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

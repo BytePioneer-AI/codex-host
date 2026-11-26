@@ -141,6 +141,10 @@ fn spawn_detached_service_runs_a_simple_child() {
 fn breakaway_retry_is_windows_only() {
     // On macOS/Linux errno 5 is EIO, not a rejected breakaway; the retry path
     // must stay Windows-only.
-    assert!(!super::is_job_breakaway_denied(&std::io::Error::from_raw_os_error(5)));
-    assert!(!super::is_job_breakaway_denied(&std::io::Error::other("no os code")));
+    assert!(!super::is_job_breakaway_denied(
+        &std::io::Error::from_raw_os_error(5)
+    ));
+    assert!(!super::is_job_breakaway_denied(&std::io::Error::other(
+        "no os code"
+    )));
 }

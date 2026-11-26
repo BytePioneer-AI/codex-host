@@ -8,11 +8,17 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { HarnessPreferencesStore } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
-import { CodexTurnProjector, type ExternalHarnessId } from "@codexhost/protocol-core";
+import {
+  CodexTurnProjector,
+  decodeExternalTransportSelection,
+  type ExternalHarnessId,
+} from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
@@ -564,6 +570,146 @@ describe("HarnessDelegationCoordinator", () => {
       expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
       expect(result.configuration?.requested).toEqual({ model, thinkingOptionId });
       expect((await value.repository.list())[0]?.transportModelId).not.toBe("codexhost/pi-native");
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("persists the confirmed initialState Model and permission mode without startup state events", async () => {
+    const requestedModel = harnessModelRefSchema.parse({ id: "grok[fast=false]" });
+    const confirmedModel = harnessModelRefSchema.parse({ id: "grok[context=256k,fast=false]" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const bypass = harnessPermissionModeIdSchema.parse("bypass");
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: requestedModel,
+          label: "Grok",
+          supportedThinkingOptionIds: [thinkingOptionId],
+        },
+      ],
+      defaultModel: requestedModel,
+      thinkingOptions: [{ id: thinkingOptionId, label: "High" }],
+      defaultThinkingOptionId: thinkingOptionId,
+    });
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "accept-edits", label: "Code" },
+        { id: "bypass", label: "Bypass Permissions", dangerous: true },
+      ],
+      defaultModeId: "accept-edits",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("cursor-cli"),
+      catalog,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const originalOpen = adapter.open.bind(adapter);
+    vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      const opened = await originalOpen(input);
+      if (!opened.ok) return opened;
+      Object.defineProperty(opened.value, "initialState", {
+        configurable: true,
+        value: {
+          ...opened.value.initialState,
+          effectiveModel: confirmedModel,
+          effectiveThinkingOptionId: thinkingOptionId,
+          effectivePermissionModeId: bypass,
+        },
+      });
+      return opened;
+    });
+    const value = await fixture(adapter);
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "cursor-cli",
+        task: "preserve confirmed startup configuration",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model: requestedModel,
+        thinkingOptionId,
+      });
+      expect(result.configuration?.effective?.effectiveModel).toEqual(confirmedModel);
+      const stored = (await value.repository.list())[0];
+      expect(
+        stored ? decodeExternalTransportSelection("cursor-cli", stored.transportModelId) : null,
+      ).toEqual({
+        model: confirmedModel,
+        thinkingOptionId,
+        permissionModeId: bypass,
+      });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not persist requested Thinking when confirmed initialState has an empty Thinking catalog", async () => {
+    const requestedModel = harnessModelRefSchema.parse({ id: "swe-2-1-medium" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("devin.bWF4");
+    const bypass = harnessPermissionModeIdSchema.parse("bypass");
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: requestedModel,
+          label: "SWE-2.1",
+          supportedThinkingOptionIds: [thinkingOptionId],
+        },
+      ],
+      defaultModel: requestedModel,
+      thinkingOptions: [{ id: thinkingOptionId, label: "Max" }],
+      defaultThinkingOptionId: thinkingOptionId,
+    });
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "accept-edits", label: "Code" },
+        { id: "bypass", label: "Bypass Permissions", dangerous: true },
+      ],
+      defaultModeId: "accept-edits",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("devin"),
+      catalog,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const originalOpen = adapter.open.bind(adapter);
+    vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      const opened = await originalOpen(input);
+      if (!opened.ok) return opened;
+      Object.defineProperty(opened.value, "initialState", {
+        configurable: true,
+        value: {
+          nativeRef: opened.value.initialState.nativeRef,
+          effectiveModel: requestedModel,
+          availableThinkingOptions: [],
+          effectivePermissionModeId: bypass,
+        },
+      });
+      return opened;
+    });
+    const value = await fixture(adapter);
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "devin",
+        task: "omit cleared startup thinking",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model: requestedModel,
+        thinkingOptionId,
+      });
+      expect(result.configuration?.effective?.effectiveThinkingOptionId).toBeUndefined();
+      const stored = (await value.repository.list())[0];
+      expect(
+        stored ? decodeExternalTransportSelection("devin", stored.transportModelId) : null,
+      ).toEqual({
+        model: requestedModel,
+        permissionModeId: bypass,
+      });
     } finally {
       await value.close();
     }

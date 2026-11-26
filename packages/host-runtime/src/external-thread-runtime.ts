@@ -482,11 +482,14 @@ export class ExternalThreadRuntime {
       throw new Error(`External Harness '${input.record.harnessId}' is not registered`);
     }
     const initialState = input.restoredState ?? input.session.initialState;
-    const effectiveModel = input.requestedModel ?? initialState.effectiveModel;
+    const effectiveModel = initialState.effectiveModel ?? input.requestedModel;
     const effectiveThinkingOptionId =
-      input.requestedThinkingOptionId ?? initialState.effectiveThinkingOptionId;
+      initialState.effectiveThinkingOptionId ??
+      (initialState.availableThinkingOptions !== undefined
+        ? undefined
+        : input.requestedThinkingOptionId);
     const effectivePermissionModeId =
-      input.requestedPermissionModeId ?? initialState.effectivePermissionModeId;
+      initialState.effectivePermissionModeId ?? input.requestedPermissionModeId;
     const observerState: HarnessSessionState = {
       ...initialState,
       ...(effectiveModel ? { effectiveModel } : {}),

@@ -345,6 +345,10 @@ describe("Devin exact native history", () => {
         stopReason: "end_turn",
         _meta: { "cognition.ai/userMessageId": "continued" },
       });
+      const outputs: unknown[] = [];
+      const done = (async () => {
+        for await (const output of child.outputs) outputs.push(output);
+      })();
       expect(
         await child.execute({
           type: "turn.start",
@@ -353,6 +357,13 @@ describe("Devin exact native history", () => {
         }),
       ).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+      await child.close();
+      await done;
+      expect(outputs).not.toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: "session.state.changed" }),
+        }),
+      );
     },
   );
   it("detects source history changes instead of returning a child", async () => {

@@ -8,9 +8,13 @@ export function desktopProjectPathKey(path: string): string {
     .replaceAll("\\", "/")
     .toLowerCase();
   const wsl = /^\/\/(?:wsl\$|wsl\.localhost)\/[^/]+(?:\/(.*))?$/.exec(normalized);
-  if (wsl) return "/" + (wsl[1] ?? "");
   const drive = /^\/?([a-z]):(?:\/(.*))?$/.exec(normalized);
-  return drive ? "/mnt/" + drive[1] + (drive[2] ? "/" + drive[2] : "") : normalized;
+  const key = wsl
+    ? "/" + (wsl[1] ?? "")
+    : drive
+      ? "/mnt/" + drive[1] + (drive[2] ? "/" + drive[2] : "")
+      : normalized;
+  return key.length > 1 ? key.replace(/\/+$/, "") || "/" : key;
 }
 
 /** Read only registered Desktop projects. Migrated local projects remain visible

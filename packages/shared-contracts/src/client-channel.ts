@@ -159,6 +159,7 @@ export const CLIENT_CHANNEL_METHODS = [
 export const clientThreadSectionsSchema = z
   .object({
     [THREAD_SECTION_CAPABILITY]: z.literal(true).optional(),
+    complete: z.literal(false).optional(),
     sections: z.array(
       z
         .object({
@@ -177,8 +178,10 @@ export const clientThreadSectionMoveSchema = z
     threadId: z.string().min(1).max(1_024),
     sectionId: z.string().min(1).max(1_024).nullable(),
     beforeThreadId: z.string().min(1).max(1_024).nullable().optional(),
+    expectedSourceSectionId: z.string().min(1).max(1_024).optional(),
   })
-  .strict();
+  .strict()
+  .refine((move) => move.expectedSourceSectionId === undefined || move.sectionId === null);
 
 /** Canonical external pin membership, shared with native Thread sections. */
 export const clientThreadPinsSchema = z.object({ threadIds: z.array(z.string().min(1)) }).strict();

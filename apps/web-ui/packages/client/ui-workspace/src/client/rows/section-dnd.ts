@@ -6,6 +6,7 @@
  * concurrency guarantees can be verified directly by focused logic tests.
  */
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
+import { notifySubscribers } from "@deepseek-ai/dsh-client-store";
 import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-controller/types";
 import type { HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -32,6 +33,8 @@ export interface SectionMovePayload {
    * - `SessionId`: insert before that target member in `sectionId`.
    */
   readonly beforeSessionId?: SessionId | null;
+  /** For drag-out only: move only if the session still belongs to this custom section. */
+  readonly expectedSourceSectionId?: string;
 }
 
 /** Drag source identity when a section-eligible session starts dragging. */
@@ -269,8 +272,15 @@ export function resolveSectionDropMove(
   visibleSectionRows?: ReadonlyMap<string, readonly SessionId[]>,
 ): SectionMovePayload | null {
   if (target.kind === "unsectioned") {
-    if (source.sourceSectionId === null) return null;
-    return { sessionId: source.sessionId, sectionId: null };
+    const section = sections.find((candidate) => candidate.id === source.sourceSectionId);
+    if (
+      section === undefined ||
+      !isManageableCustomSection(section) ||
+      !section.threadIds.includes(source.sessionId)
+    ) {
+      return null;
+    }
+    return { sessionId: source.sessionId, sectionId: null, expectedSourceSectionId: section.id };
   }
 
   const section = sections.find((candidate) => candidate.id === target.sectionId);
@@ -387,6 +397,7 @@ export function createSectionMoveCoordinator(options: {
     sessionId: SessionId,
     sectionId: string | null,
     beforeSessionId?: SessionId | null,
+    expectedSourceSectionId?: string,
   ) => Promise<void>;
   readonly onError?: (error: unknown) => void;
 }): SectionMoveCoordinator {
@@ -396,7 +407,7 @@ export function createSectionMoveCoordinator(options: {
 
   const emit = (): void => {
     snapshot = new Set(inFlight);
-    for (const listener of listeners) listener();
+    notifySubscribers(listeners, "[section-move]");
   };
 
   const movingSessionIds: HostObservable<ReadonlySet<SessionId>> = {
@@ -419,7 +430,12 @@ export function createSectionMoveCoordinator(options: {
       inFlight.add(payload.sessionId);
       emit();
       try {
-        await options.execute(payload.sessionId, payload.sectionId, payload.beforeSessionId);
+        await options.execute(
+          payload.sessionId,
+          payload.sectionId,
+          payload.beforeSessionId,
+          payload.expectedSourceSectionId,
+        );
         return { status: "committed" };
       } catch (error) {
         if (moveOptions.notifyOnError !== false) options.onError?.(error);

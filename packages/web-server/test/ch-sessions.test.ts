@@ -99,7 +99,7 @@ it("advertises section capability for an empty list only when both ends opt in",
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     if (method !== "codexhost/thread/sections/list") return request<T>(method, params);
-    assert.deepEqual(params, sectionFollowArgs);
+    assert.deepEqual(params, { ...sectionFollowArgs, requireComplete: true });
     return { sections, ...(supportsSections ? sectionFollowArgs : {}) } as T;
   };
   assert.ok((await list()).ok);
@@ -163,7 +163,7 @@ it("projects confirmed section writes to capable and legacy Workspace followers"
   const writes: Array<{ method: string; params: Record<string, unknown> }> = [];
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     if (method === "codexhost/thread/sections/list") {
-      assert.deepEqual(params, sectionFollowArgs);
+      assert.deepEqual(params, { ...sectionFollowArgs, requireComplete: true });
       return { sections, ...sectionFollowArgs } as T;
     }
     if (method === CLIENT_THREAD_SECTION_MUTATIONS.create.method) {
@@ -407,6 +407,18 @@ it("retries a shared sections change after a catalog read and preserves the proj
   t.mock.timers.tick(1000);
   assert.deepEqual(await published.promise, [{ id: "shared", name, threadIds: [] }]);
   assert.equal(reads, 3);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({
+          ...sectionFollowArgs,
+          complete: false,
+          sections: [{ id: "native-only", name: "Native only", threads: [] }],
+        } as T)
+      : request<T>(method, params);
+  assert.ok((await list()).ok);
+  assert.deepEqual((await subscribe(sectionFollowArgs)).baseline.threadSections, [
+    { id: "shared", name, threadIds: [] },
+  ]);
 });
 
 it("stops advertising section support without retrying unsupported section reads", async (t) => {
@@ -854,6 +866,10 @@ it("preserves omitted, null and precise section anchors and surfaces Host owner 
       } as T;
     if (method !== "codexhost/thread/sections/move") return request<T>(method, params);
     submitted.push(params);
+    if (params.expectedSourceSectionId !== undefined)
+      throw new RpcError("host/rejected", "Thread no longer belongs to its drag source section", {
+        hostCode: -32078,
+      });
     switch (params.beforeThreadId) {
       case undefined:
         break;
@@ -923,6 +939,38 @@ it("preserves omitted, null and precise section anchors and surfaces Host owner 
   const afterDelete = [{ id: "research", name: "Research", threadIds: [last.id, first.id] }];
   assert.deepEqual(follower.updates().at(-1)?.threadSections, afterDelete);
   assert.deepEqual((await subscribe(sectionFollowArgs)).baseline.threadSections, afterDelete);
+
+  const recreated = await rpc.dispatch("workspace/create", { args: { request: { path: root } } });
+  assert.ok(recreated.ok);
+  const newWorkspaceId = workspaces.byPath(root)?.workspaceId;
+  assert.ok(newWorkspaceId);
+  assert.notEqual(newWorkspaceId, workspaceId);
+  assert.ok((await move({ ...toResearch, beforeSessionId: last.id })).ok);
+  const afterRecreate = [
+    {
+      id: "research",
+      name: "Research",
+      threadIds: [first.id, last.id],
+      workspaceIds: [newWorkspaceId],
+    },
+  ];
+  assert.deepEqual(follower.updates().at(-1)?.threadSections, afterRecreate);
+  assert.deepEqual(capable.updates().at(-1)?.threadSections, afterRecreate);
+  assert.deepEqual((await subscribe(sectionFollowArgs)).baseline.threadSections, afterRecreate);
+
+  const staleDrop = await move({
+    sessionId: first.id,
+    sectionId: null,
+    expectedSourceSectionId: "previous-section",
+  });
+  assert.ok(!staleDrop.ok);
+  assert.match(staleDrop.error.message, /drag source section/);
+  assert.deepEqual(submitted.at(-1), {
+    threadId: first.id,
+    sectionId: null,
+    expectedSourceSectionId: "previous-section",
+  });
+  assert.deepEqual(capable.updates().at(-1)?.threadSections, afterRecreate);
 });
 
 it("places Desktop's section projects as their root Workspaces in Desktop order", async (t) => {

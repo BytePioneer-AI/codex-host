@@ -264,6 +264,12 @@ describe("workspace-controller thread section contracts", () => {
       sessionId: "t-1",
       sectionId: null,
     });
+    const guardedRemoval = {
+      sessionId: "t-2" as SessionId,
+      sectionId: null,
+      expectedSourceSectionId: "sec-1",
+    };
+    expect(moveParam.parse(guardedRemoval)).toEqual(guardedRemoval);
     expect(() =>
       moveParam.parse({ sessionId: "t-1", sectionId: "sec-1", beforeSessionId: 42 }),
     ).toThrow();
@@ -317,6 +323,8 @@ describe("workspace-controller thread section contracts", () => {
     await controller.moveSessionToSection("t-2" as SessionId, null);
     expect(sentMoves[3]).toEqual({ sessionId: "t-2", sectionId: null });
     expect(Object.hasOwn(sentMoves[3]!, "beforeSessionId")).toBe(false);
+    await controller.moveSessionToSection("t-2" as SessionId, null, undefined, "sec-1");
+    expect(sentMoves[4]).toEqual(guardedRemoval);
 
     // No optimistic reordering: snapshot stays authoritative until stream updates
     expect(model.getSnapshot().threadSections?.[0]?.threadIds).toEqual(["t-1", "t-2"]);

@@ -97,6 +97,16 @@ it("refreshes on lifecycle notifications and reconnect instead of waiting for th
   }
   await b.tick(100);
   assert.ok(b.workspaces.ownerOf("new-unsectioned"));
+  const projectPath = join(b.root, "moved-project");
+  host.projectSnapshot.projects.push({ id: "moved", name: "Moved", rootPaths: [projectPath] });
+  host.projectSnapshot.assignments.thread = "moved";
+  for (const type of ["projects-changed", "sections-changed"] as const) {
+    for (const listener of host.listeners) {
+      listener({ type, cursor: { epoch: host.epoch, sequence: ++host.sequence } });
+    }
+  }
+  await b.tick(100);
+  assert.equal(b.workspaces.ownerOf("thread")?.path, projectPath);
   host.connection(false);
   await b.tick(60_000);
   host.requests.length = 0;

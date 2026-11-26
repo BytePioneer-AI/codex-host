@@ -294,10 +294,15 @@ export function apply(ctx: Context): void {
     (snapshot) => snapshot.archivedFilter ?? "default",
   );
   const sectionMoveCoordinator = createSectionMoveCoordinator({
-    execute: (sessionId, sectionId, beforeSessionId) => {
+    execute: (sessionId, sectionId, beforeSessionId, expectedSourceSectionId) => {
       if (!workspaces.moveSessionToSection)
         return Promise.reject(new Error("Section moves are unavailable"));
-      return workspaces.moveSessionToSection(sessionId, sectionId, beforeSessionId);
+      return workspaces.moveSessionToSection(
+        sessionId,
+        sectionId,
+        beforeSessionId,
+        expectedSourceSectionId,
+      );
     },
     onError: (reason) => {
       notify({

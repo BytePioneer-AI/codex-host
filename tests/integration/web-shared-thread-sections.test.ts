@@ -5,6 +5,7 @@ import { tsImport } from "tsx/esm/api";
 import { expect, it } from "vitest";
 import { SharedThreadBridge } from "../../packages/host-runtime/src/shared-thread-bridge.js";
 import { SharedThreadOwner } from "../../packages/host-runtime/src/shared-thread-owner.js";
+import { SHARED_THREAD_LIST_METHOD } from "../../packages/host-runtime/src/shared-thread-peer.js";
 import {
   type FakeOfficialProcess,
   createFixture,
@@ -83,7 +84,10 @@ it("keeps shared section members when a scoped page cannot confirm them", async 
       connect: async () => ({
         ...peer,
         request: async (method, params) => {
-          if (method === unavailableMethod) {
+          if (
+            method === unavailableMethod ||
+            (unavailableMethod === "thread/list" && method === SHARED_THREAD_LIST_METHOD)
+          ) {
             return { error: { code: -32078, message: "Synthetic shared owner read failure" } };
           }
           return peer.request(method, params);

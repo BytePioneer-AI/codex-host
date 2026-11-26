@@ -1,7 +1,12 @@
 import type { JsonObject } from "@codexhost/protocol-core";
+import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
+import {
+  SHARED_THREAD_LIST_METHOD,
+  SHARED_THREAD_OWNERSHIP_METHOD,
+} from "../src/shared-thread-peer.js";
 
 import {
   closeFixture,
@@ -672,6 +677,153 @@ describe("External Thread sections through AppServerHost", () => {
     }
   });
 
+  it("falls back to native sections when a nested shared list fails and then disconnects", async () => {
+    const ended = Promise.withResolvers<undefined>();
+    let online = true;
+    let failList = false;
+    let failNativeDefinitions = false;
+    const downstream = {
+      request: async (method: string, params: JsonObject): Promise<JsonObject> => {
+        if (method === SHARED_THREAD_LIST_METHOD || method === "thread/list") {
+          if (failList) return { error: { code: -32082, message: "Nested Thread list failed" } };
+          return {
+            result: {
+              ...(method === SHARED_THREAD_LIST_METHOD ? { complete: true } : {}),
+              data: [],
+              nextCursor: null,
+            },
+          };
+        }
+        if (
+          method === SHARED_THREAD_OWNERSHIP_METHOD ||
+          method === "codexhost/thread/ownership/list"
+        ) {
+          const threadIds = params.threadIds as string[];
+          return {
+            result: { threads: threadIds.map((threadId) => ({ threadId, owner: "codex" })) },
+          };
+        }
+        if (method === "codexhost/shared-threads/placements") return { result: { placements: [] } };
+        return { result: {} };
+      },
+      respond: async () => undefined,
+      subscribe: () => () => undefined,
+      closed: ended.promise,
+      close: () => {
+        online = false;
+        ended.resolve(undefined);
+      },
+    };
+    const middle = createFixture({
+      externalOnly: true,
+      sharedThreads: new SharedThreadBridge({
+        connect: async () => (online ? downstream : null),
+        delegateCreates: false,
+        diagnose: () => undefined,
+      }),
+    });
+    const owner = new SharedThreadOwner();
+    middle.desktopOutput.pipe(owner.output, { end: false });
+    owner.input.pipe(middle.desktopInput, { end: false });
+    const viewer = createFixture({
+      sharedThreads: new SharedThreadBridge({
+        connect: async () => owner.connect(),
+        delegateCreates: false,
+        diagnose: () => undefined,
+      }),
+    });
+    serveOfficialSections(middle, [], { Research: [], Review: [] });
+    const native = serveOfficialSections(
+      viewer,
+      [],
+      { Research: ["official-2", "official-1"], Review: [] },
+      { incompleteList: () => failNativeDefinitions },
+    );
+    const placement = (threadId: string, sectionId: string) => ({
+      hostThreadId: hostThreadIdSchema.parse(threadId),
+      section: { id: sectionId, name: sectionId, appearance: null },
+      enteredAt: new Date().toISOString(),
+      beforeThreadId: null,
+    });
+    try {
+      await vi.waitFor(() => middle.mappingStore.listSectionPlacements());
+      const boot = await sectionRpc(middle, "list", {});
+      expect(boot, middle.diagnosticOutput.read()?.toString()).toHaveProperty("result");
+      const shared = await startPiThread(middle);
+      const local = await startPiThread(viewer);
+      const sharedPlacements = [placement(shared, "Research")];
+      const localPlacements = [placement(local, "Review")];
+      await middle.mappingStore.replaceSectionPlacements(sharedPlacements);
+      await viewer.mappingStore.replaceSectionPlacements(localPlacements);
+      const list = (params: JsonObject = {}) => sectionRpc(viewer, "list", params);
+      const complete = { requireComplete: true };
+      const full = await list(complete);
+      expect(full).toMatchObject({
+        result: {
+          sections: [
+            {
+              id: "Research",
+              threads: [{ id: "official-2" }, { id: "official-1" }, { id: shared }],
+            },
+            { id: "Review", threads: [{ id: local }] },
+          ],
+        },
+      });
+      expect(full).not.toHaveProperty("result.complete");
+      await expect(list()).resolves.toEqual(full);
+
+      failList = true;
+      await expect(call(viewer, 240, "thread/list", {})).resolves.toMatchObject({
+        result: {
+          data: expect.arrayContaining([
+            expect.objectContaining({ id: shared }),
+            expect.objectContaining({ id: local }),
+          ]),
+        },
+      });
+      const incomplete = {
+        result: {
+          complete: false,
+          sections: [
+            {
+              id: "Research",
+              name: "Research",
+              threads: [{ id: "official-2" }, { id: "official-1" }],
+            },
+            { id: "Review", name: "Review", threads: [] },
+          ],
+        },
+      };
+      await expect(list()).resolves.toEqual(incomplete);
+      await expect(list(complete)).resolves.toMatchObject({ error: { code: -32081 } });
+
+      downstream.close();
+      await downstream.closed;
+      await expect(list()).resolves.toEqual(incomplete);
+      await expect(list(complete)).resolves.toMatchObject({ error: { code: -32081 } });
+      await expect(
+        sectionRpc(viewer, "move", {
+          threadId: "official-1",
+          sectionId: "Review",
+          beforeThreadId: null,
+        }),
+      ).resolves.toMatchObject({ error: { code: -32078 } });
+      expect(native.moves).toEqual([]);
+      expect(native.sectionReads).not.toContainEqual(
+        expect.objectContaining({ requireComplete: expect.anything() }),
+      );
+      expect(await middle.mappingStore.listSectionPlacements()).toEqual(sharedPlacements);
+      expect(await viewer.mappingStore.listSectionPlacements()).toEqual(localPlacements);
+
+      failNativeDefinitions = true;
+      await expect(list()).resolves.toMatchObject({ error: { code: -32081 } });
+    } finally {
+      await stopFixture(viewer);
+      owner.close();
+      await stopFixture(middle);
+    }
+  });
+
   it("lists mixed custom sections in placement order without archived or pinned members", async () => {
     const fixture = createFixture();
     serveOfficialSections(fixture, ["pinned-1"], {
@@ -730,6 +882,13 @@ describe("External Thread sections through AppServerHost", () => {
       const move = (threadId: string, sectionId: string | null) =>
         fixture.host.handleClientRequest("codexhost/thread/sections/move", { threadId, sectionId });
       await expect(move("official-thread", "Research")).resolves.toEqual({ result: {} });
+      await expect(
+        sectionRpc(fixture, "move", {
+          threadId: "official-thread",
+          sectionId: null,
+          expectedSourceSectionId: "Review",
+        }),
+      ).resolves.toMatchObject({ error: { code: -32078, message: /drag source section/ } });
       await expect(move("official-thread", null)).resolves.toEqual({ result: {} });
       await expect(move(external, "Research")).resolves.toEqual({ result: {} });
       await expect(move(secondExternal, "Research")).resolves.toEqual({ result: {} });
@@ -749,7 +908,21 @@ describe("External Thread sections through AppServerHost", () => {
       await expect(move(external, "Review")).resolves.toEqual({ result: {} });
       const moved = await fixture.mappingStore.listSectionPlacements();
       expect(moved.find((row) => row.hostThreadId === external)?.section.id).toBe("Review");
-      await expect(move(external, null)).resolves.toEqual({ result: {} });
+      await expect(
+        sectionRpc(fixture, "move", {
+          threadId: external,
+          sectionId: null,
+          expectedSourceSectionId: "Research",
+        }),
+      ).resolves.toMatchObject({ error: { code: -32078, message: /drag source section/ } });
+      expect(await fixture.mappingStore.listSectionPlacements()).toEqual(moved);
+      await expect(
+        sectionRpc(fixture, "move", {
+          threadId: external,
+          sectionId: null,
+          expectedSourceSectionId: "Review",
+        }),
+      ).resolves.toEqual({ result: {} });
       expect(
         (await fixture.mappingStore.listSectionPlacements()).map((row) => row.hostThreadId),
       ).toEqual([secondExternal]);
@@ -969,16 +1142,17 @@ describe("External Thread sections through AppServerHost", () => {
         .spyOn(fixture.mappingStore, "replaceSectionPlacements")
         .mockRejectedValueOnce(new Error("Storage offline"))
         .mockRejectedValueOnce(new Error("Storage still offline"));
-      const retry = () =>
+      const retry = (verifySource = false) =>
         sectionRpc(fixture, "move", {
           threadId: "N2",
           sectionId,
           ...(beforeThreadId === undefined ? {} : { beforeThreadId }),
+          ...(verifySource ? { expectedSourceSectionId: "Research" } : {}),
         });
       const partial = {
         error: { code: -32081, message: expect.stringContaining("Native Thread moved") },
       };
-      await expect(retry()).resolves.toMatchObject(partial);
+      await expect(retry(sectionId === null)).resolves.toMatchObject(partial);
       expect(await readPlacements()).toEqual(original);
 
       if (changed === "native") {
@@ -1000,7 +1174,7 @@ describe("External Thread sections through AppServerHost", () => {
         await expect(retry()).resolves.toMatchObject(partial);
         expect(await readPlacements()).toEqual(superseding);
       } else {
-        await expect(retry()).resolves.toEqual({ result: {} });
+        await expect(retry(sectionId === null)).resolves.toEqual({ result: {} });
         expect(await readPlacements()).toMatchObject([
           { hostThreadId: external, section: { id: "Research" }, beforeThreadId: "N3" },
         ]);
@@ -1138,9 +1312,17 @@ describe("External Thread sections through AppServerHost", () => {
     ownerFixture.desktopOutput.pipe(owner.output, { end: false });
     owner.input.pipe(ownerFixture.desktopInput, { end: false });
     const ownerNative = serveOfficialSections(ownerFixture, [], { Research: [], Review: [] });
+    let firstConnection = true;
+    let sharedSocketReady = false;
     const local = createFixture({
       sharedThreads: new SharedThreadBridge({
-        connect: async () => owner.connect(),
+        connect: async () => {
+          if (firstConnection) {
+            firstConnection = false;
+            throw new Error("Shared Unix socket refused the connection");
+          }
+          return sharedSocketReady ? owner.connect() : null;
+        },
         delegateCreates: false,
         diagnose: () => undefined,
       }),
@@ -1159,6 +1341,12 @@ describe("External Thread sections through AppServerHost", () => {
       ).toHaveProperty("result");
       const before = await ownerFixture.mappingStore.listSectionPlacements();
       const move = (params: JsonObject) => sectionRpc(local, "move", params);
+      await expect(
+        move({ threadId: "local-review", sectionId: "Research" }),
+      ).resolves.toMatchObject({
+        error: { code: -32078, message: expect.stringContaining("across owners") },
+      });
+      sharedSocketReady = true;
       await expect(move({ threadId: "local-thread", sectionId: "Research" })).resolves.toEqual({
         result: {},
       });

@@ -247,6 +247,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_p
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
   'sectionId': z.union([z.string(), z.literal(null)]).readonly(),
   'beforeSessionId': z.union([z.intersection(z.string(), z.unknown()), z.literal(null)]).readonly().optional(),
+  'expectedSourceSectionId': z.string().readonly().optional(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_result$schema$value ??= z.object({

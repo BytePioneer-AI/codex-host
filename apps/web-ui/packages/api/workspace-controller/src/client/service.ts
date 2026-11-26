@@ -117,6 +117,7 @@ export interface IWorkspaces {
     sessionId: SessionId,
     sectionId: string | null,
     beforeSessionId?: SessionId | null,
+    expectedSourceSectionId?: string,
   ): Promise<void>;
   /** Create a custom Thread section with a non-empty name. */
   createThreadSection?(name: string): Promise<WorkspaceCreateThreadSectionValue>;
@@ -204,11 +205,13 @@ export class WorkspaceController extends Service implements IWorkspaces {
     sessionId: SessionId,
     sectionId: string | null,
     beforeSessionId?: SessionId | null,
+    expectedSourceSectionId?: string,
   ): Promise<void> {
     const result = await this.model.moveSessionToSection({
       sessionId,
       sectionId,
       ...(beforeSessionId === undefined ? {} : { beforeSessionId }),
+      ...(expectedSourceSectionId === undefined ? {} : { expectedSourceSectionId }),
     });
     if (!result.ok) throw commandError("move to section", result.error);
     if (result.value.sectionId !== sectionId)

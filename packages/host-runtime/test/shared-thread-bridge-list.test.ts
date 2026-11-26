@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
-import type { SharedThreadPeer } from "../src/shared-thread-peer.js";
+import { SHARED_THREAD_LIST_METHOD, type SharedThreadPeer } from "../src/shared-thread-peer.js";
 import {
   SHARED_SECTIONS_CHANGED_METHOD,
   SHARED_SECTIONS_WATCH_METHOD,
@@ -13,16 +13,25 @@ function fakePeer(total: number) {
   const rows = Array.from({ length: total }, (_, index) => ({ id: `shared-${index}` }));
   const listeners = new Set<(message: JsonObject) => void>();
   const listCalls: JsonObject[] = [];
+  const strictListCalls: JsonObject[] = [];
   const ended = Promise.withResolvers<undefined>();
   let fail = false;
+  let acknowledgeComplete = true;
   const peer: SharedThreadPeer = {
     request: async (method, params) => {
-      if (method !== "thread/list") return { result: {} };
-      listCalls.push(params);
+      if (method !== "thread/list" && method !== SHARED_THREAD_LIST_METHOD) return { result: {} };
+      const strict = method === SHARED_THREAD_LIST_METHOD;
+      (strict ? strictListCalls : listCalls).push(params);
       if (fail) return { error: { code: -1, message: "busy" } };
       const offset = typeof params.cursor === "string" ? Number(params.cursor) : 0;
       const next = offset + PAGE < rows.length ? String(offset + PAGE) : null;
-      return { result: { data: rows.slice(offset, offset + PAGE), nextCursor: next } };
+      return {
+        result: {
+          data: rows.slice(offset, offset + PAGE),
+          nextCursor: next,
+          ...(strict && acknowledgeComplete ? { complete: true } : {}),
+        },
+      };
     },
     respond: async () => undefined,
     subscribe: (listener) => {
@@ -38,6 +47,10 @@ function fakePeer(total: number) {
   return {
     peer,
     listCalls,
+    strictListCalls,
+    acknowledgeComplete: (value: boolean) => {
+      acknowledgeComplete = value;
+    },
     notify: (message: JsonObject) => {
       for (const listener of listeners) listener(message);
     },
@@ -260,6 +273,29 @@ it("does not keep a failed walk", async () => {
   expect(await bridge.list(query)).toEqual([]);
   shared.failNext(false);
   expect(await bridge.list(query)).toHaveLength(10);
+});
+
+it("never uses a best-effort walk as proof of completeness", async () => {
+  const shared = fakePeer(250);
+  const bridge = bridgeFor(shared.peer);
+  const strict = { requireComplete: true };
+  expect(await bridge.list(query)).toHaveLength(250);
+
+  shared.acknowledgeComplete(false);
+  await expect(bridge.list(query, strict)).rejects.toThrow("did not confirm complete Thread list");
+  expect(shared.listCalls).toHaveLength(2);
+  expect(shared.strictListCalls).toHaveLength(1);
+  expect(await bridge.list(query)).toHaveLength(250);
+
+  shared.acknowledgeComplete(true);
+  expect(await bridge.list(query, strict)).toHaveLength(250);
+  expect(shared.strictListCalls.map(({ cursor }) => cursor)).toEqual([null, null, "200"]);
+  expect(await bridge.list({ ...query, cursor: "upstream-next" }, strict)).toHaveLength(250);
+  expect(shared.strictListCalls).toHaveLength(3);
+
+  shared.failNext(true);
+  await expect(bridge.list(query, strict)).rejects.toThrow("Shared Thread list failed");
+  expect(await bridge.list(query)).toHaveLength(250);
 });
 
 it("walks again after a routed section move, which has no Thread notification", async () => {

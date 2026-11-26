@@ -21,7 +21,13 @@ import {
   type StoredSectionPlacementV1,
 } from "@codexhost/mapping-store";
 import { createRemoteOfficialAppServerConnection } from "./remote-official-connection.js";
-import { object, StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
+import {
+  object,
+  SHARED_THREAD_LIST_METHOD,
+  SHARED_THREAD_OWNERSHIP_METHOD,
+  StreamThreadPeer,
+  type SharedThreadPeer,
+} from "./shared-thread-peer.js";
 import {
   SHARED_SECTIONS_CHANGED_METHOD,
   SHARED_SECTIONS_WATCH_METHOD,
@@ -91,7 +97,7 @@ export class SharedThreadBridge {
   #treeDiagnosed = false;
 
   #peer: SharedThreadPeer | null = null;
-  #hasConnected = false;
+  #peerMayExist = false;
   #connecting: Promise<SharedThreadPeer | null> | null = null;
   #closed = false;
   #timer: NodeJS.Timeout | undefined;
@@ -102,7 +108,12 @@ export class SharedThreadBridge {
   // walk per query serves those pages; a Thread notification or a new peer starts a fresh walk.
   readonly #lists = new Map<
     string,
-    { generation: number; startedAtMs: number; rows: Promise<JsonObject[] | null> }
+    {
+      generation: number;
+      startedAtMs: number;
+      pending: boolean;
+      rows: Promise<JsonObject[] | null>;
+    }
   >();
   #listGeneration = 0;
 
@@ -146,7 +157,7 @@ export class SharedThreadBridge {
           return null;
         }
         this.#peer = peer;
-        this.#hasConnected = true;
+        this.#peerMayExist = true;
         peer.subscribe((message) => {
           if (message.method === SHARED_SECTIONS_CHANGED_METHOD) {
             this.#invalidateLists();
@@ -197,6 +208,8 @@ export class SharedThreadBridge {
         return peer;
       })
       .catch((error: unknown) => {
+        // Only clean absence before any evidence of a peer can mean standalone.
+        this.#peerMayExist = true;
         this.#peer?.close();
         this.#peer = null;
         throw error;
@@ -299,13 +312,18 @@ export class SharedThreadBridge {
     this.#treeListener?.(snapshot);
   }
 
-  async ownership(threadIds: string[]): Promise<Map<string, string>> {
+  async ownership(threadIds: string[], requireComplete = false): Promise<Map<string, string>> {
     if (threadIds.length === 0) return new Map();
     try {
       const peer = await this.#connect();
-      if (!peer) throw new Error("Shared Thread Host is disconnected");
-      return await this.#readOwnership(peer, threadIds);
+      if (!peer) {
+        if (requireComplete && !this.#peerMayExist && !this.options.delegateCreates)
+          return new Map();
+        throw new Error("Shared Thread Host is disconnected");
+      }
+      return await this.#readOwnership(peer, threadIds, requireComplete);
     } catch (error) {
+      if (requireComplete) throw error;
       if (threadIds.some((id) => this.#known.has(id))) throw error;
       // A local read permits fallback for this lookup only; it may be a copy of a shared Thread.
       const probe = this.#localProbe;
@@ -318,9 +336,24 @@ export class SharedThreadBridge {
     }
   }
 
-  async #readOwnership(peer: SharedThreadPeer, threadIds: string[]): Promise<Map<string, string>> {
-    const response = await peer.request("codexhost/thread/ownership/list", { threadIds });
+  async #readOwnership(
+    peer: SharedThreadPeer,
+    threadIds: string[],
+    requireComplete = false,
+  ): Promise<Map<string, string>> {
+    const response = await peer.request(
+      requireComplete ? SHARED_THREAD_OWNERSHIP_METHOD : "codexhost/thread/ownership/list",
+      { threadIds },
+    );
     const result = threadOwnershipListResultSchema.parse(response.result);
+    if (requireComplete) {
+      const requested = new Set(threadIds);
+      if (
+        result.threads.length !== requested.size ||
+        result.threads.some(({ threadId }) => !requested.has(threadId))
+      )
+        throw new Error("Incomplete shared Thread ownership");
+    }
     const owners = new Map<string, string>();
     for (const thread of result.threads) {
       if (thread.owner === "external") {
@@ -419,14 +452,21 @@ export class SharedThreadBridge {
     return { ...reply, id: request.id };
   }
 
-  async #rows(peer: SharedThreadPeer, params: JsonObject): Promise<JsonObject[]> {
+  async #rows(
+    peer: SharedThreadPeer,
+    params: JsonObject,
+    requireComplete: boolean,
+  ): Promise<JsonObject[]> {
+    const method = requireComplete ? SHARED_THREAD_LIST_METHOD : "thread/list";
     const rows: JsonObject[] = [];
     let cursor: string | null = null;
     const seen = new Set<string>();
     do {
-      const reply = await peer.request("thread/list", { ...params, cursor, limit: 200 });
-      if (!object(reply.result) || !Array.isArray(reply.result.data))
+      const reply = await peer.request(method, { ...params, cursor, limit: 200 });
+      if (reply.error !== undefined || !object(reply.result) || !Array.isArray(reply.result.data))
         throw new Error("Shared Thread list failed");
+      if (requireComplete && reply.result.complete !== true)
+        throw new Error("Shared Thread Host did not confirm complete Thread list");
       for (const row of reply.result.data) {
         if (!object(row) || typeof row.id !== "string")
           throw new Error("Invalid shared Thread row");
@@ -439,7 +479,7 @@ export class SharedThreadBridge {
       if (typeof next === "string" && seen.has(next))
         throw new Error("Shared Thread pagination did not advance");
       cursor = next;
-      if (cursor) seen.add(cursor);
+      if (cursor !== null) seen.add(cursor);
     } while (cursor !== null);
     return rows;
   }
@@ -453,7 +493,7 @@ export class SharedThreadBridge {
     delete query.cursor;
     delete query.limit;
     if (query.sortKey === "section_position") query.sortKey = "updated_at";
-    const key = JSON.stringify(query);
+    const key = JSON.stringify([requireComplete, query]);
     const now = this.options.now ?? Date.now;
     try {
       const cached = this.#lists.get(key);
@@ -461,7 +501,9 @@ export class SharedThreadBridge {
       if (
         cached &&
         cached.generation === this.#listGeneration &&
-        now() - cached.startedAtMs < SHARED_LIST_REUSE_MS
+        now() - cached.startedAtMs < SHARED_LIST_REUSE_MS &&
+        // A new strict walk checks the nested peer again; continuations can reuse it.
+        (!requireComplete || cached.pending || typeof params.cursor === "string")
       ) {
         rows = await cached.rows;
       } else {
@@ -469,18 +511,22 @@ export class SharedThreadBridge {
         const entry = {
           generation: this.#listGeneration,
           startedAtMs: now(),
-          rows: this.#connect().then((peer) => (peer ? this.#rows(peer, query) : null)),
+          pending: true,
+          rows: this.#connect().then((peer) =>
+            peer ? this.#rows(peer, query, requireComplete) : null,
+          ),
         };
         this.#lists.set(key, entry);
         const forget = (): void => {
           if (this.#lists.get(key) === entry) this.#lists.delete(key);
         };
         entry.rows.then((rows) => {
+          entry.pending = false;
           if (rows === null) forget();
         }, forget);
         rows = await entry.rows;
       }
-      if (rows === null && requireComplete && (this.#hasConnected || this.options.delegateCreates))
+      if (rows === null && requireComplete && (this.#peerMayExist || this.options.delegateCreates))
         throw new Error("Shared Thread Host is disconnected");
       return rows ?? [];
     } catch (error) {
@@ -494,7 +540,7 @@ export class SharedThreadBridge {
     try {
       const peer = await this.#connect();
       if (!peer) {
-        if (requireComplete && (this.#hasConnected || this.options.delegateCreates))
+        if (requireComplete && (this.#peerMayExist || this.options.delegateCreates))
           throw new Error("Shared Thread Host is disconnected");
         return [];
       }

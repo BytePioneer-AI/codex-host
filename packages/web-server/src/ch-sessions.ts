@@ -371,11 +371,15 @@ export class ChSessions {
   }
 
   private async readThreadSections() {
-    return clientThreadSectionsSchema.parse(
+    const snapshot = clientThreadSectionsSchema.parse(
       await this.host.request("codexhost/thread/sections/list", {
         [THREAD_SECTION_CAPABILITY]: true,
+        requireComplete: true,
       }),
     );
+    if (snapshot.complete === false)
+      throw new RpcError("host/sections-incomplete", "Complete Thread sections are unavailable.");
+    return snapshot;
   }
 
   private async refreshSectionMove(move?: { threadId: string; sectionId: string | null }) {
@@ -1674,15 +1678,17 @@ export class ChSessions {
         sessionId: string;
         sectionId: string | null;
         beforeSessionId?: string | null;
+        expectedSourceSectionId?: string;
       }>(args);
       const move = clientThreadSectionMoveSchema.safeParse({
         threadId: input.sessionId,
         sectionId: input.sectionId,
         beforeThreadId: input.beforeSessionId,
+        expectedSourceSectionId: input.expectedSourceSectionId,
       });
       if (!move.success)
         throw new RpcError("workspace/section-invalid", "Invalid Thread section move.");
-      const { sectionId, beforeThreadId } = move.data;
+      const { sectionId, beforeThreadId, expectedSourceSectionId } = move.data;
       const id = this.id(move.data.threadId);
       const before = typeof beforeThreadId === "string" ? this.id(beforeThreadId) : beforeThreadId;
       if (typeof before === "string" && (sectionId === null || before === id))
@@ -1703,6 +1709,7 @@ export class ChSessions {
         threadId: id,
         sectionId,
         ...(before === undefined ? {} : { beforeThreadId: before }),
+        ...(expectedSourceSectionId === undefined ? {} : { expectedSourceSectionId }),
       });
       await this.refreshSectionMove({ threadId: id, sectionId }).catch(() => undefined);
       return { sectionId };

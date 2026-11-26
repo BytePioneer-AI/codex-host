@@ -49,6 +49,7 @@ import {
   type HarnessPreferenceSnapshot,
 } from "@codexhost/shared-contracts";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
+import { SHARED_THREAD_LIST_METHOD, SHARED_THREAD_OWNERSHIP_METHOD } from "./shared-thread-peer.js";
 import {
   isConsoleHostMethod,
   isHostExtensionManagementMethod,
@@ -303,6 +304,13 @@ const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
 const SECTION_RECONCILE_RETRY_MS = 100;
 const SECTION_RECONCILE_MAX_RETRY_MS = 30_000;
 type SectionMutation = keyof typeof CLIENT_THREAD_SECTION_MUTATIONS;
+
+type LocalThreadCatalog = {
+  records: StoredThreadSummaryV1[];
+  placements: StoredSectionPlacementV1[];
+  officialImportTimes: OfficialImportTimes;
+  sharedOwners?: ReadonlyMap<string, string>;
+};
 
 import { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelHost } from "./client-channel-host.js";
@@ -1050,6 +1058,7 @@ export class AppServerHost {
     string,
     {
       sectionId: string | null;
+      sourceSectionId: string | null | undefined;
       beforeThreadId: string | null;
       nativeConfirmed: boolean;
       recover(loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>): Promise<boolean>;
@@ -2446,6 +2455,36 @@ export class AppServerHost {
       this.#dispatchDesktopReply(request, () => this.#readThreadCatalog(request));
       return;
     }
+    if (
+      request.method === SHARED_THREAD_LIST_METHOD ||
+      request.method === SHARED_THREAD_OWNERSHIP_METHOD
+    ) {
+      if (!this.#options.externalOnly) {
+        await this.#writer.json(rpcError(request, -32601, "Not a shared Thread Host"));
+        return;
+      }
+      this.#dispatchDesktopReply(request, async () => {
+        if (request.method === SHARED_THREAD_OWNERSHIP_METHOD) {
+          await this.#listThreadOwnership(request, true);
+          return;
+        }
+        let query: DecodedThreadListRequest | null;
+        try {
+          query = decodeThreadListRequest({
+            id: request.id,
+            method: "thread/list",
+            params: requestObject(request),
+          });
+          if (!query?.supportsExternal || query.sortKey === "section_position")
+            throw new Error("Invalid shared Thread list query");
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+          return;
+        }
+        await this.#listThreads(request, query, origin, true);
+      });
+      return;
+    }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       if (requestObject(request).requireComplete === true) {
         try {
@@ -2620,8 +2659,9 @@ export class AppServerHost {
           const requestOfficial = (method: string, params: JsonObject) =>
             this.#requestOfficial(method, params);
           const definitions = await this.#readSectionDefinitions();
-          const supportsSections =
-            isRecord(request.params) && request.params[THREAD_SECTION_CAPABILITY] === true;
+          const params = isRecord(request.params) ? request.params : {};
+          const supportsSections = params[THREAD_SECTION_CAPABILITY] === true;
+          const requireComplete = params.requireComplete === true;
           const capability = supportsSections ? { [THREAD_SECTION_CAPABILITY]: true } : {};
           const sections = [...definitions.values()]
             .filter((section) => section.id !== PINNED_THREAD_SECTION_ID)
@@ -2632,14 +2672,17 @@ export class AppServerHost {
             await this.#writer.json(rpcEnvelope(request, { result: { ...capability, sections } }));
             return;
           }
-          // Match the live catalog query so the shared Host walk can be reused.
           const query = decodeThreadListRequest({
             id: request.id,
             method: "thread/list",
             params: { archived: false, sortKey: "updated_at", sortDirection: "desc" },
           });
           if (!query) throw new Error("Section Thread list query could not be decoded");
-          const { placements, externalRows } = await this.#sectionThreadCatalog(query, definitions);
+          const { placements, externalRows, complete } = await this.#sectionThreadCatalog(
+            query,
+            requireComplete ? "complete" : "native-fallback",
+            definitions,
+          );
           const placementsBySection = new Map<string, StoredSectionPlacementV1[]>();
           for (const placement of placements) {
             const inSection = placementsBySection.get(placement.section.id);
@@ -2648,13 +2691,17 @@ export class AppServerHost {
           }
           const sectionRows = await Promise.all(
             sections.map(async (section) => {
-              const officialRows = await listAllOfficialRows(requestOfficial, {
-                sectionId: section.id,
-                sortDirection: "asc",
-                sortKey: "section_position",
-                modelProviders: [],
-                useStateDbOnly: true,
-              });
+              const officialRows = await listAllOfficialRows(
+                requestOfficial,
+                {
+                  sectionId: section.id,
+                  sortDirection: "asc",
+                  sortKey: "section_position",
+                  modelProviders: [],
+                  useStateDbOnly: true,
+                },
+                true,
+              );
               const inSection = placementsBySection.get(section.id);
               if (!inSection) return { ...section, threads: officialRows };
               const rows = new Map(officialRows.map((row) => [String(row.id), row]));
@@ -2668,7 +2715,13 @@ export class AppServerHost {
             }),
           );
           await this.#writer.json(
-            rpcEnvelope(request, { result: { ...capability, sections: sectionRows } }),
+            rpcEnvelope(request, {
+              result: {
+                ...capability,
+                ...(complete === false ? { complete } : {}),
+                sections: sectionRows,
+              },
+            }),
           );
         } catch (error) {
           this.#diagnose(error);
@@ -3912,12 +3965,13 @@ export class AppServerHost {
     request: JsonRpcRequest,
     listRequest: DecodedThreadListRequest,
     origin: HostRequestOrigin,
+    requireComplete = false,
   ): Promise<void> {
     const timing = new ThreadListTiming();
     let ok = false;
     try {
       const { records, placements, officialImportTimes } = await timing.measure("store", () =>
-        this.#localThreadCatalog(),
+        this.#localThreadCatalog(requireComplete),
       );
       timing.counts.mappingRecords = records.length;
       timing.counts.placements = placements.length;
@@ -3926,7 +3980,9 @@ export class AppServerHost {
       );
       const sharedCatalog = this.#options.sharedThreads;
       const sharedThreads = sharedCatalog
-        ? await timing.measure("shared_catalog", () => sharedCatalog.list(listRequest.params))
+        ? await timing.measure("shared_catalog", () =>
+            sharedCatalog.list(listRequest.params, { requireComplete }),
+          )
         : undefined;
       timing.counts.sharedRows = sharedThreads?.length ?? 0;
       const result = await timing.measure("aggregate", () =>
@@ -3939,7 +3995,7 @@ export class AppServerHost {
           runtimeFor: (threadId) => this.#listRuntimeState(threadId),
           placementOf: (threadId) => placementById.get(threadId),
           requestOfficialPage: async (params) => {
-            if (this.#options.externalOnly && origin !== "client")
+            if (requireComplete || (this.#options.externalOnly && origin !== "client"))
               return { data: [], nextCursor: null, backwardsCursor: null };
             let official;
             try {
@@ -3968,7 +4024,9 @@ export class AppServerHost {
         }),
       );
       timing.counts.returnedRows = result.data.length;
-      await this.#writer.json(rpcEnvelope(request, { result }));
+      await this.#writer.json(
+        rpcEnvelope(request, { result: requireComplete ? { ...result, complete: true } : result }),
+      );
       ok = true;
     } catch (error) {
       if (error instanceof OfficialThreadListError) {
@@ -3983,17 +4041,12 @@ export class AppServerHost {
     }
   }
 
-  /**
-   * Local records and placements, minus Threads the shared Host owns. A viewer's Mapping Store can
-   * keep a copy from before the Thread was shared; the shared Host's row is canonical even when
-   * the current query excludes it (archived, moved out of a section).
-   */
-  async #localThreadCatalog({ rawPlacements = false } = {}): Promise<{
-    records: StoredThreadSummaryV1[];
-    placements: StoredSectionPlacementV1[];
-    officialImportTimes: OfficialImportTimes;
-    sharedOwners?: ReadonlyMap<string, string>;
-  }> {
+  async #localThreadCatalog(requireComplete = false): Promise<LocalThreadCatalog> {
+    const local = await this.#readLocalThreadCatalog();
+    return this.#excludeSharedThreadCopies(local, requireComplete);
+  }
+
+  async #readLocalThreadCatalog(rawPlacements = false): Promise<LocalThreadCatalog> {
     const [records, storedPlacements] = await Promise.all([
       this.#repository.listSummaries(),
       this.#repository.listSectionPlacements(),
@@ -4007,27 +4060,41 @@ export class AppServerHost {
     const placements = rawPlacements
       ? storedPlacements
       : this.#sectionDefinitions.project(storedPlacements);
+    return { records, placements, officialImportTimes };
+  }
+
+  /**
+   * The shared Host owns the canonical row even when the query excludes it.
+   * A viewer's Mapping Store can still hold a copy from before sharing.
+   */
+  async #excludeSharedThreadCopies(
+    local: LocalThreadCatalog,
+    requireComplete: boolean,
+  ): Promise<LocalThreadCatalog> {
     const shared = this.#options.sharedThreads;
-    if (!shared) return { records, placements, officialImportTimes };
+    if (!shared) return local;
+    const { records, placements } = local;
     const ids = [...new Set([...records, ...placements].map((entry) => entry.hostThreadId))];
     const sharedOwners = new Map<string, string>();
     try {
       for (let offset = 0; offset < ids.length; offset += THREAD_OWNERSHIP_LIST_MAX_LENGTH) {
         const owners = await shared.ownership(
           ids.slice(offset, offset + THREAD_OWNERSHIP_LIST_MAX_LENGTH),
+          requireComplete,
         );
         for (const [id, harnessId] of owners) sharedOwners.set(id, harnessId);
       }
     } catch (error) {
+      if (requireComplete) throw error;
       // Without the shared Host the local store is the only catalog left.
       this.#diagnose(error);
-      return { records, placements, officialImportTimes };
+      return local;
     }
-    if (sharedOwners.size === 0) return { records, placements, officialImportTimes };
+    if (sharedOwners.size === 0) return local;
     return {
       records: records.filter((record) => !sharedOwners.has(record.hostThreadId)),
       placements: placements.filter((placement) => !sharedOwners.has(placement.hostThreadId)),
-      officialImportTimes,
+      officialImportTimes: local.officialImportTimes,
       sharedOwners,
     };
   }
@@ -4048,18 +4115,32 @@ export class AppServerHost {
 
   async #sectionThreadCatalog(
     query: DecodedThreadListRequest,
+    mode: "complete" | "native-fallback" | "best-effort",
     definitions?: ReadonlyMap<string, StoredThreadSection>,
   ): Promise<{
     placements: StoredSectionPlacementV1[];
     externalRows: Map<string, JsonObject>;
+    complete?: false;
   }> {
     const shared = this.#options.sharedThreads;
-    const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
-      await Promise.all([
-        this.#localThreadCatalog({ rawPlacements: true }),
-        shared?.placements(true) ?? [],
-        shared?.list(query.params, { requireComplete: true }) ?? [],
-      ]);
+    let local = await this.#readLocalThreadCatalog(true);
+    let sharedPlacements: StoredSectionPlacementV1[] = [];
+    let sharedThreads: readonly JsonObject[] = [];
+    if (shared) {
+      const requireComplete = mode !== "best-effort";
+      try {
+        [local, sharedPlacements, sharedThreads] = await Promise.all([
+          this.#excludeSharedThreadCopies(local, requireComplete),
+          shared.placements(true),
+          shared.list(query.params, { requireComplete }),
+        ]);
+      } catch (error) {
+        if (mode === "complete") throw error;
+        this.#diagnose(error);
+        return { placements: [], externalRows: new Map(), complete: false };
+      }
+    }
+    const { records, placements: localPlacements } = local;
     const placementById = new Map<string, StoredSectionPlacementV1>();
     for (const placement of localPlacements) placementById.set(placement.hostThreadId, placement);
     for (const placement of sharedPlacements) placementById.set(placement.hostThreadId, placement);
@@ -4093,7 +4174,7 @@ export class AppServerHost {
     query: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const { placements, externalRows } = await this.#sectionThreadCatalog(query);
+      const { placements, externalRows } = await this.#sectionThreadCatalog(query, "best-effort");
       const page = await listSectionThreads({
         query,
         placements,
@@ -4384,7 +4465,7 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section move"));
       return;
     }
-    const { threadId, sectionId, beforeThreadId } = parsed.data;
+    const { threadId, sectionId, beforeThreadId, expectedSourceSectionId } = parsed.data;
     if (typeof beforeThreadId === "string" && (sectionId === null || beforeThreadId === threadId)) {
       await this.#writer.json(rpcError(request, -32602, "Invalid Thread section anchor"));
       return;
@@ -4397,6 +4478,7 @@ export class AppServerHost {
           threadId,
           sectionId,
           ...(beforeThreadId === undefined ? {} : { beforeThreadId }),
+          ...(expectedSourceSectionId === undefined ? {} : { expectedSourceSectionId }),
         });
         await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
       } catch (error) {
@@ -4475,25 +4557,34 @@ export class AppServerHost {
             ? thread.section.id
             : null;
       }
-      if (currentSectionId === sectionId) {
-        const pending =
-          !remote && !movingExternal ? this.#pendingSectionMoves.get(threadId) : undefined;
-        if (
-          pending?.sectionId === sectionId &&
-          (beforeThreadId === undefined || pending.beforeThreadId === beforeThreadId)
-        ) {
-          await this.#finishPartialSectionMove(
-            request,
-            threadId,
-            pending.recover,
-            pending.nativeConfirmed,
-          );
-          return;
-        }
-        if (beforeThreadId === undefined || sectionId === null) {
-          await this.#writer.json(rpcEnvelope(request, { result: {} }));
-          return;
-        }
+      const pending =
+        currentSectionId === sectionId && !remote && !movingExternal
+          ? this.#pendingSectionMoves.get(threadId)
+          : undefined;
+      const recovery =
+        pending?.sectionId === sectionId &&
+        (beforeThreadId === undefined || pending.beforeThreadId === beforeThreadId) &&
+        (expectedSourceSectionId === undefined ||
+          pending.sourceSectionId === expectedSourceSectionId)
+          ? pending
+          : undefined;
+      if (
+        !recovery &&
+        expectedSourceSectionId !== undefined &&
+        expectedSourceSectionId !== currentSectionId
+      ) {
+        await this.#writer.json(
+          rpcError(request, -32078, "Thread no longer belongs to its drag source section"),
+        );
+        return;
+      }
+      if (
+        !recovery &&
+        currentSectionId === sectionId &&
+        (beforeThreadId === undefined || sectionId === null)
+      ) {
+        await this.#writer.json(rpcEnvelope(request, { result: {} }));
+        return;
       }
       if (remote) {
         await this.#writer.json(ownerError);
@@ -4505,7 +4596,7 @@ export class AppServerHost {
           if (
             foreign.some(
               ({ section, hostThreadId }) =>
-                section.id === currentSectionId ||
+                section.id === (recovery?.sourceSectionId ?? currentSectionId) ||
                 section.id === sectionId ||
                 hostThreadId === beforeThreadId ||
                 hostThreadId === threadId,
@@ -4522,6 +4613,15 @@ export class AppServerHost {
           await this.#writer.json(ownerError);
           return;
         }
+      }
+      if (recovery) {
+        await this.#finishPartialSectionMove(
+          request,
+          threadId,
+          recovery.recover,
+          recovery.nativeConfirmed,
+        );
+        return;
       }
       placements ??= await this.#repository.listSectionPlacements();
       await this.#moveThreadSection(
@@ -4594,6 +4694,7 @@ export class AppServerHost {
         this.#diagnose(outcome.cause);
         this.#pendingSectionMoves.set(move.threadId, {
           sectionId: move.sectionId,
+          sourceSectionId: custom?.currentSectionId,
           beforeThreadId: move.beforeThreadId,
           recover: outcome.recover,
           nativeConfirmed: outcome.nativeConfirmed,
@@ -5302,14 +5403,17 @@ export class AppServerHost {
     );
   }
 
-  async #listThreadOwnership(request: JsonRpcRequest): Promise<void> {
+  async #listThreadOwnership(request: JsonRpcRequest, requireComplete = false): Promise<void> {
     const params = threadOwnershipListParamsSchema.safeParse(request.params);
     if (!params.success) {
       await this.#writer.json(rpcError(request, -32602, "Invalid Thread ownership-list params"));
       return;
     }
     try {
-      const shared = await this.#options.sharedThreads?.ownership(params.data.threadIds);
+      const shared = await this.#options.sharedThreads?.ownership(
+        params.data.threadIds,
+        requireComplete,
+      );
       const threads = await Promise.all(
         params.data.threadIds.map(async (threadId) => {
           const sharedHarness = shared?.get(threadId);

@@ -87,6 +87,7 @@ export class ChRealtime {
       this.catalogReason ??= "hello";
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "projects-changed") {
+      this.catalogReason = "changed";
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "sections-changed" && this.callbacks.sections) {
       this.sectionsDirty = true;

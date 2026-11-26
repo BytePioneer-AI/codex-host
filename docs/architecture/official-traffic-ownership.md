@@ -79,6 +79,8 @@ Web 的 `workspace/moveSessionToSection.beforeSessionId` 对应 `codexhost/threa
 | 其他分区 | 追加到末尾 | 追加到末尾  | 插到目标成员之前 |
 | 无分区   | 解除归属   | 解除归属    | 拒绝             |
 
+拖出自定义分区时，Web 额外传递 `expectedSourceSectionId`。Owner 在串行移动中读回当前归属并与该分区比较；不一致时不写入。匹配同一来源的部分写入恢复仍需验证顺序和外部锚点。
+
 锚点必须是目标分区内的其他成员。Host 按完整的官方与外部成员顺序规划移动，无法确认同一 owner 的完整顺序时拒绝写入。移动确认后，Web 优先读取 Host 的分区快照并通过 `workspace/follow` 发布，保留项目归属；遇到未知成员或定义变化时刷新目录。
 
 Desktop 的原生分区移动和置顶写入由实际 Owner 串行处理。共享连接只承接其拥有的 Thread；共用官方 Runtime 和 Mapping Store 的连接由同一 Owner 串行处理原生及外部 Thread。只有在未向共享 Owner 提交写入、且本地官方 app-server 确认目标及显式锚点归属时，才走本地原生路径。共享写入明确拒绝或回执丢失时不转发第二次。

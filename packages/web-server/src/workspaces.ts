@@ -729,6 +729,7 @@ export class Workspaces {
   private referenceThreadSections: ThreadSectionView[] = [];
   private legacyThreadSections: ThreadSectionView[] = [];
   private referenceThreadSectionsV1: true | undefined;
+  private referenceSectionWorkspaceIdsDirty = false;
 
   hasThreadSection(id: string): boolean {
     return this.referenceThreadSections.some((section) => section.id === id);
@@ -813,6 +814,7 @@ export class Workspaces {
       if (Object.keys(valid).length !== Object.keys(saved).length) this.saveProjectSections(valid);
     }
     this.officialThreadSections = next;
+    this.referenceSectionWorkspaceIdsDirty = false;
     this.officialThreadSectionsV1 = threadSectionsV1;
     this.projectSectionCoverage = coverage;
     this.publishProjectSections();
@@ -841,6 +843,7 @@ export class Workspaces {
   ): boolean {
     const current = this.officialThreadSections ?? [];
     if (
+      this.referenceSectionWorkspaceIdsDirty ||
       threadSectionsV1 !== this.officialThreadSectionsV1 ||
       sections.length !== current.length ||
       !sections.every((section, i) => {
@@ -1254,6 +1257,7 @@ export class Workspaces {
     };
     this.data.writeJson(FILE, state);
     this.state = state;
+    if (this.referenceProjectRoots.has(absolute)) this.referenceSectionWorkspaceIdsDirty = true;
     this.broadcast({ type: "upsert", workspace });
     this.broadcast({
       type: "order",

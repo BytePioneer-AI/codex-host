@@ -205,7 +205,6 @@ function useSectionDrag({
   pinnedSessionIds,
   archivedSessionIds,
   moveSessionToSection,
-  onClearLocalDrag,
   onCancelLocalDrag,
 }: {
   enabled: boolean;
@@ -215,24 +214,29 @@ function useSectionDrag({
   pinnedSessionIds: readonly SessionId[];
   archivedSessionIds: readonly SessionId[];
   moveSessionToSection?: (payload: SectionMovePayload) => Promise<SectionMoveOutcome>;
-  onClearLocalDrag: () => void;
   onCancelLocalDrag: () => void;
 }) {
   const [sectionDrag, setSectionDrag] = useState<SectionDragState | null>(null);
   const stateRef = useRef<SectionDragState | null>(null);
   const committedRef = useRef(false);
   const cancelledRef = useRef(false);
-  const clearLocalRef = useRef(onClearLocalDrag);
   const cancelLocalRef = useRef(onCancelLocalDrag);
-  clearLocalRef.current = onClearLocalDrag;
-  cancelLocalRef.current = onCancelLocalDrag;
 
   const setState = (next: SectionDragState | null): void => {
     stateRef.current = next;
     setSectionDrag(next);
   };
 
-  const active = sectionDrag !== null;
+  const active = enabled && sectionDrag !== null;
+
+  useLayoutEffect(() => {
+    cancelLocalRef.current = onCancelLocalDrag;
+    if (enabled || stateRef.current === null) return;
+    cancelledRef.current = true;
+    stateRef.current = null;
+    setSectionDrag(null);
+    cancelLocalRef.current();
+  }, [enabled, onCancelLocalDrag]);
 
   useEffect(() => {
     if (!active) return;
@@ -277,7 +281,6 @@ function useSectionDrag({
     const current = stateRef.current;
     if (current === null || cancelledRef.current) return;
     if (target.kind === "unsectioned" && current.source.sourceSectionId === null) return;
-    clearLocalRef.current();
     const prev = current.over;
     if (
       prev !== null &&
@@ -364,9 +367,15 @@ function useSectionDrag({
 
   return {
     active,
-    isActive: () => stateRef.current !== null || committedRef.current || cancelledRef.current,
-    canDropToUnsectioned: sectionDrag !== null && sectionDrag.source.sourceSectionId !== null,
-    isUnsectionedTarget: sectionDrag?.over?.kind === "unsectioned",
+    hasSectionTarget: active && sectionDrag.over !== null,
+    canFinishLocalDrop: (copied?: boolean) =>
+      canCommitSectionDrop({
+        committed: committedRef.current,
+        cancelled: cancelledRef.current,
+        dropEffect: copied ? "copy" : null,
+      }),
+    canDropToUnsectioned: active && sectionDrag.source.sourceSectionId !== null,
+    isUnsectionedTarget: active && sectionDrag.over?.kind === "unsectioned",
     canDragRow,
     startFromUnsectioned: (sessionId: SessionId) => {
       start(sessionId, null);
@@ -811,18 +820,13 @@ function SessionTree({
     pinnedSessionIds: rowState.pinnedSessionIds,
     archivedSessionIds: rowState.archivedSessionIds,
     moveSessionToSection,
-    onClearLocalDrag: () => {
-      setDrag((active) =>
-        active === null || active.over === null ? active : { ...active, over: null },
-      );
-    },
     onCancelLocalDrag: () => {
       sessionDropCommitted.current = true;
       setDrag(null);
     },
   });
   const nativeDragActive = drag !== null || workspaceDrag !== null || sectionDrag.active;
-  useNativeDragAcceptance(workspaceDrag !== null || (drag !== null && !sectionDrag.active));
+  useNativeDragAcceptance(workspaceDrag !== null || drag !== null);
   const currentGroup =
     current === undefined || !workspaceReady
       ? undefined
@@ -1327,9 +1331,13 @@ function SessionTree({
                           over: null,
                         });
                         if (canSectionDragRow) sectionDrag.startFromUnsectioned(node.id);
+                        else sectionDrag.end();
                       },
                       active: compatibleTarget,
-                      marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
+                      marker:
+                        !sectionDrag.hasSectionTarget && sameGroupDrag && drag.over?.id === node.id
+                          ? drag.over.half
+                          : null,
                       hover: (half: "before" | "after") => {
                         sectionDrag.clearHover();
                         /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
@@ -1349,15 +1357,9 @@ function SessionTree({
                         commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) });
                       },
                       end: (copied?: boolean) => {
-                        const sectionHandled = sectionDrag.isActive();
+                        const canFinish = sectionDrag.canFinishLocalDrop(copied);
                         sectionDrag.end();
-                        if (
-                          !sectionHandled &&
-                          !copied &&
-                          drag?.over !== null &&
-                          drag?.over !== undefined
-                        )
-                          commitSessionDrag(drag, drag.over);
+                        if (canFinish && drag?.over) commitSessionDrag(drag, drag.over);
                         else setDrag(null);
                         sessionDropCommitted.current = false;
                       },
@@ -1517,28 +1519,15 @@ function SessionTree({
     <div
       ref={treeBody}
       className={clsx(css.treeBody, css.wide)}
-      onDragOver={
-        sectionDrag.active
-          ? () => {
-              sectionDrag.clearHover();
-              setDrag((active) =>
-                active === null || active.over === null ? active : { ...active, over: null },
-              );
-            }
-          : undefined
-      }
+      onDragOver={sectionDrag.active ? sectionDrag.clearHover : undefined}
       onDragLeave={
         sectionDrag.active
           ? (event) => {
               if (
-                event.relatedTarget instanceof Node &&
-                event.currentTarget.contains(event.relatedTarget)
+                !(event.relatedTarget instanceof Node) ||
+                !event.currentTarget.contains(event.relatedTarget)
               )
-                return;
-              sectionDrag.clearHover();
-              setDrag((active) =>
-                active === null || active.over === null ? active : { ...active, over: null },
-              );
+                sectionDrag.clearHover();
             }
           : undefined
       }
@@ -1859,17 +1848,12 @@ function FlatList({
     pinnedSessionIds: rowState.pinnedSessionIds,
     archivedSessionIds: rowState.archivedSessionIds,
     moveSessionToSection,
-    onClearLocalDrag: () => {
-      setDrag((active) =>
-        active === null || active.over === null ? active : { ...active, over: null },
-      );
-    },
     onCancelLocalDrag: () => {
       dropCommitted.current = true;
       setDrag(null);
     },
   });
-  useNativeDragAcceptance(drag !== null && !sectionDrag.active);
+  useNativeDragAcceptance(drag !== null);
   const currentId = panelActive
     ? undefined
     : Object.values(list.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0)?.id;
@@ -1887,28 +1871,15 @@ function FlatList({
   return (
     <div
       className={clsx(css.treeBody, css.wide)}
-      onDragOver={
-        sectionDrag.active
-          ? () => {
-              sectionDrag.clearHover();
-              setDrag((active) =>
-                active === null || active.over === null ? active : { ...active, over: null },
-              );
-            }
-          : undefined
-      }
+      onDragOver={sectionDrag.active ? sectionDrag.clearHover : undefined}
       onDragLeave={
         sectionDrag.active
           ? (event) => {
               if (
-                event.relatedTarget instanceof Node &&
-                event.currentTarget.contains(event.relatedTarget)
+                !(event.relatedTarget instanceof Node) ||
+                !event.currentTarget.contains(event.relatedTarget)
               )
-                return;
-              sectionDrag.clearHover();
-              setDrag((active) =>
-                active === null || active.over === null ? active : { ...active, over: null },
-              );
+                sectionDrag.clearHover();
             }
           : undefined
       }
@@ -2077,9 +2048,13 @@ function FlatList({
                           over: null,
                         });
                         if (canSectionDragRow) sectionDrag.startFromUnsectioned(node.id);
+                        else sectionDrag.end();
                       },
                       active,
-                      marker: active && drag.over?.id === node.id ? drag.over.half : null,
+                      marker:
+                        !sectionDrag.hasSectionTarget && active && drag.over?.id === node.id
+                          ? drag.over.half
+                          : null,
                       hover: (half) => {
                         sectionDrag.clearHover();
                         setDrag((current) =>
@@ -2097,15 +2072,9 @@ function FlatList({
                           commitDrag(drag, { id: node.id, half: normalizeHalf(half) });
                       },
                       end: (copied?: boolean) => {
-                        const sectionHandled = sectionDrag.isActive();
+                        const canFinish = sectionDrag.canFinishLocalDrop(copied);
                         sectionDrag.end();
-                        if (
-                          !sectionHandled &&
-                          !copied &&
-                          drag?.over !== null &&
-                          drag?.over !== undefined
-                        )
-                          commitDrag(drag, drag.over);
+                        if (canFinish && drag?.over) commitDrag(drag, drag.over);
                         else setDrag(null);
                         dropCommitted.current = false;
                       },

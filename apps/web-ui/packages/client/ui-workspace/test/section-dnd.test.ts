@@ -292,19 +292,51 @@ describe("resolveSectionDropMove", () => {
     );
   });
 
-  it("moves back to unsectioned omitting anchor, and ignores unsectioned-to-unsectioned", () => {
+  it("moves back to unsectioned with the original section and no anchor", () => {
     const moveOut = resolveSectionDropMove(
       { sessionId: sid("a1"), sourceSectionId: "sec-a" },
       { kind: "unsectioned" },
       sections,
       visible,
     );
-    assert.deepEqual(moveOut, { sessionId: sid("a1"), sectionId: null });
+    assert.deepEqual(moveOut, {
+      sessionId: sid("a1"),
+      sectionId: null,
+      expectedSourceSectionId: "sec-a",
+    });
     assert.equal(Object.hasOwn(moveOut!, "beforeSessionId"), false);
+  });
 
+  it("ignores unsectioned-to-unsectioned", () => {
     assert.equal(
       resolveSectionDropMove(
         { sessionId: sid("u1"), sourceSectionId: null },
+        { kind: "unsectioned" },
+        sections,
+        visible,
+      ),
+      null,
+    );
+  });
+
+  it("rejects drag-out if the original custom section no longer contains the session", () => {
+    const source = { sessionId: sid("a1"), sourceSectionId: "sec-a" };
+    const target = { kind: "unsectioned" } as const;
+    const originalWithoutSession = { id: "sec-a", name: "Alpha", threadIds: [sid("a2")] };
+    const newOwner = { id: "sec-b", name: "Beta", threadIds: [sid("a1")] };
+
+    assert.equal(resolveSectionDropMove(source, target, [originalWithoutSession], visible), null);
+    assert.equal(
+      resolveSectionDropMove(source, target, [originalWithoutSession, newOwner], visible),
+      null,
+    );
+    assert.equal(resolveSectionDropMove(source, target, [newOwner], visible), null);
+  });
+
+  it("rejects drag-out from the built-in Pinned section", () => {
+    assert.equal(
+      resolveSectionDropMove(
+        { sessionId: sid("p1"), sourceSectionId: PINNED_THREAD_SECTION_ID },
         { kind: "unsectioned" },
         sections,
         visible,
@@ -585,15 +617,16 @@ describe("createSectionMoveCoordinator", () => {
     const calls: Array<{
       sessionId: SessionId;
       sectionId: string | null;
-      beforeSessionId?: SessionId | null;
+      beforeSessionId: SessionId | null | undefined;
+      expectedSourceSectionId: string | undefined;
     }> = [];
     const errors: unknown[] = [];
     let resolveA!: () => void;
     let rejectB!: (reason: Error) => void;
 
     const coordinator = createSectionMoveCoordinator({
-      execute: (sessionId, sectionId, beforeSessionId) => {
-        calls.push({ sessionId, sectionId, beforeSessionId });
+      execute: (sessionId, sectionId, beforeSessionId, expectedSourceSectionId) => {
+        calls.push({ sessionId, sectionId, beforeSessionId, expectedSourceSectionId });
         if (sessionId === sid("a")) {
           return new Promise<void>((resolve) => {
             resolveA = resolve;
@@ -631,9 +664,27 @@ describe("createSectionMoveCoordinator", () => {
     assert.equal(calls.length, 1);
 
     // Different session B can move concurrently
-    const moveB = coordinator.move({ sessionId: sid("b"), sectionId: null });
+    const moveB = coordinator.move({
+      sessionId: sid("b"),
+      sectionId: null,
+      expectedSourceSectionId: "sec-2",
+    });
     assert.equal(coordinator.isMoving(sid("b")), true);
     assert.equal(calls.length, 2);
+    assert.deepEqual(calls, [
+      {
+        sessionId: sid("a"),
+        sectionId: "sec-1",
+        beforeSessionId: null,
+        expectedSourceSectionId: undefined,
+      },
+      {
+        sessionId: sid("b"),
+        sectionId: null,
+        beforeSessionId: undefined,
+        expectedSourceSectionId: "sec-2",
+      },
+    ]);
 
     resolveA();
     assert.deepEqual(await moveA1, { status: "committed" });
@@ -648,6 +699,30 @@ describe("createSectionMoveCoordinator", () => {
     assert.equal(errors[0], failure);
     assert.ok(notifications >= 4);
     stop();
+  });
+
+  it("keeps moves and other subscribers working when a subscriber throws", async (t) => {
+    const failure = new Error("Owner view incomplete");
+    let rejectMove = false;
+    const coordinator = createSectionMoveCoordinator({
+      execute: async () => {
+        if (rejectMove) throw failure;
+      },
+    });
+    const observed: SessionId[][] = [];
+    t.mock.method(console, "error", () => undefined);
+    coordinator.movingSessionIds.subscribe(() => {
+      throw new Error("Broken subscriber");
+    });
+    coordinator.movingSessionIds.subscribe(() => {
+      observed.push([...coordinator.movingSessionIds.getSnapshot()]);
+    });
+    const payload = { sessionId: sid("a"), sectionId: "sec-1" };
+    assert.deepEqual(await coordinator.move(payload), { status: "committed" });
+    rejectMove = true;
+    assert.deepEqual(await coordinator.move(payload), { status: "failed", error: failure });
+    assert.deepEqual(observed, [[payload.sessionId], [], [payload.sessionId], []]);
+    assert.equal(coordinator.isMoving(payload.sessionId), false);
   });
 });
 

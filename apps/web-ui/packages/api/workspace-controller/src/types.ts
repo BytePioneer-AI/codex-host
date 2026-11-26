@@ -185,6 +185,8 @@ export interface WorkspaceMoveSessionToSectionRequest {
    * member `SessionId` to insert before it (rejected when `sectionId === null`).
    */
   readonly beforeSessionId?: SessionId | null;
+  /** Compare the current section at the Owner before a drag removes the Thread. */
+  readonly expectedSourceSectionId?: string;
 }
 
 export interface WorkspaceMoveWorkspaceToSectionRequest {

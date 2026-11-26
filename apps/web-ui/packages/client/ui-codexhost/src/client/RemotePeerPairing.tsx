@@ -1,5 +1,5 @@
 /** Mutual pairing helpers, result feedback banner, and one-click mesh sync modal. */
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, Modal, Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
@@ -252,8 +252,27 @@ export function PairingReportBanner({
   onDismiss: () => void;
   t: Translate;
 }): ReactNode {
-  const [expanded, setExpanded] = useState(true);
   const summary = useMemo(() => summarizePairingReport(report), [report]);
+  const [expanded, setExpanded] = useState(() => summary.tone !== "success");
+  const [fading, setFading] = useState(false);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+
+  useEffect(() => {
+    setExpanded(summary.tone !== "success");
+    setFading(false);
+  }, [report, summary.tone]);
+
+  useEffect(() => {
+    if (summary.tone !== "success" || expanded) return;
+    const fadeTimer = setTimeout(() => setFading(true), 4_700);
+    const dismissTimer = setTimeout(() => onDismissRef.current(), 5_000);
+    return () => {
+      clearTimeout(fadeTimer);
+      clearTimeout(dismissTimer);
+    };
+  }, [expanded, report, summary.tone]);
+
   if (summary.total === 0) return null;
 
   const heading =
@@ -270,6 +289,8 @@ export function PairingReportBanner({
     <section
       className={css.reportBanner}
       data-tone={summary.tone}
+      data-compact={summary.tone === "success" && !expanded}
+      data-fading={fading}
       role={summary.tone === "error" ? "alert" : "status"}
     >
       <div className={css.reportBannerHeader}>
@@ -327,7 +348,7 @@ export function SyncMeshModal({
 }: {
   peers: readonly RemotePeerSummary[];
   onClose: () => void;
-  onSynced: () => Promise<void>;
+  onSynced: (report: RemotePeerPairingReport) => Promise<void>;
   onOpenShareTab: () => void;
   t: Translate;
 }): ReactNode {
@@ -390,7 +411,7 @@ export function SyncMeshModal({
           : {}),
       });
       setReport(result);
-      await onSynced();
+      await onSynced(result);
     } catch (cause) {
       setError(t("remotePeers.actionFailed", { message: errorMessageOf(cause) }));
     } finally {

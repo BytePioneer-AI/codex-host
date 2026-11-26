@@ -40,6 +40,7 @@ import {
   type RemotePeersTranslate as Translate,
 } from "./RemotePeerModals.tsx";
 import { PairingReportBanner, SyncMeshModal } from "./RemotePeerPairing.tsx";
+import { RemotePeersTopology, topologyEdgeKey } from "./RemotePeersTopology.tsx";
 import css from "./RemotePeersPanel.module.css";
 
 type ListView =
@@ -139,9 +140,40 @@ export function RemotePeersPanel({
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pairingReport, setPairingReport] = useState<RemotePeerPairingReport | null>(null);
+  const [recentEdgeKeys, setRecentEdgeKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const [recentPeerIds, setRecentPeerIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selfEventSource] = useState(() => Symbol("remote-peers-panel"));
   const loadSeqRef = useRef(0);
+  const recentEdgeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const recentPeerTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const openShareTab = onOpenShareTab ?? (() => undefined);
+
+  const highlightPairingChanges = useCallback((report: RemotePeerPairingReport): void => {
+    const edges = new Set<string>();
+    const peerIds = new Set<string>();
+    for (const step of report.results) {
+      if (step.status !== "added" && step.status !== "updated") continue;
+      edges.add(topologyEdgeKey(step.targetPeerId, step.introducedHost));
+      peerIds.add(step.targetPeerId);
+    }
+    if (edges.size > 0) {
+      clearTimeout(recentEdgeTimerRef.current);
+      setRecentEdgeKeys(edges);
+      recentEdgeTimerRef.current = setTimeout(() => setRecentEdgeKeys(new Set()), 3_500);
+    }
+    if (peerIds.size > 0) {
+      clearTimeout(recentPeerTimerRef.current);
+      setRecentPeerIds(peerIds);
+      recentPeerTimerRef.current = setTimeout(() => setRecentPeerIds(new Set()), 1_500);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(recentEdgeTimerRef.current);
+      clearTimeout(recentPeerTimerRef.current);
+    };
+  }, []);
 
   const loadPeers = useCallback(
     async (mode: LoadMode = "initial", force = false): Promise<void> => {
@@ -326,6 +358,7 @@ export function RemotePeersPanel({
       });
       if (report.results.length > 0) {
         setPairingReport(report);
+        highlightPairingChanges(report);
       }
       await loadPeers("background", true);
       dispatchRemotePeersUpdated({ source: selfEventSource });
@@ -489,6 +522,7 @@ export function RemotePeersPanel({
                 className={css.peerRow}
                 data-peer-id={peer.peerId}
                 data-peer-state={peer.state}
+                data-recent={recentPeerIds.has(peer.peerId) || undefined}
               >
                 <div className={css.peerMain}>
                   <div className={css.peerIdentity}>
@@ -680,6 +714,10 @@ export function RemotePeersPanel({
         </section>
       )}
 
+      {view.kind === "ready" && hasEnabledPeers && (
+        <RemotePeersTopology peers={view.peers} recentEdgeKeys={recentEdgeKeys} t={t} />
+      )}
+
       {addOpen && (
         <AddPeerModal
           suggestedColor={
@@ -696,6 +734,7 @@ export function RemotePeersPanel({
           onAdded={async (pairing) => {
             if (pairing !== undefined && pairing.results.length > 0) {
               setPairingReport(pairing);
+              highlightPairingChanges(pairing);
             }
             await loadPeers("background", true);
           }}
@@ -708,7 +747,8 @@ export function RemotePeersPanel({
           t={t}
           onClose={() => setSyncMeshOpen(false)}
           onOpenShareTab={openShareTab}
-          onSynced={async () => {
+          onSynced={async (report) => {
+            highlightPairingChanges(report);
             await loadPeers("background", true);
             dispatchRemotePeersUpdated({ source: selfEventSource });
           }}

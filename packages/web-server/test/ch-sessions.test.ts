@@ -1652,6 +1652,45 @@ it("workspace mirror: propagates a failed save without accepting the mirror", (t
   assert.deepEqual(workspaces.ownerOf("thread")?.sessionIds, ["thread"]);
 });
 
+it("keeps an unassigned Thread in the Web Workspace opened inside a project root", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-nested-web-workspace-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const opened = join(home, "work", "opened");
+  mkdirSync(opened, { recursive: true });
+  const host = new FakeChHost();
+  // Neither Thread was given a project or moved out of projects; only their cwd places them.
+  for (const [id, cwd] of [
+    ["in-opened", join(opened, "generated")],
+    ["beside-opened", join(home, "work", "other")],
+    ["assigned-in-opened", opened],
+  ] as const) {
+    host.add(id, cwd, id, false);
+    host.projectSnapshot.projectless.splice(host.projectSnapshot.projectless.indexOf(id), 1);
+  }
+  host.projectSnapshot.projects.push({ id: "home", name: "Home", rootPaths: [home] });
+  host.projectSnapshot.assignments["assigned-in-opened"] = "home";
+  const workspaces = new Workspaces(new DataDir(root), root);
+  workspaces.create(opened);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const listed = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(listed.ok, listed.ok ? undefined : listed.error.message);
+  assert.equal(
+    workspaces.ownerOf("in-opened")?.path,
+    opened,
+    "a containing project root does not take the Threads of a folder opened in Web",
+  );
+  assert.equal(workspaces.ownerOf("beside-opened")?.path, home);
+  assert.equal(
+    workspaces.ownerOf("assigned-in-opened")?.path,
+    home,
+    "an explicit project assignment still decides",
+  );
+});
+
 it("groups assigned worktrees under their GUI project without changing execution cwd", () => {
   const root = resolve("computer", "project");
   const snapshot = {

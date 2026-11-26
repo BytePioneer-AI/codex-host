@@ -32,7 +32,11 @@ import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
-import { nativeProjectByCwd, projectGroupRoot } from "./ch-project-groups.ts";
+import {
+  nativeProjectByCwd,
+  projectGroupRoot,
+  webWorkspaceGroupRoot,
+} from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
@@ -495,13 +499,20 @@ export class ChSessions {
       const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
       const rootTitles = projectRootTitles(projects.projects);
       const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
+      const webWorkspaces = this.workspaces.webWorkspacePaths();
       for (const row of this.rows.values()) {
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
           projectless.add(row.id);
-        const root =
+        const projectRoot =
           row.cwd && !projectless.has(row.id)
             ? projectGroupRoot(projects, row.id, row.cwd)
             : undefined;
+        // Only the cwd placed an unassigned Thread, so a folder opened in Web inside that
+        // project root is the closer match.
+        const root =
+          projectRoot !== undefined && row.cwd && !row.projectId && !projects.assignments[row.id]
+            ? webWorkspaceGroupRoot(projectRoot, row.cwd, webWorkspaces)
+            : projectRoot;
         groups.set(row.id, root);
         if (root) {
           // Only the project's first root keeps the native project name; other

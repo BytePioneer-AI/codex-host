@@ -709,6 +709,11 @@ export class Workspaces {
     return this.state.items.find((item) => item.path === path);
   }
 
+  /** Folders the user opened as Workspaces in Web, as opposed to mirrored project roots. */
+  webWorkspacePaths(): string[] {
+    return this.state.items.filter((item) => item.origin === "web").map((item) => item.path);
+  }
+
   /**
    * The folder whose Threads a local Workspace lists, without the folders of nested local
    * Workspaces, which list their own Threads. Remote or unknown Workspaces have none.

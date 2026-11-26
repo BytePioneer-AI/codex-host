@@ -38,6 +38,31 @@ export function projectGroupRoot(
 }
 
 /**
+ * The folder an unassigned Thread is listed under once folders opened in Web are considered.
+ * A project root that merely contains such a folder does not take its Threads: the user opened
+ * the folder as its own Workspace, which is more specific than the project around it.
+ * @param root Project group root already chosen for the Thread's cwd.
+ * @param cwd Actual execution directory.
+ * @param webWorkspaces Folders the user opened as Workspaces in Web.
+ * @returns The deepest such folder holding the cwd below the project root, else the root.
+ */
+export function webWorkspaceGroupRoot(
+  root: string,
+  cwd: string,
+  webWorkspaces: readonly string[],
+): string {
+  const holds = (folder: string, path: string) => {
+    const inner = relative(folder, path);
+    return inner !== "" && !isAbsolute(inner) && inner !== ".." && !inner.startsWith(".." + sep);
+  };
+  const target = resolve(cwd);
+  const nested = webWorkspaces
+    .map((path) => resolve(path))
+    .filter((path) => holds(resolve(root), path) && (path === target || holds(path, target)));
+  return nested.sort((a, b) => b.length - a.length)[0] ?? root;
+}
+
+/**
  * The native project an unassigned Thread belongs to, as Desktop groups it: the project with
  * the deepest root holding its cwd, unless the Thread was explicitly moved out of projects.
  * @param snapshot Current native projects and projectless classification.

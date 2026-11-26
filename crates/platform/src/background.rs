@@ -157,7 +157,7 @@ pub fn spawn_detached_service(
 // platforms errno 5 is `EIO`, so the retry path stays Windows-only.
 #[cfg(target_os = "windows")]
 fn is_job_breakaway_denied(error: &std::io::Error) -> bool {
-    error.raw_os_error() == Some(windows::Win32::Foundation::ERROR_ACCESS_DENIED.0)
+    error.raw_os_error() == Some(windows::Win32::Foundation::ERROR_ACCESS_DENIED.0 as i32)
 }
 
 #[cfg(not(target_os = "windows"))]

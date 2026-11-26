@@ -654,7 +654,10 @@ describe("CodeBuddy native history and output projection", () => {
   });
   it("preserves native Model IDs verbatim and derives configuration from the native catalog", () => {
     expect(modelRef("provider/model:variant")).toEqual({ id: "provider/model:variant" });
-    expect(configuration(configOptions()).catalog.defaultModel).toEqual({ id: "native/model" });
+    expect(configuration(configOptions()).catalog).toMatchObject({
+      defaultModel: { id: "native/model" },
+      thinkingOptionsScope: "activeModel",
+    });
     expect(() => configuration([])).toThrow();
   });
   it("follows the current branch, preserves stable IDs, and refuses damaged history", () => {

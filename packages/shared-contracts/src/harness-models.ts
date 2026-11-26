@@ -126,12 +126,25 @@ const harnessThinkingOptionsSchema = z
     }
   });
 
+export const harnessThinkingOptionsScopeSchema = z.enum(["catalog", "activeModel"]);
+
+export type HarnessThinkingOptionsScope = z.infer<typeof harnessThinkingOptionsScopeSchema>;
+
 export const harnessModelCatalogSchema = z
   .object({
     models: z.array(harnessModelSchema),
     defaultModel: harnessModelRefSchema.optional(),
     thinkingOptions: harnessThinkingOptionsSchema,
     defaultThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
+    /**
+     * Scope of per-Model `supportedThinkingOptionIds` in this catalog.
+     * Omitted or `"catalog"` means each Model's `supportedThinkingOptionIds`
+     * reflects its own options (omitted or `[]` means none).
+     * `"activeModel"` means only the active Model's Thinking options were
+     * observed; other Models omit `supportedThinkingOptionIds` and must be
+     * validated by the Adapter after selecting the Model.
+     */
+    thinkingOptionsScope: harnessThinkingOptionsScopeSchema.optional(),
   })
   .strict()
   .superRefine((catalog, context) => {

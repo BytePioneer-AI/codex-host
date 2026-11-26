@@ -150,6 +150,46 @@ describe("compact delegation output", () => {
           configuration: { effective: { effectiveModel: fastModel, resolvedModelLabel: "Model" } },
         }),
       ).toHaveProperty("model", `${id}~fast`);
+      const activeModelOnly = {
+        ...inspection,
+        catalog: {
+          models: [
+            { ref: { id }, label: "Active", supportedThinkingOptionIds: ["high"] },
+            { ref: { id: "unobserved" }, label: "Unobserved" },
+            { ref: { id: "fixed" }, label: "Fixed", supportedThinkingOptionIds: [] },
+          ],
+          defaultModel: { id },
+          thinkingOptions: [{ id: "high", label: "High" }],
+          defaultThinkingOptionId: "high",
+          thinkingOptionsScope: "activeModel" as const,
+        },
+      };
+      expect(
+        compactDelegationOutput("harness inspect", { harnessId, inspection: activeModelOnly }),
+      ).toMatchObject({
+        thinkingOptionsScope: "activeModel",
+        models: [
+          { id, label: "Active", thinking: ["high"] },
+          { id: "unobserved", label: "Unobserved" },
+          { id: "fixed", label: "Fixed", thinking: [] },
+        ],
+      });
+      expect(
+        (
+          compactDelegationOutput("harness inspect", {
+            harnessId,
+            inspection: activeModelOnly,
+          }) as { models: Array<Record<string, unknown>> }
+        ).models[1],
+      ).not.toHaveProperty("thinking");
+      expect(
+        jsonDelegationOutput("harness inspect", { harnessId, inspection: activeModelOnly }),
+      ).toMatchObject({
+        inspection: { catalog: { thinkingOptionsScope: "activeModel" } },
+      });
+      expect(
+        textDelegationOutput("harness inspect", { harnessId, inspection: activeModelOnly }),
+      ).toContain("thinkingOptionsScope: activeModel");
       const unavailable = { status: "unavailable", error: { message: "Missing executable" } };
       expect(
         compactDelegationOutput("harness inspect", { harnessId, inspection: unavailable }),

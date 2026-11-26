@@ -2169,7 +2169,10 @@ class ClaudeHarnessSession implements HarnessSession {
         if (event.lastRequestUsage) {
           this.#requestUsageBoundary += 1;
           this.#applyLatestRequestUsage(active, event.lastRequestUsage);
-        } else {
+        } else if (!event.localCommand) {
+          // Local command output and synthetic notices have no transcript
+          // message carrying usage; reading the JSONL for their ids would
+          // only burn the retry budget. Real assistant completions keep it.
           this.#requestLatestRequestUsage(active, event.messageId);
         }
         if (event.checkpointId) active.checkpointId = event.checkpointId;

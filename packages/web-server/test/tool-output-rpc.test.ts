@@ -438,7 +438,7 @@ it("protects in-flight local and remote session/toolOutput reads from idle evict
   const localRpc = new RpcRegistry();
   const localStreams = new Streams();
   sessions.register(localRpc, localStreams);
-  await sessions.refresh();
+  assert.ok((await localRpc.dispatch("session/list", { args: { request: {} } })).ok);
 
   const localPage = await localRpc.dispatch("session/page", {
     args: { request: { address: { sessionId: row.id }, throughSeq: 2 ** 40 + 100 } },

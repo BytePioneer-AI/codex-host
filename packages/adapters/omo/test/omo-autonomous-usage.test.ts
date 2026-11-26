@@ -374,7 +374,168 @@ describe("OmO autonomous engine Turns", () => {
     ).toBe(true);
     await fixtureSession.closeAll();
   });
+
+  it("settles a host Turn normally when an engine Turn's user entry lands in the settling window", async () => {
+    const fixtureSession = await createSessionFixture({ FAKE_OMO_TURN_SCRIPT: "cancel" });
+    await fixtureSession.session.execute(turnStart("turn-1", "hello"));
+    await waitForStreamedText(fixtureSession.queue, "Working");
+
+    // The interrupt settles the host Turn natively. The engine Turn starts in
+    // the same command window, so its user entry is persisted while the host
+    // Turn is still settling and its frames are buffered behind that slot.
+    const stopping = fixtureSession.session.stopBackgroundWork();
+    const engine = fixtureSession.rpc.send("autonomous.run", {
+      message: "engine work",
+      text: "engine during settle",
+    });
+    await expect(stopping).resolves.toEqual({ ok: true, value: undefined });
+    await engine;
+
+    const { events, autonomousTurnId } = await collectSettledOverlap(fixtureSession.queue);
+
+    const hostTerminals = events.filter(
+      (event): event is Extract<HostEvent, { type: "turn.completed" }> =>
+        event.type === "turn.completed" && event.turnId === "turn-1",
+    );
+    expect(hostTerminals).toHaveLength(1);
+    // The host Turn's own outcome kind, not merely "no throw": the engine entry
+    // is not host input, so the settle is the normal cancelled outcome and not
+    // the wave-8 protocolError that counted the engine entry against it.
+    expect(hostTerminals[0]?.outcome).toMatchObject({
+      status: "cancelled",
+      reason: "Cancelled by user",
+    });
+    expect(hostTerminals[0]?.outcome).not.toHaveProperty("error");
+    expect(hostTerminals[0]?.nativeTurnRef?.nativeTurnKey).toBe("turn:u-1");
+
+    const autonomousStarted = events.filter(
+      (event): event is Extract<HostEvent, { type: "turn.autonomous.started" }> =>
+        event.type === "turn.autonomous.started",
+    );
+    expect(autonomousStarted).toHaveLength(1);
+    expect(autonomousStarted[0]?.input).toEqual([]);
+    // The host terminal leaves first; the buffered engine Turn publishes only
+    // after the settling slot clears.
+    expect(events.indexOf(hostTerminals[0] as HostEvent)).toBeLessThan(
+      events.indexOf(autonomousStarted[0] as HostEvent),
+    );
+
+    const autonomousTerminals = events.filter(
+      (event): event is Extract<HostEvent, { type: "turn.completed" }> =>
+        event.type === "turn.completed" && event.turnId === autonomousTurnId,
+    );
+    expect(autonomousTerminals).toHaveLength(1);
+    expect(autonomousTerminals[0]?.ephemeral).toBeUndefined();
+    expect(autonomousTerminals[0]?.nativeTurnRef).toEqual({
+      harnessId: "omo",
+      nativeSessionId: "synthetic-session-id",
+      nativeTurnKey: "turn:u-2",
+      formatVersion: 1,
+    });
+    expect(autonomousTerminals[0]?.outcome).toMatchObject({ status: "succeeded" });
+
+    // Content stays with its Turn: the engine text never joins the host items.
+    expect(agentMessageTexts(events, "turn-1")).not.toContain("engine during settle");
+    expect(agentMessageTexts(events, autonomousTurnId)).toContain("engine during settle");
+    expect(events.some((event) => event.type === "session.faulted")).toBe(false);
+    await fixtureSession.closeAll();
+  });
+
+  it("still faults when the extra settle-window entry is never attributed to an engine Turn", async () => {
+    // The peer persists the engine Turn's user entry but never streams its
+    // `entry_appended`, so the entry cannot be attributed to that Turn. The
+    // steer settlement count must keep treating it as an extra.
+    const fixtureSession = await createSessionFixture({
+      FAKE_OMO_TURN_SCRIPT: "cancel",
+      FAKE_OMO_NO_USER_ENTRY_EVENT: "1",
+    });
+    await fixtureSession.session.execute(turnStart("turn-1", "hello"));
+    await waitForStreamedText(fixtureSession.queue, "Working");
+
+    const stopping = fixtureSession.session.stopBackgroundWork();
+    const engine = fixtureSession.rpc.send("autonomous.run", {
+      message: "engine work",
+      text: "engine during settle",
+    });
+    await expect(stopping).resolves.toEqual({ ok: true, value: undefined });
+    await engine;
+
+    const { events, autonomousTurnId } = await collectSettledOverlap(fixtureSession.queue);
+
+    const hostTerminals = events.filter(
+      (event): event is Extract<HostEvent, { type: "turn.completed" }> =>
+        event.type === "turn.completed" && event.turnId === "turn-1",
+    );
+    expect(hostTerminals).toHaveLength(1);
+    expect(hostTerminals[0]?.outcome).toMatchObject({
+      status: "failed",
+      error: { code: "protocolError" },
+    });
+    expect(hostTerminals[0]?.outcome).toMatchObject({
+      error: { message: expect.stringContaining("persisted 2 new User Entries") },
+    });
+
+    // The engine Turn still projects, ephemeral because its entry was unobserved.
+    const autonomousTerminals = events.filter(
+      (event): event is Extract<HostEvent, { type: "turn.completed" }> =>
+        event.type === "turn.completed" && event.turnId === autonomousTurnId,
+    );
+    expect(autonomousTerminals).toHaveLength(1);
+    expect(autonomousTerminals[0]?.ephemeral).toBe(true);
+    expect(autonomousTerminals[0]?.outcome).toMatchObject({ status: "succeeded" });
+    await fixtureSession.closeAll();
+  });
 });
+
+/** Reads until the named streamed text lands, proving the Turn runs natively. */
+async function waitForStreamedText(queue: OutputQueue, text: string): Promise<void> {
+  for (;;) {
+    const event = await queue.nextEvent();
+    if (
+      event.type === "item.updated" &&
+      event.update.type === "text.append" &&
+      event.update.text === text
+    ) {
+      return;
+    }
+  }
+}
+
+/**
+ * Reads through the engine Turn's terminal; the host Turn's terminal is inside
+ * the same slice because the engine Turn is buffered behind its settlement.
+ */
+async function collectSettledOverlap(
+  queue: OutputQueue,
+): Promise<{ events: HostEvent[]; autonomousTurnId: string }> {
+  const events: HostEvent[] = [];
+  let autonomousTurnId: string | null = null;
+  for (;;) {
+    const event = await queue.nextEvent();
+    events.push(event);
+    if (event.type === "turn.autonomous.started") autonomousTurnId = event.turnId;
+    if (
+      autonomousTurnId !== null &&
+      event.type === "turn.completed" &&
+      event.turnId === autonomousTurnId
+    ) {
+      return { events, autonomousTurnId };
+    }
+  }
+}
+
+/** Completed agent-message texts attributed to one Turn. */
+function agentMessageTexts(events: HostEvent[], turnId: string): string[] {
+  return events
+    .filter(
+      (event): event is Extract<HostEvent, { type: "item.completed" }> =>
+        event.type === "item.completed" && event.turnId === turnId,
+    )
+    .flatMap((event) => {
+      const item = event.snapshot.item;
+      return item.type === "agentMessage" ? [item.text] : [];
+    });
+}
 
 /** Collects output from the first `turn.autonomous.started` through its terminal. */
 async function collectTurnEventsFromAutonomous(queue: OutputQueue): Promise<HostEvent[]> {

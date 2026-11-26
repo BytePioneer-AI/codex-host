@@ -73,7 +73,10 @@
  * user entry the machinery observes during the run, and an engine turn that
  * persists none completes `ephemeral` (the history projection roots Turns at
  * user entries, so such a Turn has no history Turn to reference — its
- * content would otherwise be lost). While a host operation holds the
+ * content would otherwise be lost). A user entry observed as an engine Turn's
+ * stays out of a host Turn's steer settlement count: an engine Turn can start
+ * while a host Turn settles, and its entry lands in the same history window.
+ * While a host operation holds the
  * foreground slot (prompt admission, a configuration selection, an active or
  * settling Turn), the engine turn and its frames are buffered behind a bound
  * and drained when the slot clears, so an engine turn that starts during a
@@ -749,6 +752,8 @@ export class OmoHarnessSession implements HarnessSession {
   #state: HarnessSessionState;
   readonly #pump: Promise<void>;
   readonly #consumedUserEntryIds = new Set<string>();
+  /** User entries observed as belonging to engine-initiated Turns. */
+  readonly #autonomousUserEntryIds = new Set<string>();
   readonly #emittedTurnKeys = new Set<string>();
   #accepting: { readonly clientTurnId: string } | null = null;
   #active: ActiveTurn | null = null;
@@ -1845,6 +1850,12 @@ export class OmoHarnessSession implements HarnessSession {
         );
         return;
       }
+      if (frame.type === "entry_appended") {
+        // Attribute the entry now: it was persisted while a host Turn was
+        // settling, and that Turn's identity walk must not claim it.
+        const id = userMessageEntryId(frame.entry);
+        if (id) this.#autonomousUserEntryIds.add(id);
+      }
       entry.frames.push(frame);
       return;
     }
@@ -1928,9 +1939,12 @@ export class OmoHarnessSession implements HarnessSession {
     const id = nonEmptyString(entry.id);
     if (entry.type !== "message" || !isRecord(entry.message)) return;
     const role = entry.message.role;
-    if (role === "user" && id && active.userEntryId === null) {
-      active.userEntryId = id;
-      this.#consumedUserEntryIds.add(id);
+    if (role === "user" && id) {
+      if (active.autonomous) this.#autonomousUserEntryIds.add(id);
+      if (active.userEntryId === null) {
+        active.userEntryId = id;
+        this.#consumedUserEntryIds.add(id);
+      }
       return;
     }
     if (role === "toolResult" && interruptedDetails(entry.message)) {
@@ -2355,7 +2369,11 @@ export class OmoHarnessSession implements HarnessSession {
     if (!sessionId) {
       throw new OmoSessionProtocolError("OmO Turn has no persisted Session identity");
     }
-    const userEntryIds = await this.#readTurnUserEntryIds(active);
+    const persistedEntryIds = await this.#readTurnUserEntryIds(active);
+    const userEntryIds = await this.#settlementUserEntryIds(
+      persistedEntryIds,
+      active.acceptedSteerCount,
+    );
     const userEntryId = userEntryIds[0];
     if (userEntryId === undefined) {
       throw new OmoSessionProtocolError("OmO history has no User Entry for the settled Turn");
@@ -2386,6 +2404,37 @@ export class OmoHarnessSession implements HarnessSession {
         formatVersion: 1,
       }),
     };
+  }
+
+  /**
+   * The user-message entries this host Turn can claim, oldest first. Entries
+   * observed as an engine Turn's are excluded: an engine Turn that starts while
+   * this Turn settles persists its own entry into the same history window.
+   *
+   * Those frames precede this identity read's `get_entries` answer on the
+   * ordered stream, but the event pump dispatches one frame per microtask, so
+   * the answer can resolve before the entry is attributed. When the walk sees
+   * more entries than this Turn admitted, or an engine Turn is queued behind
+   * this settlement, one event-loop turn lets the pump dispatch everything the
+   * answer already covers before the identity is chosen and the count is
+   * judged. Entries that still cannot be attributed to an engine Turn remain
+   * extras and fault as before, so the steer invariant is not weakened.
+   */
+  async #settlementUserEntryIds(
+    persistedEntryIds: readonly string[],
+    acceptedSteerCount: number,
+  ): Promise<string[]> {
+    const expected = 1 + Math.max(0, acceptedSteerCount);
+    const hostEntryIds = (): string[] =>
+      persistedEntryIds.filter((id) => !this.#autonomousUserEntryIds.has(id));
+    let claimed = hostEntryIds();
+    if (claimed.length > expected || this.#pendingAutonomous.length > 0) {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      claimed = hostEntryIds();
+    }
+    return claimed;
   }
 
   /**
@@ -2439,7 +2488,8 @@ export class OmoHarnessSession implements HarnessSession {
       const { entries, hasMore, next } = historyPage(response.data, "get_entries");
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const id = userMessageEntryId(entries[index]);
-        if (id && !this.#consumedUserEntryIds.has(id)) return id;
+        if (id && !this.#consumedUserEntryIds.has(id) && !this.#autonomousUserEntryIds.has(id))
+          return id;
       }
       if (!hasMore) break;
       if (next === undefined || next === before) break;

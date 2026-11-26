@@ -2,6 +2,7 @@ mod instance;
 mod launcher;
 mod navigation;
 mod readiness;
+mod session_activation;
 mod tray;
 mod visibility;
 mod zoom;
@@ -20,6 +21,7 @@ use instance::{Activation, ActivationDelivery, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
 use readiness::{ShellReady, WebEvent, WebReady};
+use session_activation::{Recovery, SessionActivation, wake_script};
 use visibility::{WindowVisibility, WindowVisibilityState, compute_window_hidden};
 use zoom::{ZoomController, ZoomState, percent_to_scale};
 
@@ -70,77 +72,42 @@ impl Page {
     }
 }
 
-enum MainTarget {
-    Route(&'static str),
-    Session(String),
-}
-
-impl MainTarget {
-    fn apply(self, url: &mut Url) {
-        match self {
-            Self::Route(route) => url.set_fragment(Some(route)),
-            Self::Session(session_id) => {
-                url.query_pairs_mut().append_pair("session", &session_id);
-            }
-        }
-    }
-}
-
 struct View {
     page: Page,
     last_login: Option<Url>,
-    pending_target: Option<MainTarget>,
-    live_session_generation: u64,
+    pending_route: Option<&'static str>,
+    session: SessionActivation,
 }
 
 impl View {
-    fn open_target(&mut self, target: Option<MainTarget>) -> Result<Option<Url>, String> {
-        let Some(target) = target else {
-            return Ok(None);
-        };
+    fn open_route(&mut self, route: &'static str) -> Option<Url> {
+        self.session.clear();
         if matches!(self.page, Page::Web) {
-            let mut url = self
-                .last_login
-                .clone()
-                .ok_or("Desktop Web login URL is unavailable")?;
-            self.pending_target = None;
-            target.apply(&mut url);
-            Ok(Some(url))
+            let mut login = self.last_login.clone()?;
+            login.set_fragment(Some(route));
+            Some(login)
         } else {
-            self.pending_target = Some(target);
-            Ok(None)
+            self.pending_route = Some(route);
+            None
         }
     }
 
     fn connect(&mut self, mut login: Url) -> Url {
         self.page = Page::Web;
         self.last_login = Some(login.clone());
-        if let Some(target) = self.pending_target.take() {
-            target.apply(&mut login);
+        if let Some(route) = self.pending_route.take() {
+            login.set_fragment(Some(route));
         }
+        self.session.connect(&mut login);
         login
     }
 
-    fn queue_live_session(&mut self, session_id: String) -> u64 {
-        self.live_session_generation = self.live_session_generation.wrapping_add(1);
-        self.pending_target = Some(MainTarget::Session(session_id));
-        self.live_session_generation
-    }
-
-    fn finish_live_session(&mut self, generation: u64, opened: bool) -> Option<Url> {
-        if !matches!(self.page, Page::Web)
-            || self.live_session_generation != generation
-            || !matches!(self.pending_target, Some(MainTarget::Session(_)))
-        {
-            return None;
-        }
-        let mut login = self.last_login.clone()?;
-        let target = self.pending_target.take()?;
-        if opened {
-            return None;
-        }
-        target.apply(&mut login);
-        Some(login)
+    fn accepts_session_page(&self, url: &Url) -> bool {
+        matches!(self.page, Page::Web)
+            && self
+                .last_login
+                .as_ref()
+                .is_some_and(|login| login.origin() == url.origin())
     }
 }
 
@@ -159,9 +126,16 @@ fn navigation_for(app: &AppHandle, url: &Url) -> Navigation {
     let shell = app.state::<Shell>();
     let view = shell.view.lock().unwrap();
     match classify(url, view.last_login.as_ref()) {
-        // A queued redirect from the previous service must not open a browser
-        // while the window is switching back to the embedded loading page.
-        Navigation::Web if !matches!(view.page, Page::Web) => Navigation::Block,
+        Navigation::Web
+            if matches!(view.page, Page::Web)
+                && view.session.allows_navigation(url) != Some(false) =>
+        {
+            Navigation::Web
+        }
+        // Do not export a stale shell session navigation to the browser, even if the
+        // replacement service has a different origin.
+        Navigation::Web => Navigation::Block,
+        Navigation::Browser if view.session.allows_navigation(url).is_some() => Navigation::Block,
         decision => decision,
     }
 }
@@ -198,10 +172,10 @@ fn navigate_loading(app: &AppHandle, status: Status) {
     navigate(app, url);
 }
 
-fn begin_web(app: &AppHandle, replace_page: bool) {
+fn begin_web(app: &AppHandle, replace_page: bool) -> bool {
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
-        return;
+        return false;
     }
     shell.view.lock().unwrap().page = Page::Loading(Status::Starting, None);
     if replace_page {
@@ -212,7 +186,9 @@ fn begin_web(app: &AppHandle, replace_page: bool) {
             app,
             WebEvent::Error("The desktop Web service watcher stopped.".into()),
         );
+        return false;
     }
+    true
 }
 
 fn web_event(app: &AppHandle, event: WebEvent) {
@@ -388,20 +364,38 @@ fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
     }
 }
 
-fn prepare_main_target(
-    app: &AppHandle,
-    shell: &Shell,
-    target: Option<MainTarget>,
-) -> Result<Option<Url>, String> {
-    let mut view = shell.view.lock().unwrap();
-    let begin = matches!(view.page, Page::Dormant)
-        || (matches!(view.page, Page::Onboarding) && target.is_some());
-    let url = view.open_target(target)?;
-    drop(view);
-    if begin {
-        begin_web(app, true);
+enum SessionDispatch {
+    Pending,
+    Live { origin: String, generation: u64 },
+}
+
+fn prepare_session(
+    view: &Mutex<View>,
+    session_id: String,
+    show_window: impl FnOnce() -> Result<(), String>,
+    start_web: impl FnOnce() -> bool,
+) -> Option<SessionDispatch> {
+    let start = match view.lock().unwrap().page {
+        Page::Dormant | Page::Onboarding => true,
+        Page::Loading(Status::Error, _) => return None,
+        _ => false,
+    };
+    show_window().ok()?;
+    if start && !start_web() {
+        return None;
     }
-    Ok(url)
+    let mut view = view.lock().unwrap();
+    let origin = if matches!(view.page, Page::Web) {
+        Some(view.last_login.as_ref()?.origin().ascii_serialization())
+    } else {
+        None
+    };
+    view.pending_route = None;
+    let generation = view.session.queue(session_id, origin.is_some());
+    Some(match origin {
+        Some(origin) => SessionDispatch::Live { origin, generation },
+        None => SessionDispatch::Pending,
+    })
 }
 
 pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
@@ -409,28 +403,58 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
     if shell.launcher.is_stopping() {
         return;
     }
-    if let Ok(Some(url)) = prepare_main_target(app, &shell, route.map(MainTarget::Route)) {
+    let (url, begin) = {
+        let mut view = shell.view.lock().unwrap();
+        let begin = matches!(view.page, Page::Dormant)
+            || (matches!(view.page, Page::Onboarding) && route.is_some());
+        (route.and_then(|route| view.open_route(route)), begin)
+    };
+    if begin {
+        begin_web(app, true);
+    }
+    if let Some(url) = url {
         navigate(app, url);
     }
     let _ = set_visible(app, true);
 }
 
-fn session_script(origin: &str, session_id: &str) -> String {
-    let origin = serde_json::to_string(origin).expect("Web origin is a JSON string");
-    let session = serde_json::to_string(session_id).expect("Session ID is a JSON string");
-    format!(
-        "(() => {{ try {{ if (location.origin !== {origin} || typeof window.__codexhostOpenSession !== 'function') return false; window.__codexhostOpenSession({session}); return true; }} catch {{ return false; }} }})()"
-    )
-}
+const SESSION_PROBE_DELAY: Duration = Duration::from_millis(500);
 
-fn finish_live_session(app: &AppHandle, generation: u64, opened: bool) -> bool {
+fn recover_session(app: &AppHandle, generation: u64, scheduled: bool) -> bool {
     let shell = app.state::<Shell>();
-    let target = shell
-        .view
-        .lock()
-        .unwrap()
-        .finish_live_session(generation, opened);
-    target.is_some_and(|url| navigate(app, url))
+    let recovery = {
+        let mut view = shell.view.lock().unwrap();
+        if !matches!(view.page, Page::Web) || shell.launcher.is_stopping() {
+            return scheduled;
+        }
+        let View {
+            last_login,
+            session,
+            ..
+        } = &mut *view;
+        last_login
+            .as_ref()
+            .and_then(|login| session.recover(generation, login))
+    };
+    match recovery {
+        Some(Recovery::Probe(script)) => {
+            if let Some(window) = app.get_webview_window(MAIN) {
+                let _ = window.eval(script);
+            }
+            true
+        }
+        Some(Recovery::Navigate(url)) => {
+            // A scheduled live wake already produced acceptance. Keep the target on
+            // failure so the next Connected can use a fresh login URL.
+            if navigate(app, url) || scheduled {
+                true
+            } else {
+                shell.view.lock().unwrap().session.clear();
+                false
+            }
+        }
+        None => scheduled,
+    }
 }
 
 fn show_session(app: &AppHandle, session_id: String) -> bool {
@@ -438,46 +462,67 @@ fn show_session(app: &AppHandle, session_id: String) -> bool {
     if shell.launcher.is_stopping() {
         return false;
     }
-    let Some(window) = app.get_webview_window(MAIN) else {
+    let Some(live) = prepare_session(
+        &shell.view,
+        session_id,
+        || set_visible(app, true),
+        || begin_web(app, true),
+    ) else {
         return false;
     };
-    let live_request = {
-        let mut view = shell.view.lock().unwrap();
-        if matches!(view.page, Page::Web) {
-            let Some(login) = view.last_login.as_ref() else {
-                return false;
-            };
-            let origin = login.origin().ascii_serialization();
-            // Keep the target until the live page accepts it or a reconnect consumes it.
-            let generation = view.queue_live_session(session_id.clone());
-            Some((origin, generation))
-        } else {
-            None
-        }
-    };
-    let Some((origin, generation)) = live_request else {
-        let accepted = prepare_main_target(app, &shell, Some(MainTarget::Session(session_id)))
-            .is_ok_and(|target| target.is_none_or(|url| navigate(app, url)));
-        if accepted {
-            let _ = set_visible(app, true);
-        }
-        return accepted;
-    };
-    let script = session_script(&origin, &session_id);
-    let callback_app = app.clone();
-    let scheduled = window
-        .eval_with_callback(script, move |result| {
-            let app = callback_app.clone();
-            let _ = callback_app.run_on_main_thread(move || {
-                finish_live_session(&app, generation, result == "true");
-            });
-        })
-        .is_ok();
-    if scheduled || finish_live_session(app, generation, false) {
-        let _ = set_visible(app, true);
+    let SessionDispatch::Live { origin, generation } = live else {
         return true;
+    };
+    let scheduled = app
+        .get_webview_window(MAIN)
+        .is_some_and(|window| window.eval(wake_script(&origin, generation)).is_ok());
+    if !scheduled {
+        return recover_session(app, generation, false);
     }
-    false
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(SESSION_PROBE_DELAY);
+        let on_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            recover_session(&on_main, generation, true);
+        });
+    }));
+    true
+}
+
+#[tauri::command]
+fn desktop_session_claim(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    generation: String,
+    document: String,
+) -> Option<String> {
+    let generation = generation.parse().ok()?;
+    if document.len() != 36 || shell.launcher.is_stopping() {
+        return None;
+    }
+    let url = window.url().ok()?;
+    let mut view = shell.view.lock().unwrap();
+    if window.label() != MAIN || !view.accepts_session_page(&url) {
+        return None;
+    }
+    view.session.claim(generation, document)
+}
+
+#[tauri::command]
+fn desktop_session_opened(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    generation: String,
+    document: String,
+) {
+    let (Ok(generation), Ok(url)) = (generation.parse(), window.url()) else {
+        return;
+    };
+    let mut view = shell.view.lock().unwrap();
+    if window.label() == MAIN && view.accepts_session_page(&url) {
+        view.session.opened(generation, &document);
+    }
 }
 
 pub(crate) fn show_onboarding(app: &AppHandle) {
@@ -487,7 +532,8 @@ pub(crate) fn show_onboarding(app: &AppHandle) {
     }
     let mut view = shell.view.lock().unwrap();
     view.page = Page::Onboarding;
-    view.pending_target = None;
+    view.pending_route = None;
+    view.session.clear();
     drop(view);
     let zoom = shell.zoom.lock().unwrap().percent();
     let mut url = embedded(ONBOARDING);
@@ -612,7 +658,9 @@ async fn choose_surface(
             return;
         }
         match surface {
-            Surface::NativeShell => begin_web(&on_main, true),
+            Surface::NativeShell => {
+                begin_web(&on_main, true);
+            }
             Surface::CodexDesktop => {
                 shell.view.lock().unwrap().page = Page::Dormant;
                 let _ = set_visible(&on_main, false);
@@ -797,7 +845,7 @@ fn run_primary(
     activations: mpsc::Receiver<ActivationDelivery>,
     session_reply: Option<Arc<SessionLaunchReply>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let initial_target = options.session_id.map(MainTarget::Session);
+    let initial_session = options.session_id;
     let launcher = Arc::new(Launcher::new(
         &std::env::current_exe()?,
         options.data_dir,
@@ -828,8 +876,8 @@ fn run_primary(
                     Page::Loading(Status::Starting, None)
                 },
                 last_login: None,
-                pending_target: initial_target,
-                live_session_generation: 0,
+                pending_route: None,
+                session: SessionActivation::default(),
             }),
             ensure_web,
             locale: locale.clone(),
@@ -847,6 +895,8 @@ fn run_primary(
             open_web_browser,
             window_start_dragging,
             window_minimize,
+            desktop_session_claim,
+            desktop_session_opened,
             window_toggle_maximize,
             window_close,
             window_chrome_state,
@@ -981,9 +1031,17 @@ fn run_primary(
                         let _ = worker_app.run_on_main_thread(move || web_event(&app, event));
                     });
                 })?;
-            show_main(&app_handle, None);
-            if !onboarding {
-                begin_web(&app_handle, false);
+            if let Some(session_id) = initial_session {
+                if !begin_web(&app_handle, false) || !show_session(&app_handle, session_id) {
+                    return Err(
+                        io::Error::other("Desktop session activation was not accepted").into(),
+                    );
+                }
+            } else {
+                show_main(&app_handle, None);
+                if !onboarding {
+                    begin_web(&app_handle, false);
+                }
             }
             reject_on_failure.0 = None;
             Ok(())
@@ -1085,14 +1143,15 @@ impl<W: Write> Drop for RejectUnfinishedSessionLaunch<W> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use tauri::webview::{PermissionKind, PermissionResponse};
     use url::Url;
 
     use super::{
-        MainTarget, Page, RejectUnfinishedSessionLaunch, SessionLaunchOutcome, SessionLaunchReply,
-        Status, View, permission_response, session_script,
+        Page, Recovery, RejectUnfinishedSessionLaunch, SessionActivation, SessionDispatch,
+        SessionLaunchOutcome, SessionLaunchReply, Status, View, permission_response,
+        prepare_session, wake_script,
     };
 
     #[test]
@@ -1150,86 +1209,141 @@ mod tests {
         );
     }
 
+    fn session_view(page: Page, last_login: Option<Url>) -> View {
+        View {
+            page,
+            last_login,
+            pending_route: None,
+            session: SessionActivation::default(),
+        }
+    }
+
     #[test]
     fn notification_session_uses_the_live_login_and_survives_reconnect() {
         let old_login = Url::parse("http://127.0.0.1:4400/?token=old").unwrap();
         let new_login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
-        let session = || MainTarget::Session("thread/一?x=#".into());
-        let mut view = View {
-            page: Page::Loading(Status::Starting, None),
-            last_login: None,
-            pending_target: Some(session()),
-            live_session_generation: 0,
-        };
-        let live = view.connect(old_login);
+        let mut view = session_view(Page::Loading(Status::Starting, None), None);
+        let thread = "thread/一?x=#";
+        view.session.queue(thread.into(), false);
+        let first = view.connect(old_login);
         assert_eq!(
-            live.as_str(),
-            "http://127.0.0.1:4400/?token=old&session=thread%2F%E4%B8%80%3Fx%3D%23"
+            first.as_str(),
+            "http://127.0.0.1:4400/?token=old&session=thread%2F%E4%B8%80%3Fx%3D%23&desktopSessionGeneration=2"
         );
-
-        assert!(view.pending_target.is_none());
-        let earlier = view.queue_live_session("earlier".into());
+        assert_eq!(view.session.allows_navigation(&first), Some(true));
+        assert_eq!(
+            view.session.claim(2, "old-document".into()).as_deref(),
+            Some(thread)
+        );
         view.page = Page::Loading(Status::Reconnecting, None);
-        assert_eq!(view.open_target(Some(session())).unwrap(), None);
-        assert_eq!(view.finish_live_session(earlier, false), None);
         let reconnected = view.connect(new_login.clone());
         assert_eq!(
             reconnected.as_str(),
-            "http://127.0.0.1:4401/?token=new&session=thread%2F%E4%B8%80%3Fx%3D%23"
+            "http://127.0.0.1:4401/?token=new&session=thread%2F%E4%B8%80%3Fx%3D%23&desktopSessionGeneration=3"
         );
-        assert_eq!(view.connect(new_login.clone()), new_login);
-        let request = view.queue_live_session("thread/一?x=#".into());
+        assert_eq!(view.session.allows_navigation(&first), Some(false));
+        assert_eq!(view.session.allows_navigation(&reconnected), Some(true));
+        view.session.opened(2, "old-document");
         assert_eq!(
-            view.finish_live_session(request, false).unwrap(),
-            reconnected
+            view.session.claim(3, "new-document".into()).as_deref(),
+            Some(thread)
         );
-        let request = view.queue_live_session("thread/一?x=#".into());
-        assert_eq!(view.finish_live_session(request, true), None);
-        assert!(view.pending_target.is_none());
+        view.session.opened(3, "old-document");
+        assert_eq!(view.session.allows_navigation(&reconnected), Some(true));
+        view.session.opened(3, "new-document");
+        assert_eq!(view.connect(new_login.clone()), new_login);
     }
 
     #[test]
     fn tray_route_supersedes_live_fallback_even_if_the_same_session_is_requested_again() {
         let login = Url::parse("http://127.0.0.1:4401/?token=new").unwrap();
-        let mut view = View {
-            page: Page::Web,
-            last_login: Some(login),
-            pending_target: None,
-            live_session_generation: 0,
-        };
-        let earlier = view.queue_live_session("thread".into());
-        let settings = view
-            .open_target(Some(MainTarget::Route("connect-devices")))
-            .unwrap()
-            .unwrap();
+        let mut view = session_view(Page::Web, Some(login.clone()));
+        let earlier = view.session.queue("thread".into(), true);
+        let settings = view.open_route("connect-devices").unwrap();
         assert_eq!(
             settings.as_str(),
             "http://127.0.0.1:4401/?token=new#connect-devices"
         );
-        assert_eq!(view.finish_live_session(earlier, false), None);
+        assert!(view.session.recover(earlier, &login).is_none());
+        assert!(view.session.claim(earlier, "old-document".into()).is_none());
 
-        let latest = view.queue_live_session("thread".into());
+        let latest = view.session.queue("thread".into(), true);
+        assert!(view.session.recover(earlier, &login).is_none());
+        let Some(Recovery::Navigate(url)) = view.session.recover(latest, &login) else {
+            panic!("an unclaimed live wake needs URL fallback");
+        };
         assert_eq!(
-            view.open_target(None).unwrap(),
-            None,
-            "show the current page"
+            url.as_str(),
+            "http://127.0.0.1:4401/?token=new&session=thread&desktopSessionGeneration=3"
         );
-        assert_eq!(view.finish_live_session(earlier, false), None);
-        assert_eq!(
-            view.finish_live_session(latest, false).unwrap().as_str(),
-            "http://127.0.0.1:4401/?token=new&session=thread"
-        );
+        assert!(view.session.claim(latest, "old-document".into()).is_none());
     }
 
     #[test]
-    fn live_session_script_uses_a_json_string_on_the_trusted_origin() {
-        let id = r#"id"); globalThis.injected = true; //"#;
-        let script = session_script("http://127.0.0.1:4400", id);
-        assert!(script.contains(&format!(
-            "window.__codexhostOpenSession({})",
-            serde_json::to_string(id).unwrap()
-        )));
-        assert!(script.contains(r#"location.origin !== "http://127.0.0.1:4400""#));
+    fn missing_page_ack_probes_the_claimed_generation_without_navigating() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        let mut session = SessionActivation::default();
+        let generation = session.queue("thread".into(), true);
+        assert_eq!(
+            session.claim(generation, "document".into()).as_deref(),
+            Some("thread")
+        );
+        let Some(Recovery::Probe(script)) = session.recover(generation, &login) else {
+            panic!("a claimed wake cannot fall back to navigation");
+        };
+        assert_eq!(script, wake_script("http://127.0.0.1:4400", generation));
+        assert_eq!(
+            script,
+            r#"if (location.origin === "http://127.0.0.1:4400") window.__codexhostOpenDesktopSession?.('1');"#
+        );
+        assert!(session.claim(generation, "other-document".into()).is_none());
+        assert_eq!(
+            session.claim(generation, "document".into()).as_deref(),
+            Some("thread")
+        );
+        session.opened(generation, "document");
+        assert!(session.recover(generation, &login).is_none());
+    }
+
+    #[test]
+    fn refused_sessions_do_not_replace_the_pending_target_or_dispatch() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        for page in [Page::Web, Page::Loading(Status::Starting, None)] {
+            let view = Mutex::new(session_view(page, Some(login.clone())));
+            view.lock().unwrap().session.queue("first".into(), false);
+            assert!(
+                prepare_session(
+                    &view,
+                    "rejected".into(),
+                    || Err("window did not restore".into()),
+                    || panic!("do not start Web after a window failure"),
+                )
+                .is_none()
+            );
+            let url = view.lock().unwrap().connect(login.clone());
+            assert_eq!(
+                url.query_pairs()
+                    .find(|(name, _)| name == "session")
+                    .unwrap()
+                    .1,
+                "first"
+            );
+        }
+        let view = Mutex::new(session_view(Page::Loading(Status::Error, None), None));
+        assert!(
+            prepare_session(
+                &view,
+                "rejected".into(),
+                || panic!("an error page must not take over the notification"),
+                || panic!("an error page declines rather than starting Web"),
+            )
+            .is_none()
+        );
+        assert_eq!(view.lock().unwrap().connect(login.clone()), login);
+        assert!(matches!(
+            prepare_session(&view, "accepted".into(), || Ok(()), || false),
+            Some(SessionDispatch::Live { .. })
+        ));
     }
 
     #[test]

@@ -17,6 +17,7 @@ const MAX_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_REQUEST_BYTES: u64 = 4 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_REPLY_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_SESSION_REPLIES: usize = 16;
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,14 +471,18 @@ fn serve(
     activations: mpsc::Sender<ActivationDelivery>,
     stop: Arc<AtomicBool>,
 ) {
+    let mut replies = Vec::new();
     while !stop.load(Ordering::Acquire) {
         let Ok((stream, _)) = listener.accept() else {
-            return;
+            break;
         };
         if stop.load(Ordering::Acquire) {
-            return;
+            break;
         }
-        let _ = handle_activation(stream, &nonce, &activations, &stop);
+        let _ = handle_activation(stream, &nonce, &activations, &stop, &mut replies);
+    }
+    for reply in replies {
+        let _ = reply.join();
     }
 }
 
@@ -485,7 +490,8 @@ fn handle_activation(
     mut stream: TcpStream,
     nonce: &str,
     activations: &mpsc::Sender<ActivationDelivery>,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
+    replies: &mut Vec<JoinHandle<()>>,
 ) -> Result<(), String> {
     stream
         .set_write_timeout(Some(IO_TIMEOUT))
@@ -498,7 +504,8 @@ fn handle_activation(
         .filter(|parsed| request.len() as u64 <= MAX_REQUEST_BYTES && parsed.nonce == nonce);
     let response: &[u8] = match request.map(|request| request.action) {
         Some(Activation::ShowSession(id)) => {
-            if !valid_session_id(&id) {
+            replies.retain(|reply| !reply.is_finished());
+            if !valid_session_id(&id) || replies.len() >= MAX_SESSION_REPLIES {
                 b"denied\n"
             } else {
                 let (reply, acceptance) = mpsc::channel();
@@ -511,11 +518,21 @@ fn handle_activation(
                 {
                     b"denied\n"
                 } else {
-                    match wait_for_session_reply(acceptance, stop) {
-                        Some(true) => b"ok\n",
-                        Some(false) => b"denied\n",
-                        None => b"unknown\n",
-                    }
+                    let stop = Arc::clone(stop);
+                    replies.push(
+                        thread::Builder::new()
+                            .name("session-activation-reply".into())
+                            .spawn(move || {
+                                let line: &[u8] = match wait_for_session_reply(acceptance, &stop) {
+                                    Some(true) => b"ok\n",
+                                    Some(false) => b"denied\n",
+                                    None => b"unknown\n",
+                                };
+                                let _ = stream.write_all(line);
+                            })
+                            .map_err(|error| format!("Cannot start the session reply: {error}"))?,
+                    );
+                    return Ok(());
                 }
             }
         }
@@ -779,6 +796,65 @@ mod tests {
         drop(instance);
         assert!(!canonical_data.join(RECORD_FILE).exists());
         assert!(canonical_data.join(LOCK_FILE).is_file());
+    }
+
+    #[test]
+    fn pending_session_reply_does_not_block_later_activations_or_reorder_them() {
+        let temp = aliased_temp_dir();
+        let data_dir = temp.canonical.join("data");
+        let Claim::Primary {
+            instance,
+            activations,
+        } = claim_with(&data_dir, Activation::Show, test_retry(), || {}).unwrap()
+        else {
+            panic!("the first claim must own the data directory");
+        };
+        let RecordState::Live(record) = read_live_record(&data_dir) else {
+            panic!("the primary must own the instance record");
+        };
+        let send = |action| {
+            let mut stream = TcpStream::connect_timeout(&instance.address(), IO_TIMEOUT).unwrap();
+            stream
+                .set_read_timeout(Some(SESSION_REPLY_TIMEOUT + IO_TIMEOUT))
+                .unwrap();
+            serde_json::to_writer(
+                &mut stream,
+                &ActivationRequest {
+                    nonce: record.nonce.clone(),
+                    action,
+                },
+            )
+            .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream
+        };
+        let read_reply = |stream| {
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            line
+        };
+        let first = send(Activation::ShowSession("first".into()));
+        let first_delivery = activations.recv_timeout(IO_TIMEOUT).unwrap();
+        assert_eq!(
+            first_delivery.action,
+            Activation::ShowSession("first".into())
+        );
+
+        let onboarding = send(Activation::Onboarding);
+        let last = send(Activation::ShowSession("last".into()));
+        assert_eq!(
+            activations.recv_timeout(IO_TIMEOUT).unwrap().action,
+            Activation::Onboarding
+        );
+        let last_delivery = activations.recv_timeout(IO_TIMEOUT).unwrap();
+        assert_eq!(last_delivery.action, Activation::ShowSession("last".into()));
+
+        last_delivery.session_reply.unwrap().send(false).unwrap();
+        assert_eq!(read_reply(onboarding), "ok\n");
+        assert_eq!(read_reply(last), "denied\n");
+        first_delivery.session_reply.unwrap().send(true).unwrap();
+        assert_eq!(read_reply(first), "ok\n");
+        assert!(matches!(activations.try_recv(), Err(TryRecvError::Empty)));
     }
 
     #[test]

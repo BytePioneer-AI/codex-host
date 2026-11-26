@@ -1,0 +1,10 @@
+{
+  "identifier": "desktop-session",
+  "description": "Claim and confirm a pending native session activation from the main loopback Web page.",
+  "webviews": ["main"],
+  "local": false,
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*", "http://[\\:\\:1]:*/*"]
+  },
+  "permissions": ["allow-desktop-session-claim", "allow-desktop-session-opened"]
+}

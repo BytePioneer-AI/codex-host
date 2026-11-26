@@ -89,7 +89,11 @@ import { initializeNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
 import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
-import { isDesktopShell } from "./desktop-shell.ts";
+import {
+  attachDesktopSessionPage,
+  desktopSessionGenerationQuery,
+  isDesktopShell,
+} from "./desktop-shell.ts";
 import { WallpaperController } from "./wallpaper.ts";
 import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import {
@@ -696,13 +700,20 @@ export function apply(ctx: ClientContext): void {
       }),
     "ui-codexhost: release announcement",
   );
+  const desktopPage = isDesktopShell() ? attachDesktopSessionPage(face.openSession) : undefined;
   const openFromUrl = (): void => {
     const url = new URL(window.location.href);
     const sessionId = url.searchParams.get("session");
     if (sessionId === null) return;
     url.searchParams.delete("session");
+    const generation = url.searchParams.get(desktopSessionGenerationQuery);
+    if (desktopPage) url.searchParams.delete(desktopSessionGenerationQuery);
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-    face.openSession(sessionId);
+    if (desktopPage && generation !== null) {
+      void desktopPage.wake(generation);
+    } else {
+      face.openSession(sessionId);
+    }
   };
   openFromUrl();
   const onMessage = (event: MessageEvent): void => {
@@ -710,17 +721,8 @@ export function apply(ctx: ClientContext): void {
     if (data?.type === "codexhost/open-session" && typeof data.sessionId === "string")
       face.openSession(data.sessionId);
   };
-  if (isDesktopShell()) {
-    const shellWindow = window as Window & { __codexhostOpenSession?: (sessionId: string) => void };
-    const openSession = (sessionId: string) => face.openSession(sessionId);
-    shellWindow.__codexhostOpenSession = openSession;
-    ctx.effect(
-      () => () => {
-        if (shellWindow.__codexhostOpenSession === openSession)
-          delete shellWindow.__codexhostOpenSession;
-      },
-      "ui-codexhost: desktop session activations",
-    );
+  if (desktopPage) {
+    ctx.effect(() => desktopPage.dispose, "ui-codexhost: desktop session activations");
   } else if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", onMessage);
     ctx.effect(

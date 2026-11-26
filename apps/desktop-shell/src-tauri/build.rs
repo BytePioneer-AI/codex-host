@@ -24,6 +24,8 @@ fn main() {
             "get_state",
             "ensure_web_access",
             "open_web_browser",
+            "desktop_session_claim",
+            "desktop_session_opened",
             "window_start_dragging",
             "window_minimize",
             "window_toggle_maximize",

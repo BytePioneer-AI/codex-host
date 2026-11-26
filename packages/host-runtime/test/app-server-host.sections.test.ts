@@ -23,6 +23,7 @@ function serveOfficialSections(
   options: {
     reject?: (method: string) => boolean;
     loseCreateReply?: (section: JsonObject) => void;
+    deleteReply?: () => JsonObject;
     incompleteList?: () => boolean;
   } = {},
 ) {
@@ -74,6 +75,10 @@ function serveOfficialSections(
           method === "threadSection/create" ? `new-${++sectionNumber}` : String(params.sectionId);
         if (method === "threadSection/delete") {
           deleteSection(id);
+          if (options.deleteReply) {
+            reply(options.deleteReply());
+            continue;
+          }
           result = {};
         } else {
           const definition = {
@@ -401,6 +406,46 @@ describe("External Thread sections through AppServerHost", () => {
           result: { status: "confirmed", syncPending: true },
         },
       );
+      await vi.waitFor(async () => {
+        expect(await fixture.mappingStore.listSectionPlacements()).toEqual([]);
+      });
+      expect(native.mutations).toEqual([
+        { method: "threadSection/delete", params: { sectionId: "Research" } },
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("reconciles an unknown delete only after a complete read and retries placement cleanup", async () => {
+    const fixture = createFixture();
+    let incompleteList = false;
+    const native = serveOfficialSections(
+      fixture,
+      [],
+      { Research: [] },
+      {
+        deleteReply: () => {
+          incompleteList = true;
+          return { error: { message: "Malformed reply" } };
+        },
+        incompleteList: () => incompleteList,
+      },
+    );
+    try {
+      const threadId = await startPiThread(fixture);
+      await expect(
+        sectionRpc(fixture, "move", { threadId, sectionId: "Research" }),
+      ).resolves.toEqual({ result: {} });
+      const original = await fixture.mappingStore.listSectionPlacements();
+      vi.spyOn(fixture.mappingStore, "replaceSectionPlacements").mockRejectedValueOnce(
+        new Error("Storage unavailable"),
+      );
+      await expect(sectionRpc(fixture, "delete", { sectionId: "Research" })).resolves.toEqual({
+        result: { status: "unknown" },
+      });
+      expect(await fixture.mappingStore.listSectionPlacements()).toEqual(original);
+      incompleteList = false;
       await vi.waitFor(async () => {
         expect(await fixture.mappingStore.listSectionPlacements()).toEqual([]);
       });

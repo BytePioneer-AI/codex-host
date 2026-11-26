@@ -123,6 +123,7 @@ import {
   CLIENT_THREAD_SECTION_MUTATIONS,
   THREAD_SECTION_CAPABILITY,
   type ClientThreadSectionMutationResult,
+  jsonRpcErrorSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   type HarnessCommandDescriptor,
@@ -4234,7 +4235,11 @@ export class AppServerHost {
       } catch (error) {
         this.#diagnose(error);
       }
-      if (reply && isRecord(reply.error)) {
+      if (
+        reply &&
+        !Object.hasOwn(reply, "result") &&
+        jsonRpcErrorSchema.safeParse(reply.error).success
+      ) {
         await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
         return;
       }
@@ -4245,6 +4250,7 @@ export class AppServerHost {
       const sectionId = operation === "create" ? section?.id : raw.sectionId;
       if (
         !reply ||
+        Object.hasOwn(reply, "error") ||
         !isRecord(reply.result) ||
         typeof sectionId !== "string" ||
         !sectionId ||
@@ -4252,8 +4258,8 @@ export class AppServerHost {
         (operation !== "delete" && section?.id !== sectionId)
       ) {
         // A new snapshot cannot attribute the result of this particular write.
-        await this.#reconcileSectionPlacements({ readOnly: true, refreshEmpty: true });
-        if (shared) await this.#refreshSharedSectionPlacements(shared, true);
+        await this.#reconcileSectionPlacements({ refreshEmpty: true });
+        if (shared) await this.#refreshSharedSectionPlacements(shared);
         await this.#publishSectionsChanged();
         await this.#writeUnknownSectionMutation(request, native);
         return;
@@ -4265,7 +4271,7 @@ export class AppServerHost {
       await this.#publishSectionsChanged();
       if (shared) {
         // This Desktop has a separate local store and may also show shared rows.
-        syncPending = (await this.#refreshSharedSectionPlacements(shared, false)) || syncPending;
+        syncPending = (await this.#refreshSharedSectionPlacements(shared)) || syncPending;
       }
       const result: ClientThreadSectionMutationResult = {
         status: "confirmed",
@@ -4279,12 +4285,9 @@ export class AppServerHost {
     });
   }
 
-  async #refreshSharedSectionPlacements(
-    shared: SharedThreadBridge,
-    readOnly: boolean,
-  ): Promise<boolean> {
+  async #refreshSharedSectionPlacements(shared: SharedThreadBridge): Promise<boolean> {
     try {
-      const reply = await shared.request(SHARED_SECTIONS_RECONCILE_METHOD, { readOnly });
+      const reply = await shared.request(SHARED_SECTIONS_RECONCILE_METHOD, {});
       return (
         reply.error !== undefined || !isRecord(reply.result) || reply.result.syncPending !== false
       );

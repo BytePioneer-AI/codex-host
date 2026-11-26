@@ -7,6 +7,7 @@ import {
   clientThreadSnapshotSchema,
   harnessInstallationRequestTimeoutMs,
   THREAD_SECTION_CAPABILITY,
+  jsonRpcErrorSchema,
   type ClientChannelDescriptor,
   type ClientChannelCursor,
   type ClientChannelEvent,
@@ -222,12 +223,15 @@ export class HostClientChannel {
       throw Object.assign(new Error("Obsolete Host reply; resynchronize after reconnecting"), {
         code: -32094,
       });
-    if (value.error || !response.ok)
-      throw Object.assign(new Error(value.error?.message ?? "Host request failed"), {
-        code: value.error?.code ?? -32603,
+    if (Object.hasOwn(value, "error") && !Object.hasOwn(value, "result")) {
+      const error = jsonRpcErrorSchema.safeParse(value.error);
+      if (error.success)
+        throw Object.assign(new Error(error.data.message), { code: error.data.code });
+    }
+    if (!response.ok || Object.hasOwn(value, "error") || !Object.hasOwn(value, "result"))
+      throw Object.assign(new Error("Invalid Host reply; operation outcome may be unknown"), {
+        code: -32093,
       });
-    if (!Object.hasOwn(value, "result"))
-      throw new Error("Invalid Host reply; operation outcome may be unknown");
     return value.result as T;
   }
   request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {

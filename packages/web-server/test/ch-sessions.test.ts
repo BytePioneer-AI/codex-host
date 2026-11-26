@@ -317,7 +317,8 @@ it("preserves rejection and pending, and never retries a section write with unkn
     return request<T>(method, params);
   };
   const create = () => mutate("create", { name: "Research" });
-  for (const code of [-32601, -32602]) {
+  const rejectedCodes = [-32601, -32602, -32603];
+  for (const code of rejectedCodes) {
     error = new RpcError("host/rejected", "Original rejection", { hostCode: code });
     assert.deepEqual(await create(), {
       ok: false,
@@ -339,7 +340,7 @@ it("preserves rejection and pending, and never retries a section write with unkn
   result = { status: "invalid" };
   assert.deepEqual(await create(), { ok: true, value: { status: "unknown" } });
   assert.equal(reads, ambiguous.length + 1);
-  assert.equal(writes, ambiguous.length + 3);
+  assert.equal(writes, ambiguous.length + rejectedCodes.length + 1);
 
   result = {
     status: "confirmed",
@@ -352,7 +353,7 @@ it("preserves rejection and pending, and never retries a section write with unkn
   };
   assert.deepEqual(await create(), { ok: true, value: result });
   assert.equal(reads, ambiguous.length + 2);
-  assert.equal(writes, ambiguous.length + 4);
+  assert.equal(writes, ambiguous.length + rejectedCodes.length + 2);
 });
 
 it("retries a shared sections change after a catalog read and preserves the projection on failure", async (t) => {

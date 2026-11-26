@@ -207,6 +207,63 @@ fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
 }
 
 #[test]
+fn npm_diagnostic_console_can_open_without_an_inherited_node_path() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "codexhost diagnostic console {} {unique}",
+        std::process::id()
+    ));
+    let bin = root.join("bin");
+    let app = root.join("app");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&app).unwrap();
+    let source = launcher_path();
+    let installed = bin.join(source.file_name().unwrap());
+    fs::copy(source, &installed).unwrap();
+    fs::write(
+        app.join("console-server.mjs"),
+        "console.log(process.argv[2]);",
+    )
+    .unwrap();
+    let metadata = app.join("codexhost-distribution.json");
+    fs::write(&metadata, r#"{"schemaVersion":1,"distribution":"npm"}"#).unwrap();
+
+    let output = |node| {
+        let mut command = Command::new(&installed);
+        command
+            .arg("console")
+            .env("CODEXHOST_DATA_DIR", root.join("data"))
+            .env_remove("CODEXHOST_NPM_NODE_PATH");
+        if let Some(node) = node {
+            command.env("CODEXHOST_NPM_NODE_PATH", node);
+        }
+        output_of_copied_binary(&mut command).expect("run installed diagnostic console")
+    };
+    let without_override = output(None);
+    let with_stale_override = output(Some(root.join("removed-node").join("node")));
+    fs::write(
+        &metadata,
+        r#"{"schemaVersion":1,"distribution":"installer"}"#,
+    )
+    .unwrap();
+    let native_without_runtime = output(None);
+    fs::remove_dir_all(&root).unwrap();
+
+    for result in [without_override, with_stale_override] {
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "open");
+    }
+    assert!(!native_without_runtime.status.success());
+}
+
+#[test]
 fn help_prints_usage_to_stdout_and_succeeds() {
     for argument in ["--help", "-h", "help"] {
         let output = Command::new(launcher_path())

@@ -1690,8 +1690,18 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
+    let node = default_node_with_npm(installed.node, inherited_npm_node());
+    let node = if (!node.is_absolute() || !node.is_file())
+        && console::uses_npm_distribution(&installed.console_server)
+    {
+        let program = if cfg!(windows) { "node.exe" } else { "node" };
+        resolve_executable_on_path(Path::new(program))
+            .ok_or("The npm diagnostic console needs Node.js on PATH. Run `codexhost console` from a terminal with Node.js available.")?
+    } else {
+        resolve_default_node(node)?
+    };
     let command = console::ConsoleCommand {
-        node: resolve_default_node(default_node_with_npm(installed.node, inherited_npm_node()))?,
+        node,
         console_server: installed.console_server,
     };
     if console::run(&command, action)? {

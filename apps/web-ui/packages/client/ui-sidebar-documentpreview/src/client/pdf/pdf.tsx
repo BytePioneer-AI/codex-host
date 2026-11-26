@@ -13,7 +13,7 @@ import type { PropsLocale, PropsStore } from "@deepseek-ai/dsh-client-ui-slots";
 import type { TabId } from "@deepseek-ai/dsh-client-ui-dockkit";
 import type { DocumentPreviewProps } from "../document/contract.ts";
 import type { PdfStore, PdfView } from "./store.ts";
-import { renderPdfPage, type PdfDocument } from "./document.ts";
+import { renderPdfPage, type PdfDocument, type PdfPageSize } from "./document.ts";
 import { openPdf } from "./runtime.ts";
 import { PdfWorkerFailure } from "./errors.ts";
 import { pdfTextRenderer } from "./text.ts";
@@ -168,6 +168,12 @@ export function PdfBody(props: PdfBodyProps & { readonly loading: ReactNode }): 
   );
 }
 
+function reclaimCanvas(node: HTMLCanvasElement | null): void {
+  if (node === null) return;
+  if (node.width !== 0) node.width = 0;
+  if (node.height !== 0) node.height = 0;
+}
+
 function PdfPage({
   document,
   page,
@@ -189,9 +195,10 @@ function PdfPage({
   readonly zoomSurfaceClass: string;
 } & PropsLocale<"sidebarPdf">): ReactNode {
   const host = useRef<HTMLDivElement>(null);
+  const surface = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const text = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState<number>();
+  const [pageSize, setPageSize] = useState<PdfPageSize>();
   const [requested, setRequested] = useState(initiallyRequested);
   const [visible, setVisible] = useState(initiallyRequested);
   const renderedZoom = useRef<number>();
@@ -201,10 +208,11 @@ function PdfPage({
   const [failure, setFailure] = useState<{ readonly error: unknown }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    // A zoomed canvas can remain visible after its narrower page wrapper has
-    // scrolled out horizontally. Observe the displayed page once it is ready.
+    // A zoomed surface can remain visible after its narrower page wrapper has
+    // scrolled out horizontally. Observe the sized surface container once ready
+    // so reclaiming the canvas backing store never collapses the observed box.
     const node =
-      state === "ready" ? (canvas.current as HTMLCanvasElement) : (host.current as HTMLDivElement);
+      state === "ready" ? (surface.current as HTMLDivElement) : (host.current as HTMLDivElement);
     if (typeof IntersectionObserver === "undefined") {
       setRequested(true);
       setVisible(true);
@@ -214,7 +222,9 @@ function PdfPage({
     const observer = new IntersectionObserver(
       (entries) => {
         if (disposed) return;
-        const intersects = entries.some((entry) => entry.isIntersecting);
+        const latest = entries.at(-1);
+        if (latest === undefined) return;
+        const intersects = latest.isIntersecting;
         setVisible(intersects);
         if (!intersects) return;
         setRequested(true);
@@ -228,22 +238,31 @@ function PdfPage({
       observer.disconnect();
     };
   }, [page, onVisible, state]);
-  useEffect(
-    () => () => {
-      textTask.current?.cancel();
-    },
-    [],
-  );
   useEffect(() => {
+    const node = canvas.current;
+    return () => {
+      textTask.current?.cancel();
+      textTask.current = undefined;
+      reclaimCanvas(node);
+      renderedZoom.current = undefined;
+    };
+  }, [document, page]);
+  useEffect(() => {
+    if (!visible) {
+      reclaimCanvas(canvas.current);
+      renderedZoom.current = undefined;
+      return;
+    }
     if (!requested) return;
     setFailure(undefined);
-    if (renderedZoom.current !== undefined && (!visible || renderedZoom.current === zoom)) return;
+    if (renderedZoom.current === zoom) return;
     const node = canvas.current as HTMLCanvasElement;
     const lifetime = new AbortController();
     const renderSignal = AbortSignal.any([lifetime.signal, signal]);
     let newText: typeof textTask.current;
     // PDF.js shares a page proxy across renders; its cancelled task must finish
-    // cleanup before another render starts. The displayed bitmap stays intact.
+    // cleanup before another render starts. Visible pages keep their bitmap
+    // intact during re-render; offscreen pages reclaim their backing store.
     pendingRender.current = pendingRender.current
       .then(async () => {
         renderSignal.throwIfAborted();
@@ -273,7 +292,11 @@ function PdfPage({
           textTask.current ??= newText;
           newText = undefined;
           renderedZoom.current = zoom;
-          setWidth(size.width);
+          setPageSize((prev) =>
+            prev !== undefined && prev.width === size.width && prev.height === size.height
+              ? prev
+              : size,
+          );
           onWidth?.(size.width);
           setState("ready");
         } finally {
@@ -289,8 +312,22 @@ function PdfPage({
       newText?.cancel();
     };
   }, [document, page, requested, visible, zoom, signal, attempt, onWidth]);
+  const pageStyle =
+    pageSize === undefined
+      ? undefined
+      : ({
+          "--pdf-page-width": `${pageSize.width}px`,
+          "--pdf-page-height": `${pageSize.height}px`,
+        } as CSSProperties);
+  const surfaceStyle =
+    pageSize === undefined
+      ? ({ "--document-zoom-width": "0px" } as CSSProperties)
+      : ({
+          "--document-zoom-width": `${pageSize.width}px`,
+          aspectRatio: `${pageSize.width} / ${pageSize.height}`,
+        } as CSSProperties);
   return (
-    <div ref={host} className={css.page} data-pdf-page={page}>
+    <div ref={host} className={css.page} data-pdf-page={page} style={pageStyle}>
       {failure === undefined &&
         state !== "ready" &&
         (requested ? (
@@ -312,9 +349,10 @@ function PdfPage({
         </div>
       )}
       <div
+        ref={surface}
         className={`${css.surface} ${zoomSurfaceClass}`}
         data-document-zoom-surface
-        style={{ "--document-zoom-width": `${width ?? 0}px` } as CSSProperties}
+        style={surfaceStyle}
         hidden={state !== "ready"}
       >
         <canvas

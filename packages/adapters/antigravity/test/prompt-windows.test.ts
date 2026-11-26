@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as childProcess from "node:child_process";
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
@@ -38,6 +39,23 @@ function staleProcessStartToken(): string {
   return String((Number.isFinite(current) ? current : Math.round(performance.timeOrigin)) - 60_000);
 }
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcess>();
+  const { promisify: nodePromisify } = await import("node:util");
+  const actualPromisified = nodePromisify(actual.execFile);
+  const trackedExecFile = vi.fn(actual.execFile);
+  Object.defineProperty(trackedExecFile, nodePromisify.custom, {
+    value: (...args: Parameters<typeof actualPromisified>) => {
+      trackedExecFile.mock.calls.push(args as unknown as Parameters<typeof actual.execFile>);
+      return actualPromisified(...args);
+    },
+  });
+  return {
+    ...actual,
+    execFile: trackedExecFile,
+  };
+});
+
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof fsPromises>();
   return {
@@ -51,6 +69,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const dirs: string[] = [];
 
 afterEach(async () => {
+  vi.mocked(childProcess.execFile).mockClear();
   vi.mocked(fsPromises.open).mockRestore();
   vi.mocked(fsPromises.readFile).mockRestore();
   vi.mocked(fsPromises.rm).mockRestore();
@@ -460,5 +479,50 @@ describe("prompt-windows cross-process lock safety", () => {
       }
     },
     15_000,
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "caches async OS process start queries across lock contention retries",
+    async () => {
+      const { env } = await setupEnv();
+      const sessionId = "cached-contender-query";
+      const file = promptWindowsPath(sessionId, env);
+      const lockFile = `${file}.lock`;
+      await mkdir(path.dirname(file), { recursive: true });
+      const parentPid = process.ppid;
+      // Warm self start cache before measuring contention queries for the external contender.
+      await savePromptWindows("warm-self-start", [{ submittedAtMs: 0, returnedAtMs: 1 }], env);
+      vi.mocked(childProcess.execFile).mockClear();
+
+      const parentStartId = String(
+        Date.parse(
+          execFileSync("/bin/ps", ["-p", String(parentPid), "-o", "lstart="], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+            env: { ...process.env, LC_ALL: "C" },
+            timeout: 1_000,
+          }).trim(),
+        ),
+      );
+      await writeFile(
+        lockFile,
+        JSON.stringify({
+          pid: parentPid,
+          startId: parentStartId,
+          token: "external-parent-holder",
+          createdAtMs: Date.now(),
+        }),
+      );
+
+      await expect(
+        savePromptWindows(sessionId, [{ submittedAtMs: 1, returnedAtMs: 2 }], env, {
+          lockTimeoutMs: 120,
+        }),
+      ).rejects.toThrow("Timed out acquiring prompt windows lock");
+
+      // Multiple contention retries happen within 120ms, but OS process start should only be queried once.
+      expect(vi.mocked(childProcess.execFile).mock.calls.length).toBe(1);
+      await rm(lockFile);
+    },
   );
 });

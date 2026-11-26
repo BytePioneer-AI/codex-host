@@ -38,7 +38,11 @@ import {
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
 import * as nativeBoundaries from "../src/native-turn-boundaries.js";
-import { promptWindowsDirectory, readPromptWindows } from "../src/prompt-windows.js";
+import {
+  promptWindowsDirectory,
+  promptWindowsPath,
+  readPromptWindows,
+} from "../src/prompt-windows.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
@@ -3586,7 +3590,6 @@ describe("Antigravity idle wake Turns", () => {
     });
   });
 
-
   it("reads native SQLite history cold via adapter.readSnapshot without creating a transport", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-cold-read-"));
     directories.push(home);
@@ -3934,6 +3937,62 @@ describe("Antigravity idle wake Turns", () => {
         await restarted.close();
       }
       await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("degrades gracefully on resume and readSnapshot when persisted prompt windows file is unreadable", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      const inPromptAtMs = Date.now();
+      stampStep(db, 0, inPromptAtMs);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stampStep(db, 2, inPromptAtMs);
+      answerStep(db, 3, "WAKE_RESULT", "in-prompt-wake");
+      stampStep(db, 3, inPromptAtMs);
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      await session.close();
+      await adapter.close();
+
+      // Replace the persisted prompt-windows file with a directory so readFile fails with EISDIR.
+      const windowsFile = promptWindowsPath(nativeRef.nativeSessionId, env);
+      await rm(windowsFile, { recursive: true, force: true });
+      await mkdir(windowsFile, { recursive: true });
+
+      const restarted = fixture({ environment: env });
+      try {
+        const reopened = await restarted.adapter.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(coldSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+          "wake-2",
+        ]);
+
+        // Materializing the live transport (#open) must also degrade instead of failing session init.
+        const nextTurn = hostTurnIdSchema.parse("11111111-1111-4111-8111-111111111199");
+        const started = await reopened.value.execute({
+          type: "turn.start",
+          turnId: nextTurn,
+          input: [{ type: "text", text: "follow-up" }],
+        });
+        expect(started.ok).toBe(true);
+        await vi.waitFor(() => expect(restarted.transports[0]?.prompt).toHaveBeenCalled());
+        // Restore the path so the final prompt-window save during close can succeed.
+        await rm(windowsFile, { recursive: true, force: true });
+        restarted.transports[0]?.result.resolve({ stopReason: "end_turn" });
+        await reopened.value.close();
+      } finally {
+        await restarted.adapter.close();
+      }
     } finally {
       db.close();
     }

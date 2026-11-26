@@ -450,8 +450,16 @@ export class AntigravitySession implements HarnessSession {
         : undefined;
     return mergePromptWindows(this.#promptWindows, activeWindow);
   }
+  async #readPersistedPromptWindows(nativeSessionId: string): Promise<AntigravityPromptWindow[]> {
+    try {
+      return await readPromptWindows(nativeSessionId, this.#options.environment);
+    } catch {
+      // Prompt windows are auxiliary replay metadata; degrade to unmerged wakes instead of failing open/history.
+      return [];
+    }
+  }
   async #preparePromptWindows(nativeSessionId: string): Promise<() => AntigravityPromptWindow[]> {
-    const persisted = await readPromptWindows(nativeSessionId, this.#options.environment);
+    const persisted = await this.#readPersistedPromptWindows(nativeSessionId);
     return () => mergePromptWindows(persisted, this.currentPromptWindows());
   }
   #recordPromptWindow(turn: ActiveTurn, nativeSessionId: string): boolean {
@@ -641,7 +649,7 @@ export class AntigravitySession implements HarnessSession {
       if (!this.#wakes) {
         const home = antigravityHome(this.#options.environment);
         const persistedWindows = ref
-          ? await readPromptWindows(opened.sessionId, this.#options.environment)
+          ? await this.#readPersistedPromptWindows(opened.sessionId)
           : [];
         if (this.#closed || this.#faulted) return;
         if (persistedWindows.length)

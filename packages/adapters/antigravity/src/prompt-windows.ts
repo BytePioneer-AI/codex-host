@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, type BigIntStats } from "node:fs";
 import {
@@ -16,7 +16,10 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { antigravityHome } from "./usage-statistics.js";
+
+const execFileAsync = promisify(execFile);
 
 /** Interval during which an ACP `session/prompt` (or steered chain) was in flight. */
 export interface AntigravityPromptWindow {
@@ -34,9 +37,8 @@ const pendingWrites = new Map<string, Promise<void>>();
 // Own-process artifacts whose cleanup failed after the owning operation ended.
 const unreleasedLocks = new Map<string, string>();
 const orphanedTempLinks = new Map<string, Set<string>>();
-let cachedSelfStartResolved = false;
-let cachedSelfStartId: string | undefined;
-let cachedSelfOsStartedAtMs: number | null = null;
+let selfStartPromise:
+  Promise<{ startId: string | undefined; startedAtMs: number | null }> | undefined;
 
 export function promptWindowsDirectory(environment: NodeJS.ProcessEnv): string {
   const dataDir =
@@ -213,16 +215,15 @@ function readLinuxStartTicks(pid: number): { alive: boolean; startTicks: string 
   }
 }
 
-function queryOsProcessStartedAtMs(pid: number): number | null {
+async function queryOsProcessStartedAtMs(pid: number): Promise<number | null> {
   try {
     if (process.platform === "darwin") {
-      const result = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+      const { stdout } = await execFileAsync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
         encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
         env: { ...process.env, LC_ALL: "C" },
         timeout: 1_000,
-      }).trim();
-      const startedAt = Date.parse(result);
+      });
+      const startedAt = Date.parse(stdout.trim());
       return Number.isFinite(startedAt) ? startedAt : null;
     }
     if (process.platform === "win32") {
@@ -232,17 +233,16 @@ function queryOsProcessStartedAtMs(pid: number): number | null {
         "if ($null -ne $process -and $null -ne $process.CreationDate) { " +
           "$process.CreationDate.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) }",
       ].join("; ");
-      const result = execFileSync(
+      const { stdout } = await execFileAsync(
         "powershell.exe",
         ["-NoProfile", "-NonInteractive", "-Command", query],
         {
           encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
           windowsHide: true,
           timeout: 5_000,
         },
-      ).trim();
-      const startedAt = Date.parse(result);
+      );
+      const startedAt = Date.parse(stdout.trim());
       return Number.isFinite(startedAt) ? startedAt : null;
     }
   } catch {
@@ -251,31 +251,51 @@ function queryOsProcessStartedAtMs(pid: number): number | null {
   return null;
 }
 
-/** Publish the same OS process creation identity used during verification (survives `exec`). */
-function currentContenderStart(): string | undefined {
-  if (cachedSelfStartResolved) return cachedSelfStartId;
-  cachedSelfStartResolved = true;
-  if (process.platform === "linux") {
-    const ticks = readLinuxStartTicks(process.pid).startTicks;
-    cachedSelfStartId = ticks ? `ticks${ticks}` : undefined;
-    return cachedSelfStartId;
-  }
-  cachedSelfOsStartedAtMs = queryOsProcessStartedAtMs(process.pid);
-  cachedSelfStartId =
-    cachedSelfOsStartedAtMs !== null ? String(cachedSelfOsStartedAtMs) : undefined;
-  return cachedSelfStartId;
+function resolveSelfProcessStart(): Promise<{
+  startId: string | undefined;
+  startedAtMs: number | null;
+}> {
+  if (selfStartPromise) return selfStartPromise;
+  selfStartPromise = (async () => {
+    if (process.platform === "linux") {
+      const ticks = readLinuxStartTicks(process.pid).startTicks;
+      return { startId: ticks ? `ticks${ticks}` : undefined, startedAtMs: null };
+    }
+    const startedAtMs = await queryOsProcessStartedAtMs(process.pid);
+    return {
+      startId: startedAtMs !== null ? String(startedAtMs) : undefined,
+      startedAtMs,
+    };
+  })();
+  return selfStartPromise;
 }
 
-function queryProcessStartedAtMs(pid: number): number | null {
+/** Publish the same OS process creation identity used during verification (survives `exec`). */
+async function currentContenderStart(): Promise<string | undefined> {
+  return (await resolveSelfProcessStart()).startId;
+}
+
+async function queryProcessStartedAtMs(
+  pid: number,
+  startId: string | undefined,
+  cache?: Map<string, number | null>,
+): Promise<number | null> {
   if (pid === process.pid) {
-    if (!cachedSelfStartResolved) currentContenderStart();
-    return cachedSelfOsStartedAtMs;
+    return (await resolveSelfProcessStart()).startedAtMs;
   }
-  return queryOsProcessStartedAtMs(pid);
+  const key = `${pid}:${startId ?? ""}`;
+  if (cache?.has(key)) return cache.get(key) ?? null;
+  const startedAtMs = await queryOsProcessStartedAtMs(pid);
+  cache?.set(key, startedAtMs);
+  return startedAtMs;
 }
 
 /** Process liveness with PID-reuse disambiguation; never evicts a live process by wall-clock age. */
-function contenderIsLive(pid: number, startId?: string): boolean {
+async function contenderIsLive(
+  pid: number,
+  startId?: string,
+  processStartCache?: Map<string, number | null>,
+): Promise<boolean> {
   if (!isPidAlive(pid)) return false;
   if (process.platform === "linux") {
     const info = readLinuxStartTicks(pid);
@@ -286,7 +306,7 @@ function contenderIsLive(pid: number, startId?: string): boolean {
   if (!startId || !/^\d+$/u.test(startId)) return true;
   const expected = Number(startId);
   if (!Number.isSafeInteger(expected)) return true;
-  const actualStartedAt = queryProcessStartedAtMs(pid);
+  const actualStartedAt = await queryProcessStartedAtMs(pid, startId, processStartCache);
   return (
     actualStartedAt === null || Math.abs(actualStartedAt - expected) <= PROCESS_START_TOLERANCE_MS
   );
@@ -328,14 +348,14 @@ async function cleanupPendingOwnArtifacts(lockFile: string): Promise<void> {
   }
 }
 
-function contenderLinkName(lockFile: string, kind: "publish" | "claim"): string {
-  const startId = currentContenderStart() ?? "unknown";
+async function contenderLinkName(lockFile: string, kind: "publish" | "claim"): Promise<string> {
+  const startId = (await currentContenderStart()) ?? "unknown";
   return `${lockFile}.${kind}-${process.pid}-${startId}-${randomUUID()}`;
 }
 
 /** Publish a complete lock payload atomically without creating an empty `.lock` on write error. */
 async function publishLockFile(lockFile: string, content: string): Promise<void> {
-  const temporary = contenderLinkName(lockFile, "publish");
+  const temporary = await contenderLinkName(lockFile, "publish");
   const handle = await open(temporary, "wx", 0o600);
   try {
     try {
@@ -357,6 +377,7 @@ async function removeDeadSiblingLinks(
   lockFile: string,
   snapshot: string,
   pinned: BigIntStats,
+  processStartCache: Map<string, number | null>,
 ): Promise<void> {
   await cleanupOrphanedTempLinks(lockFile);
   const dir = path.dirname(lockFile);
@@ -380,7 +401,7 @@ async function removeDeadSiblingLinks(
     }
     if (sibling.dev !== pinned.dev || sibling.ino !== pinned.ino) continue;
     // Never unlink a live reclaimer's claim based on age; only dead or reused-PID links are stale.
-    if (!contenderIsLive(siblingPid, siblingStart)) {
+    if (!(await contenderIsLive(siblingPid, siblingStart, processStartCache))) {
       await retryOnWindows(() => rm(siblingPath, { force: true })).catch((error) => {
         if (!isWindowsTransientError(error)) throw error;
       });
@@ -388,7 +409,10 @@ async function removeDeadSiblingLinks(
   }
 }
 
-async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
+async function tryReclaimStaleLock(
+  lockFile: string,
+  processStartCache: Map<string, number | null>,
+): Promise<boolean> {
   await cleanupPendingOwnArtifacts(lockFile);
   let info: Awaited<ReturnType<typeof stat>>;
   let inspected: string;
@@ -411,20 +435,20 @@ async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
     // Ownerless or corrupt lock files are only reclaimed once they age past STALE_LOCK_MS.
   }
   if (parsedPid !== undefined) {
-    if (contenderIsLive(parsedPid, parsedStartId)) return false;
+    if (await contenderIsLive(parsedPid, parsedStartId, processStartCache)) return false;
   } else if (Date.now() - info.mtimeMs < STALE_LOCK_MS) {
     return false;
   }
   // Pin the inspected inode via a hard link. Because live reclaimers' claims are never evicted,
   // nlink === 2n proves exclusive reclaim ownership of this exact inode.
-  const snapshot = contenderLinkName(lockFile, "claim");
+  const snapshot = await contenderLinkName(lockFile, "claim");
   try {
     await link(lockFile, snapshot);
     try {
       if ((await readFile(snapshot, "utf8")) !== inspected) return false;
       let pinned = await stat(snapshot, { bigint: true });
       if (pinned.nlink > 2n) {
-        await removeDeadSiblingLinks(lockFile, snapshot, pinned);
+        await removeDeadSiblingLinks(lockFile, snapshot, pinned, processStartCache);
         pinned = await stat(snapshot, { bigint: true });
       }
       if (pinned.nlink !== 2n) return false;
@@ -471,7 +495,8 @@ async function withFileLock<T>(
 ): Promise<T> {
   const lockFile = `${file}.lock`;
   const token = randomUUID();
-  const startId = currentContenderStart();
+  const startId = await currentContenderStart();
+  const processStartCache = new Map<string, number | null>();
   const payload = JSON.stringify({
     pid: process.pid,
     ...(startId ? { startId } : {}),
@@ -487,7 +512,7 @@ async function withFileLock<T>(
     } catch (error) {
       const code = errnoCode(error);
       if (code !== "EEXIST" && !isWindowsTransientError(error)) throw error;
-      if (code === "EEXIST" && (await tryReclaimStaleLock(lockFile))) continue;
+      if (code === "EEXIST" && (await tryReclaimStaleLock(lockFile, processStartCache))) continue;
       if (Date.now() >= deadline) throw new Error("Timed out acquiring prompt windows lock");
       await delay(5 + Math.floor(Math.random() * 20));
     }

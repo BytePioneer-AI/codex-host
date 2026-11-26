@@ -66,7 +66,7 @@ export class ThreadTreeWatch {
   readonly #read = new Set<string>();
   readonly #interactions = new Map<string | number, string>();
   readonly #stopEvents: () => void;
-  #archiveDirectory: Promise<string | null> | undefined;
+  #archiveDirectory: string | undefined;
   #stopOwner: (() => void) | undefined;
   #owner: ThreadTreeSnapshot | null = null;
   #closed = false;
@@ -349,13 +349,22 @@ export class ThreadTreeWatch {
   async #officialArchived(thread: JsonObject): Promise<boolean | undefined> {
     if (typeof thread.archived === "boolean") return thread.archived;
     if (typeof thread.path !== "string" || !path.isAbsolute(thread.path)) return;
+    const compare = (value: string): string => {
+      const stripped = process.platform === "win32" ? value.replace(/^\\\\\?\\/u, "") : value;
+      return process.platform === "win32" ? stripped.toLowerCase() : stripped;
+    };
     const directory = path.dirname(path.normalize(thread.path));
-    if (path.basename(directory) !== "archived_sessions") return;
+    if (compare(path.basename(directory)) !== "archived_sessions") return;
     const archiveDirectory = path.resolve(this.options.codexHome, "archived_sessions");
-    if (directory === archiveDirectory) return true;
-    this.#archiveDirectory ??= realpath(archiveDirectory).catch(() => null);
-    const resolved = await this.#archiveDirectory;
-    if (resolved !== null && directory === resolved) return true;
+    if (compare(directory) === compare(archiveDirectory)) return true;
+    const resolvedArchive =
+      this.#archiveDirectory ?? (await realpath(archiveDirectory).catch(() => null)) ?? null;
+    if (resolvedArchive === null) return;
+    this.#archiveDirectory = resolvedArchive;
+    const target = compare(resolvedArchive);
+    if (compare(directory) === target) return true;
+    const resolvedDirectory = await realpath(directory).catch(() => null);
+    if (resolvedDirectory !== null && compare(resolvedDirectory) === target) return true;
   }
 
   async #readInitial(ids: string[]): Promise<void> {

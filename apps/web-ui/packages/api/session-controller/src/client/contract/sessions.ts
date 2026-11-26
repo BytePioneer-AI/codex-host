@@ -181,4 +181,9 @@ export interface ISessions {
    * @returns the live binding, or undefined without a retained generation.
    */
   binding(id: SessionId): SessionBinding | undefined;
+  /**
+   * Hand local submission ownership to a Host-confirmed replacement identity.
+   * Keep the replacement retained until those submissions settle; navigation is caller-owned.
+   */
+  handoffSubmissions(sourceId: SessionId, targetId: SessionId): void;
 }

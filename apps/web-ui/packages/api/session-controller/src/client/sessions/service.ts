@@ -344,6 +344,33 @@ export class ClientSessions implements ISessions {
     }
   }
 
+  handoffSubmissions(sourceId: SessionId, targetId: SessionId): void {
+    const source = this.scopes.get(sourceId)?.session;
+    if (source === undefined || sourceId === targetId) return;
+    const reference = this.retain(targetId, { source: "controllerOperation" });
+    // The sending scope owns the prompt's AbortSignal. Navigation must not cancel admission.
+    const sending = this.retain(sourceId, { source: "controllerOperation" });
+    const target = this.manager.get(targetId);
+    const ids = new Set(source.handoffSubmissions(target));
+    const subscriptions: Array<() => void> = [];
+    const release = () => {
+      for (const unsubscribe of subscriptions) unsubscribe();
+      reference.release();
+      sending.release();
+    };
+    const settled = () => {
+      if (
+        !source.hasInFlightPrompts &&
+        !target.getSnapshot().pendingSubmissions.some((submission) => ids.has(submission.requestId))
+      )
+        release();
+    };
+    subscriptions.push(target.subscribe(settled), source.subscribe(settled));
+    void reference.ready.catch(release);
+    void sending.ready.catch(release);
+    settled();
+  }
+
   async using<T>(
     target: SessionTarget,
     options: SessionRetainOptions,

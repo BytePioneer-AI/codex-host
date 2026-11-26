@@ -2,7 +2,15 @@ import { randomUUID } from "node:crypto";
 import * as c from "@codexhost/shared-contracts";
 import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
-import { parseConnectionLink, type PeerHostStore, type PeerRecord } from "./peer-host-store.ts";
+import {
+  parseConnectionLink,
+  PeerHostPolicyError,
+  type PeerDnsLookup,
+  type PeerHostStore,
+  type PeerRecord,
+} from "./peer-host-store.ts";
+import { PeerEndpointError } from "./peer-manifest.ts";
+import { syncPeerMesh, type ResolvePeerSelfShare } from "./peer-pairing.ts";
 import { PeerThreadSource, type PeerThreadProjector } from "./peer-thread-source.ts";
 import { translateContentTextParts, translateThreadLinksFromPeer } from "./peer-thread-links.ts";
 import { RpcError, type EventHub, type RpcRegistry } from "./transport.ts";
@@ -18,7 +26,12 @@ export interface PeerHostManagerOptions {
   streamIdleTimeoutMs?: number;
   /** Optional placeholder attachment/image projector for Peer thread views. */
   projector?: (threadId: string) => PeerThreadProjector;
+  resolveSelfShare?: ResolvePeerSelfShare;
+  /** Optional DNS resolver override for peer probe host validation (used in tests). */
+  dnsLookup?: PeerDnsLookup;
 }
+
+const MAX_LINKED_PEER_IDS = 128;
 
 export interface PeerHostRegisterOptions {
   localHostname?: string;
@@ -33,6 +46,8 @@ export class PeerHostManager {
   private readonly localNodeId: string | undefined;
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
+  private readonly resolveSelfShare: ResolvePeerSelfShare | undefined;
+  private readonly dnsLookup: PeerDnsLookup | undefined;
   onChange?: (hostId?: string) => void;
   onPeerRemoved?: (hostId: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
@@ -53,6 +68,8 @@ export class PeerHostManager {
     this.localNodeId = options.localNodeId;
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
     this.projector = options.projector;
+    this.resolveSelfShare = options.resolveSelfShare;
+    this.dnsLookup = options.dnsLookup;
     for (const record of store.load()) this.install(record);
   }
 
@@ -63,6 +80,8 @@ export class PeerHostManager {
 
   private createClient(record: PeerRecord, initialManifest?: c.RemotePeerManifest) {
     return new PeerHostClient(record, this.changed, {
+      allowLoopback: this.allowLoopback,
+      ...(this.dnsLookup === undefined ? {} : { dnsLookup: this.dnsLookup }),
       ...(this.streamIdleTimeoutMs === undefined
         ? {}
         : { streamIdleTimeoutMs: this.streamIdleTimeoutMs }),
@@ -182,6 +201,23 @@ export class PeerHostManager {
     return peerId === undefined ? undefined : this.sources.get(peerId);
   }
 
+  private summarize(client: PeerHostClient): c.RemotePeerSummary {
+    const base = client.summary();
+    const peerNodes = client.manifest?.peerNodes;
+    if (peerNodes === undefined) return base;
+    const remoteNodeIds = new Set(Object.values(peerNodes));
+    const linkedPeerIds: string[] = [];
+    for (const other of this.clients.values()) {
+      if (linkedPeerIds.length >= MAX_LINKED_PEER_IDS) break;
+      if (other.record.peerId === client.record.peerId) continue;
+      const otherNodeId = other.manifest?.nodeId ?? other.record.nodeId;
+      if (otherNodeId !== undefined && remoteNodeIds.has(otherNodeId)) {
+        linkedPeerIds.push(other.record.peerId);
+      }
+    }
+    return { ...base, linkedPeerIds };
+  }
+
   private get(id: string) {
     const client = this.clients.get(id);
     if (!client) throw Error("Unknown remote peer");
@@ -194,7 +230,151 @@ export class PeerHostManager {
 
   private async check(origin: string) {
     if ((await this.origins()).some((s) => URL.parse(s)?.origin === origin))
-      throw Error("Cannot pair this server with itself");
+      throw new PeerEndpointError(400, "Cannot pair this server with itself");
+  }
+
+  async introducePeer(rawInput: unknown): Promise<c.RemotePeerIntroduceResult> {
+    const parsed = c.remotePeerIntroduceParamsSchema.safeParse(rawInput);
+    if (!parsed.success) throw new PeerEndpointError(400, "Invalid peer introduction parameters");
+    const input = parsed.data;
+    let conn: ReturnType<typeof parseConnectionLink>;
+    try {
+      conn = parseConnectionLink(
+        { origin: input.origin, token: input.token },
+        { allowLoopback: this.allowLoopback },
+      );
+    } catch (error) {
+      // The connection parser uses fixed messages that do not include the supplied URL or token.
+      throw new PeerEndpointError(
+        400,
+        error instanceof Error ? error.message : "Invalid peer connection",
+      );
+    }
+    await this.check(conn.origin);
+    const now = new Date().toISOString();
+    const record: PeerRecord = {
+      peerId: randomUUID(),
+      name: input.name ?? new URL(conn.origin).hostname.slice(0, 120),
+      color: input.color,
+      origin: conn.origin,
+      token: conn.token,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const candidate = this.createClient(record);
+    try {
+      try {
+        await candidate.probe();
+      } catch (error) {
+        if (
+          error instanceof PeerHostPolicyError ||
+          (error instanceof Error && error.message === "Cannot pair this server with itself")
+        ) {
+          throw new PeerEndpointError(400, error.message);
+        }
+        throw new PeerEndpointError(422, "Could not verify the introduced peer connection");
+      }
+      const manifest = candidate.manifest;
+      const nodeId = manifest?.nodeId;
+      if (input.expectedNodeId !== undefined && nodeId !== input.expectedNodeId) {
+        throw new PeerEndpointError(409, "Introduced peer did not match the expected nodeId");
+      }
+      const clients = [...this.clients.values()];
+      const clientNodeId = (client: PeerHostClient) =>
+        client.manifest ? client.manifest.nodeId : client.record.nodeId;
+      const clientOrigin = (client: PeerHostClient) =>
+        URL.parse(client.record.origin)?.origin ?? client.record.origin;
+      const exactMatch = clients.find(
+        (client) =>
+          clientOrigin(client) === conn.origin &&
+          client.record.token === conn.token &&
+          (nodeId === undefined ||
+            clientNodeId(client) === undefined ||
+            clientNodeId(client) === nodeId),
+      );
+      const existingByNodeId =
+        nodeId === undefined
+          ? undefined
+          : clients.find((client) => clientNodeId(client) === nodeId);
+      const existingByOrigin = clients.find((client) => clientOrigin(client) === conn.origin);
+      const existing = exactMatch ?? existingByNodeId ?? existingByOrigin;
+      const old = existing?.record;
+      const result = {
+        peerId: old?.peerId ?? record.peerId,
+        hostId: c.remotePeerHostId(old?.peerId ?? record.peerId),
+        ...(nodeId === undefined ? {} : { nodeId }),
+      };
+      if (existing && old) {
+        const existingNodeId = clientNodeId(existing);
+        const sameBinding =
+          clientOrigin(existing) === conn.origin &&
+          old.token === conn.token &&
+          (nodeId === undefined || existingNodeId === undefined || existingNodeId === nodeId);
+        if (!sameBinding) {
+          throw new PeerEndpointError(
+            409,
+            "An existing peer already uses this identity or origin with different connection details; update it locally instead",
+          );
+        }
+        if (old.enabled) {
+          // Keep the running client, but publish a freshly verified identity if it was not known.
+          if (manifest && existing.manifest?.nodeId !== nodeId) {
+            existing.manifest = manifest;
+            this.changed(existing.hostId);
+          }
+          return { status: "existing", ...result };
+        }
+        candidate.record = {
+          ...old,
+          enabled: true,
+          updatedAt: now,
+          ...(nodeId === undefined ? {} : { nodeId }),
+        };
+        const records = this.records();
+        this.store.save(records.map((r) => (r.peerId === old.peerId ? candidate.record : r)));
+        this.install(candidate.record, candidate);
+        this.changed(candidate.hostId);
+        return { status: "updated", ...result };
+      }
+      candidate.record = {
+        ...record,
+        name: input.name ?? (manifest?.hostname.trim().slice(0, 120) || record.name),
+        nodeId,
+      };
+      this.store.save([...this.records(), candidate.record]);
+      this.install(candidate.record, candidate);
+      this.changed(candidate.hostId);
+      return { status: "added", ...result };
+    } finally {
+      if (this.clients.get(candidate.record.peerId) !== candidate) candidate.close();
+    }
+  }
+
+  private syncMesh(params: c.RemotePeerSyncMeshParams, anchor?: PeerHostClient) {
+    const ids = params.peerIds === undefined ? undefined : new Set(params.peerIds);
+    return syncPeerMesh({
+      targets: [...this.clients.values()].filter(
+        (client) =>
+          client !== anchor &&
+          client.record.enabled &&
+          (ids === undefined || ids.has(client.record.peerId)),
+      ),
+      anchor,
+      includeSelf: params.includeSelf !== false,
+      includeMesh: params.includeMesh !== false,
+      selfOrigin: params.selfOrigin,
+      localNodeId: this.localNodeId,
+      resolveSelfShare: this.resolveSelfShare,
+      isActivePeer: (client) =>
+        this.clients.get(client.record.peerId) === client &&
+        client.record.enabled &&
+        !client.closed,
+      peerTokens: () => this.peerTokens(),
+      changed: (client) => {
+        if (this.clients.get(client.record.peerId) === client) this.changed(client.hostId);
+      },
+    });
   }
 
   hosts() {
@@ -344,7 +524,7 @@ export class PeerHostManager {
       });
     });
     const linkOptions = { allowLoopback: this.allowLoopback };
-    const localOnlyActions = new Set(["add", "update", "remove", "test"]);
+    const localOnlyActions = new Set(["add", "update", "remove", "test", "syncMesh"]);
     for (const [action, method] of Object.entries(c.REMOTE_PEERS_METHODS))
       rpc.register(method, async (args, ctx) => {
         if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
@@ -355,25 +535,23 @@ export class PeerHostManager {
           );
         }
         const input = requestOf(args);
-        if (action === "list") return { peers: [...this.clients.values()].map((p) => p.summary()) };
+        if (action === "list")
+          return { peers: [...this.clients.values()].map((p) => this.summarize(p)) };
+        if (action === "syncMesh")
+          return this.syncMesh(c.remotePeerSyncMeshParamsSchema.parse(input));
         if (action === "add" || action === "test") {
-          const p =
-            action === "add"
-              ? c.remotePeerAddParamsSchema.parse(input)
-              : c.remotePeerTestParamsSchema.parse(input);
+          const add = action === "add" ? c.remotePeerAddParamsSchema.parse(input) : undefined;
+          const p = add ?? c.remotePeerTestParamsSchema.parse(input);
           const conn = parseConnectionLink(
             "peerId" in p && p.peerId ? this.get(p.peerId).record : p,
             linkOptions,
           );
           await this.check(conn.origin);
           const now = new Date().toISOString();
-          const explicitName =
-            "name" in p && typeof p.name === "string" && p.name.trim() ? p.name.trim() : undefined;
-          const explicitColor = "color" in p ? p.color : undefined;
           const record: PeerRecord = {
             peerId: randomUUID(),
-            name: explicitName ?? new URL(conn.origin).hostname,
-            ...(explicitColor !== undefined ? { color: explicitColor } : {}),
+            name: add?.name ?? new URL(conn.origin).hostname.slice(0, 120),
+            color: add?.color,
             origin: conn.origin,
             token: conn.token,
             enabled: true,
@@ -384,14 +562,12 @@ export class PeerHostManager {
           try {
             await client.probe();
           } catch (e) {
-            if (action === "test")
-              return { ok: false, error: e instanceof Error ? e.message : "Probe failed" };
+            client.close();
+            if (!add) return { ok: false, error: e instanceof Error ? e.message : "Probe failed" };
             throw e;
           }
-          if (!explicitName && client.manifest?.hostname) {
-            record.name = client.manifest.hostname;
-          }
-          if (action === "test")
+          if (!add) {
+            client.close();
             return c.remotePeerTestResultSchema.parse({
               ...client.summary(),
               projects: client.manifest?.projects.map(({ id, name, path }) => ({
@@ -401,10 +577,29 @@ export class PeerHostManager {
               })),
               ok: true,
             });
-          this.store.save([...this.records(), record]);
+          }
+          record.name = add.name ?? (client.manifest?.hostname.trim().slice(0, 120) || record.name);
+          record.nodeId = client.manifest?.nodeId;
+          try {
+            this.store.save([...this.records(), record]);
+          } catch (error) {
+            client.close();
+            throw error;
+          }
           const installed = this.install(record, client);
           this.changed(installed.hostId);
-          return { peer: installed.summary() };
+          if (add.pairBack === true || add.meshPeerIds?.length) {
+            const pairing = await this.syncMesh(
+              {
+                peerIds: add.meshPeerIds ?? [],
+                includeSelf: add.pairBack === true,
+                selfOrigin: add.selfOrigin,
+              },
+              installed,
+            );
+            return { peer: this.summarize(installed), pairing };
+          }
+          return { peer: this.summarize(installed) };
         }
         const { peerId } = c.remotePeerIdParamsSchema.parse(input);
         const client = this.get(peerId);
@@ -442,6 +637,12 @@ export class PeerHostManager {
               ...old,
               origin: conn.origin,
               token: conn.token,
+              nodeId:
+                conn.origin === old.origin
+                  ? client.manifest
+                    ? client.manifest.nodeId
+                    : old.nodeId
+                  : undefined,
               enabled: p.enabled ?? old.enabled,
               name: p.name ?? old.name,
               updatedAt: new Date().toISOString(),
@@ -460,6 +661,7 @@ export class PeerHostManager {
               const candidate = this.createClient(record);
               try {
                 await candidate.probe();
+                record.nodeId = candidate.manifest?.nodeId;
                 probedClient = candidate;
               } catch (e) {
                 candidate.close();
@@ -480,16 +682,16 @@ export class PeerHostManager {
             ) {
               client.record = record;
               this.changed(client.hostId);
-              return { peer: client.summary() };
+              return { peer: this.summarize(client) };
             }
             const next = this.install(record, probedClient);
             this.changed(next.hostId);
-            return { peer: next.summary() };
+            return { peer: this.summarize(next) };
           }
           case "reconnect": {
             const next = this.install(client.record);
             this.changed(next.hostId);
-            return { peer: next.summary() };
+            return { peer: this.summarize(next) };
           }
           case "listDirs":
             return client.listDirs(c.remotePeerListDirsParamsSchema.parse(input).path);

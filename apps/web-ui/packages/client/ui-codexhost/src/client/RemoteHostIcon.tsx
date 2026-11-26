@@ -81,3 +81,54 @@ export function CheckMarkIcon({ className }: { className?: string }): ReactNode 
     </svg>
   );
 }
+
+export function BidirectionalIcon({
+  size = 13,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}): ReactNode {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.45"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M3.5 5.5h9m0 0L10 3m2.5 2.5L10 8" />
+      <path d="M12.5 10.5h-9m0 0L6 8m-2.5 2.5L6 13" />
+    </svg>
+  );
+}
+
+export function CloseIcon({
+  size = 13,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}): ReactNode {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" />
+    </svg>
+  );
+}

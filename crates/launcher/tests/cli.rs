@@ -222,7 +222,7 @@ fn help_prints_usage_to_stdout_and_succeeds() {
             "codexhost app [--onboarding]",
             "codexhost launch-prefs get --json",
             "codexhost desktop-screenshot",
-            "codexhost host info ...",
+            "codexhost host info|list ...",
             "codexhost project list ...",
             "codexhost harness list|inspect ...",
             "codexhost thread send|cancel|read|wait|watch|watches|list|file ...",

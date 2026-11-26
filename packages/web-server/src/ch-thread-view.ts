@@ -134,6 +134,7 @@ function itemOf(
   reasoningPreviewIds: ReadonlySet<string>,
   projectImage: (path: string, projectionKey: string) => unknown,
   projectionKey: string,
+  projectText: (text: string) => string,
 ): HostItem | undefined {
   const itemId = item.id;
   switch (item.type) {
@@ -142,7 +143,7 @@ function itemOf(
         type: "agentMessage",
         itemId,
         // Web resolves Markdown paths itself; Desktop media escaping is not its wire format.
-        text: String(item.codexhostNativeText ?? item.text ?? ""),
+        text: projectText(String(item.codexhostNativeText ?? item.text ?? "")),
       };
     case "reasoning":
       return {
@@ -285,6 +286,7 @@ export class ChThreadView {
     protected readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
     private readonly projectImage: (path: string, projectionKey: string) => unknown = () =>
       undefined,
+    private readonly projectText: (text: string) => string = (text) => text,
   ) {
     const published = new Map<string, string>();
     this.log = new SessionLog(
@@ -367,6 +369,7 @@ export class ChThreadView {
       () => false,
       this.projectInput,
       this.projectImage,
+      this.projectText,
     );
     page.update({ ...this.thread, turns });
     this.log.prepend(page.log.events);
@@ -479,6 +482,7 @@ export class ChThreadView {
         return this.projectImage(path, projectionKey);
       },
       imageViewProjectionKey(turnId, item.id),
+      this.projectText,
     );
   }
 

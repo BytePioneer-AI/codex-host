@@ -46,6 +46,7 @@ export function isMethodUnavailableError(error: unknown): boolean {
 export interface PeerThreadProjector {
   projectInput(content: unknown[]): unknown[];
   projectImage(path: string, projectionKey: string): unknown;
+  projectText?: (text: string) => string;
 }
 
 export interface PeerThreadSourceOptions {
@@ -613,7 +614,10 @@ export class PeerThreadSource {
       origin,
       projector ? (content) => projector.projectInput(content) : undefined,
       projector ? (path, projectionKey) => projector.projectImage(path, projectionKey) : undefined,
-      { hostThreadId: threadId },
+      {
+        hostThreadId: threadId,
+        ...(projector?.projectText ? { projectText: projector.projectText } : {}),
+      },
     );
     this.histories.set(threadId, history);
     return history;

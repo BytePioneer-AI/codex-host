@@ -114,6 +114,7 @@ export async function peerFetch(
 const INITIAL_CONNECTION_WAIT_MS = 2_000;
 const MAX_TRACKED_SNAPSHOT_THREADS = 64;
 const MAX_TRACKED_KNOWN_TURNS = 16;
+const SELF_PAIR_ERROR = "Cannot pair this server with itself";
 
 export class PeerHostClient {
   private life = new AbortController();
@@ -126,6 +127,7 @@ export class PeerHostClient {
   private streamOnline = false;
   private readonly listeners = new Set<(update: HostClientUpdate) => void>();
   private readonly streamIdleTimeoutMs: number;
+  private readonly rejectNodeId: string | undefined;
   private readonly fullKnownTurns = new Map<string, Map<string, string>>();
   private readonly truncatedKnownTurns = new Map<string, Map<string, string>>();
   private knownTurnsEpoch: string | undefined;
@@ -134,11 +136,16 @@ export class PeerHostClient {
   constructor(
     public record: PeerRecord,
     private changed: (hostId?: string) => void,
-    options: { streamIdleTimeoutMs?: number; initialManifest?: c.RemotePeerManifest } = {},
+    options: {
+      streamIdleTimeoutMs?: number;
+      initialManifest?: c.RemotePeerManifest;
+      rejectNodeId?: string;
+    } = {},
   ) {
     this.hostId = c.remotePeerHostId(record.peerId);
     this.state = record.enabled ? "connecting" : "disabled";
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    this.rejectNodeId = options.rejectNodeId;
     if (options.initialManifest !== undefined) {
       this.manifest = options.initialManifest;
     }
@@ -202,7 +209,7 @@ export class PeerHostClient {
   summary(): c.RemotePeerSummary {
     const { peerId, name, color, origin, enabled, createdAt, updatedAt } = this.record;
     const { encrypted, transportKind } = classifyPeerTransport(origin);
-    const { version, platform, hostname, homeDir, projects } = this.manifest ?? {};
+    const { version, platform, hostname, homeDir, projects, nodeId } = this.manifest ?? {};
     return {
       peerId,
       name,
@@ -212,6 +219,7 @@ export class PeerHostClient {
       createdAt,
       updatedAt,
       hostId: this.hostId,
+      ...(nodeId !== undefined ? { nodeId } : {}),
       state: this.state,
       encrypted,
       transportKind,
@@ -303,13 +311,24 @@ export class PeerHostClient {
   async probe() {
     const start = Date.now();
     try {
-      this.manifest = c.remotePeerManifestSchema.parse(
+      const manifest = c.remotePeerManifestSchema.parse(
         await (await this.fetch("/api/peer/v1/manifest")).json(),
       );
+      if (this.rejectNodeId !== undefined && manifest.nodeId === this.rejectNodeId) {
+        throw Error(SELF_PAIR_ERROR);
+      }
+      this.manifest = manifest;
       this.latencyMs = Date.now() - start;
       delete this.lastError;
       this.state = "connected";
     } catch (e) {
+      if (e instanceof Error && e.message === SELF_PAIR_ERROR) {
+        delete this.manifest;
+        this.state = "offline";
+        this.lastError = SELF_PAIR_ERROR;
+        this.setStreamOffline();
+        throw e;
+      }
       this.state =
         e instanceof RpcError && e.code === "remote/auth-error" ? "auth-error" : "offline";
       const message =

@@ -508,6 +508,7 @@ export {
   remotePeerHostId,
   peerIdFromRemoteHostId,
   remotePeerIdSchema,
+  remotePeerNodeIdSchema,
   remotePeerHostIdSchema,
   remotePeerTransportKindSchema,
   remotePeerColorSchema,

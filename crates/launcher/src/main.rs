@@ -180,7 +180,7 @@ const USAGE: &str = "usage:
   codexhost desktop-screenshot
   codexhost broker install|status|stop|uninstall
   codexhost delegate --help
-  codexhost host info ...
+  codexhost host info|list ...
   codexhost project list ...
   codexhost harness list|inspect ...
   codexhost delegate start ...
@@ -1882,9 +1882,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
-        Some("host") if arguments.get(1).is_some_and(|arg| arg == "info") => {
-            run_delegation_cli(arguments)
-        }
+        Some("host") if is_delegation_host_command(arguments) => run_delegation_cli(arguments),
         Some("host") => host_service::run(&arguments[1..]),
         Some("web-service") => web_service::run(&arguments[1..]),
         Some("proxy-environment") if arguments.len() == 1 => {
@@ -1899,6 +1897,13 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Err("invalid launcher arguments".into())
         }
     }
+}
+
+fn is_delegation_host_command(arguments: &[String]) -> bool {
+    arguments.first().is_some_and(|arg| arg == "host")
+        && arguments
+            .get(1)
+            .is_some_and(|arg| matches!(arg.as_str(), "info" | "list"))
 }
 
 fn main() -> ExitCode {
@@ -2110,6 +2115,29 @@ mod tests {
             "get".into(),
             "--json".into()
         ]));
+    }
+
+    #[test]
+    fn host_delegation_routing_matches_info_and_list_only() {
+        for args in [
+            vec!["host".into(), "info".into()],
+            vec!["host".into(), "info".into(), "--json".into()],
+            vec!["host".into(), "list".into()],
+            vec!["host".into(), "list".into(), "--json".into()],
+            vec!["host".into(), "list".into(), "--help".into()],
+        ] {
+            assert!(super::is_delegation_host_command(&args), "{args:?}");
+        }
+        for args in [
+            vec!["host".into()],
+            vec!["host".into(), "--node".into(), "/usr/bin/node".into()],
+            vec!["host".into(), "start".into()],
+            vec!["host".into(), "status".into()],
+            vec!["delegate".into(), "list".into()],
+        ] {
+            assert!(!super::is_delegation_host_command(&args), "{args:?}");
+        }
+        assert!(super::USAGE.contains("codexhost host info|list ..."));
     }
 
     #[test]

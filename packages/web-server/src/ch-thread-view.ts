@@ -9,6 +9,7 @@ import {
   type WebFileDiff,
   type WebTurnFileSummary,
 } from "@codexhost/shared-contracts";
+import { externalImportHistoryItems } from "./ch-external-import-history.ts";
 import { conversationItems } from "./ch-file-operations.ts";
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
@@ -385,7 +386,7 @@ export class ChThreadView {
     for (const turn of thread.turns) {
       const view = this.turns.get(turn.id);
       if (!view) continue;
-      const items = conversationItems(turn);
+      const items = this.displayItems(turn);
       const ids = new Set(items.map((item) => item.id));
       const users = items.filter((item) => item.type === "userMessage");
       const published = [...view.started];
@@ -482,6 +483,11 @@ export class ChThreadView {
     );
   }
 
+  private displayItems(turn: ChTurn): ChItem[] {
+    const items = conversationItems(turn);
+    return this.harnessId === "codex" ? externalImportHistoryItems(turn, items) : items;
+  }
+
   private publishMessageTimes(): void {
     // Journal replay clocks may be synthetic; message labels require native boundaries.
     this.log.setProjection(
@@ -549,7 +555,7 @@ export class ChThreadView {
   ): void {
     let previousEnd = thread.createdAt * 1000;
     for (const turn of thread.turns) {
-      const items = conversationItems(turn);
+      const items = this.displayItems(turn);
       let view = this.turns.get(turn.id);
       const complete = finished(turn.status);
       const start = nativeTime(turn.startedAt) ?? (complete ? previousEnd : Date.now());
@@ -716,7 +722,7 @@ export class ChThreadView {
         for (const item of view.items.values())
           if (!view.completed.has(item.itemId))
             view.projector.itemCompleted(item, { status: "succeeded" });
-        // Protocol Core already resolves native and inferred phases for Desktop and Web.
+        // Use the phase supplied by the Host or recovered for converted history.
         const answer = items.findLast(
           (item) => item.type === "agentMessage" && item.phase === "final_answer",
         );

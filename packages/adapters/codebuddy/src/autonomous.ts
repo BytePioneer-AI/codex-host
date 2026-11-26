@@ -67,6 +67,11 @@ export class CodeBuddyAutonomousTurns {
   readonly #rounds: CodeBuddyAutonomousRound[] = [];
   readonly #budget = new AutonomousBufferBudget();
   #open: CodeBuddyAutonomousRound | undefined;
+  #announcements = 0;
+
+  get announcements(): number {
+    return this.#announcements;
+  }
 
   announce(requestId: string): CodeBuddyAutonomousRound {
     if (this.#open) throw new CodeBuddyError("protocolError", "Native autonomous Turns overlapped");
@@ -83,6 +88,7 @@ export class CodeBuddyAutonomousTurns {
       ended: false,
       started: false,
     };
+    this.#announcements += 1;
     this.#rounds.push(round);
     this.#open = round;
     return round;
@@ -105,6 +111,10 @@ export class CodeBuddyAutonomousTurns {
 
   owner(): CodeBuddyAutonomousRound | undefined {
     return this.#open;
+  }
+
+  hasRounds(): boolean {
+    return this.#rounds.length > 0;
   }
 
   interactionIdentity(

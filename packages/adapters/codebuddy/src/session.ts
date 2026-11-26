@@ -68,6 +68,7 @@ import {
 } from "./configuration.js";
 import {
   codeBuddyCanonicalCwd,
+  compactionEvidenceForTurn,
   historyUsage,
   historyUsageRequests,
   pendingNativeHistoryRewind,
@@ -205,7 +206,7 @@ export class CodeBuddySession implements HarnessSession {
               }
               return;
             }
-            if (!this.#replay || this.#active?.autonomous) this.#dispatchUpdate(update);
+            this.#dispatchUpdate(update);
           } catch (error) {
             if (this.#replay) this.#replay.fault ??= { error };
             else this.#onFault(error);
@@ -379,7 +380,8 @@ export class CodeBuddySession implements HarnessSession {
       try {
         identity = this.#autonomous.interactionIdentity(round, request);
       } catch (error) {
-        this.#onFault(error);
+        if (this.#replay) this.#replay.fault ??= { error };
+        else this.#onFault(error);
         return Promise.resolve(cancelled);
       }
       return identity.then((turnId) => {
@@ -473,11 +475,19 @@ export class CodeBuddySession implements HarnessSession {
     try {
       const outcome: TurnOutcome = { status: active.cancelled ? "cancelled" : "succeeded" };
       if (active.cancelled) {
-        await this.#retireClient();
-        if (this.#closed) return;
-        await this.#resumeClient();
+        const recovery = (async () => {
+          await this.#retireClient();
+          if (this.#closed || this.#fault) return;
+          await this.#resumeClient();
+        })();
+        void recovery.catch(() => {});
+        await bounded(
+          Promise.race([recovery, active.completion]),
+          30_000,
+          "ACP autonomous cancel recovery",
+        );
       }
-      if (!active.done && !this.#closed) this.#finish(active, outcome);
+      if (!active.done && !this.#closed && !this.#fault) this.#finish(active, outcome);
     } catch (error) {
       this.#onFault(error);
     }
@@ -553,6 +563,12 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   async #snapshot(historyTimeout?: number): Promise<HostThreadSnapshot> {
+    return (await this.#snapshotWithHistory(historyTimeout)).snapshot;
+  }
+
+  async #snapshotWithHistory(
+    historyTimeout?: number,
+  ): Promise<{ snapshot: HostThreadSnapshot; history: string }> {
     if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
     const read = this.#history(this.#ref);
     const history = historyTimeout
@@ -565,7 +581,7 @@ export class CodeBuddySession implements HarnessSession {
     this.#usage = historyUsage(history);
     // Requests the last Turn added, now persisted; CodeBuddy ACP reports no per-request usage.
     this.#meterHistory(history, false);
-    return { ...this.subagents.project(snapshot), state: this.#state };
+    return { snapshot: { ...this.subagents.project(snapshot), state: this.#state }, history };
   }
 
   /** Read persisted request usage without waiting for the ACP prompt (including tool waits). */
@@ -667,6 +683,14 @@ export class CodeBuddySession implements HarnessSession {
     return this.#execute(command, invocation);
   }
 
+  /** ACP `session/cancel` carries only the Session ID; send it only while this Turn owns execution. */
+  #ownsNativeExecution(active: ActiveTurn): boolean {
+    if (active.done || this.#needsResume) return false;
+    if (active.autonomous)
+      return !active.autonomous.round.ended && this.#autonomous.owner() === active.autonomous.round;
+    return !active.promptSettled && !this.#autonomous.hasRounds();
+  }
+
   async #execute(
     command: HostCommand | (HarnessCommandInvocation & { type: "command.execute" }),
     invocation?: string,
@@ -687,26 +711,28 @@ export class CodeBuddySession implements HarnessSession {
       const active = this.#active;
       if (!active || active.command.turnId !== command.turnId || !this.#ref)
         return failure("invalidRequest", "Turn is not active", this.profile);
-      if (!active.cancelled) {
-        active.cancelled = true;
-        const generation = this.#generation;
-        try {
-          const requested = this.#client.cancel(this.#ref.nativeSessionId);
-          this.#interactions.close();
-          await requested;
-        } catch (error) {
-          // The prompt may have returned and retired its process while cancel was in flight.
-          if (generation === this.#generation) {
-            if (this.#active === active) this.#onFault(error);
-            return { ok: false, error: nativeError(error, this.profile) };
-          }
+      if (active.cancelled) return { ok: true, value: { cancellationRequested: true } };
+      if (!this.#ownsNativeExecution(active))
+        return failure("invalidState", "Turn is already completing", this.profile);
+      active.cancelled = true;
+      const generation = this.#generation;
+      try {
+        const requested = this.#client.cancel(this.#ref.nativeSessionId);
+        this.#interactions.close();
+        await requested;
+      } catch (error) {
+        // The prompt may have returned and retired its process while cancel was in flight.
+        if (generation === this.#generation) {
+          if (this.#active === active) this.#onFault(error);
+          return { ok: false, error: nativeError(error, this.profile) };
         }
-        if (this.#active === active && !this.#closed) {
-          void bounded(active.completion, 30_000, "ACP cancel acknowledgement").catch((error) => {
-            // Once the process has exited, only best-effort history remains.
-            if (this.#active === active && !this.#needsResume) this.#onFault(error);
-          });
-        }
+      }
+      if (this.#active === active && !this.#closed) {
+        void bounded(active.completion, 30_000, "ACP cancel acknowledgement").catch((error) => {
+          // Once a foreground process has exited, only bounded best-effort history remains.
+          if (this.#active === active && (active.autonomous || !this.#needsResume))
+            this.#onFault(error);
+        });
       }
       return { ok: true, value: { cancellationRequested: true } };
     }
@@ -731,7 +757,13 @@ export class CodeBuddySession implements HarnessSession {
                 .trim()))
         )
           return failure("invalidRequest", "A nonempty text prompt is required", this.profile);
-        if (this.#needsResume) await this.#resumeClient();
+        if (this.#needsResume) {
+          await this.#resumeClient();
+          if (this.#closed || this.#fault)
+            return failure("invalidState", "Session is closed or faulted", this.profile);
+          if (this.#active)
+            return failure("sessionBusy", "Session is executing an operation", this.profile);
+        }
         const nativeCommand =
           command.type === "command.execute" ||
           (nativeCommandsEnabled(this.profile) &&
@@ -747,6 +779,7 @@ export class CodeBuddySession implements HarnessSession {
         }
         // Reading history also yields to native notifications, so a drain announced during
         // admission is visible before the Host prompt would reach the native process.
+        const drainBefore = this.#autonomous.announcements;
         const snapshot = await this.#snapshot();
         if (this.#closed || this.#fault)
           return failure("invalidState", "Session closed before Turn start", this.profile);
@@ -772,10 +805,21 @@ export class CodeBuddySession implements HarnessSession {
           active,
           new Set(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)),
           new Set(snapshot.turns.flatMap((turn) => turn.items.map(({ item }) => item.itemId))),
+          drainBefore,
         );
         return { ok: true, value: { turnId: command.turnId } };
       }
-      if (this.#needsResume) await this.#resumeClient();
+      if (this.#needsResume) {
+        await this.#resumeClient();
+        if (this.#closed || this.#fault)
+          return failure("invalidState", "Session is closed or faulted", this.profile);
+        if (
+          this.#active &&
+          (this.#active.cancelled ||
+            (command.type !== "model.select" && command.type !== "thinking.select"))
+        )
+          return failure("sessionBusy", "Session is executing an operation", this.profile);
+      }
       await this.#configure(
         command.type === "model.select"
           ? "model"
@@ -796,7 +840,12 @@ export class CodeBuddySession implements HarnessSession {
     }
   }
 
-  async #run(active: ActiveTurn, before: ReadonlySet<string>, beforeItems: ReadonlySet<string>) {
+  async #run(
+    active: ActiveTurn,
+    before: ReadonlySet<string>,
+    beforeItems: ReadonlySet<string>,
+    drainBefore: number,
+  ) {
     let cancellationConfirmed = false;
     try {
       if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
@@ -835,15 +884,18 @@ export class CodeBuddySession implements HarnessSession {
         cancellationConfirmed = true;
       }
       // After shutdown, history can enrich cancellation but cannot change its outcome.
-      const snapshot = await this.#snapshot(cancellationConfirmed ? 1_000 : undefined);
+      const { snapshot, history } = await this.#snapshotWithHistory(
+        cancellationConfirmed ? 1_000 : undefined,
+      );
       if (active.done || this.#closed) return;
       // A drain can persist before this Host terminal read; the prompt response names
-      // the Host input row. Without that identity, accept only one new persisted Turn.
+      // the Host input row. Without that identity, accept one new Turn only when no drain overlapped.
+      const drainOverlapped = this.#autonomous.announcements !== drainBefore;
       const userMessageId = text(response.userMessageId);
       const added = snapshot.turns.filter((turn) => !before.has(turn.nativeTurnRef.nativeTurnKey));
       const persisted = userMessageId
         ? added.find((turn) => turn.nativeTurnRef.nativeTurnKey === userMessageId)
-        : added.length === 1
+        : !drainOverlapped && added.length === 1
           ? added[0]
           : undefined;
       if (userMessageId && !persisted)
@@ -856,11 +908,20 @@ export class CodeBuddySession implements HarnessSession {
           "protocolError",
           "Could not identify exactly one persisted Native Turn",
         );
-      active.output.confirmCompaction(
-        snapshot.turns
-          .flatMap((turn) => turn.items)
-          .filter(({ item }) => !beforeItems.has(item.itemId)),
-      );
+      const compactionItems = persisted
+        ? compactionEvidenceForTurn(
+            history,
+            snapshot,
+            persisted.nativeTurnRef.nativeTurnKey,
+            beforeItems,
+            this.profile,
+          )
+        : drainOverlapped
+          ? []
+          : snapshot.turns
+              .flatMap((turn) => turn.items)
+              .filter(({ item }) => !beforeItems.has(item.itemId));
+      active.output.confirmCompaction(compactionItems);
       if (active.nativeCommand)
         active.output.replayCommandResult(
           (persisted?.items ?? []).filter(({ item }) => !this.subagents.hasItem(item.itemId)),
@@ -931,8 +992,11 @@ export class CodeBuddySession implements HarnessSession {
       this.#apply(restored);
       if (!this.profile.staticCommandCatalog) this.#commands = replay.commands ?? { commands: [] };
       this.#needsResume = false;
+      this.#replay = undefined;
+      this.#flushAutonomous();
     } catch (error) {
       ++this.#generation;
+      this.#autonomous.close();
       try {
         await candidate?.close();
       } catch (closeError) {
@@ -967,6 +1031,7 @@ export class CodeBuddySession implements HarnessSession {
   #onFault(error: unknown) {
     if (this.#fault || this.#closed) return;
     this.#fault = nativeError(error, this.profile);
+    this.#replay = undefined;
     this.#autonomous.close();
     if (this.#active) this.#finish(this.#active, { status: "failed", error: this.#fault });
     this.#interactions.close();

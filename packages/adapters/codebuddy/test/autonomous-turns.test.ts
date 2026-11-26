@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setImmediate as tick } from "node:timers/promises";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import {
+  harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 import { CodeBuddyAdapter } from "../src/codebuddy-adapter.js";
 import { CodeBuddyAutonomousTurns } from "../src/autonomous.js";
+import { CodeBuddyError } from "../src/common.js";
 import { snapshotFromHistory } from "../src/history.js";
 import { fixture } from "./fixtures.js";
 
@@ -564,6 +569,452 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     await tick();
     expect(f.events().filter((e) => e.type.startsWith("turn."))).toEqual([]);
     expect(f.readHistory).not.toHaveBeenCalled();
+  });
+
+  it("registers an open drain announced during post-cancel reconnection and blocks Host admission", async () => {
+    let promptSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const f = await setup((native) => ({
+      clientFactory: (options) => {
+        const client = native.clientFactory(options);
+        if (native.clients.length === 2) {
+          const open = client.open.bind(client);
+          promptSpy = vi.spyOn(client, "prompt");
+          client.open = async (...args) => {
+            client.update({
+              sessionUpdate: "agent_message_chunk",
+              messageId: "replayed",
+              content: { type: "text", text: "replayed history" },
+            });
+            announce(client, "resume-open");
+            text(client, "live drain", "resume-open");
+            return open(...args);
+          };
+        }
+        return client;
+      },
+    }));
+    await f.session.execute(host("stopped", "hold"));
+    await f.session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("stopped") });
+    expect(await f.completed()).toMatchObject([
+      { turnId: "stopped", outcome: { status: "cancelled" } },
+    ]);
+
+    expect(await f.session.execute(host("blocked-by-drain"))).toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    expect(promptSpy).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(f.ids()).toHaveLength(1));
+    const drainId = required(f.ids()[0]);
+    await vi.waitFor(() => expect(f.texts(drainId)).toEqual(["live drain"]));
+    expect(
+      f
+        .events()
+        .some(
+          (e) =>
+            e.type === "item.updated" &&
+            e.update.type === "text.append" &&
+            e.update.text === "replayed history",
+        ),
+    ).toBe(false);
+
+    const replacement = required(f.native.clients[1]);
+    text(replacement, " more", "resume-open");
+    end(replacement, "resume-open");
+    expect((await f.completed(2))[1]).toMatchObject({
+      turnId: drainId,
+      outcome: { status: "succeeded" },
+      ephemeral: true,
+    });
+    expect(f.texts(drainId)).toEqual(["live drain", " more"]);
+
+    expect(await f.session.execute(host("after-drain"))).toMatchObject({ ok: true });
+    expect((await f.completed(3))[2]).toMatchObject({
+      turnId: "after-drain",
+      outcome: { status: "succeeded" },
+    });
+  });
+
+  it("publishes completed drains announced during post-cancel reconnection without replaying history frames", async () => {
+    const f = await setup((native) => ({
+      clientFactory: (options) => {
+        const client = native.clientFactory(options);
+        if (native.clients.length === 2) {
+          const open = client.open.bind(client);
+          client.open = async (...args) => {
+            client.update({
+              sessionUpdate: "agent_message_chunk",
+              messageId: "history-before",
+              content: { type: "text", text: "history before" },
+            });
+            announce(client, "resume-done");
+            text(client, "during-resume", "resume-done");
+            end(client, "resume-done");
+            client.update({
+              sessionUpdate: "agent_message_chunk",
+              messageId: "history-after",
+              content: { type: "text", text: "history after" },
+            });
+            return open(...args);
+          };
+        }
+        return client;
+      },
+    }));
+    await f.session.execute(host("stopped", "hold"));
+    await f.session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("stopped") });
+    await f.completed();
+
+    expect(await f.session.execute(host("next"))).toMatchObject({ ok: true });
+    const completed = await f.completed(3);
+    expect(completed.map((e) => e.outcome.status)).toEqual(["cancelled", "succeeded", "succeeded"]);
+    expect(f.texts(required(f.ids()[0]))).toEqual(["during-resume"]);
+    const appended = f
+      .events()
+      .flatMap((e) =>
+        e.type === "item.updated" && e.update.type === "text.append" ? [e.update.text] : [],
+      );
+    expect(appended).not.toContain("history before");
+    expect(appended).not.toContain("history after");
+  });
+
+  it("cleans up candidate autonomous buffers and pending interactions when post-cancel reconnection fails", async () => {
+    let pendingPermission: Promise<unknown> | undefined;
+    let pendingQuestion: Promise<unknown> | undefined;
+    const f = await setup((native) => ({
+      clientFactory: (options) => {
+        const client = native.clientFactory(options);
+        if (native.clients.length === 2) {
+          const open = client.open.bind(client);
+          client.open = async (...args) => {
+            const result = await open(...args);
+            announce(client, "candidate-drain");
+            text(client, "discarded", "candidate-drain");
+            pendingPermission = client.context.handlers.permission({
+              sessionId: "native-session",
+              toolCall: {
+                toolCallId: "cand-write",
+                rawInput: { file_path: "cand.txt" },
+                _meta: { "codebuddy.ai/toolName": "Write" },
+              },
+              options: [
+                { optionId: "allow", name: "Allow", kind: "allow_once" },
+                { optionId: "reject", name: "Reject", kind: "reject_once" },
+              ],
+            });
+            pendingQuestion = client.context.handlers.question({
+              sessionId: "native-session",
+              toolCallId: "cand-ask",
+              schema: { questions: [{ question: "Choose?", options: [{ label: "Alpha" }] }] },
+            });
+            return result;
+          };
+          client.configure = async () => {
+            throw new CodeBuddyError("nativeFailure", "configuration refusal");
+          };
+        }
+        return client;
+      },
+    }));
+    expect(
+      await f.session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).toMatchObject({ ok: true });
+    await f.session.execute(host("stopped", "hold"));
+    await f.session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("stopped") });
+    await f.completed();
+
+    expect(await f.session.execute(host("failed-resume"))).toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure" },
+    });
+    await expect(pendingPermission).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    await expect(pendingQuestion).resolves.toEqual({ outcome: "cancelled" });
+    expect(f.ids()).toEqual([]);
+    expect(f.outputs.filter((o) => o.kind === "interaction")).toEqual([]);
+
+    expect(await f.session.execute(host("retry"))).toMatchObject({ ok: true });
+    expect((await f.completed(2))[1]).toMatchObject({
+      turnId: "retry",
+      outcome: { status: "succeeded" },
+    });
+  });
+
+  it.each([false, true])(
+    "refuses turn.cancel for a settled foreground Turn during pending terminal history (with drain: %s)",
+    async (withDrain) => {
+      let gate!: ReturnType<typeof gateHistory>;
+      const f = await setup((n) => {
+        gate = gateHistory(n, 2);
+        return { readHistory: gate.readHistory };
+      });
+      const cancelSpy = vi.spyOn(f.client, "cancel");
+      await f.session.execute(host("host", "hold"));
+      f.client.finishPending();
+      await gate.entered;
+
+      if (withDrain) {
+        announce(f.client, "next-drain");
+        text(f.client, "drain output", "next-drain");
+      }
+
+      expect(
+        await f.session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("host") }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(cancelSpy).not.toHaveBeenCalled();
+
+      gate.release();
+      if (withDrain) {
+        await vi.waitFor(() => expect(f.ids()).toHaveLength(1));
+        const drainId = required(f.ids()[0]);
+        end(f.client, "next-drain");
+        const completed = await f.completed(2);
+        expect(completed).toMatchObject([
+          { turnId: "host", outcome: { status: "succeeded" } },
+          { turnId: drainId, outcome: { status: "succeeded" }, ephemeral: true },
+        ]);
+        expect(f.texts(drainId)).toEqual(["drain output"]);
+      } else {
+        expect(await f.completed()).toMatchObject([
+          { turnId: "host", outcome: { status: "succeeded" } },
+        ]);
+      }
+    },
+  );
+
+  it.each(["prompt", "command"] as const)(
+    "does not attribute an overlapping drain Turn to a %s response without userMessageId",
+    async (kind) => {
+      let gate!: ReturnType<typeof gateHistory>;
+      const f = await setup((n) => {
+        gate = gateHistory(n, 2);
+        return { readHistory: gate.readHistory };
+      });
+      if (kind === "prompt") {
+        f.client.prompt = async () => ({ stopReason: "end_turn" });
+        await f.session.execute(host("no-id", "hello"));
+      } else {
+        await f.session.commands?.execute({
+          turnId: hostTurnIdSchema.parse("cost-cmd"),
+          commandId: "codebuddy.cost",
+        });
+      }
+      await gate.entered;
+      announce(f.client, "overlap-drain");
+      text(f.client, "drain reply", "overlap-drain");
+      persist(f.native, "overlap-drain");
+      end(f.client, "overlap-drain");
+      gate.release();
+
+      const completed = await f.completed(2);
+      if (kind === "prompt") {
+        expect(completed[0]).toMatchObject({
+          turnId: "no-id",
+          outcome: { status: "failed", error: { code: "protocolError" } },
+        });
+        expect(completed[0]?.nativeTurnRef).toBeUndefined();
+      } else {
+        expect(completed[0]).toMatchObject({
+          turnId: "cost-cmd",
+          outcome: { status: "succeeded" },
+        });
+        expect(completed[0]?.nativeTurnRef).toBeUndefined();
+        expect(f.texts("cost-cmd")).toEqual(["Cost: 0 credits"]);
+      }
+      expect(completed[1]).toMatchObject({
+        turnId: required(f.ids()[0]),
+        outcome: { status: "succeeded" },
+        ephemeral: true,
+      });
+    },
+  );
+
+  it.each(["drain-in-turn", "drain-pre-message"] as const)(
+    "does not confirm foreground compaction from an overlapping drain (%s)",
+    async (placement) => {
+      let gate!: ReturnType<typeof gateHistory>;
+      const f = await setup((n) => {
+        gate = gateHistory(n, 2);
+        return { readHistory: gate.readHistory };
+      });
+      await f.session.execute(host("host", "hold"));
+      f.client.update({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "compacting" },
+        _meta: { "codebuddy.ai/isCompactInternal": true },
+      });
+      f.client.finishPending();
+      await gate.entered;
+
+      announce(f.client, "compact-drain");
+      if (placement === "drain-in-turn") {
+        f.native.history.push(hidden("drain-user", f.native.history.at(-1)?.id));
+        f.native.history.push({
+          type: "message",
+          role: "assistant",
+          id: "drain-compact",
+          parentId: "drain-user",
+          status: "completed",
+          providerData: {
+            agent: "compact",
+            isCompactInternal: true,
+            isCompacted: true,
+            compactType: "emergency-auto",
+          },
+          content: [{ type: "output_text", text: "drain summary" }],
+        });
+        f.native.history.push({
+          type: "message",
+          role: "assistant",
+          id: "drain-answer",
+          parentId: "drain-compact",
+          status: "completed",
+          content: [{ type: "output_text", text: "drain done" }],
+        });
+      } else {
+        f.native.history.push({
+          type: "message",
+          role: "user",
+          id: "drain-pre-compact",
+          logicalParentId: f.native.history.at(-1)?.id,
+          providerData: {
+            agent: "cli",
+            compactType: "pre-message-auto",
+            isCompactInternal: true,
+            isCompacted: true,
+          },
+          content: [{ type: "input_text", text: "<cb_summary>drain pre-message</cb_summary>" }],
+        });
+        f.native.history.push(hidden("drain-user", "drain-pre-compact"));
+        f.native.history.push({
+          type: "message",
+          role: "assistant",
+          id: "drain-answer",
+          parentId: "drain-user",
+          status: "completed",
+          content: [{ type: "output_text", text: "drain done" }],
+        });
+      }
+      end(f.client, "compact-drain");
+      gate.release();
+
+      await f.completed(2);
+      expect(f.events()).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          turnId: "host",
+          snapshot: expect.objectContaining({
+            item: expect.objectContaining({ type: "contextCompaction" }),
+            outcome: expect.objectContaining({ status: "failed" }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it("still confirms foreground pre-message compaction when a later drain runs", async () => {
+    let gate!: ReturnType<typeof gateHistory>;
+    const f = await setup((n) => {
+      gate = gateHistory(n, 4);
+      return { readHistory: gate.readHistory };
+    });
+    await f.session.execute(host("first", "one"));
+    await f.completed(1);
+
+    await f.session.execute(host("second", "hold"));
+    // Insert a cache-expired pre-message compaction directly on user-2's parent edge.
+    const user2 = required(f.native.history.pop());
+    const priorAssistantId = f.native.history.at(-1)?.id;
+    f.native.history.push(
+      {
+        type: "message",
+        role: "user",
+        id: "cmp-before-user-2",
+        logicalParentId: priorAssistantId,
+        providerData: {
+          agent: "cli",
+          compactType: "pre-message-auto",
+          isCompactInternal: true,
+          isCompacted: true,
+        },
+        content: [{ type: "input_text", text: "<cb_summary>before second</cb_summary>" }],
+      },
+      { ...user2, parentId: "cmp-before-user-2" },
+    );
+    f.client.update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "compacting" },
+      _meta: { "codebuddy.ai/isCompactInternal": true },
+    });
+    f.client.finishPending();
+    await gate.entered;
+    announce(f.client, "after-second");
+    persist(f.native, "after-second");
+    end(f.client, "after-second");
+    gate.release();
+
+    await f.completed(3);
+    expect(f.events()).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        turnId: "second",
+        snapshot: expect.objectContaining({
+          item: expect.objectContaining({ type: "contextCompaction" }),
+          outcome: { status: "succeeded" },
+        }),
+      }),
+    );
+  });
+
+  it("faults and releases busy state when autonomous cancel recovery hangs", async () => {
+    const openEntered = Promise.withResolvers<undefined>();
+    const releaseOpen = Promise.withResolvers<Awaited<ReturnType<Client["open"]>>>();
+    void releaseOpen.promise.catch(() => {});
+    const f = await setup((native) => ({
+      clientFactory: (options) => {
+        const client = native.clientFactory(options);
+        if (native.clients.length === 2) {
+          client.open = async () => {
+            openEntered.resolve(undefined);
+            return releaseOpen.promise;
+          };
+        }
+        return client;
+      },
+    }));
+    announce(f.client, "stalled-cancel");
+    await tick();
+    const id = required(f.ids()[0]);
+    vi.useFakeTimers();
+    try {
+      await f.session.execute({ type: "turn.cancel", turnId: id });
+      end(f.client, "stalled-cancel");
+      await openEntered.promise;
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(f.events().filter((e) => e.type === "turn.completed")).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await f.closed;
+      expect(f.events().filter((e) => e.type === "turn.completed")).toMatchObject([
+        { turnId: id, outcome: { status: "failed", error: { code: "unavailable" } } },
+      ]);
+      expect(f.events().filter((e) => e.type === "session.faulted")).toMatchObject([
+        { error: { code: "unavailable" } },
+      ]);
+      expect(f.native.clients[1]?.closed).toBe(true);
+      expect(await f.session.execute(host("after-hang"))).toMatchObject({
+        ok: false,
+        error: { code: "invalidState" },
+      });
+    } finally {
+      vi.useRealTimers();
+      releaseOpen.reject(new Error("abandoned open"));
+      await tick();
+    }
+    expect(f.events().filter((e) => e.type === "turn.completed")).toHaveLength(1);
   });
 });
 

@@ -771,6 +771,68 @@ export function snapshotFromHistory(
   return { turns };
 }
 
+/** Persisted compaction Items directly attributable to one Native Turn: its own body (excluding
+ *  any trailing pre-message compaction on a later Turn's parent edge) plus any pre-message
+ *  compaction directly on this Turn's parent edge. */
+export function compactionEvidenceForTurn(
+  contents: string,
+  snapshot: HostThreadSnapshot,
+  turnKey: string,
+  beforeItems: ReadonlySet<string>,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+): HostItemSnapshot[] {
+  if (!nativeCommandsEnabled(profile)) return [];
+  const turnIndex = snapshot.turns.findIndex(
+    (turn) => turn.nativeTurnRef.nativeTurnKey === turnKey,
+  );
+  if (turnIndex < 0) return [];
+  const history = nativeDisplayHistoryRows(contents);
+  const start = history.findIndex(
+    (row) => row.type === "message" && row.role === "user" && text(row.id) === turnKey,
+  );
+  if (start < 0) return [];
+  const turnKeys = new Set(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey));
+  const attributable = new Set<string>();
+  for (let index = start - 1; index >= 0; index -= 1) {
+    const row = history[index];
+    if (!row || !isNativeCompactionSummary(row)) break;
+    attributable.add(`compact-${text(row.id)}`);
+  }
+  let nextTurn = history.length;
+  for (let index = start + 1; index < history.length; index += 1) {
+    const row = history[index];
+    if (row?.type === "message" && row.role === "user" && turnKeys.has(text(row.id))) {
+      nextTurn = index;
+      break;
+    }
+  }
+  let bodyEnd = nextTurn - 1;
+  if (nextTurn < history.length) {
+    while (bodyEnd > start && isNativeCompactionSummary(history[bodyEnd] ?? {})) bodyEnd -= 1;
+  }
+  for (let index = start + 1; index <= bodyEnd; index += 1) {
+    const row = history[index];
+    if (!row) continue;
+    const data = record(row.providerData);
+    if (
+      isNativeCompactionSummary(row) ||
+      (row.role === "assistant" && (data.agent === "compact" || data.isCompactInternal === true))
+    ) {
+      attributable.add(`compact-${text(row.id)}`);
+    }
+  }
+  const candidates = [
+    ...(turnIndex > 0 ? (snapshot.turns[turnIndex - 1]?.items ?? []) : []),
+    ...(snapshot.turns[turnIndex]?.items ?? []),
+  ];
+  return candidates.filter(
+    ({ item }) =>
+      item.type === "contextCompaction" &&
+      !beforeItems.has(item.itemId) &&
+      attributable.has(item.itemId),
+  );
+}
+
 /** One Usage entry per model request; duplicated tool rows do not multiply spend. */
 function usageCount(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;

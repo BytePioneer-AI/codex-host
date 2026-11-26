@@ -29,4 +29,4 @@ CodeBuddy 与 WorkBuddy 的原生 unsolicited drain 可在没有 Host 请求时�
 
 ## Impact
 
-共用 CodeBuddy Adapter、其测试、WorkBuddy 的能力断言及两份集成文档。公共契约、Host、Renderer 与国内版插件不变；fork 国内版复用共享 Session 后受益。
+共用 CodeBuddy Adapter、Host Runtime 队列准入与自主轮交接、相关测试、WorkBuddy 的能力断言及两份集成文档。公共契约、Renderer 与国内版插件不变；fork 国内版复用共享 Session 后受益。

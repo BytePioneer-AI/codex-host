@@ -11,6 +11,7 @@ import {
   remotePeerCreateDirResultSchema,
   remotePeerListDirsResultSchema,
   remotePeerListResultSchema,
+  remotePeerPairingReportSchema,
   remotePeerRemoveResultSchema,
   remotePeerSummarySchema,
   remotePeerTestResultSchema,
@@ -31,8 +32,10 @@ import {
   type RemotePeerAddParams,
   type RemotePeerCreateWorkspaceParams,
   type RemotePeerDeleteWorkspaceParams,
+  type RemotePeerPairingReport,
   type RemotePeerRenameWorkspaceParams,
   type RemotePeerSummary,
+  type RemotePeerSyncMeshParams,
   type RemotePeerTestParams,
   type RemotePeerUpdateParams,
   type ThreadCommandExecuteResult,
@@ -440,11 +443,25 @@ function parseRemotePeerResult(value: unknown): { peer: RemotePeerSummary } {
   return { peer: remotePeerSummarySchema.parse(candidate) };
 }
 
+function parseRemotePeerAddResult(value: unknown): {
+  peer: RemotePeerSummary;
+  pairing?: RemotePeerPairingReport;
+} {
+  const { peer } = parseRemotePeerResult(value);
+  const rawPairing =
+    value !== null && typeof value === "object" && "pairing" in value
+      ? (value as { pairing?: unknown }).pairing
+      : undefined;
+  return rawPairing === undefined
+    ? { peer }
+    : { peer, pairing: remotePeerPairingReportSchema.parse(rawPairing) };
+}
+
 export const remotePeersApi = {
   list: async () =>
     remotePeerListResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.list, {})),
   add: async (input: RemotePeerAddParams) =>
-    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.add, input)),
+    parseRemotePeerAddResult(await call<unknown>(REMOTE_PEERS_METHODS.add, input)),
   update: async (input: RemotePeerUpdateParams) =>
     parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.update, input)),
   remove: async (peerId: string) =>
@@ -455,6 +472,8 @@ export const remotePeersApi = {
     parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.reconnect, { peerId })),
   test: async (input: RemotePeerTestParams) =>
     remotePeerTestResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.test, input)),
+  syncMesh: async (input: RemotePeerSyncMeshParams) =>
+    remotePeerPairingReportSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.syncMesh, input)),
   listDirs: async (peerId: string, path?: string) =>
     remotePeerListDirsResultSchema.parse(
       await call<unknown>(

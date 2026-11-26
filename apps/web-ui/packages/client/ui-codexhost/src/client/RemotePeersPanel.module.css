@@ -341,6 +341,26 @@
   white-space: nowrap;
 }
 
+.pairedBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10.5px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+:global(body[data-ds-dark-theme]) .pairedBadge {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
+}
+
 .peerMetaRow {
   display: flex;
   align-items: center;
@@ -480,7 +500,18 @@
 
 /* Modal sheets */
 .addModal.addModal {
-  width: min(440px, 100%);
+  width: min(460px, 100%);
+}
+
+.syncMeshModal.syncMeshModal {
+  width: min(480px, 100%);
+}
+
+.syncMeshSubtitle {
+  margin: -6px 0 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .confirm.confirm {
@@ -808,6 +839,467 @@
   border-top: 1px solid var(--dsw-alias-border-l2);
 }
 
+/* Mutual & mesh pairing sections */
+.pairingSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+  min-width: 0;
+}
+
+.pairingSwitchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pairingDivider {
+  height: 1px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.pairingNotice {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.pairingNoticeRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+}
+
+.pairingWarning {
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.inlineLinkButton {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-state-business-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 17px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.inlineLinkButton:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.inlineLinkButton:focus-visible,
+.selfOriginSelect:focus-visible,
+.reportDismissButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 1px;
+}
+
+.inlineLinkButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.selfOriginRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  min-width: 0;
+}
+
+.selfOriginPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.selfOriginLabel {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.selfOriginValue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.selfOriginKind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.selfOriginHost {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.selfOriginSelect {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.selfOriginSelect:hover:not(:disabled) {
+  border-color: var(--dsw-alias-border-l4);
+}
+
+.selfOriginSelect:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.meshInlineBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.meshInlineTitle {
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.meshBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+  min-width: 0;
+}
+
+.meshBoxHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.meshToolbarActions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.meshEmptyHint {
+  margin: 2px 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.meshHostList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  min-width: 0;
+}
+
+.meshHostRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: 0;
+  transition: background-color 120ms ease;
+}
+
+.meshHostRow:hover:not([data-disabled="true"]) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.meshHostRow[data-disabled="true"] {
+  opacity: 0.58;
+  cursor: default;
+}
+
+.meshHostRow .projectCheckbox {
+  margin: 0;
+  accent-color: var(--dsw-alias-label-primary);
+}
+
+.meshHostName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.meshHostMeta {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+.meshHostStatus {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+/* Pairing report banner & per-step list */
+.reportBanner,
+.modalReportBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+  min-width: 0;
+}
+
+.modalReportBox {
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.reportBanner[data-tone="error"],
+.modalReportBox[data-tone="error"] {
+  border-color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-error-primary) 34%,
+    var(--dsw-alias-border-l2)
+  );
+}
+
+.reportBannerHeader,
+.modalReportHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.modalReportHeader {
+  justify-content: flex-start;
+}
+
+.reportBannerTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.reportBannerIcon {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.reportBannerDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.reportBannerDot[data-tone="error"] {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.reportBannerTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.reportBannerActions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reportDismissButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.reportDismissButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.pairingStepList {
+  list-style: none;
+  margin: 0;
+  padding: 6px 2px 2px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 216px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.pairingStepRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pairingStepMain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pairingStepDirection {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pairingStatusBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 0;
+  font-size: 10.5px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+}
+
+.pairingStatusBadge[data-status="added"],
+.pairingStatusBadge[data-status="updated"] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.pairingStatusBadge[data-status="failed"] {
+  color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
+}
+
+:global(body[data-ds-dark-theme]) .pairingStatusBadge {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
+}
+
+:global(body[data-ds-dark-theme]) .pairingStatusBadge[data-status="failed"] {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);
+}
+
+.pairingStepReason {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
 .dangerConfirm {
   background: var(--dsw-alias-state-error-primary);
   color: white;
@@ -834,6 +1326,12 @@
     font-size: 19px;
   }
 
+  .headerActions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
   .peerRow {
     padding: 10px 12px;
   }
@@ -842,7 +1340,16 @@
     gap: 8px;
   }
 
+  .peerNameRow {
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+
   .peerSwitch {
     margin-left: 4px;
+  }
+
+  .reportBannerTitle {
+    white-space: normal;
   }
 }

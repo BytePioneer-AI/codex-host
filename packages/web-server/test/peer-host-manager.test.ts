@@ -8,7 +8,11 @@ import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { REMOTE_PEERS_METHODS as methods } from "@codexhost/shared-contracts";
-import { parseConnectionLink, PeerHostStore } from "../src/peer-host-store.ts";
+import {
+  loadOrCreatePeerNodeId,
+  parseConnectionLink,
+  PeerHostStore,
+} from "../src/peer-host-store.ts";
 import { PeerHostManager, createCompositeRemoteCall } from "../src/peer-host-manager.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "../src/peer-manifest.ts";
 import { deliverRemoteInput, readRemoteThreadStatus } from "../src/remote-session-delivery.ts";
@@ -1664,4 +1668,205 @@ it("forwards queued steer on remote peers via codexhost/thread/queue/send-now an
       params: { threadId: "t-steer", queuedSubmissionId: "q-old-idle" },
     },
   ]);
+});
+
+it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, and blocks self-pairing by nodeId", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-node-identity-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+
+  // 1. node-identity-v1.json persists across reloads with 0600 mode and recovers from corruption.
+  const firstNodeId = loadOrCreatePeerNodeId(data);
+  assert.ok(firstNodeId.length > 0);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(data.path("node-identity-v1.json")).mode & 0o777, 0o600);
+  }
+  assert.equal(loadOrCreatePeerNodeId(data), firstNodeId);
+
+  writeFileSync(data.path("node-identity-v1.json"), "{corrupt-json", "utf8");
+  const recoveredCorrupt = loadOrCreatePeerNodeId(data);
+  assert.notEqual(recoveredCorrupt, firstNodeId);
+  assert.equal(loadOrCreatePeerNodeId(data), recoveredCorrupt);
+
+  writeFileSync(
+    data.path("node-identity-v1.json"),
+    JSON.stringify({ version: 2, nodeId: "bad/id" }),
+    "utf8",
+  );
+  const localNodeId = loadOrCreatePeerNodeId(data);
+  assert.notEqual(localNodeId, recoveredCorrupt);
+  assert.equal(loadOrCreatePeerNodeId(data), localNodeId);
+
+  // 2. Helper stub peers: one with localNodeId (self via alias URL), one modern peer B, one legacy peer (no nodeId).
+  const secretToken = "peer-identity-secret";
+  const makeStubPeer = async (manifestExtra: Record<string, unknown>, failManifest = false) => {
+    const epoch = randomUUID();
+    const server = createServer((req, res) => {
+      if (req.headers.authorization !== `Bearer ${secretToken}`) {
+        res.writeHead(401).end();
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/api/peer/v1/manifest") {
+        if (failManifest) {
+          res.writeHead(503).end();
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            version: "0.26.1",
+            epoch,
+            platform: process.platform,
+            hostname: "stub-host",
+            projects: [],
+            capabilities: { delegation: 1 },
+            ...manifestExtra,
+          }),
+        );
+        return;
+      }
+      if (url.pathname === "/api/ch/v1/events") {
+        res.writeHead(200);
+        res.write(
+          `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true })}\n`,
+        );
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    return {
+      origin,
+      close: () => {
+        server.closeAllConnections();
+        server.close();
+      },
+    };
+  };
+
+  const selfAlias = await makeStubPeer({ nodeId: localNodeId });
+  const peerB = await makeStubPeer({ nodeId: "node-b-id" });
+  const peerBOffline = await makeStubPeer({ nodeId: "node-b-id" }, true);
+  const legacyPeer = await makeStubPeer({});
+  t.after(() => {
+    selfAlias.close();
+    peerB.close();
+    peerBOffline.close();
+    legacyPeer.close();
+  });
+
+  // Pre-seed an offline enabled peer sharing node-b-id via persisted record + offline state.
+  const store = new PeerHostStore(data);
+  const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
+    allowLoopback: true,
+    localNodeId,
+  });
+  t.after(() => manager.close());
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const localAuth = { local: true, credential: "local", release() {} };
+
+  assert.equal(manager.selfNodeId(), localNodeId);
+  assert.equal(manager.nodeIdForHostId("local"), localNodeId);
+  assert.equal(manager.hostIdForNodeId(localNodeId), "local");
+
+  // 3. Reject self-pairing via nodeId on `test`, `add`, and `update` even when origin is not in `origins()`.
+  const testedSelf = await rpc.dispatch(
+    methods.test,
+    { args: { connectionUrl: `${selfAlias.origin}/#token=${secretToken}` } },
+    localAuth,
+  );
+  assert.equal(testedSelf.ok, true);
+  assert.deepEqual(testedSelf.value, {
+    ok: false,
+    error: "Cannot pair this server with itself",
+  });
+
+  const addedSelf = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${selfAlias.origin}/#token=${secretToken}` } },
+    localAuth,
+  );
+  assert.equal(addedSelf.ok, false);
+  assert.match(addedSelf.error.message, /Cannot pair this server with itself/u);
+
+  // 4. Add modern Peer B and legacy Peer (no nodeId); verify summary, delegationHosts, and update self-pair block.
+  const addedB = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${peerB.origin}/#token=${secretToken}`, name: "Modern B" } },
+    localAuth,
+  );
+  assert.equal(addedB.ok, true);
+  const peerBInfo = (addedB.value as { peer: { peerId: string; hostId: string; nodeId?: string } })
+    .peer;
+  assert.equal(peerBInfo.nodeId, "node-b-id");
+
+  const addedLegacy = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${legacyPeer.origin}/#token=${secretToken}`, name: "Legacy" } },
+    localAuth,
+  );
+  assert.equal(addedLegacy.ok, true);
+  const legacyInfo = (addedLegacy.value as { peer: { hostId: string; nodeId?: string } }).peer;
+  assert.equal(legacyInfo.nodeId, undefined);
+
+  const updatedToSelf = await rpc.dispatch(
+    methods.update,
+    {
+      args: {
+        peerId: peerBInfo.peerId,
+        connectionUrl: `${selfAlias.origin}/#token=${secretToken}`,
+      },
+    },
+    localAuth,
+  );
+  assert.equal(updatedToSelf.ok, false);
+  assert.match(updatedToSelf.error.message, /Cannot pair this server with itself/u);
+  assert.equal(manager.client(peerBInfo.hostId)?.record.origin, peerB.origin);
+
+  // 5. Multiple peers with same nodeId: hostIdForNodeId prefers state === "connected".
+  const addedB2 = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${peerB.origin}/#token=${secretToken}`, name: "Modern B Dup" } },
+    localAuth,
+  );
+  assert.equal(addedB2.ok, true);
+  const peerB2HostId = (addedB2.value as { peer: { hostId: string } }).peer.hostId;
+  const firstClient = manager.client(peerBInfo.hostId);
+  assert.ok(firstClient);
+  firstClient.state = "offline";
+  assert.equal(manager.hostIdForNodeId("node-b-id"), peerB2HostId);
+  assert.equal(manager.nodeIdForHostId(peerB2HostId), "node-b-id");
+  assert.equal(manager.nodeIdForHostId(legacyInfo.hostId), undefined);
+
+  // 6. peerEndpoint manifest exposes nodeId and strictly anonymous peerNodes (no URL/name/token).
+  const ws = new Workspaces(data, root, true);
+  const wsRpc = new RpcRegistry();
+  ws.register(wsRpc, new StreamRegistry());
+  const manifest = await peerEndpoint(
+    "GET",
+    new URL("http://127.0.0.1/api/peer/v1/manifest"),
+    {},
+    ws,
+    wsRpc,
+    "epoch-1",
+    "0.26.1",
+    [root],
+    { nodeId: manager.selfNodeId(), peerNodes: manager.peerNodes() },
+  );
+  const serialized = JSON.stringify(manifest);
+  assert.equal(serialized.includes(secretToken), false);
+  assert.equal(serialized.includes(peerB.origin), false);
+  assert.equal(serialized.includes("Modern B"), false);
+  const parsedManifest = manifest as { nodeId?: string; peerNodes?: Record<string, string> };
+  assert.equal(parsedManifest.nodeId, localNodeId);
+  assert.equal(parsedManifest.peerNodes?.[peerB2HostId], "node-b-id");
+  assert.equal(Object.hasOwn(parsedManifest.peerNodes ?? {}, legacyInfo.hostId), false);
+
+  // delegationHosts carries nodeId for modern peers and omits it for legacy peers.
+  const dHosts = manager.delegationHosts();
+  assert.equal(dHosts.find((h) => h.hostId === peerB2HostId)?.nodeId, "node-b-id");
+  assert.equal(dHosts.find((h) => h.hostId === legacyInfo.hostId)?.nodeId, undefined);
 });

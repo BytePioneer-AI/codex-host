@@ -47,7 +47,11 @@ export class ChThreadHistory extends ChThreadView {
     origin = RENDER_ORIGIN,
     projectInput?: (content: unknown[]) => unknown[],
     projectImage?: (path: string, projectionKey: string) => unknown,
-    options?: { hostThreadId?: string; canEditQueueItem?: QueueEditEvaluator },
+    options?: {
+      hostThreadId?: string;
+      canEditQueueItem?: QueueEditEvaluator;
+      projectText?: (text: string) => string;
+    },
   ) {
     const pagination = { cursor: null as string | null };
     super(
@@ -59,6 +63,7 @@ export class ChThreadHistory extends ChThreadView {
       () => pagination.cursor !== null,
       projectInput,
       projectImage,
+      options?.projectText,
     );
     this.pagination = pagination;
     this.hasProjectInput = projectInput !== undefined;

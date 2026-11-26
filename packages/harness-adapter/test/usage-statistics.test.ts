@@ -31,7 +31,11 @@ describe("jsonlUsageSources", () => {
     await writeFile(path.join(root, "project", "empty.jsonl"), "");
     await writeFile(path.join(root, "project", "notes.txt"), "x");
     await writeFile(path.join(root, "project", "session", "subagents", "agent.jsonl"), "{}\n");
-    await symlink(path.join(root, "project"), path.join(root, "linked"));
+    await symlink(
+      path.join(root, "project"),
+      path.join(root, "linked"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
     const shallow = await jsonlUsageSources(root, 1, signal);
     expect(shallow.map((source) => path.relative(root, source.id))).toEqual([
       path.join("project", "main.jsonl"),
@@ -63,6 +67,20 @@ it("parses only marked, well-formed object lines", async () => {
   const records = [];
   for await (const record of jsonlRecords(file, "hit", signal)) records.push(record);
   expect(records).toEqual([{ k: "hit", n: 1 }]);
+});
+
+it("streams CRLF and multi-chunk UTF-8 JSONL lines without corrupting split code points", async () => {
+  const file = path.join(root, "large.jsonl");
+  const text = `${"语".repeat(50_000)}😀`;
+  const skipped = JSON.stringify({ k: "miss", pad: "x".repeat(200_000) });
+  const matched = JSON.stringify({ k: "hit", text });
+  await writeFile(file, `${skipped}\r\n${matched}\r\n{"k":"hit","tail":true}`);
+  const records = [];
+  for await (const record of jsonlRecords(file, '"hit"', signal)) records.push(record);
+  expect(records).toEqual([
+    { k: "hit", text },
+    { k: "hit", tail: true },
+  ]);
 });
 
 it("validates optional native credits without treating missing values as zero", () => {

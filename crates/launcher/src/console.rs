@@ -326,6 +326,13 @@ pub fn console_command_for(node: &Path, host_runtime: &Path, installed: &Path) -
     }
 }
 
+pub fn uses_npm_distribution(console_server: &Path) -> bool {
+    std::fs::read(console_server.with_file_name("codexhost-distribution.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|metadata| metadata["schemaVersion"] == 1 && metadata["distribution"] == "npm")
+}
+
 fn desktop_json(installation: &DesktopInstallation, process_ids: &[u32]) -> Value {
     let (platform, identity) = match &installation.identity {
         DesktopIdentity::WindowsPackage {

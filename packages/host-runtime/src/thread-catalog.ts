@@ -9,6 +9,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
+  desktopProjectPathKey,
   hostThreadIdSchema,
   harnessIdSchema,
   type HostThreadId,
@@ -45,21 +46,25 @@ function withinFolder(folder: string, cwd: string): boolean {
   );
 }
 
-/** A native row the scoped folder would list: inside it and outside every excluded folder. */
-function inScope(scope: NonNullable<ThreadCatalogReadParams["scope"]>, row: JsonObject): boolean {
-  const cwd = row.cwd;
+/** A native project lists exact registered roots; legacy folder scopes include descendants. */
+function scopeMatcher(scope: NonNullable<ThreadCatalogReadParams["scope"]>) {
   if ("projectId" in scope) {
-    if (typeof row.projectId === "string") return row.projectId === scope.projectId;
-    if (typeof row.id === "string" && scope.legacyThreadIds.includes(row.id)) return true;
-    return (
-      typeof cwd === "string" && (scope.rootPaths ?? []).some((root) => withinFolder(root, cwd))
-    );
+    const roots = new Set(scope.rootPaths?.map(desktopProjectPathKey));
+    const assigned = new Set(scope.legacyThreadIds);
+    return (row: JsonObject) => {
+      if (typeof row.projectId === "string") return row.projectId === scope.projectId;
+      if (typeof row.id === "string" && assigned.has(row.id)) return true;
+      return (
+        row.workspaceKind !== "projectless" &&
+        typeof row.cwd === "string" &&
+        roots.has(desktopProjectPathKey(row.cwd))
+      );
+    };
   }
-  return (
+  return ({ cwd }: JsonObject) =>
     typeof cwd === "string" &&
     withinFolder(scope.cwd, cwd) &&
-    !scope.excludeCwds.some((folder) => withinFolder(folder, cwd))
-  );
+    !scope.excludeCwds.some((folder) => withinFolder(folder, cwd));
 }
 
 interface CatalogEntry {
@@ -168,16 +173,16 @@ export async function readThreadCatalog(
       const branch = query.archived ? "archived" : "live";
       const cursor = input.officialCursor?.[branch];
       if (cursor === null || !(await prepareOfficial())) return [];
-      const scope = input.scope;
+      const inScope = input.scope && scopeMatcher(input.scope);
       const data: JsonObject[] = [];
       let next: string | null = cursor ?? null;
-      for (let pages = 0; pages < (scope ? SCOPED_MAX_PAGES : 1); pages += 1) {
+      for (let pages = 0; pages < (inScope ? SCOPED_MAX_PAGES : 1); pages += 1) {
         count();
         const page = await input.requestOfficialPage({
           ...query.params,
           // A project can contain Codex conversations from more than one model provider.
           modelProviders: [],
-          ...(scope ? { limit: SCOPED_PAGE_SIZE } : {}),
+          ...(inScope ? { limit: SCOPED_PAGE_SIZE } : {}),
           cursor: next,
         });
         if (page.nextCursor !== null && page.nextCursor === next)
@@ -186,7 +191,7 @@ export async function readThreadCatalog(
         const visible = page.data.filter((thread) => !isShadowedOfficialThread(times, thread));
         data.push(...visible);
         next = page.nextCursor;
-        if (next === null || !scope || visible.some((thread) => inScope(scope, thread))) break;
+        if (next === null || !inScope || visible.some(inScope)) break;
       }
       officialCursor[branch] = next;
       return data.map((thread) => ({
@@ -265,7 +270,9 @@ export async function readThreadCatalog(
       query: listQuery(true),
       runtimeFor: input.runtimeFor,
       placementOf: (id) => placements.get(id),
-    }).map((record) => record.hostThreadId);
+    })
+      .filter((record) => !record.ephemeral)
+      .map((record) => record.hostThreadId);
     return { rows, archivedThreadIds, reservedIds: new Set([...localOwners.keys(), ...sharedIds]) };
   };
 
@@ -297,9 +304,9 @@ export async function readThreadCatalog(
       if (external.reservedIds.has(id) || byId.has(id)) continue;
       byId.set(id, row);
     }
-    const rows = [...byId.values()].sort((left, right) =>
-      compareThreadListEntries(left.entry, right.entry, "desc"),
-    );
+    const rows = [...byId.values()]
+      .filter(({ entry }) => entry.thread.ephemeral !== true)
+      .sort((left, right) => compareThreadListEntries(left.entry, right.entry, "desc"));
     const result: ThreadCatalogReadResult = {
       officialCursor,
       threads: rows.map(({ entry }) => ({ ...entry.thread, turns: [] })),

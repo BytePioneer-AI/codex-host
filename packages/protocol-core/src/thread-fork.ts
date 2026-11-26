@@ -170,6 +170,10 @@ export function mapExternalThreadHarnessError(
       return { code: -32080, message: "External Fork Checkpoint is unavailable" };
     case "credentialAccessRequired":
       return { code: -32077, message: error.message };
+    case "rateLimited":
+      return { code: -32077, message: "External Harness rate limit reached" };
+    case "quotaExhausted":
+      return { code: -32077, message: "External Harness quota exhausted" };
     case "notInstalled":
     case "unavailable":
     case "authenticationRequired":

@@ -3,6 +3,7 @@ import type { JsonObject, OfficialThreadListPage } from "@codexhost/protocol-cor
 import {
   harnessIdSchema,
   hostThreadIdSchema,
+  hostTurnIdSchema,
   nativeSessionRefSchema,
   threadCatalogReadResultSchema,
 } from "@codexhost/shared-contracts";
@@ -137,8 +138,23 @@ describe("source-separated Thread catalog", () => {
         ? page([row("native-live", 6), row("native-live", 5)], "next")
         : page([row("native-live", 4), row("native-other", 3)]);
     });
+    const parent = external("local-live", 7);
+    const forkSource = {
+      hostThreadId: parent.hostThreadId,
+      hostTurnId: hostTurnIdSchema.parse("turn"),
+    };
     const result = await readThreadCatalog({
-      ...input([external("local-live", 7), external("local-archived", 1, true)]),
+      ...input([
+        parent,
+        { ...external("local-archived", 1, true), forkSource },
+        { ...external("temporary-live", 8), forkSource, ephemeral: true },
+        { ...external("temporary-archived", 8, true), forkSource, ephemeral: true },
+      ]),
+      sharedThreads: {
+        list: async ({ archived }) =>
+          archived ? [{ ...row("shared-temporary", 9), ephemeral: true }] : [],
+        ownership: async () => new Map([["shared-temporary", "pi"]]),
+      },
       includeArchived: true,
       requestOfficialPage: request,
     });
@@ -172,6 +188,7 @@ describe("source-separated Thread catalog", () => {
       parent,
       archived,
       hiddenChild,
+      { ...external("temporary-archived", 1, true), ephemeral: true },
       { ...external("creating", 1, true), state: "creating" },
       { ...external("without-session", 1, true), nativeSessionRef: undefined },
     ]);
@@ -307,9 +324,9 @@ describe("source-separated Thread catalog", () => {
   it.each(["folder", "project", "migrated", "rooted"] as const)(
     "reads on for a scoped %s until a page holds its Thread, the branch ends, or the bound",
     async (scopeKind) => {
-      // Row 120 lies in an excluded nested folder; row 250 is the folder's only Thread.
+      // Native projects need an exact root match. Folder scopes also accept descendants.
       const cwdOf = (n: number) =>
-        n === 250 ? "/work/app/src" : n === 120 ? "/work/app/nested" : "/work/other";
+        n === 250 ? "/work/app" : n === 120 || n === 121 ? "/work/app/nested" : "/work/other";
       const nativeRows = Array.from({ length: 2_000 }, (_, n) => ({
         ...row(`native-${n}`, 5_000 - n),
         cwd: cwdOf(n),

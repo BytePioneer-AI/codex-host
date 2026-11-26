@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
@@ -28,18 +29,49 @@ function fixture(owned: boolean) {
     close,
     ...(owned ? { stopProcess } : {}),
   };
-  const onOutput = vi.fn(async () => undefined);
+  const onOutput = vi.fn(async (): Promise<void> => undefined);
+  const onClosed = vi.fn();
   const runtime = new CodexRuntime({
     generation: 1,
     connection,
     diagnosticOutput: new PassThrough(),
     onOutput,
-    onClosed: vi.fn(),
+    onClosed,
   });
-  return { runtime, connection, exit, close, stopProcess, onOutput, stdin, stdout };
+  return { runtime, connection, exit, close, stopProcess, onOutput, onClosed, stdin, stdout };
 }
 
-describe("Codex runtime controlled shutdown", () => {
+describe("Codex runtime lifecycle", () => {
+  it("handles a premature output close while forwarding a notification", async () => {
+    const f = fixture(false);
+    const forwarding = Promise.withResolvers<undefined>();
+    const forwarded = Promise.withResolvers<undefined>();
+    f.onOutput.mockImplementationOnce(async () => {
+      forwarding.resolve(undefined);
+      await forwarded.promise;
+    });
+    const unhandledRejection = vi.fn();
+    process.on("unhandledRejection", unhandledRejection);
+
+    try {
+      f.stdout.write('{"method":"account/updated","params":{}}\n');
+      await forwarding.promise;
+
+      const closed = once(f.stdout, "close");
+      f.stdout.destroy();
+      await closed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(f.onClosed).toHaveBeenCalledExactlyOnceWith(expect.any(Error));
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      forwarded.resolve(undefined);
+      f.runtime.close();
+      await f.runtime.outputTask;
+      process.off("unhandledRejection", unhandledRejection);
+    }
+  });
+
   it("does not confuse shared client closure with listener process exit", async () => {
     const f = fixture(false);
     try {

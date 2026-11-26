@@ -400,6 +400,7 @@ it("executes end-to-end Peer attachment upload, prompt, draft retry, preview, le
   mkdirSync(join(peerWorkspace, "sub"), { recursive: true });
   writeFileSync(join(peerWorkspace, "sub", "screenshot.png"), PNG_BYTES);
   writeFileSync(join(outside, "secret.png"), PNG_BYTES);
+  writeFileSync(join(outside, "notes.txt"), "not an image");
 
   const legacyWorkspace = join(root, "legacy-workspace");
   mkdirSync(legacyWorkspace, { recursive: true });
@@ -670,14 +671,28 @@ it("executes end-to-end Peer attachment upload, prompt, draft retry, preview, le
   assert.equal(previewHead.headers.get("content-type"), "image/png");
   assert.equal((await previewHead.arrayBuffer()).byteLength, 0);
 
-  // Outside workspace file and invalid sessionIds are rejected with 404
+  // Outside workspace raster image previews via /api/remote-peer/file; non-images and invalid sessionIds are rejected with 404
   const outsidePreview = await fetch(
     `${hubHttp.origin}${c.REMOTE_PEER_FILE_PROXY_PATH}?${new URLSearchParams({
       sessionId: modernSessionId,
       path: join(outside, "secret.png"),
     })}`,
   );
-  assert.equal(outsidePreview.status, 404);
+  assert.equal(outsidePreview.status, 200);
+  assert.equal(outsidePreview.headers.get("content-type"), "image/png");
+  assert.equal(
+    outsidePreview.headers.get("content-security-policy"),
+    "sandbox; default-src 'none'",
+  );
+  assert.deepEqual(Buffer.from(await outsidePreview.arrayBuffer()), PNG_BYTES);
+
+  const outsideTextPreview = await fetch(
+    `${hubHttp.origin}${c.REMOTE_PEER_FILE_PROXY_PATH}?${new URLSearchParams({
+      sessionId: modernSessionId,
+      path: join(outside, "notes.txt"),
+    })}`,
+  );
+  assert.equal(outsideTextPreview.status, 404);
 
   for (const badSessionId of [
     "local-thread-1",

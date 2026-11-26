@@ -387,6 +387,9 @@ const CHANGED_METHODS = new Set([
   "turn/steer",
   "turn/interrupt",
 ]);
+const EMPTY_ROLLOUT_ERROR =
+  /^failed to read thread: thread-store internal error: failed to read session metadata ([\s\S]+): rollout at \1 is empty$/u;
+const LIST_TURNS_UNSUPPORTED_ERROR = "list_turns is not supported yet";
 
 /** Native Codex side of the Host client channel. It is attached to the shared
  * service's existing official session; it never creates an app-server. */
@@ -394,6 +397,7 @@ export class NativeClientChannel {
   readonly #host: NativeClientChannelDependencies;
   readonly #knownThreads = new Set<string>();
   readonly #resumedThreads = new Set<string>();
+  readonly #startedThreads = new Set<string>();
   readonly #configuration = new Map<string, ReturnType<typeof nativeThreadConfiguration>>();
   readonly #items = new NativeClientItems();
   readonly #asyncQuestions: NativeAsyncQuestions;
@@ -424,7 +428,11 @@ export class NativeClientChannel {
       this.noteThread(threadId);
       if (value.method === "thread/settings/updated" && isJsonObject(params.threadSettings))
         this.#configuration.set(threadId, nativeThreadConfiguration(params.threadSettings));
-      if (value.method === "thread/closed") this.#resumedThreads.delete(threadId);
+      if (value.method === "thread/started") this.#startedThreads.add(threadId);
+      if (value.method === "thread/closed") {
+        this.#resumedThreads.delete(threadId);
+        this.#startedThreads.delete(threadId);
+      }
       const endedTurn =
         value.method === "turn/completed" && isRecord(params.turn) ? params.turn.id : undefined;
       if (value.method === "thread/closed" || typeof endedTurn === "string") {
@@ -497,12 +505,16 @@ export class NativeClientChannel {
     if (thread && typeof thread.id === "string") {
       this.noteThread(thread.id);
       if (opensThread) this.#resumedThreads.add(thread.id);
+      if (method === "thread/start") this.#startedThreads.add(thread.id);
     }
     const threadId = threadIdFromParams(params);
     if (threadId) {
       this.noteThread(threadId);
       if (method === "thread/resume") this.#resumedThreads.add(threadId);
-      if (method === "thread/archive") this.#resumedThreads.delete(threadId);
+      if (method === "thread/archive") {
+        this.#resumedThreads.delete(threadId);
+        this.#startedThreads.delete(threadId);
+      }
     }
     const configuredThreadId =
       typeof thread?.id === "string" ? thread.id : method === "thread/fork" ? undefined : threadId;
@@ -589,29 +601,41 @@ export class NativeClientChannel {
       method === "thread/resume" ? { ...params, excludeTurns: true } : params,
     );
     if (generation !== this.#generationToken) return stale();
-    // Codex can expose the rollout path before its metadata is flushed. Retry
-    // only this explicit read failure; persistent errors and writes stay intact.
-    for (const delayMs of [50, 100, 200, 400]) {
+    const initialTurnsPage =
+      method === "thread/turns/list" && (params.cursor === undefined || params.cursor === null);
+    const shouldRetryMaterialization = (current: NativeClientReply): boolean => {
+      if (!("error" in current)) return false;
       if (
-        method !== "thread/read" ||
-        !("error" in reply) ||
-        reply.error.code !== -32603 ||
-        !/^failed to read thread: thread-store internal error: failed to read session metadata ([\s\S]+): rollout at \1 is empty$/u.test(
-          reply.error.message,
-        )
+        (method === "thread/read" || method === "thread/turns/list") &&
+        current.error.code === -32603 &&
+        EMPTY_ROLLOUT_ERROR.test(current.error.message)
       )
-        break;
+        return true;
+      return (
+        initialTurnsPage &&
+        threadId !== undefined &&
+        this.#startedThreads.has(threadId) &&
+        current.error.code === -32601 &&
+        current.error.message === LIST_TURNS_UNSUPPORTED_ERROR
+      );
+    };
+    // Codex can expose a newly started Thread's rollout path before its session
+    // metadata and SQLite thread row finish flushing. Retry only those explicit
+    // read errors within one bounded window; persistent errors and writes stay intact.
+    for (const delayMs of [50, 100, 200, 400]) {
+      if (!shouldRetryMaterialization(reply)) break;
       await delay(delayMs);
       if (generation !== this.#generationToken) return stale();
       reply = await this.#host.request(method, params);
       if (generation !== this.#generationToken) return stale();
     }
+    if (method === "thread/turns/list" && threadId && "result" in reply)
+      this.#startedThreads.delete(threadId);
     // A native Thread exists before its first user message materializes history.
     // Only that explicit initial-page response means empty history, not a failed read.
     if (
-      method === "thread/turns/list" &&
+      initialTurnsPage &&
       threadId &&
-      (params.cursor === undefined || params.cursor === null) &&
       "error" in reply &&
       reply.error.code === -32600 &&
       reply.error.message ===
@@ -767,6 +791,7 @@ export class NativeClientChannel {
     this.#generationToken += 1;
     this.#knownThreads.clear();
     this.#resumedThreads.clear();
+    this.#startedThreads.clear();
     this.#pending.clear();
     this.#pendingNativeIds.clear();
     this.#unconfirmedResponses.clear();

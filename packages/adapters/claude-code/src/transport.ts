@@ -17,12 +17,19 @@ import type { ClaudePermissionMode } from "./permission-modes.js";
 export type ClaudeUserContent = SDKUserMessage["message"]["content"];
 
 export type ClaudeTransportFailureKind =
-  "authentication" | "cancellationUnproven" | "native" | "protocol" | "textConflict";
+  | "authentication"
+  | "billing"
+  | "cancellationUnproven"
+  | "native"
+  | "protocol"
+  | "quotaExhausted"
+  | "rateLimited"
+  | "textConflict";
 
 export type ClaudeTransportTurnResult =
   | { status: "succeeded" }
   | { status: "cancelled"; reason: string }
-  | { status: "failed"; kind: ClaudeTransportFailureKind };
+  | { status: "failed"; kind: ClaudeTransportFailureKind; resetsAtUnix?: number };
 
 export interface ClaudeQuestionOption {
   label: string;

@@ -458,12 +458,79 @@
   margin: 12px 0;
   padding: 0;
   border: 0;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   cursor: zoom-in;
 }
 .imageButtonStandalone {
   max-width: 100%;
+}
+.imageButtonLoading {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: min(100%, 220px);
+  height: 148px;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 0;
+  background: var(--dsw-alias-bg-skeleton);
+  cursor: default;
+}
+.imageButtonStandalone.imageButtonLoading {
+  width: min(100%, 240px);
+  height: 160px;
+}
+.imageFrame {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+}
+.imageFrameLoading {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: min(100%, 320px);
+  height: 180px;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-skeleton);
+}
+.imageButtonLoading::before,
+.imageFrameLoading::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 20%,
+    color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent) 50%,
+    transparent 80%
+  );
+  transform: translateX(-100%);
+  animation: markdown-image-shimmer 1.6s var(--ds-ease-in-out, ease-in-out) infinite;
+  pointer-events: none;
+}
+.imagePlaceholder {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 0 12px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  pointer-events: none;
+  user-select: none;
+}
+.imageSpinner {
+  flex: none;
+  animation: markdown-image-spin 0.9s linear infinite;
 }
 .markdown > p:first-child > .imageButton:first-child {
   margin-top: 0;
@@ -482,17 +549,63 @@
   height: auto;
   max-height: 220px;
   box-sizing: border-box;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-sm);
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  box-shadow:
+    0 0 0 0.5px var(--dsw-alias-border-l1),
+    0 1px 3px rgba(0, 0, 0, 0.04);
   object-fit: contain;
-  transition: border-color var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+  transition: box-shadow var(--ds-transition-duration-fast) var(--ds-ease-in-out);
 }
 .imageButtonStandalone .image {
   max-width: 100%;
   max-height: 160px;
 }
+.imageButton .imageLoading,
+.imageFrame .imageLoading {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: 0;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+}
+.imageReveal {
+  animation: markdown-image-reveal var(--ds-transition-duration, 0.2s) var(--ds-ease-out, ease-out);
+}
 .imageButton:hover .image {
-  border-color: var(--dsw-alias-border-l3);
+  box-shadow:
+    0 0 0 0.5px var(--dsw-alias-border-l2-darkmode-thin),
+    0 3px 10px rgba(0, 0, 0, 0.08);
+}
+@keyframes markdown-image-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes markdown-image-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes markdown-image-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .imageButtonLoading::before,
+  .imageFrameLoading::before,
+  .imageSpinner,
+  .imageReveal {
+    animation: none;
+  }
 }
 .imageButton:focus-visible {
   outline: var(--dsw-focus-ring-width) solid

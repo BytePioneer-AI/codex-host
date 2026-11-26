@@ -89,6 +89,7 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     updatedAt: status.updatedAt,
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
+    ...(status.npmDownload === undefined ? {} : { npmDownload: status.npmDownload }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
     ...(status.serviceStopOutput === undefined
       ? {}

@@ -115,10 +115,10 @@ export interface IWorkspaces {
   moveWorkspaceToSection?(workspaceId: WorkspaceId, sectionId: string | null): Promise<void>;
   moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
 
-  /** Move a local native Session to an existing local native project without changing section, pin, or cwd. */
+  /** Change or clear a Session's native project without changing section, pin, or cwd. */
   moveSessionToProject?(
     sessionId: SessionId,
-    projectId: string,
+    projectId: string | null,
   ): Promise<WorkspaceMoveSessionToProjectValue>;
   /** Create a custom Thread section with a non-empty name. */
   createThreadSection?(name: string): Promise<WorkspaceCreateThreadSectionValue>;
@@ -204,7 +204,7 @@ export class WorkspaceController extends Service implements IWorkspaces {
 
   async moveSessionToProject(
     sessionId: SessionId,
-    projectId: string,
+    projectId: string | null,
   ): Promise<WorkspaceMoveSessionToProjectValue> {
     const result = await this.model.moveSessionToProject({ sessionId, projectId });
     if (!result.ok) {

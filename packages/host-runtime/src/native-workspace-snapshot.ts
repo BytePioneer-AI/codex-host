@@ -207,7 +207,10 @@ export async function readExternalWorkspaceSnapshot(
     Object.entries(snapshot.assignments).filter(([id]) => nativeProjects || owned.has(id)),
   );
   const verified = canMove ? new Map<string, string | null>() : undefined;
-  if (readProjectIds && guiByNative.size) {
+  const projectless = new Set(
+    snapshot.projectless.filter((id) => owned.has(id) && !assignments.has(id)),
+  );
+  if (readProjectIds) {
     const official = [...owned].filter((id) => !externalIds.has(id));
     const values = await readProjectIds(official);
     for (const id of official) {
@@ -218,13 +221,16 @@ export async function readExternalWorkspaceSnapshot(
       if (guiId === undefined) assignments.delete(id);
       else assignments.set(id, guiId);
       if (guiId !== undefined || nativeId === null) verified?.set(id, guiId ?? null);
+      if (nativeId === null) projectless.add(id);
+      else if (guiId !== undefined) projectless.delete(id);
     }
   }
-  const projectless = new Set(
-    snapshot.projectless.filter((id) => owned.has(id) && !assignments.has(id)),
-  );
   for (const thread of threads) {
-    if (thread.projectId) {
+    if (thread.projectId === "") {
+      assignments.delete(thread.hostThreadId);
+      verified?.set(thread.hostThreadId, null);
+      projectless.add(thread.hostThreadId);
+    } else if (thread.projectId !== undefined) {
       const guiId = guiByNative.get(thread.projectId);
       if (guiId !== undefined) {
         assignments.set(thread.hostThreadId, guiId);

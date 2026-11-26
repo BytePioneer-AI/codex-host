@@ -221,6 +221,42 @@ it("uses the native project's ID and binding even when the catalog row still nam
   ]);
 });
 
+for (const nativeProjects of [false, true]) {
+  it(`keeps a cleared Thread out of projects on refresh (nativeProjects=${nativeProjects})`, async (t) => {
+    const host = new FakeChHost();
+    const { row, workspaces, call, list, subscribe } = setup(t, host);
+    host.projectSnapshot.nativeProjects = nativeProjects;
+    row.projectId = "project-moving"; // Catalog can still name the old project.
+    const request = host.request.bind(host);
+    let writes = 0;
+    host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, params);
+      assert.deepEqual(params, { threadId: row.id, projectId: null });
+      writes++;
+      delete host.projectSnapshot.assignments[row.id];
+      host.projectSnapshot.projectless.push(row.id);
+      return { status: "unknown" } as T;
+    };
+    const cwd = row.cwd;
+    assert.ok((await list()).ok);
+    assert.equal(workspaces.ownerOf(row.id)?.path, cwd);
+    assert.deepEqual(
+      await call("workspace/moveSessionToProject", { sessionId: row.id, projectId: null }),
+      { ok: true, value: { status: "unknown" } },
+    );
+    for (let i = 0; i < 2; i++) {
+      assert.ok((await list()).ok);
+      assert.equal(workspaces.ownerOf(row.id), undefined);
+      const [baseline] = (await subscribe("workspace/follow", {})) as Array<{
+        value: { projectlessSessionIds: string[] };
+      }>;
+      assert.deepEqual(baseline?.value.projectlessSessionIds, [row.id]);
+    }
+    assert.equal(writes, 1);
+    assert.equal(row.cwd, cwd);
+  });
+}
+
 it("publishes empty and shared-root projects with only explicit local membership", async (t) => {
   const host = new FakeChHost();
   const { row, root, call, list, move, subscribe, workspaces } = setup(t, host);
@@ -391,6 +427,7 @@ it("validates the local Thread and request before sending any Host move or remot
   );
   for (const params of [
     { sessionId: row.id, projectId: "" },
+    { sessionId: row.id },
     { sessionId: row.id, projectId: "target", cwd: root },
     {
       sessionId: row.id,

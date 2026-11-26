@@ -69,13 +69,13 @@ export type ClientThreadSectionMutationResult = z.infer<
 export const CLIENT_THREAD_PROJECT_MOVE_METHOD = "codexhost/workspace/moveThreadToProject";
 const projectMoveId = z.string().max(1_024).regex(/\S/u);
 export const clientSessionProjectMoveParamsSchema = z
-  .object({ sessionId: projectMoveId, projectId: projectMoveId })
+  .object({ sessionId: projectMoveId, projectId: projectMoveId.nullable() })
   .strict();
 export const clientThreadProjectMoveParamsSchema = z
-  .object({ threadId: projectMoveId, projectId: projectMoveId })
+  .object({ threadId: projectMoveId, projectId: projectMoveId.nullable() })
   .strict();
 export const clientThreadProjectMoveResultSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("confirmed"), projectId: projectMoveId }).strict(),
+  z.object({ status: z.literal("confirmed"), projectId: projectMoveId.nullable() }).strict(),
   z.object({ status: z.literal("unknown") }).strict(),
 ]);
 

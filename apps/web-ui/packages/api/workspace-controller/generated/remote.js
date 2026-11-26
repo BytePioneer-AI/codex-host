@@ -356,7 +356,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_updateThreadSection_re
 })]))
 const workspaceMoveProjectRequest = () => z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
-  'projectId': z.string().min(1).readonly(),
+  'projectId': z.string().min(1).nullable().readonly(),
 }).strict()
 const workspaceMoveProjectResult = () => z.union([
   z.object({
@@ -364,7 +364,7 @@ const workspaceMoveProjectResult = () => z.union([
   }).strict(),
   z.object({
     'status': z.literal("confirmed").readonly(),
-    'projectId': z.string().min(1).readonly(),
+    'projectId': z.string().min(1).nullable().readonly(),
   }).strict(),
 ])
 

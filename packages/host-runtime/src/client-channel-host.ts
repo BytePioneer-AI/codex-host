@@ -122,7 +122,7 @@ export interface ClientChannelHostDependencies {
   readThreadHandoff?(threadId: string): Promise<ThreadHandoffMetadata | null>;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
-  moveThreadToProject?(threadId: string, projectId: string): Promise<ConsoleHostReply>;
+  moveThreadToProject?(threadId: string, projectId: string | null): Promise<ConsoleHostReply>;
   readNativeProjectIds?(
     threadIds: readonly string[],
   ): Promise<ReadonlyMap<string, string | null | undefined>>;

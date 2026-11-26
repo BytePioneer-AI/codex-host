@@ -134,7 +134,8 @@ const storedThreadMetadataFieldsShape = {
     .catch(undefined),
   /** Bounded first user message, independent of the official title. Empty means textless. */
   preview: z.string().max(4_096).optional(),
-  projectId: nonBlankTextSchema.max(1_024).optional(),
+  /** Empty marks an explicit no-project selection; missing permits legacy navigation. */
+  projectId: z.union([nonBlankTextSchema.max(1_024), z.literal("")]).optional(),
   projectlessWorkspace: z
     .object({
       workspaceRoot: nonBlankTextSchema.max(16_384),
@@ -342,7 +343,7 @@ export interface FindRecentDelegationInput {
  */
 export interface ThreadMetadataPatch {
   preview?: string | null;
-  projectId?: string | null;
+  projectId?: string | null; // Empty records no project; null removes the field.
   projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"] | null;
   daybreakEnabled?: boolean;
   gitInfo?: {

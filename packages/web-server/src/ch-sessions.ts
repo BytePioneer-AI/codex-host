@@ -696,6 +696,7 @@ export class ChSessions {
           ? { projectlessSessionIds: projectlessSessionIds.sort() }
           : {}),
       };
+      const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
       if (projects.nativeProjects) {
         const roots = nativeProjectRootOwners(projects.projects);
         const projectFor = this.nativeProjectResolver(projects, roots);
@@ -719,7 +720,6 @@ export class ChSessions {
       }
       const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
       const rootTitles = projectRootTitles(projects.projects);
-      const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
       for (const row of this.rows.values()) {
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
           projectless.add(row.id);

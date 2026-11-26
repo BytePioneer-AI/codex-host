@@ -41,9 +41,9 @@ Web / App → Web 网关 → 客户端通道 ───────────�
 
 后台以只读方式从 `CODEX_HOME/.codex-global-state.sqlite` 读取 GUI 项目归属，仅在 SQLite 文件不存在或尚未迁移（`user_version` 为 0）时读取同目录的 `.codex-global-state.json`。若此时 JSON 文件也不存在，GUI 归属为空。文件损坏或数据库版本不受支持（如高于 1）时，查询报错。`codexhost/workspace/read` 投影 canonical external IDs 及请求中指定的原生 Thread IDs，并合并唯一 Mapping Store 中明确记录的项目/无项目事实；生成的执行目录不凭 cwd 匹配变成项目。置顶统一通过 `codexhost/thread/pins/list` / `codexhost/thread/pins/set` 访问原生分区协议与同一 Mapping Store 的外部 Thread 分区记录，支持无 Desktop 窗口读写；查询与 Desktop 分区移动共用串行边界。官方 Thread 的置顶通过官方 `thread/section/move` 持久化，不要求外部 Mapping Store 记录；`pins/list` 始终查询官方 Pinned 分区，再合并未归档外部成员，返回与 Desktop 一致的混合顺序（包含没有外部置顶的情况）。`workspace/read` 的置顶字段仅从 Mapping Store 投影外部成员，不读取 GUI 全局文件中的置顶副本，也不是 Web 置顶列表的事实源；完整成员与顺序通过 `pins/list` 查询。不建立预置顶、补写队列或 Renderer 回退；原生能力不可用时明确失败，未知写入结果不自动重发。远程 SSH 的原有执行所有权保持原样，公开客户端通道支持本机原生与 external Threads，但不聚合远程连接；移动后台推送不是此改造的能力。
 
-更改项目归属的本机服务入口为 `codexhost/workspace/moveThreadToProject {threadId, projectId}`。`projectId` 使用 `workspace/read` 的项目 ID：原生目录使用 `project/list` 的 ID，兼容目录将 GUI ID 按本机 scope 转成原生 ID。Host 通过同一 app-server 的 `project/read` 校验目标。官方 Codex Thread 通过 `thread/metadata/update {threadId, projectId}` 写入，再用独立 `thread/read` 确认；外部 Harness Thread 由 Mapping Store 保存并回读项目 metadata。旧协议缺少原生归属字段时，GUI 归属仅用于导航，不会变成可写绑定。
+更改项目归属的本机服务入口为 `codexhost/workspace/moveThreadToProject {threadId, projectId}`。`projectId` 使用 `workspace/read` 的项目 ID，或用 `null` 明确设为无项目。原生目录使用 `project/list` 的 ID，兼容目录将 GUI ID 按本机 scope 转成原生 ID；Host 通过同一 app-server 的 `project/read` 校验正向项目目标。官方 Codex Thread 通过 `thread/metadata/update {threadId, projectId}` 写入，清除时向该协议传 `""`（`null` 和省略字段不修改项目），再用独立 `thread/read` 确认。外部 Harness Thread 由 Mapping Store 保存并回读项目 metadata；显式无项目有持久标记，不等同于未记录归属。旧协议缺少原生归属字段时，GUI 归属仅用于导航，不会变成可写绑定。
 
-目标校验、写入和回读使用同一代官方后台。Host 在回读后确认目标项目仍存在；写入前后台换代或收到目标删除通知时拒绝操作，写入已尝试但无法确认时返回 `{status:"unknown"}`，不重发。目录刷新在当前 Owner 代次内复用已确认的原生归属；收到项目变更通知时使相关缓存失效。单个 Thread 的归属读取失败不影响其他 Thread；缺少确认的归属不能用旧 GUI 记录或执行目录补成可写绑定。外部 Thread 若只有旧 GUI 归属，保留导航但不允许移动；没有任何项目归属则可作为明确的无项目来源。删除项目后的外部归属清理与项目移动、分区和置顶操作使用同一串行边界。
+目标校验、写入和回读使用同一代官方后台。Host 在回读后确认非空目标项目仍存在；写入前后台换代或收到目标删除通知时拒绝操作，写入已尝试但无法确认时返回 `{status:"unknown"}`，不重发。目录刷新在当前 Owner 代次内复用已确认的原生归属；收到项目变更通知时使相关缓存失效。单个 Thread 的归属读取失败不影响其他 Thread；缺少确认的归属不能用旧 GUI 记录或执行目录补成可写绑定。显式无项目不回退到旧 GUI 分配或目录匹配；外部 Thread 若只有旧 GUI 归属，保留导航但不允许移动。删除项目后的外部归属清理与项目移动、分区和置顶操作使用同一串行边界。
 
 ## 官方 Codex 的统一入口
 

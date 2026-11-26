@@ -129,10 +129,12 @@ async function setup(
       case "thread/metadata/update":
         if (options.write === "rejected")
           return { error: { code: -32602, message: "Native project move rejected" } };
-        if (options.write !== "stale") thread.projectId = projectId;
+        if (typeof projectId !== "string")
+          return { error: { code: -32600, message: "No metadata fields to update" } };
+        if (options.write !== "stale") thread.projectId = projectId || null;
         return options.write === "ambiguous"
           ? { error: { code: -32093, message: "Native write outcome unavailable" } }
-          : { result: { thread: { ...thread, projectId } } };
+          : { result: { thread: { ...thread, projectId: projectId || null } } };
       case "threadSection/list":
         return { result: { data: [SECTION], nextCursor: null } };
       case "thread/list":
@@ -241,7 +243,7 @@ async function setup(
 
 type Setup = Awaited<ReturnType<typeof setup>>;
 
-function move({ fixture }: Setup, threadId: string, projectId = GUI_PROJECT) {
+function move({ fixture }: Setup, threadId: string, projectId: string | null = GUI_PROJECT) {
   return fixture.host.handleClientRequest(MOVE, { threadId, projectId });
 }
 
@@ -281,6 +283,32 @@ describe("Host client project move", () => {
     expect((await workspace(context, [NATIVE_THREAD], true)).assignments[NATIVE_THREAD]).toBe(
       NATIVE_PROJECT,
     );
+  });
+
+  it("clears the native project with an empty wire value and never restores the legacy assignment", async () => {
+    const context = await setup();
+    await expect(move(context, NATIVE_THREAD)).resolves.toEqual(confirmed);
+    await workspace(context, [NATIVE_THREAD]);
+    await expect(move(context, NATIVE_THREAD, null)).resolves.toEqual({
+      result: { status: "confirmed", projectId: null },
+    });
+    expect(nativeWrites(context)).toHaveLength(2);
+    expect(nativeWrites(context).at(-1)?.params).toEqual({
+      threadId: NATIVE_THREAD,
+      projectId: "",
+    });
+    expect(context.thread).toMatchObject({ projectId: null, cwd: context.cwd, section: SECTION });
+    for (const restart of [false, true]) {
+      if (restart) {
+        await context.scope.stop();
+        await context.scope.start();
+      }
+      const snapshot = await workspace(context, [NATIVE_THREAD]);
+      expect(snapshot.assignments).not.toHaveProperty(NATIVE_THREAD);
+      expect(snapshot.projectMoveBindings?.assignments[NATIVE_THREAD]).toBeNull();
+      expect(snapshot.projectless).toContain(NATIVE_THREAD);
+    }
+    expect(await readFile(context.stateFile, "utf8")).toBe(context.originalState);
   });
 
   it("moves the official Thread using scoped native IDs and confirms from a separate read", async () => {
@@ -418,6 +446,19 @@ describe("Host client project move", () => {
       expect(nativeWrites(context)).toHaveLength(1);
     },
   );
+
+  it("returns unknown without resending when a native clear cannot be read back", async () => {
+    const context = await setup({ write: "stale" });
+    await expect(move(context, NATIVE_THREAD, null)).resolves.toEqual({
+      result: { status: "unknown" },
+    });
+    expect(nativeWrites(context).map(({ params }) => params)).toEqual([
+      { threadId: NATIVE_THREAD, projectId: "" },
+    ]);
+    expect((await workspace(context, [NATIVE_THREAD])).assignments[NATIVE_THREAD]).toBe(
+      OLD_GUI_PROJECT,
+    );
+  });
 
   it("confirms an ambiguous native write only by reading it back, without resending", async () => {
     const context = await setup({ write: "ambiguous" });
@@ -690,6 +731,39 @@ describe("Host client project move", () => {
     expect(await fixture.mappingStore.getThread(threadId)).toEqual(after);
     expect(nativeWrites(context)).toEqual([]);
     expect(await readFile(context.stateFile, "utf8")).toBe(context.originalState);
+  });
+
+  it("persists explicit external no-project across reopen despite a legacy assignment", async () => {
+    const context = await setup();
+    const id = await startExternal(context);
+    await context.mappingStore.updateMetadata(id, { projectId: OLD_NATIVE_PROJECT });
+    const state = JSON.parse(context.originalState);
+    state["thread-project-assignments"][id] = { projectKind: "local", projectId: OLD_GUI_PROJECT };
+    await writeFile(context.stateFile, JSON.stringify(state), "utf8");
+    await expect(move(context, id)).resolves.toEqual(confirmed);
+    const before = await context.mappingStore.getThread(id);
+    if (!before) throw new Error("Missing external Thread record");
+    await expect(move(context, id, null)).resolves.toEqual({
+      result: { status: "confirmed", projectId: null },
+    });
+    const snapshot = await workspace(context);
+    expect(snapshot.assignments).not.toHaveProperty(id);
+    expect(snapshot.projectMoveBindings?.assignments[id]).toBeNull();
+    expect(snapshot.projectless).toContain(id);
+    await context.mappingStore.close();
+    const reopened = new MappingStore({ directory: path.join(context.home, "store") });
+    await reopened.initialize();
+    try {
+      expect(await reopened.getThread(id)).toEqual({
+        ...before,
+        projectId: "",
+        revision: before.revision + 1,
+        updatedAt: expect.any(String),
+      });
+    } finally {
+      await reopened.close();
+    }
+    expect(nativeWrites(context)).toEqual([]);
   });
 
   it("cancels an external update at the store write boundary if its owner retired", async () => {

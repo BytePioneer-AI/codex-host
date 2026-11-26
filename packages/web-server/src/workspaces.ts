@@ -428,11 +428,11 @@ export class Workspaces {
       if (sectionCapability === undefined || capable === sectionCapability) sink.push(frame);
   }
 
-  hasProjectMoveBinding(sessionId: string, projectId: string): boolean {
+  hasProjectMoveBinding(sessionId: string, projectId: string | null): boolean {
     const state = this.localProjectState;
     return (
       state !== undefined &&
-      state.localProjects.some((project) => project.id === projectId) &&
+      (projectId === null || state.localProjects.some((project) => project.id === projectId)) &&
       (state.projectlessSessionIds?.includes(sessionId) === true ||
         state.localProjects.some((project) => project.sessionIds.includes(sessionId)))
     );

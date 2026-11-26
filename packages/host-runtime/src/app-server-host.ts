@@ -1172,7 +1172,7 @@ export class AppServerHost {
         ? {
             ...(options.localProjectMoves
               ? {
-                  moveThreadToProject: (threadId: string, projectId: string) => {
+                  moveThreadToProject: (threadId: string, projectId: string | null) => {
                     // A cold owner can start generation one; a queued move cannot adopt a replacement.
                     const generation = this.#officialRuntimeScope.owner.generation || 1;
                     return this.#desktopRequests.run(threadId, () =>
@@ -3036,7 +3036,7 @@ export class AppServerHost {
 
   #moveClientThreadToProject(
     threadId: string,
-    projectId: string,
+    projectId: string | null,
     generation: number,
   ): Promise<ConsoleHostReply> {
     return this.#runSectionOperation(async () => {
@@ -3054,8 +3054,8 @@ export class AppServerHost {
         if (this.#projectMoveTarget?.invalidated)
           throw new Error("Project move target was deleted");
       };
-      const confirmTarget = async (nativeId: string) => {
-        const exists = await this.#projectExists(nativeId, checkTarget);
+      const confirmTarget = async (nativeId: string | null) => {
+        const exists = nativeId === null || (await this.#projectExists(nativeId, checkTarget));
         if (exists && this.#isProjectOwner(generation) && !this.#projectMoveTarget?.invalidated)
           return confirmed;
         return attemptedWrite ? unknown : unavailable;
@@ -3078,11 +3078,16 @@ export class AppServerHost {
         checkOwner();
         const { legacyAssignedThreads, nativeByGui, guiByNative } = await readWorkspaceProjects(
           environment,
-          nativeProjects?.some(({ id }) => id === projectId) ? nativeProjects : undefined,
+          projectId === null || nativeProjects?.some(({ id }) => id === projectId)
+            ? nativeProjects
+            : undefined,
         );
-        const nativeId = nativeByGui.get(projectId);
+        const nativeId = projectId === null ? null : nativeByGui.get(projectId);
         if (nativeId) this.#projectMoveTarget = { nativeId, invalidated: false };
-        if (!nativeId || !(await this.#projectExists(nativeId, checkTarget))) {
+        if (
+          nativeId === undefined ||
+          (nativeId !== null && !(await this.#projectExists(nativeId, checkTarget)))
+        ) {
           return { error: { code: -32602, message: "Local project is unavailable" } };
         }
         checkTarget();
@@ -3098,7 +3103,7 @@ export class AppServerHost {
             record.state !== "ready" ||
             (record.projectId === undefined
               ? legacyAssignedThreads.has(id)
-              : !guiByNative.has(record.projectId)) ||
+              : record.projectId !== "" && !guiByNative.has(record.projectId)) ||
             record.archived ||
             record.ephemeral ||
             record.subagent ||
@@ -3110,9 +3115,14 @@ export class AppServerHost {
           )
             return unavailable;
           checkTarget();
-          if (record.projectId === nativeId) return await confirmTarget(nativeId);
+          const storedProjectId = nativeId ?? "";
+          if (record.projectId === storedProjectId) return await confirmTarget(nativeId);
           try {
-            await this.#repository.updateMetadata(id, { projectId: nativeId }, { beforeWrite });
+            await this.#repository.updateMetadata(
+              id,
+              { projectId: storedProjectId },
+              { beforeWrite },
+            );
           } catch (error) {
             if (!attemptedWrite) throw error;
             this.#diagnose(error);
@@ -3125,9 +3135,9 @@ export class AppServerHost {
             if (actual.projectId !== record.projectId) {
               await this.#writer.json({
                 method: "thread/project/updated",
-                params: { threadId, projectId: actual.projectId ?? null },
+                params: { threadId, projectId: actual.projectId || null },
               });
-              return actual.projectId === nativeId ? await confirmTarget(nativeId) : unknown;
+              return actual.projectId === storedProjectId ? await confirmTarget(nativeId) : unknown;
             }
           }
           this.clientEvents.changed(threadId, "thread/project/updated");
@@ -3156,7 +3166,7 @@ export class AppServerHost {
         try {
           write = await this.#officialRuntime.request(
             "thread/metadata/update",
-            { threadId, projectId: nativeId },
+            { threadId, projectId: nativeId ?? "" },
             beforeWrite,
           );
         } catch (error) {
@@ -4844,11 +4854,11 @@ export class AppServerHost {
       return;
     }
     const patch = {
-      ...(update.projectId !== undefined ? { projectId: update.projectId } : {}),
+      ...(update.projectId !== undefined ? { projectId: update.projectId ?? "" } : {}),
       ...(update.daybreakEnabled !== undefined ? { daybreakEnabled: update.daybreakEnabled } : {}),
       ...(update.gitInfo !== undefined ? { gitInfo: update.gitInfo } : {}),
     };
-    const previousProjectId = location.record.projectId ?? null;
+    const previousProjectId = location.record.projectId;
     const updated = await this.#persistExternalThreadRecord(
       request,
       location,
@@ -4858,11 +4868,11 @@ export class AppServerHost {
     );
     if (!updated) return;
     await this.#writer.json(rpcEnvelope(request, { result: { thread: updated.thread } }));
-    const projectId = updated.record.projectId ?? null;
+    const projectId = updated.record.projectId;
     if (projectId !== previousProjectId) {
       await this.#writer.json({
         method: "thread/project/updated",
-        params: { threadId: updated.record.hostThreadId, projectId },
+        params: { threadId: updated.record.hostThreadId, projectId: projectId || null },
       });
     }
   }

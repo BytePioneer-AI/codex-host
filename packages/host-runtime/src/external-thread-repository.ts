@@ -740,7 +740,7 @@ export function externalThreadValue(input: {
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
     isPinned: false,
-    projectId: record.projectId ?? null,
+    projectId: record.projectId || null,
     ...(record.projectlessWorkspace && !record.projectId
       ? {
           workspaceKind: "projectless",

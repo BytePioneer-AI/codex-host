@@ -108,7 +108,11 @@ describe("workspace-controller project move contracts", () => {
       projectId: "proj-beta",
     });
     expect(() => moveParam.parse({ sessionId: "t-1", projectId: "" })).toThrow();
-    expect(() => moveParam.parse({ sessionId: "t-1", projectId: null })).toThrow();
+    expect(moveParam.parse({ sessionId: "t-1", projectId: null })).toEqual({
+      sessionId: "t-1",
+      projectId: null,
+    });
+    expect(() => moveParam.parse({ sessionId: "t-1" })).toThrow();
     expect(() =>
       moveParam.parse({ sessionId: "t-1", projectId: "proj-beta", sectionId: "sec-1" }),
     ).toThrow();
@@ -126,6 +130,10 @@ describe("workspace-controller project move contracts", () => {
     expect(moveResult.parse({ status: "unknown" })).toEqual({ status: "unknown" });
     expect(() => moveResult.parse({ projectId: "proj-beta" })).toThrow();
     expect(() => moveResult.parse({ status: "confirmed", projectId: "" })).toThrow();
+    expect(moveResult.parse({ status: "confirmed", projectId: null })).toEqual({
+      status: "confirmed",
+      projectId: null,
+    });
     expect(() => moveResult.parse({ status: "unknown", projectId: "proj-beta" })).toThrow();
 
     const frame = followSchema.parse({

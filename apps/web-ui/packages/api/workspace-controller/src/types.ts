@@ -202,10 +202,10 @@ export interface WorkspaceLocalProject {
   readonly workspaceIds?: readonly WorkspaceId[];
 }
 
-/** Narrow request moving a local native Session to an existing local native project. */
+/** Move a local Session to a native project, or clear its project with `null`. */
 export interface WorkspaceMoveSessionToProjectRequest {
   readonly sessionId: SessionId;
-  readonly projectId: string;
+  readonly projectId: string | null;
 }
 
 /** Result of `workspace/moveSessionToProject`: confirmed destination or unknown outcome. */
@@ -213,7 +213,7 @@ export type WorkspaceMoveSessionToProjectValue =
   | { readonly status: "unknown" }
   | {
       readonly status: "confirmed";
-      readonly projectId: string;
+      readonly projectId: string | null;
     };
 
 /** Native section appearance supplied by Codex Desktop / official app-server. */

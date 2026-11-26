@@ -187,6 +187,7 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 | Kimi Code | 原生 `--version` 和区域 CDN 最新版本；仅识别的全局 npm 安装或带手动更新能力的原生二进制允许更新，其他安装使用原安装方式。 |
 | Antigravity CLI | 原生 `--version` 与按 OS/CPU 的官方更新清单；执行 `agy update`。Host 在 Windows 和 macOS 上为自身启动的 CLI 进程默认设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，更新仍通过显式 `agy update` 执行；安装器和用户已有设置不变。 |
 | OMP | 原生 `update --check` / `update`，保留配置的 stable/canary 渠道；校验原生更新器在 PATH 中选择的目标与所选安装一致，Nix 和目标不一致的自定义入口保留手动更新。 |
+| OmO | 原生 `omo --version` 与 `omo update --dry-run` 非交互检查；`omo update` 自替换未在真机验证，`canUpdate:false` + `manualUpdateUrl`（详见 [OmO 接入](../harnesses/omo/omo-harness-integration.md#版本检查与更新)）。 |
 | OpenCode | `--version`；npm 安装查询原包版本并更新其准确 prefix，标准 `~/.opencode/bin/opencode` 原生安装查询官方 GitHub Release 并执行 `upgrade <version> --method curl`。其他包管理器、自定义安装和 Windows 原生安装只检查，不进入交互式安装回退。 |
 | Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
 | CodeBuddy | `--version`；识别的 npm 安装查询 `@tencent-ai/codebuddy-code`，只有全局安装允许在原 prefix 更新。原生安装只显示已安装版本，最新版本和更新交给原安装器；macOS 受管远程 Broker 尚不转发该能力。 |

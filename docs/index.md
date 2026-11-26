@@ -47,7 +47,7 @@
 
 ## Harness 专项
 
-[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，以及 Pi 权限模式、Antigravity ACP 审批/派生/压缩等边界。
+[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，以及 OmO classic RPC、Pi 权限模式、Antigravity ACP 审批/派生/压缩等边界。
 
 ### Antigravity
 
@@ -113,6 +113,12 @@
 | --- | --- |
 | [`harnesses/omp/omp-interactions.md`](harnesses/omp/omp-interactions.md) | OMP 原生提问、审批、选项说明和超时语义；维护 OMP 交互时阅读。 |
 | [`harnesses/omp/omp-steer.md`](harnesses/omp/omp-steer.md) | OMP 原生插话窗口、拒绝与未知回执、历史和实机 Gate。 |
+
+### OmO
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/omo/omo-harness-integration.md`](harnesses/omo/omo-harness-integration.md) | OmO 插件经 `omo --mode rpc` classic stdio JSONL 接入：能力协商与版本门槛、会话与 Turn 语义、安装与更新通道门、已知边界及 SUL-1.0 与商标披露；维护 OmO Adapter 时阅读。 |
 
 ### Grok
 

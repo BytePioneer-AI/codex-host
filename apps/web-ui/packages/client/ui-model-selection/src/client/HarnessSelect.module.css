@@ -44,11 +44,41 @@
 }
 
 .menu[role="menu"] {
-  width: 224px;
-  min-width: min(224px, calc(100vw - 24px));
+  width: 236px;
+  min-width: min(236px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
   max-height: min(420px, calc(100dvh - 48px));
   border-radius: 6px;
+}
+
+.handoffLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.harnessName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.handoffIcon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  transition: color 120ms ease;
+}
+
+.menu [role="menuitem"]:hover:not(:disabled) .handoffIcon,
+.menu [role="menuitem"]:focus-visible:not(:disabled) .handoffIcon {
+  color: var(--dsw-alias-label-secondary);
 }
 
 .menu [role="menuitem"] {

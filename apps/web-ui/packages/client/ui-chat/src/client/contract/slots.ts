@@ -234,6 +234,20 @@ export interface ChatHandoffResult {
   readonly handoff: ThreadHandoffMetadata;
 }
 
+export interface ChatHandoffModalRequest {
+  readonly seq: number;
+  readonly sessionId: SessionId;
+  readonly targetHarnessId?: string;
+  readonly atSeq?: number;
+}
+
+export interface ChatHandoffLauncher {
+  open(
+    sessionId: SessionId,
+    options?: { readonly targetHarnessId?: string; readonly atSeq?: number },
+  ): void;
+}
+
 declare module "@deepseek-ai/cordis" {
   interface Context {
     chatTurnDiffs: {
@@ -245,6 +259,7 @@ declare module "@deepseek-ai/cordis" {
     chatHandoff: {
       handoff(request: ChatHandoffRequest): Promise<ChatHandoffResult>;
     };
+    chatHandoffLauncher: ChatHandoffLauncher;
   }
 }
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -337,6 +352,8 @@ export interface ChatViewInjected {
     presentation: ObservableSnapshot<ChatPresentationPolicy>;
     /** Whether the Sidebar Browser is registered. */
     browserAvailable: ObservableSnapshot<boolean>;
+    /** Pending cross-Harness handoff modal open request initiated outside ChatView. */
+    handoffRequest: ObservableSnapshot<ChatHandoffModalRequest | null>;
   };
   keyedHooks: {
     /** Resolve the stable source for one Chat Node key. */
@@ -368,6 +385,7 @@ export interface ChatViewInjected {
   forkAt: (seq: number) => Promise<void>;
   openSession: (sessionId: string) => void;
   handoff?: ((input: ChatHandoffInput) => Promise<void>) | undefined;
+  clearHandoffRequest: (seq: number) => void;
   loadModelCatalog?: (() => Promise<ModelCatalog>) | undefined;
   editMessage?: ((seq: number, text: string) => Promise<SentMessageEditReceipt>) | undefined;
   loadTurnDiffs?: ((turn: number, path?: string) => Promise<readonly DiffHunk[]>) | undefined;

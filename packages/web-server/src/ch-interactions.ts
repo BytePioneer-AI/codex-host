@@ -289,6 +289,12 @@ export class ChInteractions {
       );
     }
   }
+  hasPending(sessionId: string): boolean {
+    for (const value of this.pending.values()) {
+      if (value.sessionId === sessionId) return true;
+    }
+    return false;
+  }
   clearSession(sessionId: string): void {
     this.bumpSessionVersion(sessionId);
     this.sessionEpochs.delete(sessionId);

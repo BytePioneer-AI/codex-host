@@ -37,10 +37,19 @@ export function ChatMarkdown({
   const [copyFailed, setCopyFailed] = useState(false);
   const closeMenu = useCallback(() => setTarget(null), []);
   const getAnchorRect = useCallback(() => target?.position ?? null, [target]);
+  const expandCodeLabel = useCallback((count: number) => t("codeBlock.expand", { count }), [t]);
+  const collapseCodeLabel = t("codeBlock.collapse");
 
   return (
     <>
-      <MarkdownDelegateProvider {...delegate} openFile={openFile} onLinkContextMenu={setTarget}>
+      <MarkdownDelegateProvider
+        collapsibleCodeBlocks
+        expandCodeLabel={expandCodeLabel}
+        collapseCodeLabel={collapseCodeLabel}
+        {...delegate}
+        openFile={openFile}
+        onLinkContextMenu={setTarget}
+      >
         {children}
       </MarkdownDelegateProvider>
       <Menu

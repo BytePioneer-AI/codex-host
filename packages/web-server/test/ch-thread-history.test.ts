@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
+import { webToolOutputPreviews } from "@codexhost/shared-contracts";
 import { ChThreadHistory } from "../src/ch-thread-history.ts";
+import { RpcError } from "../src/transport.ts";
 import { FakeChHost } from "./support/ch-host.ts";
 import { defined } from "./support/defined.ts";
 import type { ChTurn } from "../src/ch-thread-view.ts";
@@ -473,4 +475,91 @@ it("uses hostThreadId for Host requests while preserving display id and empty cw
   await view.refresh(true);
   assert.equal(view.thread.id, displayId);
   assert.equal(view.thread.cwd, "");
+});
+
+it("reloads compacted tool output across stale -32602 cursors and >200 pages without scanning on non-cursor errors", async () => {
+  const { host, row, view } = fixture(10);
+  const bigOutput = "TAIL-OK-" + "Z".repeat(70_000);
+  defined(
+    defined(row.turns[0]).items.find((item) => item.type === "commandExecution"),
+  ).aggregatedOutput = bigOutput;
+  await view.refresh();
+  await view.loadOlder();
+
+  const oldestTool = defined(view.log.events.find((event) => event.type === "tool/result"));
+  const ref = defined(
+    webToolOutputPreviews((oldestTool.data as { meta?: unknown }).meta)[0],
+  ).reference;
+
+  // Local host/rejected and remote remote/request-failed with hostCode -32602 fall back to head scan.
+  const baseRequest = host.request.bind(host);
+  for (const staleCursorError of [
+    new RpcError("host/rejected", "cursor anchor is no longer present", { hostCode: -32602 }),
+    new RpcError("remote/request-failed", "cursor anchor is no longer present", {
+      httpStatus: 400,
+      hostCode: -32602,
+    }),
+  ]) {
+    let rejectedOnce = false;
+    host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      if (method === "thread/turns/list" && params.cursor !== null && !rejectedOnce) {
+        rejectedOnce = true;
+        throw staleCursorError;
+      }
+      return baseRequest<T>(method, params);
+    };
+    const loaded = await view.readToolOutput(ref);
+    assert.equal(loaded.text, bigOutput);
+    assert.equal(rejectedOnce, true);
+  }
+
+  // Non-cursor errors propagate immediately without falling back to a head scan.
+  for (const nonCursorError of [
+    new RpcError("host/rejected", "internal failure", { hostCode: -32603 }),
+    new RpcError("host/rejected", "Thread access revoked"),
+    new RpcError("remote/request-failed", "Remote peer returned HTTP 500", { httpStatus: 500 }),
+    new RpcError("remote/auth-error", "Remote peer rejected the access token", { httpStatus: 401 }),
+  ]) {
+    const calls: Array<unknown> = [];
+    host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      if (method === "thread/turns/list") {
+        calls.push(params.cursor);
+        throw nonCursorError;
+      }
+      return baseRequest<T>(method, params);
+    };
+    await assert.rejects(view.readToolOutput(ref), { code: nonCursorError.code });
+    assert.equal(calls.length, 1, "non-cursor error must not trigger head scan");
+  }
+
+  // History deeper than 200 pages (5 turns/page -> 202 pages) still resolves without stale false positive.
+  const deep = fixture(1010);
+  defined(
+    defined(deep.row.turns[0]).items.find((item) => item.type === "commandExecution"),
+  ).aggregatedOutput = bigOutput;
+  await deep.view.refresh();
+  const deepBase = deep.host.request.bind(deep.host);
+  // Load all the way to the oldest turn so its tool reference exists, then invalidate its stored cursor.
+  while (deep.view.thread.turns.length < deep.row.turns.length) {
+    await deep.view.loadOlder();
+  }
+  const deepOldestTool = defined(
+    deep.view.log.events.find((event) => event.type === "tool/result"),
+  );
+  const deepRef = defined(
+    webToolOutputPreviews((deepOldestTool.data as { meta?: unknown }).meta)[0],
+  ).reference;
+  let invalidated = false;
+  deep.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/turns/list" && params.cursor !== null && !invalidated) {
+      invalidated = true;
+      throw new RpcError("host/rejected", "cursor anchor is no longer present", {
+        hostCode: -32602,
+      });
+    }
+    return deepBase<T>(method, params);
+  };
+  const deepLoaded = await deep.view.readToolOutput(deepRef);
+  assert.equal(deepLoaded.text, bigOutput);
+  assert.equal(invalidated, true);
 });

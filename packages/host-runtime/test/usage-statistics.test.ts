@@ -678,6 +678,55 @@ describe("UsageStatistics", () => {
     stats.close();
   });
 
+  it("checkpoints parsed sources to disk periodically before a long Harness scan finishes", async () => {
+    let now = NOW;
+    const third = Promise.withResolvers<HarnessUsageEntry[]>();
+    const secondDone = Promise.withResolvers<undefined>();
+    const sources: HarnessUsageSource[] = [
+      { id: "first", fingerprint: "1" },
+      { id: "second", fingerprint: "1" },
+      { id: "third", fingerprint: "1" },
+    ];
+    const capability: HarnessUsageStatisticsCapability = {
+      listSources: async () => sources,
+      readSource: async (id) => {
+        if (id === "first") return [entry("e1")];
+        if (id === "second") {
+          await new Promise((resolve) => setImmediate(resolve));
+          now += 61_000;
+          return [entry("e2")];
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+        secondDone.resolve(undefined);
+        return third.promise;
+      },
+    };
+    const cacheFile = path.join(directory, "usage-statistics", "v8", "codex-usage.json");
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
+    stats.attach(() => [{ harness: "codex-usage", capability }]);
+    try {
+      await stats.get("all");
+      await secondDone.promise;
+      await vi.waitFor(
+        async () => {
+          const persisted = await readFile(cacheFile, "utf8");
+          expect(persisted).toContain('"e1"');
+          expect(persisted).toContain('"e2"');
+        },
+        { timeout: 500 },
+      );
+      third.resolve([entry("e3")]);
+      await stats.settled();
+      expect((await stats.get("all")).totals.requests).toBe(3);
+    } finally {
+      stats.close();
+    }
+  });
+
   it("reparses unchanged native sources instead of retaining a v7 cache", async () => {
     const storage = new FakeStorage(
       new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),
@@ -887,6 +936,7 @@ it("uses persisted Desktop titles by Harness/native identity and reflects rename
     );
     expect(renamed.totals).toEqual(initial.totals);
     expect(storage.reads).toEqual(reads);
+    const fullThreadsSpy = vi.spyOn(fixture.mappingStore, "listThreads");
     await fixture.mappingStore.setTitle(record.hostThreadId, "");
     expect((await usageStatistics.get("all")).sessions).toContainEqual(
       expect.objectContaining({
@@ -895,7 +945,10 @@ it("uses persisted Desktop titles by Harness/native identity and reflects rename
         title: "Raw first prompt",
       }),
     );
-    vi.spyOn(fixture.mappingStore, "listThreads").mockRejectedValueOnce(new Error("unavailable"));
+    expect(fullThreadsSpy).not.toHaveBeenCalled();
+    vi.spyOn(fixture.mappingStore, "listThreadSummaries").mockRejectedValueOnce(
+      new Error("unavailable"),
+    );
     expect((await usageStatistics.get("all")).sessions).toContainEqual(
       expect.objectContaining({
         harness: "pi",

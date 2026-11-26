@@ -188,18 +188,16 @@ it("detects archived_sessions created later and resolves symlinked thread paths"
     // First watch before archived_sessions exists must not permanently cache null.
     await watch.handle({ id: 1, method: THREAD_TREE_WATCH_METHOD, params: {} });
     expect(
-      threadTreeWatchResultSchema.parse(send.mock.lastCall?.[0].result).snapshot.nodes.archived
-        ?.archived,
-    ).toBe(false);
+      threadTreeWatchResultSchema.parse(send.mock.lastCall?.[0].result).snapshot.nodes,
+    ).toHaveProperty("archived.archived", false);
 
     await mkdir(path.join(realHome, "archived_sessions"), { recursive: true });
     archiveCreated = true;
     watch.resetOfficial();
     await watch.handle({ id: 2, method: THREAD_TREE_WATCH_METHOD, params: {} });
     expect(
-      threadTreeWatchResultSchema.parse(send.mock.lastCall?.[0].result).snapshot.nodes.archived
-        ?.archived,
-    ).toBe(true);
+      threadTreeWatchResultSchema.parse(send.mock.lastCall?.[0].result).snapshot.nodes,
+    ).toHaveProperty("archived.archived", true);
   } finally {
     watch.close();
     await rm(root, { recursive: true, force: true });

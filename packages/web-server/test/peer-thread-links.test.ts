@@ -146,7 +146,7 @@ it("translates RemoteSessions outbound paths for remote-peer:* while preserving 
   const hostIdAOnB = "remote-peer:peer-a-on-b";
   let peerNodesB: Record<string, string> = { [hostIdAOnB]: nodeA };
 
-  const receivedPeerPrompts: Array<Record<string, unknown>> = [];
+  const receivedPeerPrompts: Array<{ method: string; params: Record<string, unknown> }> = [];
   const receivedPeerAttachmentPrompts: Array<Record<string, unknown>> = [];
 
   const serverB = createServer(async (req, res) => {

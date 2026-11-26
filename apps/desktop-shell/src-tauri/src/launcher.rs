@@ -163,6 +163,12 @@ impl Launcher {
             .env("CODEXHOST_DATA_DIR", &self.data_dir)
             .stdin(Stdio::null())
             .stderr(Stdio::null());
+        #[cfg(windows)]
+        if args == ["launch"] && uses_default_windows_data_directory(&self.data_dir) {
+            // 默认目录由启动器和 Host 自行解析。显式传入会让 Windows Shim
+            // 进入本地运行时的独占文件锁路径，与普通 npm 桌面启动不一致
+            command.env_remove("CODEXHOST_DATA_DIR");
+        }
         Ok(command)
     }
 
@@ -388,9 +394,52 @@ impl Launcher {
     }
 }
 
+/// @brief 判断桌面壳使用的目录是否为 Windows 启动器的默认数据目录
+///
+/// 同时接受能解析为同一目录的路径写法。自定义目录继续显式传给启动器
+#[cfg(windows)]
+fn uses_default_windows_data_directory(directory: &Path) -> bool {
+    let Some(user_profile) = env::var_os("USERPROFILE") else {
+        return false;
+    };
+    let default = PathBuf::from(user_profile).join(".codexhost");
+    default == directory
+        || directory
+            .canonicalize()
+            .is_ok_and(|actual| default.canonicalize().is_ok_and(|expected| actual == expected))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn tray_launch_leaves_the_default_implicit_and_preserves_custom_directories() {
+        let default = PathBuf::from(env::var_os("USERPROFILE").unwrap()).join(".codexhost");
+        let custom = tempfile::tempdir().unwrap();
+        for (directory, args, expected) in [
+            (default.as_path(), &["launch"][..], None),
+            (default.as_path(), &["stop"][..], Some(default.as_os_str())),
+            (custom.path(), &["launch"][..], Some(custom.path().as_os_str())),
+        ] {
+            let launcher = Launcher {
+                executable: Some(PathBuf::from("unused.exe")),
+                data_dir: directory.to_path_buf(),
+                command_lock: Mutex::new(()),
+                stopping: AtomicBool::new(false),
+            };
+            assert_eq!(
+                launcher
+                    .command(args)
+                    .unwrap()
+                    .get_envs()
+                    .find(|(name, _)| *name == "CODEXHOST_DATA_DIR")
+                    .map(|(_, value)| value),
+                Some(expected),
+            );
+        }
+    }
 
     #[test]
     fn parses_startup_options_and_keeps_data_directory_precedence() {

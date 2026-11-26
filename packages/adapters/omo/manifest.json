@@ -1,0 +1,51 @@
+{
+  "manifestVersion": 1,
+  "id": "omo",
+  "name": "OmO",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "iconStyle": {
+    "vector": {
+      "viewBox": "0 0 24 24",
+      "color": "currentColor",
+      "paths": [
+        {
+          "d": "M12 2.5a9.5 9.5 0 1 0 0 19 9.5 9.5 0 1 0 0-19Zm0 3a6.5 6.5 0 1 1 0 13 6.5 6.5 0 1 1 0-13Z",
+          "fillRule": "evenodd"
+        },
+        { "d": "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 1 0 0-7Z" }
+      ]
+    }
+  },
+  "links": {
+    "website": "https://omo.dev/",
+    "documentation": "https://omo.dev/docs",
+    "installation": "https://omo.dev/docs/install"
+  },
+  "notice": {
+    "en": "OmO (oh-my-openagent) is an independently distributed third-party product. codexhost does not bundle or distribute it and is not affiliated with it. OmO is licensed under the Sustainable Use License (SUL-1.0), which restricts redistribution and commercial use; review that license before installing or using it. codexhost only launches an omo CLI that you install yourself. OmO and oh-my-openagent are trademarks of their respective owners.",
+    "zh-CN": "OmO（oh-my-openagent）是独立分发的第三方产品，不属于 codexhost，也不随 codexhost 一起分发，与其无隶属关系。OmO 采用 Sustainable Use License（SUL-1.0），对再分发和商业使用有使用限制；安装或使用前请阅读该许可证。codexhost 只负责启动你自行安装的 omo CLI。OmO 与 oh-my-openagent 是各自权利人的商标。"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://get.omo.dev/install.sh | bash"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://get.omo.dev/install.ps1 | iex"
+      },
+      {
+        "terminal": "Any OS · Bun (npm package; Node.js 24+ required)",
+        "command": "bun add -g omo-ai"
+      }
+    ],
+    "after": {
+      "en": "After installation, run omo once in a terminal to finish setup. The npm package route requires Node.js 24 or newer.",
+      "zh-CN": "安装后请在终端运行一次 omo 完成配置。npm 包方式需要 Node.js 24 或更高版本。"
+    }
+  }
+}

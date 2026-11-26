@@ -50,7 +50,7 @@ describe("remote SSH Host CLI", () => {
       }),
     ).resolves.toBe(0);
     expect(stdout.text()).toContain(
-      "codexhost remote install [--stock-codex PATH] [--shared-data DIRECTORY] [--session ssh|desktop]",
+      "codexhost remote install [--stock-codex PATH] [--shared-data DIRECTORY] [--session ssh|desktop] [--native-host ssh|shared]",
     );
     expect(stdout.text()).toContain("codexhost remote start");
     expect(stdout.text()).toContain("codexhost remote stop");

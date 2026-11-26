@@ -1,3 +1,4 @@
+import { sharedNativeBackend } from "./native-relay.js";
 import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
@@ -558,13 +559,15 @@ export async function runHostRuntime(input: {
         // reconnect, so a failed official generation must be replaced here.
         recovery: {},
         createBackend: () =>
-          createOwnedUnixBackend({
-            stockCodexPath,
-            arguments: officialPlan.listenerArguments,
-            socketPath: officialPlan.socketPath,
-            environment: officialEnvironment(delegationEnvironment),
-            diagnosticOutput: process.stderr,
-          }),
+          delegationEnvironment.CODEXHOST_SSH_NATIVE_HOST === "shared"
+            ? sharedNativeBackend(sharedHostDataDirectory(delegationEnvironment))
+            : createOwnedUnixBackend({
+                stockCodexPath,
+                arguments: officialPlan.listenerArguments,
+                socketPath: officialPlan.socketPath,
+                environment: officialEnvironment(delegationEnvironment),
+                diagnosticOutput: process.stderr,
+              }),
       });
       const accountControl = new SingleNativeCodexAccount(() => ({
         version: 2,

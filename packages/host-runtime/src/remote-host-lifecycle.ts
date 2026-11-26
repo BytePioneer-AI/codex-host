@@ -245,6 +245,7 @@ function managedEnvironment(
     ...(manifest.sharedDataDirectory
       ? { CODEXHOST_SHARED_DATA_DIR: manifest.sharedDataDirectory }
       : {}),
+    CODEXHOST_SSH_NATIVE_HOST: manifest.nativeHost ?? "ssh",
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
     CODEXHOST_REMOTE_EXECUTION_SESSION: manifest.executionSession ?? "ssh",
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,

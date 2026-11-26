@@ -32,11 +32,13 @@ export interface RemoteHostManifestV1 {
   dataDirectory: string;
   sharedDataDirectory?: string;
   executionSession?: "ssh" | "desktop";
+  nativeHost?: "shared";
   entrypointSha256?: string;
   profileBackupPath?: string;
 }
 
 export interface RemoteHostInstallOptions {
+  nativeHost?: "ssh" | "shared";
   executionSession?: "ssh" | "desktop";
   home?: string;
   installRoot?: string;
@@ -249,6 +251,7 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
       ? [`export CODEXHOST_SHARED_DATA_DIR=${shellQuote(manifest.sharedDataDirectory)}`]
       : []),
     "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+    ...(manifest.nativeHost ? ["export CODEXHOST_SSH_NATIVE_HOST='shared'"] : []),
     ...(manifest.executionSession
       ? [`export CODEXHOST_REMOTE_EXECUTION_SESSION=${shellQuote(manifest.executionSession)}`]
       : []),
@@ -332,6 +335,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "claudeCommand", // Inert metadata accepted from older format-1 manifests.
     "profileBackupPath",
     "executionSession",
+    "nativeHost",
   ]);
   const requiredPaths = [
     "wrapperPath",
@@ -345,6 +349,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
   const optionalPaths = ["claudeCommand", "profileBackupPath", "sharedDataDirectory"] as const;
   if (
     manifest.format !== MANIFEST_FORMAT ||
+    (manifest.nativeHost !== undefined && manifest.nativeHost !== "shared") ||
     (manifest.executionSession !== undefined &&
       manifest.executionSession !== "ssh" &&
       manifest.executionSession !== "desktop") ||
@@ -388,6 +393,9 @@ export async function installRemoteHost(
   const environment = options.environment ?? process.env;
   const paths = resolvePaths(options);
   const previousManifest = await readManifest(paths.manifestPath);
+  const nativeHost = options.nativeHost ?? previousManifest?.nativeHost ?? "ssh";
+  if (nativeHost !== "ssh" && nativeHost !== "shared")
+    throw new Error("Native Host must be ssh or shared");
   const executionSession = options.executionSession ?? previousManifest?.executionSession ?? "ssh";
   if (executionSession !== "ssh" && executionSession !== "desktop") {
     throw new Error("Remote execution session must be ssh or desktop");
@@ -482,6 +490,7 @@ export async function installRemoteHost(
     hostRuntimePath,
     dataDirectory: paths.dataDirectory,
     sharedDataDirectory,
+    ...(nativeHost === "shared" ? { nativeHost } : {}),
     ...(executionSession === "desktop" ? { executionSession } : {}),
     ...(previousManifest?.profileBackupPath
       ? { profileBackupPath: previousManifest.profileBackupPath }

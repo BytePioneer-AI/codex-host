@@ -54,6 +54,8 @@ Windows 原生 codexhost 不会发现 WSL 内安装的 Harness。如果本地连
 
 如果 Desktop 或 Web 使用自定义 Host 数据目录，在该机器执行 `codexhost remote install --shared-data /绝对路径/host-data`，然后重启 SSH 监听器。未传选项时，安装会读取 `CODEXHOST_SHARED_DATA_DIR` 或非 SSH 环境中的 `CODEXHOST_DATA_DIR`；重新安装会保留已保存的选择。共享目录写入远程 manifest 和 SSH profile，不覆盖独立的 SSH 专用数据目录。原生 Agent 对共享会话的委派读取、发送、取消和等待也路由到共享执行方；历史 SSH 会话作为父会话时仍保留原有委派归属。
 
+如需让 SSH 项目中的原生 Codex 与本机 Desktop、Web 共用执行方，在远端执行 `codexhost remote install --native-host shared`，然后重启 SSH 监听器。两端运行时都需支持原生转发。每个客户端独立接入同一个原生后端。共享 Host 不可用时，原生请求会报错，历史 SSH 专用外部会话保留原归属。
+
 ### 图片与文件附件
 
 外部 Harness 继续接收文字及文件路径，不通过各 Harness 的专用图片接口发送。普通文件沿用 Desktop 原生上传和远程路径引用；能否读取文件、理解图片或解析其格式，由 Harness 的工具及所选模型决定。

@@ -1,0 +1,96 @@
+import path from "node:path";
+import { discoverHostClientChannel } from "@codexhost/desktop-control";
+import { parseJsonFrame, readLfFrames, writeJsonFrame } from "@codexhost/protocol-core";
+import {
+  OfficialRuntimeClient,
+  type OfficialRuntimeScope,
+} from "./codex-runtime/official-runtime-scope.js";
+import type { OwnedOfficialBackend } from "./codex-runtime/official-runtime-owner.js";
+import type {
+  OfficialAppServerConnection,
+  OfficialAppServerExit,
+} from "./official-app-server-connection.js";
+import { createRemoteOfficialAppServerConnection } from "./remote-official-connection.js";
+import type { RemoteAppServerSession, RemoteAppServerSessionStreams } from "./remote-app-server.js";
+import { object, rpcId } from "./shared-thread-peer.js";
+
+/** Each SSH connection is an ordinary native client of the independent Host. */
+export function nativeRelaySession(
+  scope: OfficialRuntimeScope,
+  streams: RemoteAppServerSessionStreams,
+): RemoteAppServerSession {
+  let client: OfficialRuntimeClient | undefined;
+  let detached = false;
+  const detach = () => {
+    detached = true;
+    streams.input.destroy();
+  };
+  return {
+    disconnect: detach,
+    close: detach,
+    async run() {
+      try {
+        for await (const frame of readLfFrames(streams.input, {
+          maxFrameBytes: 128 * 1024 * 1024,
+        })) {
+          const value = parseJsonFrame(frame);
+          if (!object(value)) throw new Error("Invalid native frame");
+          if (!client) {
+            if (value.method !== "initialize" || !rpcId(value.id) || !object(value.params))
+              throw new Error("Native initialization required");
+            client = new OfficialRuntimeClient({
+              scope,
+              output: async ({ value }) => {
+                if (!detached) await writeJsonFrame(streams.output, value);
+              },
+              onBackendStopped: detach,
+            });
+            await client.initialize();
+            if (detached) break;
+            const reply = await client.initializeProtocol(value.params);
+            if (!detached) await writeJsonFrame(streams.output, { ...reply, id: value.id });
+          } else {
+            await client.send(value);
+          }
+        }
+        return 0;
+      } catch (error) {
+        if (detached) return 0;
+        throw error;
+      } finally {
+        detached = true;
+        await client?.close();
+      }
+    },
+  };
+}
+
+/** Stopping the SSH listener releases only its connections to this Host generation. */
+export function sharedNativeBackend(dataDirectory: string): OwnedOfficialBackend {
+  const ended = Promise.withResolvers<OfficialAppServerExit>();
+  let descriptor: Awaited<ReturnType<typeof discoverHostClientChannel>>;
+  let monitor: OfficialAppServerConnection | undefined;
+  const connect = async () => {
+    if (!descriptor || descriptor.owner !== "service")
+      throw new Error("Independent native Host unavailable");
+    return createRemoteOfficialAppServerConnection(`ws://127.0.0.1:${descriptor.port}/v1/native`, {
+      capabilityToken: descriptor.token,
+    });
+  };
+  return {
+    closed: ended.promise,
+    connect,
+    async start() {
+      descriptor = await discoverHostClientChannel(path.join(dataDirectory, "client-hosts"));
+      monitor = await connect();
+      monitor.stderr.resume();
+      void monitor.closed.then(ended.resolve);
+    },
+    async stop() {
+      descriptor = null;
+      monitor?.close();
+      if (monitor) await monitor.closed;
+      ended.resolve({ code: 0, signal: null });
+    },
+  };
+}

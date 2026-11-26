@@ -37,6 +37,11 @@ function parseRemoteCliArguments(arguments_: readonly string[]): {
     const value = arguments_[index + 1];
     if (!value) throw new Error(`${argument} requires a value`);
     switch (argument) {
+      case "--native-host":
+        if (command !== "install" || (value !== "ssh" && value !== "shared"))
+          throw new Error("Use remote install --native-host ssh|shared");
+        options.nativeHost = value;
+        break;
       case "--session":
         if (command !== "install" || (value !== "ssh" && value !== "desktop")) {
           throw new Error("Use remote install --session ssh|desktop");
@@ -87,7 +92,7 @@ export async function runRemoteHostCli(input: {
       output.write(
         [
           "usage:",
-          "  codexhost remote install [--stock-codex PATH] [--shared-data DIRECTORY] [--session ssh|desktop]",
+          "  codexhost remote install [--stock-codex PATH] [--shared-data DIRECTORY] [--session ssh|desktop] [--native-host ssh|shared]",
           "  codexhost remote start",
           "  codexhost remote stop",
           "  codexhost remote status",

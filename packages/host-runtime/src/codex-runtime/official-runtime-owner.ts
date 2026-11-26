@@ -94,6 +94,10 @@ export class OfficialRuntimeOwner {
     return this.#generation;
   }
 
+  get activeThreadIds(): readonly string[] {
+    return [...this.#activeTurns];
+  }
+
   get hasActiveWork(): boolean {
     return this.gate.busy || this.#activeTurns.size > 0;
   }

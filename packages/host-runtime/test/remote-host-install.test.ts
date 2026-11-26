@@ -73,9 +73,13 @@ describe("remote SSH Host installation", () => {
       expect(await readFile(original.profilePath, "utf8")).not.toContain(
         "REMOTE_EXECUTION_SESSION",
       );
-      await installRemoteHost({ ...options, executionSession: "desktop" });
+      await installRemoteHost({ ...options, executionSession: "desktop", nativeHost: "shared" });
       const updated = await installRemoteHost(options);
       expect(updated.executionSession).toBe("desktop");
+      expect(updated.nativeHost).toBe("shared");
+      expect(await readFile(updated.profilePath, "utf8")).toContain(
+        "CODEXHOST_SSH_NATIVE_HOST='shared'",
+      );
       expect(await inspectRemoteHostInstallation(options)).toMatchObject({
         state: "ready",
         executionSession: "desktop",

@@ -55,6 +55,8 @@ If you only use Codex's built-in remote coding features, you do not need codexho
 
 If Desktop or Web uses a custom Host data directory, run `codexhost remote install --shared-data /absolute/path/to/host-data` on that computer, then restart the SSH listener. Installation captures `CODEXHOST_SHARED_DATA_DIR` (or a non-SSH `CODEXHOST_DATA_DIR`) when no option is supplied and preserves the saved selection on reinstall. This shared directory is stored in the remote manifest and SSH profile; it never replaces the separate SSH-only data directory. Native agents use the shared owner for delegation reads, sends, cancellation and waits too; historical SSH-owned parents keep their local delegation owner.
 
+To run native Codex on the same Host as local Desktop and Web, run `codexhost remote install --native-host shared` on the remote machine and restart the SSH listener. Both runtimes must support the native relay. Each viewer attaches to the same native backend. If the shared Host is unavailable, native requests fail until it is ready. Historical SSH-only external Threads keep their existing owner.
+
 ### Image and file attachments
 
 External Harnesses continue to receive text and file paths, not Harness-specific image inputs. Ordinary files use Desktop's native upload and remote path references. Reading files, interpreting images, and parsing their formats depend on the Harness's tools and the selected model.

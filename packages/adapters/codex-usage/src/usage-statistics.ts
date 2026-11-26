@@ -328,12 +328,31 @@ export function createCodexUsageStatistics(
   >();
   let names = new Map<string, string>();
   let namesStamp = "";
+  let namesLoading: {
+    stamp: string;
+    signal: AbortSignal;
+    promise: Promise<Map<string, string>>;
+  } | null = null;
   async function threadNames(signal: AbortSignal): Promise<Map<string, string>> {
     const current = await stamp(path.join(home, "session_index.jsonl")).catch(() => "-");
     if (namesStamp === current) return names;
-    names = await readThreadNames(home, signal);
-    namesStamp = current;
-    return names;
+    if (namesLoading?.stamp === current && namesLoading.signal === signal) {
+      return namesLoading.promise;
+    }
+    const promise = readThreadNames(home, signal).then((loaded) => {
+      if (namesLoading?.promise === promise) {
+        names = loaded;
+        namesStamp = current;
+      }
+      return loaded;
+    });
+    const entry = { stamp: current, signal, promise };
+    namesLoading = entry;
+    try {
+      return await promise;
+    } finally {
+      if (namesLoading === entry) namesLoading = null;
+    }
   }
   return {
     async listSources(signal): Promise<HarnessUsageSource[]> {

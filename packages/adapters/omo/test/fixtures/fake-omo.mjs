@@ -23,6 +23,8 @@ const state = {
   messageCount: 0,
   pendingDialogs: [{ id: "synthetic-dialog", method: "confirm", title: "Synthetic" }],
   permissionPreset: "ask",
+  permissionPresetSource: "host_default",
+  permissionPresetStatus: "applied",
   effectivePermissionPreset: "ask",
 };
 
@@ -94,14 +96,15 @@ if (scenario !== "silent-start") {
 }
 
 function respondError(command, errorCode, message = "synthetic refusal") {
-  write({
+  const response = {
     id: command.id,
     type: "response",
     command: command.type,
     success: false,
     error: message,
-    errorCode,
-  });
+  };
+  if (errorCode) response.errorCode = errorCode;
+  write(response);
 }
 
 // ---------------------------------------------------------------- session peer
@@ -112,7 +115,15 @@ function respondError(command, errorCode, message = "synthetic refusal") {
 // shapes. Nothing here is copied from OmO.
 
 const sessionEntries = [];
-const sessionReceived = { prompts: [], aborts: [], uiResponses: [], commands: [] };
+const sessionReceived = {
+  prompts: [],
+  aborts: [],
+  uiResponses: [],
+  commands: [],
+  setModels: [],
+  setThinkingLevels: [],
+  setPermissionPresets: [],
+};
 let sessionEntrySeq = 0;
 let sessionTurnSeq = 0;
 let sessionLastClientTurnId = null;
@@ -122,6 +133,48 @@ const sessionControls = {
   promptError: process.env.FAKE_OMO_PROMPT_ERROR ?? null,
   turnScript: process.env.FAKE_OMO_TURN_SCRIPT ?? "full",
   disposition: process.env.FAKE_OMO_PROMPT_DISPOSITION ?? null,
+  modelError: process.env.FAKE_OMO_SET_MODEL_ERROR ?? null,
+  thinkingErrorMessage: process.env.FAKE_OMO_SET_THINKING_MESSAGE ?? null,
+  permissionError: process.env.FAKE_OMO_SET_PERMISSION_ERROR ?? null,
+  permissionStatus: process.env.FAKE_OMO_SET_PERMISSION_STATUS ?? "applied",
+  modelReceipt: process.env.FAKE_OMO_SET_MODEL_RECEIPT ?? "done",
+  confirmModel: process.env.FAKE_OMO_SET_MODEL_CONFIRM !== "false",
+  confirmThinking: process.env.FAKE_OMO_SET_THINKING_CONFIRM !== "false",
+  confirmPermission: process.env.FAKE_OMO_SET_PERMISSION_CONFIRM !== "false",
+};
+
+// Configuration surface: the live catalog the peer offers, mirrored to the
+// real engine's command set (get_protocol_info / get_available_models /
+// get_available_thinking_levels / set_model / set_thinking_level /
+// set_permission_preset). Shapes follow the documented protocol; values are
+// synthetic.
+const sessionConfig = {
+  models: [
+    {
+      provider: "synthetic-provider",
+      id: "synthetic-model",
+      name: "Synthetic Model",
+      reasoning: true,
+      supportedThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      contextWindow: 128000,
+      maxTokens: 8192,
+    },
+    {
+      provider: "synthetic-provider",
+      id: "other-model",
+      name: "Synthetic Other",
+      reasoning: true,
+      supportedThinkingLevels: ["off", "low", "medium", "high"],
+      contextWindow: 64000,
+      maxTokens: 4096,
+    },
+  ],
+  protocolCapabilities: [
+    "multi_session",
+    "session_model_scope",
+    "effect_ledger",
+    "set_permission_preset_v1",
+  ],
 };
 
 function entryId() {
@@ -527,6 +580,118 @@ function handleSession(command) {
     case "get_state":
       respond(command, { ...state, messageCount: sessionEntries.length });
       return true;
+    case "get_protocol_info":
+      respond(command, {
+        protocolVersion: 1,
+        serverVersion: "5.1.83",
+        capabilities: sessionConfig.protocolCapabilities,
+        mode: "classic",
+        instanceId: "synthetic-instance",
+        generation: 1,
+        engineVersion: "5.1.83",
+        engineOrdinal: [5, 1, 83, 0, 0],
+        method_classes: { version: 1, digest: "synthetic" },
+        dynamic_versions: {},
+      });
+      return true;
+    case "get_available_models":
+      respond(command, { models: sessionConfig.models });
+      return true;
+    case "get_available_thinking_levels": {
+      const row = sessionConfig.models.find(
+        (model) =>
+          state.model && model.provider === state.model.provider && model.id === state.model.id,
+      );
+      respond(command, { levels: row ? row.supportedThinkingLevels : ["off"] });
+      return true;
+    }
+    case "set_model": {
+      sessionReceived.setModels.push({ ...command });
+      if (sessionControls.modelError) {
+        respondError(command, sessionControls.modelError);
+        return true;
+      }
+      const row = sessionConfig.models.find(
+        (model) => model.provider === command.provider && model.id === command.modelId,
+      );
+      if (sessionControls.confirmModel && row) {
+        state.model = {
+          provider: command.provider,
+          id: command.modelId,
+          name: row.name,
+          reasoning: row.reasoning,
+        };
+      }
+      // The engine broadcasts the switch; the transport drops it as startup
+      // chatter by design (effective state comes from get_state).
+      write({ type: "model_changed", model: { provider: command.provider, id: command.modelId } });
+      respond(command, {
+        ...(row ?? {
+          provider: command.provider,
+          id: command.modelId,
+          name: "Unknown Synthetic Model",
+          reasoning: true,
+        }),
+        ...(command.effectId
+          ? {
+              effectId: command.effectId,
+              state: sessionControls.modelReceipt,
+              effect: {
+                effectId: command.effectId,
+                kind: "set_model",
+                state: sessionControls.modelReceipt,
+                disposition: "applied",
+              },
+            }
+          : {}),
+      });
+      return true;
+    }
+    case "set_thinking_level": {
+      sessionReceived.setThinkingLevels.push({ ...command });
+      if (sessionControls.thinkingErrorMessage) {
+        // The engine refuses an unsupported level without an errorCode.
+        respondError(command, null, sessionControls.thinkingErrorMessage);
+        return true;
+      }
+      if (sessionControls.confirmThinking) state.thinkingLevel = command.level;
+      write({ type: "thinking_level_changed", level: command.level });
+      respond(
+        command,
+        command.effectId
+          ? {
+              effectId: command.effectId,
+              state: "done",
+              effect: {
+                effectId: command.effectId,
+                kind: "set_thinking_level",
+                state: "done",
+                disposition: "applied",
+              },
+            }
+          : {},
+      );
+      return true;
+    }
+    case "set_permission_preset": {
+      sessionReceived.setPermissionPresets.push({ ...command });
+      if (sessionControls.permissionError) {
+        respondError(command, sessionControls.permissionError);
+        return true;
+      }
+      state.permissionPreset = command.permissionPreset;
+      state.permissionPresetSource = "client";
+      state.permissionPresetStatus = "applied";
+      if (sessionControls.confirmPermission) {
+        state.effectivePermissionPreset = command.permissionPreset;
+      }
+      respond(command, {
+        permissionPreset: command.permissionPreset,
+        permissionPresetSource: "client",
+        permissionPresetStatus: sessionControls.permissionStatus,
+      });
+      return true;
+    }
     case "get_tree":
       respond(command, {
         tree: sessionEntries.length === 0 ? [] : [{ entry: sessionEntries[0], children: [] }],
@@ -562,6 +727,17 @@ function handleSession(command) {
       if ("promptError" in command) sessionControls.promptError = command.promptError;
       if (typeof command.turnScript === "string") sessionControls.turnScript = command.turnScript;
       if ("disposition" in command) sessionControls.disposition = command.disposition;
+      if ("modelError" in command) sessionControls.modelError = command.modelError;
+      if ("thinkingErrorMessage" in command)
+        sessionControls.thinkingErrorMessage = command.thinkingErrorMessage;
+      if ("permissionError" in command) sessionControls.permissionError = command.permissionError;
+      if ("permissionStatus" in command)
+        sessionControls.permissionStatus = command.permissionStatus;
+      if ("modelReceipt" in command) sessionControls.modelReceipt = command.modelReceipt;
+      if ("confirmModel" in command) sessionControls.confirmModel = command.confirmModel;
+      if ("confirmThinking" in command) sessionControls.confirmThinking = command.confirmThinking;
+      if ("confirmPermission" in command)
+        sessionControls.confirmPermission = command.confirmPermission;
       respond(command, { ...sessionControls });
       return true;
     }

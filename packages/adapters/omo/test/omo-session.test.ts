@@ -278,13 +278,13 @@ function textOf(snapshot: HostItemSnapshot | undefined): string | undefined {
 }
 
 describe("OmO Session capabilities and declaration", () => {
-  it("declares the staging scope: no configuration, history, steer or autonomous features", async () => {
+  it("declares live configuration selections, no history derivation or steering", async () => {
     const fixtureSession = await createSessionFixture("session");
     expect(fixtureSession.session.capabilities).toEqual({
       configuration: {
-        selectModel: false,
-        selectThinkingOption: false,
-        selectPermissionMode: false,
+        selectModel: true,
+        selectThinkingOption: true,
+        selectPermissionMode: true,
         permissionModeScope: "live",
       },
       history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
@@ -297,24 +297,6 @@ describe("OmO Session capabilities and declaration", () => {
         turnId: hostTurnIdSchema.parse("turn-1"),
         input: [{ type: "text", text: "steer" }],
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
-    await expect(
-      fixtureSession.session.execute({
-        type: "model.select",
-        model: { id: "synthetic-provider/synthetic-model" },
-      }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
-    await expect(
-      fixtureSession.session.execute({
-        type: "thinking.select",
-        thinkingOptionId: "high",
-      }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
-    await expect(
-      fixtureSession.session.execute({
-        type: "permissionMode.select",
-        permissionModeId: "ask",
-      } as never),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
     await fixtureSession.closeAll();
   });

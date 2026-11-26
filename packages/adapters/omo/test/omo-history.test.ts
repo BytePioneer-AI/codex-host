@@ -559,6 +559,58 @@ describe("OmO history projection", () => {
     });
   });
 
+  it("projects an eval tool pair as a commandExecution carrying the executed code", () => {
+    // Real 5.1.83 routes shell commands through the `eval` tool whose arguments
+    // carry {language, code, summary} (task-9 trace); the history projection
+    // must route it exactly like the live one.
+    const history: OmoSessionHistory = {
+      entries: [
+        userEntry("u1", null, "run the check", 1),
+        assistantEntry(
+          "a1",
+          "u1",
+          [
+            {
+              type: "toolCall",
+              id: "call-eval-1",
+              name: "eval",
+              arguments: {
+                language: "js",
+                code: 'const r = await tool.bash({ command: "npm test" });',
+                summary: "Running the test suite",
+              },
+            },
+          ],
+          { stopReason: "toolUse" },
+        ),
+        {
+          type: "message",
+          id: "t-eval",
+          parentId: "a1",
+          timestamp: "2026-11-26T08:00:03.000Z",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-eval-1",
+            toolName: "eval",
+            content: [{ type: "text", text: "all tests passed" }],
+            isError: false,
+          },
+        },
+        assistantEntry("a2", "t-eval", [{ type: "text", text: "done" }], { stopReason: "stop" }),
+      ],
+      leafId: "a2",
+    };
+    const items = mapOmoSnapshot(history, { sessionId: "s" }).turns.at(0)?.items ?? [];
+    const command = items.find((item) => item.item.type === "commandExecution");
+    expect(command?.item).toEqual({
+      type: "commandExecution",
+      itemId: "omo-item-v1-a1-tool-0",
+      command: 'const r = await tool.bash({ command: "npm test" });',
+      output: "all tests passed",
+    });
+    expect(items.some((item) => item.item.type === "toolExecution")).toBe(false);
+  });
+
   it("requires a session id for the projection", () => {
     expect(() => mapOmoSnapshot(branchedHistory, { sessionId: "" })).toThrowError(
       OmoHistoryProtocolError,

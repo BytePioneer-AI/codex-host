@@ -73,6 +73,8 @@ const state = {
   messageCount: 0,
   pendingDialogs: [],
   permissionPreset: "ask",
+  permissionPresetSource: "host_default",
+  permissionPresetStatus: "applied",
   effectivePermissionPreset: "ask",
 };
 
@@ -94,6 +96,36 @@ function handle(command) {
     case "get_state":
       respond(command, state);
       return;
+    case "set_permission_preset": {
+      fs.appendFileSync(
+        path.join(stateDir, "permission-presets.log"),
+        JSON.stringify(command) + "\\n",
+      );
+      const refusal = process.env.FAKE_OMO_SET_PERMISSION_ERROR;
+      if (refusal) {
+        write({
+          id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: 'invalid_launch_profile: unknown permissionPreset "' + command.permissionPreset + '"',
+          errorCode: refusal,
+        });
+        return;
+      }
+      state.permissionPreset = command.permissionPreset;
+      state.permissionPresetSource = "client";
+      state.permissionPresetStatus = "applied";
+      if (process.env.FAKE_OMO_SET_PERMISSION_CONFIRM !== "false") {
+        state.effectivePermissionPreset = command.permissionPreset;
+      }
+      respond(command, {
+        permissionPreset: command.permissionPreset,
+        permissionPresetSource: "client",
+        permissionPresetStatus: process.env.FAKE_OMO_SET_PERMISSION_STATUS ?? "applied",
+      });
+      return;
+    }
     case "get_protocol_info":
       respond(command, {
         protocolVersion: scenario === "inspect-incompatible" ? 2 : 1,
@@ -298,11 +330,11 @@ function createFixtureAdapter(
   return { adapter, inspectSpawns, sessionSpawns, inspectChildren, sessionChildren, versionReads };
 }
 
-const stagingCapabilities = {
+const sessionCapabilities = {
   configuration: {
-    selectModel: false,
-    selectThinkingOption: false,
-    selectPermissionMode: false,
+    selectModel: true,
+    selectThinkingOption: true,
+    selectPermissionMode: true,
     permissionModeScope: "live",
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
@@ -326,6 +358,16 @@ function turnStart() {
     turnId: hostTurnIdSchema.parse("turn-1"),
     input: [{ type: "text" as const, text: "hello" }],
   };
+}
+
+/** Frames the fixture peer received for `set_permission_preset`, in order. */
+function readPresetsLog(cwd: string): Array<Record<string, unknown>> {
+  const log = path.join(cwd, ".fake-omo", "permission-presets.log");
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 describe("OmO Adapter inspect", () => {
@@ -381,9 +423,18 @@ describe("OmO Adapter inspect", () => {
       "xhigh",
       "max",
     ]);
-    expect(inspection.capabilities).toEqual(stagingCapabilities);
-    // Staging rule: no permission catalog until its selection capability exists.
-    expect(inspection).not.toHaveProperty("permissionModes");
+    expect(inspection.capabilities).toEqual(sessionCapabilities);
+    // The Permission Mode catalog ships with the selection capability (the
+    // schema refine enforces the pair; the catalog is frozen from the probe).
+    expect(inspection.permissionModes?.modes.map((mode) => mode.id)).toEqual([
+      "full-access",
+      "workspace",
+      "read-only",
+      "ask",
+      "accept-edits",
+      "auto",
+    ]);
+    expect(inspection.permissionModes?.defaultModeId).toBe("full-access");
     expect(fixture.inspectSpawns).toHaveLength(1);
     expect(fixture.inspectSpawns[0]?.environment?.PI_OFFLINE).toBe("1");
   });
@@ -483,8 +534,8 @@ describe("OmO Adapter inspect", () => {
         status: "ready",
         catalog,
         capabilities: {
-          ...stagingCapabilities,
-          configuration: { ...stagingCapabilities.configuration, selectPermissionMode: true },
+          ...sessionCapabilities,
+          configuration: { ...sessionCapabilities.configuration, selectPermissionMode: true },
         },
       }),
     ).toThrow(/Permission Mode catalog/u);
@@ -493,7 +544,10 @@ describe("OmO Adapter inspect", () => {
         status: "ready",
         catalog,
         permissionModes,
-        capabilities: stagingCapabilities,
+        capabilities: {
+          ...sessionCapabilities,
+          configuration: { ...sessionCapabilities.configuration, selectPermissionMode: false },
+        },
       }),
     ).toThrow(/Permission Mode catalog/u);
   });
@@ -522,10 +576,11 @@ describe("OmO Adapter open", () => {
       effectiveModel: { id: "synthetic-provider/synthetic-model" },
       resolvedModelLabel: "Synthetic Model",
       effectiveThinkingOptionId: "medium",
+      effectivePermissionModeId: "ask",
     });
     // requested≠effective: the requested Model was never confirmed and must not be echoed.
     expect(session.initialState.effectiveModel?.id).not.toBe("requested/other-model");
-    expect(session.capabilities).toEqual(stagingCapabilities);
+    expect(session.capabilities).toEqual(sessionCapabilities);
     expect(session.initialUsage).toBeNull();
     expect(fixture.sessionSpawns).toHaveLength(1);
     expect(fixture.sessionSpawns[0]?.cwd).toBe(path.resolve(cwd));
@@ -672,12 +727,23 @@ describe("OmO Adapter open", () => {
       fixture.adapter.open({
         kind: "create",
         cwd,
+        permissionModeId: harnessPermissionModeIdSchema.parse("yolo"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest", retryable: false },
+    });
+    await expect(
+      fixture.adapter.open({
+        kind: "create",
+        cwd,
+        executionPolicy: "unattended-full-access",
         permissionModeId: harnessPermissionModeIdSchema.parse("ask"),
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
-    await expect(
-      fixture.adapter.open({ kind: "create", cwd, executionPolicy: "unattended-full-access" }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest", retryable: false },
+    });
     expect(fixture.sessionSpawns).toHaveLength(0);
   });
 
@@ -707,6 +773,107 @@ describe("OmO Adapter open", () => {
       fixture.adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
     expect(fixture.sessionSpawns).toHaveLength(0);
+  });
+
+  it("applies unattended full access at create and confirms it applied", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an open Session");
+    expect(result.value.initialState.effectivePermissionModeId).toBe("full-access");
+    const presets = readPresetsLog(cwd);
+    expect(presets).toHaveLength(1);
+    expect(presets[0]?.permissionPreset).toBe("full-access");
+    expect(presets[0]?.effectId).toBeUndefined();
+    await result.value.close();
+  });
+
+  it("applies an explicit Permission Mode at create after the conflict checks", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd);
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      permissionModeId: harnessPermissionModeIdSchema.parse("read-only"),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an open Session");
+    expect(result.value.initialState.effectivePermissionModeId).toBe("read-only");
+    expect(readPresetsLog(cwd).map((frame) => frame.permissionPreset)).toEqual(["read-only"]);
+    await result.value.close();
+  });
+
+  it("rejects an unattended create when the engine refuses the preset and closes the process", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd, {
+      FAKE_OMO_SET_PERMISSION_ERROR: "invalid_launch_profile",
+    });
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", retryable: false },
+    });
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
+  it("rejects an unattended create whose applied confirmation never lands", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd, { FAKE_OMO_SET_PERMISSION_CONFIRM: "false" });
+    const result = await fixture.adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", retryable: false },
+    });
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
+  it("never resurrects resume configuration hints over native state", async () => {
+    const cwd = temporaryDirectory();
+    const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
+    const fixture = sessionFixture(cwd);
+    const nativeRef: NativeSessionRef = {
+      harnessId: "omo",
+      nativeSessionId: "session-alpha",
+      locator: { sessionPath: sessionFile, cwd: path.resolve(cwd) },
+      formatVersion: 1,
+    };
+    const result = await fixture.adapter.open({
+      kind: "resume",
+      nativeRef,
+      cwd,
+      // Persisted hints, not commands: the Session file already restored the
+      // native state, and only that state may be published.
+      model: { id: "requested/other-model" },
+      thinkingOptionId: "high",
+      permissionModeId: harnessPermissionModeIdSchema.parse("read-only"),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an open Session");
+    expect(result.value.initialState).toMatchObject({
+      effectiveModel: { id: "synthetic-provider/synthetic-model" },
+      effectiveThinkingOptionId: "medium",
+      effectivePermissionModeId: "ask",
+    });
+    // No preset frame was sent for the hint.
+    expect(readPresetsLog(cwd)).toEqual([]);
+    await result.value.close();
   });
 
   it("closes live Session processes when the Adapter closes", async () => {

@@ -130,6 +130,13 @@ import {
 } from "@codexhost/shared-contracts";
 
 import {
+  selectOmoModel,
+  selectOmoPermissionMode,
+  selectOmoThinking,
+  type OmoConfigurationChannel,
+  type OmoConfigurationState,
+} from "./omo-configuration.js";
+import {
   omoHistoryTurnKey,
   readOmoSnapshot,
   OmoHistoryProtocolError,
@@ -155,15 +162,16 @@ import {
 const omoHarnessId: HarnessId = harnessIdSchema.parse("omo");
 
 /**
- * Capabilities of this stage. Model, Thinking, and Permission Mode selection
- * arrive in a later step; until then every selection is declared unavailable.
- * `steer`, Subagents, and autonomous Turns are not announced either.
+ * Capabilities of this build. Model, Thinking, and Permission Mode selection
+ * are live (omO presets apply from the next permission decision, including
+ * mid-Turn). History derivation and steering are not announced yet; they
+ * arrive with their own steps.
  */
-export const OMO_STAGING_CAPABILITIES: HarnessSessionCapabilities = Object.freeze({
+export const OMO_SESSION_CAPABILITIES: HarnessSessionCapabilities = Object.freeze({
   configuration: Object.freeze({
-    selectModel: false,
-    selectThinkingOption: false,
-    selectPermissionMode: false,
+    selectModel: true,
+    selectThinkingOption: true,
+    selectPermissionMode: true,
     permissionModeScope: "live" as const,
   }),
   history: Object.freeze({ fork: false, forkAcrossCwd: false, rollbackLastTurn: false }),
@@ -589,7 +597,7 @@ class HarnessSessionFault extends Error {
 
 export class OmoHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = omoHarnessId;
-  readonly capabilities: HarnessSessionCapabilities = OMO_STAGING_CAPABILITIES;
+  readonly capabilities: HarnessSessionCapabilities = OMO_SESSION_CAPABILITIES;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -604,12 +612,13 @@ export class OmoHarnessSession implements HarnessSession {
   readonly #commandTimeoutMs: number;
   readonly #closeTurnTimeoutMs: number;
   readonly #prewarmSessionFile: string | null;
-  readonly #state: HarnessSessionState;
+  #state: HarnessSessionState;
   readonly #pump: Promise<void>;
   readonly #consumedUserEntryIds = new Set<string>();
   readonly #emittedTurnKeys = new Set<string>();
   #accepting: { readonly clientTurnId: string } | null = null;
   #active: ActiveTurn | null = null;
+  #configuring = false;
   #deferredFrames: OmoEventFrame[] = [];
   #phase: SessionPhase = "open";
   #closePromise: Promise<void> | null = null;
@@ -707,16 +716,22 @@ export class OmoHarnessSession implements HarnessSession {
             retryable: false,
           },
         };
-      default:
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message:
-              "OmO Model, Thinking, and Permission Mode selection are not available in this build",
-            retryable: false,
-          },
-        };
+      case "model.select":
+        return this.#selectConfiguration((channel) =>
+          selectOmoModel(channel, command.model, { timeoutMs: this.#commandTimeoutMs }),
+        );
+      case "thinking.select":
+        return this.#selectConfiguration((channel) =>
+          selectOmoThinking(channel, command.thinkingOptionId, {
+            timeoutMs: this.#commandTimeoutMs,
+          }),
+        );
+      case "permissionMode.select":
+        return this.#selectConfiguration((channel) =>
+          selectOmoPermissionMode(channel, command.permissionModeId, {
+            timeoutMs: this.#commandTimeoutMs,
+          }),
+        );
     }
   }
 
@@ -725,6 +740,41 @@ export class OmoHarnessSession implements HarnessSession {
       this.#closePromise = this.#close().finally(() => this.#onClosed?.(this));
     }
     return this.#closePromise;
+  }
+
+  // ------------------------------------------------------------------ selection
+
+  /**
+   * Runs one configuration selection and publishes `session.state.changed`
+   * only after the flow confirmed it natively; a refusal leaves the state
+   * untouched. Selections run while a Turn streams — the engine applies a
+   * preset from the next permission decision and a model switch from the
+   * next request — so only two selections at once are refused.
+   */
+  async #selectConfiguration(
+    flow: (channel: OmoConfigurationChannel) => Promise<HarnessResult<OmoConfigurationState>>,
+  ): Promise<HarnessResult<{ completed: true }>> {
+    if (this.#configuring) {
+      return {
+        ok: false,
+        error: busy("OmO Session is already running a configuration selection"),
+      };
+    }
+    this.#configuring = true;
+    try {
+      const result = await flow(this.#rpc);
+      if (!result.ok) return result;
+      this.#state = {
+        ...(this.#state.nativeRef === undefined ? {} : { nativeRef: this.#state.nativeRef }),
+        ...result.value,
+      };
+      this.#event({ type: "session.state.changed", state: this.#state });
+      return { ok: true, value: { completed: true } };
+    } catch (error) {
+      return { ok: false, error: sessionError(error, this.#rpc) };
+    } finally {
+      this.#configuring = false;
+    }
   }
 
   // ---------------------------------------------------------------- turn start

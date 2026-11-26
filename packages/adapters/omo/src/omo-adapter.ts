@@ -5,20 +5,16 @@ import type {
   HarnessError,
   HarnessInspection,
   HarnessModelCatalog,
-  HarnessModelRef,
   HarnessResult,
   HarnessSession,
   HarnessSessionCapabilities,
   HarnessSessionState,
-  HarnessThinkingOptionId,
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 import { runInstallationCommand } from "@codexhost/harness-discovery";
 import {
   harnessIdSchema,
-  harnessModelRefSchema,
-  harnessResolvedModelLabelSchema,
   nativeSessionRefSchema,
   type HarnessId,
   type NativeSessionRef,
@@ -29,20 +25,22 @@ import {
   type OmoExecutableDependencies,
   type OmoExecutableInput,
 } from "./command.js";
+import {
+  OMO_FULL_ACCESS_PRESET,
+  OMO_PERMISSION_MODE_CATALOG,
+  applyOmoPermissionMode,
+  omoConfirmedConfigurationState,
+  omoNativePermissionPreset,
+} from "./omo-configuration.js";
 import { OMO_VERSION_TIMEOUT_MS, parseOmoVersion } from "./installation.js";
 import {
   createOmoInspectSession,
   type OmoInspectSession,
   type OmoInspectSessionOptions,
 } from "./omo-inspect.js";
-import {
-  OMO_THINKING_LEVELS,
-  OMO_THINKING_OPTION_IDS,
-  OmoModelCatalogProtocolError,
-  type OmoThinkingLevel,
-} from "./omo-model-catalog.js";
+import { OmoModelCatalogProtocolError } from "./omo-model-catalog.js";
 import { OmoProtocolError } from "./omo-protocol.js";
-import { OMO_STAGING_CAPABILITIES, OmoHarnessSession } from "./omo-session.js";
+import { OMO_SESSION_CAPABILITIES, OmoHarnessSession } from "./omo-session.js";
 import {
   OmoRpcClosedError,
   OmoRpcCommandTimeoutError,
@@ -188,14 +186,25 @@ export class OmoAdapter implements HarnessAdapter {
       );
     }
     if (input.kind === "create") {
-      if (input.permissionModeId !== undefined) {
+      const requestedPreset =
+        input.permissionModeId === undefined
+          ? undefined
+          : omoNativePermissionPreset(input.permissionModeId);
+      if (input.permissionModeId !== undefined && requestedPreset === null) {
         return failure(
-          "unsupported",
-          "OmO Permission Mode selection is not available in this build",
+          "invalidRequest",
+          `OmO does not offer Permission Mode '${input.permissionModeId}'`,
         );
       }
-      if (input.executionPolicy === "unattended-full-access") {
-        return failure("unsupported", "OmO unattended full access is not available in this build");
+      if (
+        input.executionPolicy === "unattended-full-access" &&
+        requestedPreset !== undefined &&
+        requestedPreset !== OMO_FULL_ACCESS_PRESET
+      ) {
+        return failure(
+          "invalidRequest",
+          `OmO unattended full access cannot be combined with Permission Mode '${input.permissionModeId}'`,
+        );
       }
     }
     let nativeRef: NativeSessionRef | undefined;
@@ -260,13 +269,35 @@ export class OmoAdapter implements HarnessAdapter {
           });
         }
       }
-      const initialState = omoInitialState(state, cwd);
+      let initialState = omoInitialState(state, cwd);
       if (!initialState.nativeRef) {
         return await rejectOpen({
           code: "protocolError",
           message: "OmO did not confirm a resumable Native Session identity",
           retryable: false,
         });
+      }
+      // B4: the unattended policy maps to the native full-access preset; an
+      // explicit mode at create is applied the same way. Both wait for the
+      // engine's applied confirmation and are rejected without a Session
+      // when it does not arrive; the published state is rebuilt from the
+      // post-application native state.
+      const targetPreset =
+        input.kind === "create"
+          ? input.permissionModeId !== undefined
+            ? omoNativePermissionPreset(input.permissionModeId)
+            : input.executionPolicy === "unattended-full-access"
+              ? OMO_FULL_ACCESS_PRESET
+              : undefined
+          : undefined;
+      if (targetPreset) {
+        const applied = await applyOmoPermissionMode(rpc, targetPreset, {
+          ...(this.#commandTimeoutMs === undefined ? {} : { timeoutMs: this.#commandTimeoutMs }),
+        });
+        if (!applied.ok) {
+          return await rejectOpen(applied.error);
+        }
+        initialState = omoInitialState(rpc.state, cwd);
       }
       const session = new OmoHarnessSession(rpc, {
         initialState,
@@ -366,7 +397,8 @@ export class OmoAdapter implements HarnessAdapter {
       return {
         status: "ready",
         catalog: inspected.catalog.catalog,
-        capabilities: OMO_STAGING_CAPABILITIES,
+        permissionModes: OMO_PERMISSION_MODE_CATALOG,
+        capabilities: OMO_SESSION_CAPABILITIES,
       };
     } catch (error) {
       // A deliberate close is not a startup failure of the engine.
@@ -400,7 +432,7 @@ export class OmoAdapter implements HarnessAdapter {
     return {
       status: "ready",
       catalog: availabilityCatalog,
-      capabilities: OMO_STAGING_CAPABILITIES,
+      capabilities: OMO_SESSION_CAPABILITIES,
     };
   }
 
@@ -429,14 +461,9 @@ export class OmoAdapter implements HarnessAdapter {
 
 function omoInitialState(state: OmoRpcSessionState, cwd: string): HarnessSessionState {
   const nativeRef = omoNativeSessionRef(state, cwd);
-  const effectiveModel = omoEffectiveModelRef(state.model);
-  const resolvedModelLabel = omoResolvedModelLabel(state);
-  const effectiveThinkingOptionId = omoEffectiveThinkingOption(state.thinkingLevel);
   return {
     ...(nativeRef === undefined ? {} : { nativeRef }),
-    ...(effectiveModel === undefined ? {} : { effectiveModel }),
-    ...(resolvedModelLabel === undefined ? {} : { resolvedModelLabel }),
-    ...(effectiveThinkingOptionId === undefined ? {} : { effectiveThinkingOptionId }),
+    ...omoConfirmedConfigurationState(state),
   };
 }
 
@@ -449,31 +476,6 @@ function omoNativeSessionRef(state: OmoRpcSessionState, cwd: string): NativeSess
     formatVersion: 1,
   });
   return parsed.success ? parsed.data : undefined;
-}
-
-/** The readable identity the Model Catalog publishes for a unique Provider/Model pair. */
-function omoEffectiveModelRef(model: OmoRpcSessionState["model"]): HarnessModelRef | undefined {
-  if (!model) return undefined;
-  const parsed = harnessModelRefSchema.safeParse({ id: `${model.provider}/${model.id}` });
-  return parsed.success ? parsed.data : undefined;
-}
-
-function omoResolvedModelLabel(state: OmoRpcSessionState): string | undefined {
-  const model = state.model;
-  if (!model) return undefined;
-  const rawModel = state.raw.model;
-  const nativeName =
-    isRecord(rawModel) && typeof rawModel.name === "string" && rawModel.name.trim().length > 0
-      ? rawModel.name
-      : `${model.provider} / ${model.id}`;
-  const parsed = harnessResolvedModelLabelSchema.safeParse(nativeName);
-  return parsed.success ? parsed.data : undefined;
-}
-
-function omoEffectiveThinkingOption(level: string | null): HarnessThinkingOptionId | undefined {
-  if (level === null) return undefined;
-  if (!(OMO_THINKING_LEVELS as readonly string[]).includes(level)) return undefined;
-  return OMO_THINKING_OPTION_IDS[level as OmoThinkingLevel];
 }
 
 function omoSessionPathFromRef(ref: NativeSessionRef): string | undefined {

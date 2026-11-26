@@ -412,9 +412,10 @@ export class ClientSessions implements ISessions {
     return this.manager.refreshList();
   }
 
-  /** Set the browser-local list scope without changing Session ownership or selection. */
-  loadSummary(sessionId: SessionId): Promise<void> {
-    return this.manager.loadSummary(sessionId);
+  /** Resolve one direct-link summary and publish it before navigation checks the list. */
+  async loadSummary(sessionId: SessionId): Promise<void> {
+    await this.manager.loadSummary(sessionId);
+    this.projectList();
   }
 
   loadMore(workspaceId?: WorkspaceId): Promise<void> {

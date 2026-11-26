@@ -1,10 +1,12 @@
 import { expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type { RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionListRequest, SessionListValue, SessionSummary } from "../src/types.ts";
 import { SessionManager } from "../src/client/sessions/manager.ts";
 import type { SessionRemotes } from "../src/client/sessions/remotes.ts";
+import { ClientSessions } from "../src/client/sessions/service.ts";
 import { TYPERT_REMOTE } from "../generated/remote.js";
 
 // The browser export is a loader bundle. Load the same Gateway source in Node.
@@ -216,6 +218,28 @@ it("keeps the page cursor on errors, replays explicit removals, and resolves dir
   expect(list).toHaveBeenLastCalledWith({ sessionId: archived });
   manager.resolveTarget(archived);
   await manager.dispose();
+});
+
+it("publishes a created summary before load resolves and the next animation frame", async () => {
+  const root = new Context();
+  const created = SessionId("created-thread");
+  const list = vi.fn(async () => ok([]));
+  const sessions = new ClientSessions(root, { session: { list } } as unknown as SessionRemotes);
+  const originalRaf = globalThis.requestAnimationFrame;
+  const raf = vi.fn();
+  globalThis.requestAnimationFrame = raf;
+  try {
+    sessions.handleSessionAdded(row(created));
+    expect(raf).toHaveBeenCalledTimes(1);
+    await sessions.loadSummary(created);
+    const snapshot = sessions.list.getSnapshot();
+    expect(raf).toHaveBeenCalledTimes(1);
+    expect(snapshot.byId[created]).toBeDefined();
+    if (snapshot.byId[created] === undefined) throw new Error(`Session not found: ${created}`);
+  } finally {
+    globalThis.requestAnimationFrame = originalRaf;
+    await root.fiber.dispose();
+  }
 });
 
 it("restores a retained Session when the Host adds the same identity again", async () => {

@@ -434,7 +434,8 @@ describe("native ACP stdio transport", () => {
     expect(value.isClosed).toBe(true);
   });
   it("does not apply the command timeout while waiting for a user answer", async () => {
-    const value = transport("callbacks", { commandTimeoutMs: 300 });
+    const commandTimeoutMs = 1500;
+    const value = transport("callbacks", { commandTimeoutMs });
     await open(value);
     const onElicitation = vi.fn(() => new Promise<never>(() => {}));
     let settled = false;
@@ -448,7 +449,7 @@ describe("native ACP stdio transport", () => {
       },
     );
     await vi.waitFor(() => expect(onElicitation).toHaveBeenCalledOnce());
-    await delay(450);
+    await delay(commandTimeoutMs + 150);
     expect(settled).toBe(false);
     expect(value.isClosed).toBe(false);
     await value.cancel();

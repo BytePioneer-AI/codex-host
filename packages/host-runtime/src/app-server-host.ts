@@ -1346,8 +1346,20 @@ export class AppServerHost {
       startOfficial: (input, resolveConfiguration, readParent) =>
         this.#startOfficialDelegation(input, resolveConfiguration, readParent),
       listOfficial: (input) => this.#listDelegationThreads(input),
-      officialThreadMetadata: (threadId) =>
-        this.#readThreadMetadata(threadId, options.sharedThreads),
+      officialThreadMetadata: (threadId) => this.#readThreadMetadata(threadId),
+      sharedParentMetadata: async (threadId) => {
+        const bridge = options.sharedThreads;
+        if (!bridge?.options.delegateCreates) return null;
+        const harnessId = (await bridge.ownership([threadId])).get(threadId);
+        if (!harnessId) return null;
+        const parent = await this.#readThreadMetadata(threadId, bridge);
+        if (!parent)
+          throw new DelegationControlError(
+            "DELEGATION_FAILED",
+            "Unable to read the shared parent Thread before delegation",
+          );
+        return { ...parent, harnessId };
+      },
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
       pendingQuestions: (threadId) => this.#pendingDelegationQuestions(threadId),
@@ -2930,29 +2942,20 @@ export class AppServerHost {
 
   async #readThreadMetadata(
     threadId: string,
-    sharedParents?: SharedThreadBridge,
-  ): Promise<{ cwd?: string; title?: string; projectId?: string; harnessId?: string } | null> {
+    owner?: SharedThreadBridge,
+  ): Promise<{ cwd?: string; title?: string; projectId?: string } | null> {
     const params = { threadId, includeTurns: false };
-    const readThread = (response: JsonObject | null) =>
-      response && isRecord(response.result) && isRecord(response.result.thread)
-        ? response.result.thread
-        : null;
-    const native = this.#requestOfficial("thread/read", params);
-    let thread = readThread(
-      await (sharedParents?.options.delegateCreates ? native.catch(() => null) : native),
-    );
-    let harnessId: string | undefined;
-    if (!thread && sharedParents?.options.delegateCreates) {
-      harnessId = (await sharedParents.ownership([threadId])).get(threadId);
-      if (harnessId) thread = readThread(await sharedParents.request("thread/read", params));
-    }
+    const response = owner
+      ? await owner.request("thread/read", params)
+      : await this.#requestOfficial("thread/read", params);
+    const result = isRecord(response.result) ? response.result : null;
+    const thread = result && isRecord(result.thread) ? result.thread : null;
     if (!thread) return null;
     const title =
       typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
     return {
       ...(typeof thread.cwd === "string" && thread.cwd.trim() ? { cwd: thread.cwd } : {}),
       ...(typeof thread.projectId === "string" ? { projectId: thread.projectId } : {}),
-      ...(harnessId ? { harnessId } : {}),
       ...(typeof title === "string" && title.trim() ? { title } : {}),
     };
   }

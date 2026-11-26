@@ -71,8 +71,10 @@ type ParentMetadata = {
   cwd?: string;
   title?: string;
   projectId?: string;
-  harnessId?: RoutedHarnessId;
 };
+type ReadSharedParent = (
+  threadId: string,
+) => Promise<(ParentMetadata & { harnessId: RoutedHarnessId }) | null>;
 type ReadDelegationDefault = (
   harnessId: RoutedHarnessId,
 ) => Promise<HarnessDelegationDefault | undefined>;
@@ -192,6 +194,7 @@ export class HarnessDelegationCoordinator {
     readParent: () => Promise<{ harnessId: RoutedHarnessId; projectId?: string }>,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
+  readonly #sharedParentMetadata: ReadSharedParent | undefined;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata | null>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
@@ -228,6 +231,7 @@ export class HarnessDelegationCoordinator {
       readParent: () => Promise<{ harnessId: RoutedHarnessId; projectId?: string }>,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
+    sharedParentMetadata?: ReadSharedParent;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata | null>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
@@ -250,6 +254,7 @@ export class HarnessDelegationCoordinator {
     this.#cancelOfficial = input.cancelOfficial;
     this.#startOfficial = input.startOfficial;
     this.#listOfficial = input.listOfficial;
+    this.#sharedParentMetadata = input.sharedParentMetadata;
     this.#officialThreadMetadata = input.officialThreadMetadata;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
@@ -885,6 +890,10 @@ export class HarnessDelegationCoordinator {
     // A synthetic origin (external client or remote peer) is no Thread; keep the native default.
     if (isSyntheticOrigin(parentThreadId)) {
       return { harnessId: "codex", title: originClientName(parentThreadId) ?? "remote-peer" };
+    }
+    if (targetHarnessId === "codex") {
+      const shared = await this.#sharedParentMetadata?.(parentThreadId);
+      if (shared) return shared;
     }
     const record = await this.#repository.find(parentThreadId);
     if (record)

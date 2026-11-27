@@ -108,6 +108,19 @@
   background: color-mix(in srgb, var(--dsw-alias-label-primary) 2.5%, transparent);
 }
 
+.peerRow[data-recent="true"] {
+  animation: peerRowHighlight 1.5s ease-out;
+}
+
+@keyframes peerRowHighlight {
+  0% {
+    background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 .peerMain {
   display: flex;
   align-items: center;
@@ -132,77 +145,92 @@
 }
 
 .colorDot,
-.colorSwatch {
+.colorSwatch,
+.topologyDotRing {
   --ch-peer-swatch: #3b82f6;
 }
 
 .colorDot[data-color="blue"],
-.colorSwatch[data-color="blue"] {
+.colorSwatch[data-color="blue"],
+.topologyDotRing[data-color="blue"] {
   --ch-peer-swatch: #3b82f6;
 }
 
 .colorDot[data-color="purple"],
-.colorSwatch[data-color="purple"] {
+.colorSwatch[data-color="purple"],
+.topologyDotRing[data-color="purple"] {
   --ch-peer-swatch: #8b5cf6;
 }
 
 .colorDot[data-color="cyan"],
-.colorSwatch[data-color="cyan"] {
+.colorSwatch[data-color="cyan"],
+.topologyDotRing[data-color="cyan"] {
   --ch-peer-swatch: #06b6d4;
 }
 
 .colorDot[data-color="green"],
-.colorSwatch[data-color="green"] {
+.colorSwatch[data-color="green"],
+.topologyDotRing[data-color="green"] {
   --ch-peer-swatch: #10b981;
 }
 
 .colorDot[data-color="amber"],
-.colorSwatch[data-color="amber"] {
+.colorSwatch[data-color="amber"],
+.topologyDotRing[data-color="amber"] {
   --ch-peer-swatch: #f59e0b;
 }
 
 .colorDot[data-color="rose"],
-.colorSwatch[data-color="rose"] {
+.colorSwatch[data-color="rose"],
+.topologyDotRing[data-color="rose"] {
   --ch-peer-swatch: #f43f5e;
 }
 
 .colorDot[data-color="slate"],
-.colorSwatch[data-color="slate"] {
+.colorSwatch[data-color="slate"],
+.topologyDotRing[data-color="slate"] {
   --ch-peer-swatch: #64748b;
 }
 
 :global(body[data-ds-dark-theme]) .colorDot[data-color="blue"],
-:global(body[data-ds-dark-theme]) .colorSwatch[data-color="blue"] {
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="blue"],
+:global(body[data-ds-dark-theme]) .topologyDotRing[data-color="blue"] {
   --ch-peer-swatch: #60a5fa;
 }
 
 :global(body[data-ds-dark-theme]) .colorDot[data-color="purple"],
-:global(body[data-ds-dark-theme]) .colorSwatch[data-color="purple"] {
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="purple"],
+:global(body[data-ds-dark-theme]) .topologyDotRing[data-color="purple"] {
   --ch-peer-swatch: #a78bfa;
 }
 
 :global(body[data-ds-dark-theme]) .colorDot[data-color="cyan"],
-:global(body[data-ds-dark-theme]) .colorSwatch[data-color="cyan"] {
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="cyan"],
+:global(body[data-ds-dark-theme]) .topologyDotRing[data-color="cyan"] {
   --ch-peer-swatch: #22d3ee;
 }
 
 :global(body[data-ds-dark-theme]) .colorDot[data-color="green"],
-:global(body[data-ds-dark-theme]) .colorSwatch[data-color="green"] {
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="green"],
+:global(body[data-ds-dark-theme]) .topologyDotRing[data-color="green"] {
   --ch-peer-swatch: #34d399;
 }
 
 :global(body[data-ds-dark-theme]) .colorDot[data-color="amber"],
-:global(body[data-ds-dark-theme]) .colorSwatch[data-color="amber"] {
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="amber"],
+:global(body[data-ds-dark-theme]) .topologyDotRing[data-color="amber"] {
   --ch-peer-swatch: #fbbf24;
 }
 
 :global(body[data-ds-dark-theme]) .colorDot[data-color="rose"],
-:global(body[data-ds-dark-theme]) .colorSwatch[data-color="rose"] {
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="rose"],
+:global(body[data-ds-dark-theme]) .topologyDotRing[data-color="rose"] {
   --ch-peer-swatch: #fb7185;
 }
 
 :global(body[data-ds-dark-theme]) .colorDot[data-color="slate"],
-:global(body[data-ds-dark-theme]) .colorSwatch[data-color="slate"] {
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="slate"],
+:global(body[data-ds-dark-theme]) .topologyDotRing[data-color="slate"] {
   --ch-peer-swatch: #94a3b8;
 }
 
@@ -339,6 +367,26 @@
   font-weight: 450;
   color: var(--dsw-alias-label-tertiary);
   white-space: nowrap;
+}
+
+.pairedBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10.5px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+:global(body[data-ds-dark-theme]) .pairedBadge {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
 }
 
 .peerMetaRow {
@@ -480,7 +528,18 @@
 
 /* Modal sheets */
 .addModal.addModal {
-  width: min(440px, 100%);
+  width: min(460px, 100%);
+}
+
+.syncMeshModal.syncMeshModal {
+  width: min(480px, 100%);
+}
+
+.syncMeshSubtitle {
+  margin: -6px 0 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .confirm.confirm {
@@ -808,6 +867,877 @@
   border-top: 1px solid var(--dsw-alias-border-l2);
 }
 
+/* Mutual & mesh pairing sections */
+.pairingSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+  min-width: 0;
+}
+
+.pairingSwitchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pairingDivider {
+  height: 1px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.pairingNotice {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.pairingNoticeRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+}
+
+.pairingWarning {
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.inlineLinkButton {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-state-business-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 17px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.inlineLinkButton:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.inlineLinkButton:focus-visible,
+.selfOriginSelect:focus-visible,
+.reportDismissButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 1px;
+}
+
+.inlineLinkButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.selfOriginRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  min-width: 0;
+}
+
+.selfOriginPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.selfOriginLabel {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.selfOriginValue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.selfOriginKind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.selfOriginHost {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.selfOriginSelect {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.selfOriginSelect:hover:not(:disabled) {
+  border-color: var(--dsw-alias-border-l4);
+}
+
+.selfOriginSelect:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.meshInlineBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.meshInlineTitle {
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.meshBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+  min-width: 0;
+}
+
+.meshBoxHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.meshToolbarActions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.meshEmptyHint {
+  margin: 2px 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.meshHostList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  min-width: 0;
+}
+
+.meshHostRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: 0;
+  transition: background-color 120ms ease;
+}
+
+.meshHostRow:hover:not([data-disabled="true"]) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.meshHostRow[data-disabled="true"] {
+  opacity: 0.58;
+  cursor: default;
+}
+
+.meshHostRow .projectCheckbox {
+  margin: 0;
+  accent-color: var(--dsw-alias-label-primary);
+}
+
+.meshHostName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.meshHostMeta {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+.meshHostStatus {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+/* Pairing report banner & per-step list */
+.reportBanner,
+.modalReportBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+  min-width: 0;
+  transition: opacity 280ms ease;
+}
+
+.reportBanner[data-compact="true"] {
+  padding: 7px 11px;
+  gap: 0;
+}
+
+.reportBanner[data-fading="true"] {
+  opacity: 0;
+}
+
+.modalReportBox {
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.reportBanner[data-tone="error"],
+.modalReportBox[data-tone="error"] {
+  border-color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-error-primary) 34%,
+    var(--dsw-alias-border-l2)
+  );
+}
+
+.reportBannerHeader,
+.modalReportHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.modalReportHeader {
+  justify-content: flex-start;
+}
+
+.reportBannerTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.reportBannerIcon {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.reportBannerDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.reportBannerDot[data-tone="error"] {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.reportBannerTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.reportBannerActions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reportDismissButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.reportDismissButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.pairingStepList {
+  list-style: none;
+  margin: 0;
+  padding: 6px 2px 2px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 216px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.pairingStepRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pairingStepMain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pairingStepDirection {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pairingStatusBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 0;
+  font-size: 10.5px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+}
+
+.pairingStatusBadge[data-status="added"],
+.pairingStatusBadge[data-status="updated"] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.pairingStatusBadge[data-status="failed"] {
+  color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
+}
+
+:global(body[data-ds-dark-theme]) .pairingStatusBadge {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
+}
+
+:global(body[data-ds-dark-theme]) .pairingStatusBadge[data-status="failed"] {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);
+}
+
+.pairingStepReason {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+/* Minimal light-beam connection topology card */
+.topologyCard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background:
+    radial-gradient(
+      60% 85% at 15% 50%,
+      color-mix(in srgb, var(--dsw-alias-label-primary) 3%, transparent),
+      transparent 72%
+    ),
+    var(--dsw-alias-bg-layer-1);
+  min-width: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+.topologyHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px 0;
+  min-width: 0;
+}
+
+.topologyTitleRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.topologyTitle {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.topologyOverflow {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+  font-size: 10.5px;
+  line-height: 1;
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.topologyHeaderRight {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topologyLegend {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.topologyLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.topologyLegendGlyph {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.topologyLegendGlyphMuted {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.topologyResetButton {
+  padding: 2px 7px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.topologyResetButton:hover {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
+  color: var(--dsw-alias-label-primary);
+}
+
+.topologyResetButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+
+.topologyStage {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.topologyStage[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.topologySvg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.topologyNodeLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.topologyBeamGroup {
+  --beam-rail: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+  --beam-glow: var(--dsw-alias-label-primary);
+  --beam-chevron: var(--dsw-alias-label-tertiary);
+  --beam-pulse-opacity: 0.32;
+  transition: opacity 160ms ease;
+}
+
+.topologyBeamGroup[data-mutual="true"] {
+  --beam-chevron: var(--dsw-alias-label-secondary);
+  --beam-pulse-opacity: 0.52;
+}
+
+.topologyBeamGroup[data-offline="true"] {
+  --beam-rail: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+  --beam-chevron: color-mix(in srgb, var(--dsw-alias-label-tertiary) 65%, transparent);
+}
+
+.topologyBeamGroup[data-highlighted="true"],
+.topologyBeamGroup[data-recent="true"] {
+  --beam-rail: color-mix(in srgb, var(--dsw-alias-label-primary) 20%, transparent);
+  --beam-chevron: var(--dsw-alias-label-primary);
+  --beam-pulse-opacity: 0.86;
+}
+
+.topologyBeamGroup[data-dimmed="true"] {
+  opacity: 0.16;
+}
+
+.topologyBeamRail {
+  fill: none;
+  stroke: var(--beam-rail);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-dasharray: 4 4;
+  transition: stroke 160ms ease;
+}
+
+.topologyBeamGroup[data-mutual="true"] .topologyBeamRail {
+  stroke-width: 1.55;
+  stroke-dasharray: none;
+}
+
+.topologyBeamGroup[data-offline="true"] .topologyBeamRail {
+  stroke-width: 1.2;
+  stroke-dasharray: 2.5 4;
+}
+
+.topologyBeamPulse,
+.topologyBeamPulseReverse {
+  fill: none;
+  stroke: var(--beam-glow);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 26 240;
+  opacity: var(--beam-pulse-opacity);
+  animation: topologyBeamTravel 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.topologyBeamGroup[data-mutual="true"] .topologyBeamPulse {
+  stroke-width: 1.85;
+}
+
+.topologyBeamPulseReverse {
+  stroke-width: 1.65;
+  opacity: calc(var(--beam-pulse-opacity) * 0.78);
+  animation-name: topologyBeamTravelReverse;
+}
+
+@keyframes topologyBeamTravel {
+  from {
+    stroke-dashoffset: 266;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes topologyBeamTravelReverse {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 266;
+  }
+}
+
+.topologyBeamChevron {
+  fill: none;
+  stroke: var(--beam-chevron);
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 160ms ease;
+}
+
+.topologyPillNode {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px 6px 8px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 4px 10px rgba(15, 23, 42, 0.04);
+  color: var(--dsw-alias-label-primary);
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+  z-index: 2;
+  transition:
+    opacity 160ms ease,
+    border-color 140ms ease,
+    box-shadow 160ms ease;
+}
+
+:global(body[data-ds-dark-theme]) .topologyPillNode {
+  background: var(--dsw-alias-bg-layer-2);
+  border-color: var(--dsw-alias-border-l2);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.36),
+    0 4px 12px rgba(0, 0, 0, 0.24);
+}
+
+.topologyPillNode:hover,
+.topologyPillNode[data-active="true"] {
+  border-color: color-mix(in srgb, var(--dsw-alias-label-primary) 28%, transparent);
+  z-index: 4;
+}
+
+.topologyPillNode:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+
+.topologyPillNode[data-dragging="true"] {
+  cursor: grabbing;
+  z-index: 10;
+  transition: none;
+  box-shadow:
+    0 8px 22px rgba(15, 23, 42, 0.14),
+    0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+:global(body[data-ds-dark-theme]) .topologyPillNode[data-dragging="true"] {
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.topologyPillNode[data-dimmed="true"] {
+  opacity: 0.38;
+}
+
+.topologyPillNode[data-local="true"] {
+  padding: 7px 13px 7px 10px;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-2);
+  border-color: transparent;
+  box-shadow:
+    0 2px 6px rgba(15, 23, 42, 0.16),
+    0 6px 16px rgba(15, 23, 42, 0.09);
+}
+
+:global(body[data-ds-dark-theme]) .topologyPillNode[data-local="true"] {
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.45),
+    0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
+.topologyPillNode[data-connected="false"] {
+  border-style: dashed;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.topologyLocalIcon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.topologyDotRing {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: color-mix(in srgb, var(--ch-peer-swatch) 16%, transparent);
+}
+
+.topologyDotRing[data-connected="false"] {
+  opacity: 0.45;
+}
+
+.topologyDotCore {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ch-peer-swatch);
+}
+
+.topologyPillLabel {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 550;
+  white-space: nowrap;
+  max-width: 136px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topologyPillNode[data-local="true"] .topologyPillLabel {
+  font-weight: 600;
+}
+
+.topologyFooter {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 14px 8px;
+}
+
+.topologyHint,
+.topologySummary {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topologySummary {
+  color: var(--dsw-alias-label-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topologyBeamPulse,
+  .topologyBeamPulseReverse,
+  .peerRow[data-recent="true"] {
+    animation: none;
+  }
+
+  .reportBanner,
+  .topologyBeamGroup,
+  .topologyBeamRail,
+  .topologyBeamChevron,
+  .topologyPillNode {
+    transition: none;
+  }
+}
+
 .dangerConfirm {
   background: var(--dsw-alias-state-error-primary);
   color: white;
@@ -834,6 +1764,12 @@
     font-size: 19px;
   }
 
+  .headerActions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
   .peerRow {
     padding: 10px 12px;
   }
@@ -842,7 +1778,38 @@
     gap: 8px;
   }
 
+  .peerNameRow {
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+
   .peerSwitch {
     margin-left: 4px;
+  }
+
+  .reportBannerTitle {
+    white-space: normal;
+  }
+
+  .topologyHeader {
+    padding: 10px 12px 0;
+  }
+
+  .topologyFooter {
+    padding: 0 12px 7px;
+  }
+
+  .topologyPillNode {
+    padding: 5px 10px 5px 7px;
+    gap: 6px;
+  }
+
+  .topologyPillNode[data-local="true"] {
+    padding: 6px 11px 6px 9px;
+  }
+
+  .topologyPillLabel {
+    font-size: 11.5px;
+    max-width: 104px;
   }
 }

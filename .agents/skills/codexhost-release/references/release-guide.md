@@ -79,16 +79,23 @@ codexhost v<version>
 对话过长时可以自动或手动压缩，压缩后继续在同一个 Thread 里对话。
 — @contributor-b
 
-## 🚀 新功能
+## 📋 完整更新清单
+
+<details>
+<summary>展开查看全部新功能（3 项）与修复（3 项）</summary>
+
+### 🚀 新功能
 - Composer：新增 Harness 命令按钮 (#123)
 - 模型选择器：支持搜索
 - 设置：可以复制 Agent 连接诊断
 
-## 🐛 修复
+### 🐛 修复
 - Usage：对话过程中不再停止更新 (#126, #127)
 - Linux：Inspector 无法打开 Codex Desktop
 - 另有 12 项稳定性修复
 - ⚠️ 已知问题：<一句话>
+
+</details>
 
 ---
 
@@ -102,16 +109,23 @@ A Harness commands button sits next to the input, and the model list is searchab
 Compact long conversations automatically or on demand, then keep going in the same Thread.
 — @contributor-b
 
-## 🚀 Features
+## 📋 Full Changelog
+
+<details>
+<summary>Show all features (3) and fixes (3)</summary>
+
+### 🚀 Features
 - Composer: Harness commands button (#123)
 - Model picker: search
 - Settings: copy Agent connection diagnostics
 
-## 🐛 Fixes
+### 🐛 Fixes
 - Usage: stopped updating during a conversation (#126, #127)
 - Linux: Inspector could not open Codex Desktop
 - 12 more stability fixes
 - ⚠️ Known issue: <one sentence>
+
+</details>
 
 ## Install & Upgrade
 - New install: `npm install -g @codexhost/cli`, or download the installer for your platform from Assets below.
@@ -127,7 +141,7 @@ Compact long conversations automatically or on demand, then keep going in the sa
 
 读者主要有两类：在应用内更新页看全文、想知道跟自己有没有关系的现有用户；在 GitHub 下载安装包的新用户。应用内会渲染整篇正文，所以中文在前，安装说明压到最后几行。
 
-- **结构**：一句话总结 → 主题 → 新功能 → 修复 → `---` → 同结构英文 → Install & Upgrade → 致谢。总结和主题前不加栏目标题；新功能、修复带图标（🚀 🐛），条目前不加图标。有破坏性变更时，在总结之后、主题之前单列 `## ⚠️ 破坏性变更`，英文同样处理。
+- **结构**：一句话总结 → 主题 → `## 📋 完整更新清单`（内部用 `<details><summary>...</summary>...</details>` 默认折叠 `### 🚀 新功能` 与 `### 🐛 修复` 明细）→ `---` → 同结构英文（`## 📋 Full Changelog` 下同样折叠 `### 🚀 Features` 与 `### 🐛 Fixes`）→ Install & Upgrade → 致谢。总结和主题前不加栏目标题；`## 📋 完整更新清单` / `## 📋 Full Changelog` 保留 `## ` 二级标题以确保老版本应用内更新公告解析器按首个 `## ` 截断而不吞入明细。有破坏性变更时，在总结之后、主题之前单列 `## ⚠️ 破坏性变更`（不折叠），英文同样处理。
 - **应用内更新公告**：总结和主题会作为该版本的应用内更新公告，在用户升级后弹出，规则见 [更新公告](../../../../docs/product/release-announcement.md)。没有主题的 Release 不弹公告。发布后修改 Release 正文，只影响尚未确认的用户和手动查看。
 - **一句话总结**：正文第一段，`本次更新带来……，并改进了……。`，点出最重要的两三件事和涉及的方面。
 - **主题**：4～7 个，按用户能感知的方面归并（一个主题可以合并多个 PR 和修复），每个主题三行：`### <图标> <短标题>`、一两句说明（写用户现在能做什么、哪些问题不再出现，多件事用分号隔开，不带 PR 编号）、`— @a · @b`（该主题涉及 PR 的作者，维护者直接提交的记维护者）。图标每个主题不同。每位贡献者至少出现在一个主题里。

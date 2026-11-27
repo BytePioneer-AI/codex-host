@@ -2,6 +2,7 @@
 import type {
   ISessions,
   SessionBinding,
+  SessionListState,
   SessionReference,
   SessionTarget,
 } from "@deepseek-ai/dsh-api-session-controller/client";
@@ -13,6 +14,17 @@ declare module "@deepseek-ai/dsh-api-session-controller/client" {
     /** Live data only; does not mark a Session as viewed. */
     backgroundWarm: unknown;
   }
+}
+
+/** Maximum stopped warm sessions kept retained in the background. */
+export const MAX_STOPPED_WARM_SESSIONS = 4;
+
+/** Maximum estimated byte budget across stopped warm sessions (32 MiB). */
+export const MAX_STOPPED_WARM_BYTES = 32 * 1024 * 1024;
+
+export interface SessionKeepaliveOptions {
+  readonly maxStoppedSessions?: number;
+  readonly maxStoppedBytes?: number;
 }
 
 interface HeldSession {
@@ -27,6 +39,9 @@ export class SessionKeepalive {
   private running = new Set<SessionId>();
   /** Invalid bindings and rejected acquisitions stay suppressed until leaving the targets or a visit. */
   private readonly failed = new Set<SessionId>();
+  private readonly maxStoppedSessions: number;
+  private readonly maxStoppedBytes: number;
+  private lastVisited: SessionId | undefined;
   private active = false;
   private reconciling = false;
   private dirty = false;
@@ -34,7 +49,11 @@ export class SessionKeepalive {
   constructor(
     private readonly sessions: ISessions,
     private readonly workspaces: IWorkspaces,
-  ) {}
+    options: SessionKeepaliveOptions = {},
+  ) {
+    this.maxStoppedSessions = Math.max(0, options.maxStoppedSessions ?? MAX_STOPPED_WARM_SESSIONS);
+    this.maxStoppedBytes = Math.max(0, options.maxStoppedBytes ?? MAX_STOPPED_WARM_BYTES);
+  }
 
   start(): () => void {
     this.active = true;
@@ -50,6 +69,7 @@ export class SessionKeepalive {
       this.recent.clear();
       this.running.clear();
       this.failed.clear();
+      this.lastVisited = undefined;
       for (const { reference } of held) reference.release();
     };
   }
@@ -57,6 +77,7 @@ export class SessionKeepalive {
   /** Called only after accepted navigation, before releasing the previous main-view reference. */
   visit(reference: SessionReference, target: SessionTarget): void {
     if (!this.active) return;
+    this.lastVisited = reference.sessionId;
     this.failed.delete(reference.sessionId);
     this.remember(
       reference.sessionId,
@@ -70,6 +91,28 @@ export class SessionKeepalive {
   private remember(id: SessionId, target: SessionTarget): void {
     this.recent.delete(id);
     this.recent.set(id, target);
+  }
+
+  /**
+   * Sessions held by any active view (e.g. `mainView`, `sidebarView`) are never
+   * evicted by warm-session budgets. When a minimal `ISessions` double does not
+   * track reference sources at all, fall back to protecting the latest `visit`.
+   */
+  private isProtectedView(id: SessionId, list: SessionListState): boolean {
+    let hasTrackedSource = false;
+    for (const retainedBy of [
+      this.sessions.retainInfo?.(id)?.getSnapshot().retainedBy,
+      list.byId[id]?.retainedBy,
+    ]) {
+      if (retainedBy === undefined) continue;
+      for (const [source, count] of Object.entries(retainedBy)) {
+        if ((count ?? 0) <= 0) continue;
+        hasTrackedSource = true;
+        if (source !== "backgroundWarm") return true;
+      }
+    }
+    if (hasTrackedSource) return false;
+    return id === this.lastVisited;
   }
 
   private reconcile(): void {
@@ -119,12 +162,28 @@ export class SessionKeepalive {
         archived.has(id) ||
         this.sessions.binding(id)?.session.getSnapshot().removed ||
         (list.phase === "ready" && !catalog.has(id) && typeof target === "string")
-      )
+      ) {
         this.recent.delete(id);
+        if (this.lastVisited === id) this.lastVisited = undefined;
+      }
     }
-    // Running Sessions never consume one of the eight stopped warm slots, including the main view.
+    // Running Sessions never consume stopped warm slots or byte budget, including the main view.
     const stopped = [...this.recent.keys()].filter((id) => !running.has(id));
-    for (const id of stopped.slice(0, Math.max(0, stopped.length - 8))) this.recent.delete(id);
+    let stoppedCount = stopped.length;
+    let stoppedBytes = 0;
+    const bytesById = new Map<SessionId, number>();
+    for (const id of stopped) {
+      const bytes = Math.max(0, this.sessions.estimatedBytes?.(id) ?? 0);
+      bytesById.set(id, bytes);
+      stoppedBytes += bytes;
+    }
+    for (const id of stopped) {
+      if (stoppedCount <= this.maxStoppedSessions && stoppedBytes <= this.maxStoppedBytes) break;
+      if (this.isProtectedView(id, list)) continue;
+      this.recent.delete(id);
+      stoppedCount -= 1;
+      stoppedBytes -= bytesById.get(id) ?? 0;
+    }
     const targets = new Map(this.recent);
     for (const id of running) targets.set(id, id);
     for (const id of this.failed) if (!targets.has(id)) this.failed.delete(id);
@@ -149,7 +208,13 @@ export class SessionKeepalive {
         this.held.set(id, held);
         // Session.open records sync failures in its snapshot. Keep that valid generation
         // for the Controller's reconnect resync; release rejected acquisition waiters only.
-        void reference.ready.catch(() => this.fail(id, held));
+        // Reconcile once initial opening settles so freshly loaded history bytes are accounted for.
+        void reference.ready.then(
+          () => {
+            if (this.active && this.held.get(id) === held) this.reconcile();
+          },
+          () => this.fail(id, held),
+        );
       } catch {
         this.failed.add(id);
         reference?.release();

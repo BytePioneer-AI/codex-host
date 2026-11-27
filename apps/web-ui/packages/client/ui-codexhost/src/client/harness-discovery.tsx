@@ -16,12 +16,14 @@ import {
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
 import {
+  harnessIconSources,
   RemotePluginIcon,
   IconDataOutlineRegular,
   type IconProps,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import { harnessCommandApi } from "./api.ts";
 import { HARNESS_COMMAND_SOURCE, harnessCommandReference } from "./harness-command-reference.ts";
+import { registerRemoteHostDelegation } from "./remote-host-delegation.tsx";
 import type {} from "./HostConnectionStatus.tsx";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -81,9 +83,28 @@ export function registerHarnessDiscovery(ctx: Context): void {
     if (row.blank) return harnessIdOf(id) === "codex";
     return row.projectionValues?.nativeDiscovery === true;
   };
+  const directoryOf = (id: SessionId) => {
+    if (!ctx.sessions.scope(id) || !ctx.sessions.binding(id)) return undefined;
+    try {
+      return ctx.modelDirectories.directoryFor(id);
+    } catch {
+      return undefined;
+    }
+  };
+  const delegationGroupsOf = (id: SessionId) => {
+    if (isRemotePeer(id)) {
+      return directoryOf(id)?.store.getSnapshot().harnesses ?? [];
+    }
+    return ctx.modelDirectories.harnessCatalog.getSnapshot().value?.groups ?? [];
+  };
   const supportsDelegation = (id: SessionId) => {
     const row = ctx.sessions.list.getSnapshot().byId[id];
-    if (!row || !isLocal(id) || ctx.sessions.subagentAddress(id) !== undefined) return false;
+    if (!row || ctx.sessions.subagentAddress(id) !== undefined) return false;
+    if (isRemotePeer(id)) {
+      if (connectionStateOf(id) !== "connected") return false;
+      return row.blank || row.projectionValues?.nativeDiscovery === true;
+    }
+    if (!isLocal(id)) return false;
     if (row.blank) return harnessIdOf(id) != null;
     return row.projectionValues?.nativeDiscovery === true;
   };
@@ -129,7 +150,9 @@ export function registerHarnessDiscovery(ctx: Context): void {
   const subscribe = ({ sessionId }: { sessionId: SessionId }, listener: () => void) => {
     listeners.add(listener);
     const off = ctx.sessions.list.subscribe(listener);
-    const catalogOff = ctx.modelDirectories.harnessCatalog.subscribe(listener);
+    const catalogOff = isRemotePeer(sessionId)
+      ? (directoryOf(sessionId)?.store.subscribe(listener) ?? (() => {}))
+      : ctx.modelDirectories.harnessCatalog.subscribe(listener);
     return () => {
       listeners.delete(listener);
       off();
@@ -359,33 +382,50 @@ export function registerHarnessDiscovery(ctx: Context): void {
         subscribeCandidates: subscribe,
         candidates: async ({ sessionId }, req) => {
           if (!supportsDelegation(sessionId)) return [];
-          const catalog = ctx.modelDirectories.harnessCatalog.getSnapshot().value;
-          return (catalog?.groups ?? [])
-            .filter((group) =>
-              `${group.name} ${group.id}`
-                .toLocaleLowerCase()
-                .includes(req.query.toLocaleLowerCase()),
-            )
-            .map((group) => ({
-              name: group.id,
-              label: group.name,
-              value: group.id,
-              section: t("discovery.agents"),
-              icon: (props: IconProps) => (
-                <RemotePluginIcon
-                  id={group.id}
-                  src={`/harness-icons/${encodeURIComponent(group.id)}`}
-                  presentationUrl="/harness-icons/presentation.json"
-                  size={props.size ?? 14}
-                  fallback={<IconDataOutlineRegular size={props.size ?? 14} />}
-                />
-              ),
-            }));
+          const remotePeer = isRemotePeer(sessionId);
+          let groups = delegationGroupsOf(sessionId);
+          if (remotePeer) {
+            const directory = directoryOf(sessionId);
+            const snapshot = directory?.store.getSnapshot();
+            if (
+              directory &&
+              snapshot &&
+              snapshot.harnesses.length === 0 &&
+              snapshot.status !== "error"
+            ) {
+              await directory.load().catch(() => null);
+              req.signal.throwIfAborted();
+              if (!supportsDelegation(sessionId)) return [];
+              groups = directory.store.getSnapshot().harnesses;
+            }
+          }
+          const iconHostId = remotePeer ? hostIdOf(sessionId) : undefined;
+          const query = req.query.toLocaleLowerCase();
+          return groups
+            .filter((group) => `${group.name} ${group.id}`.toLocaleLowerCase().includes(query))
+            .map((group) => {
+              const icon = harnessIconSources(group.id, iconHostId);
+              return {
+                name: group.id,
+                label: group.name,
+                value: group.id,
+                section: t("discovery.agents"),
+                icon: (props: IconProps) => (
+                  <RemotePluginIcon
+                    id={group.id}
+                    src={icon.src}
+                    presentationUrl={icon.presentationUrl}
+                    size={props.size ?? 14}
+                    fallback={<IconDataOutlineRegular size={props.size ?? 14} />}
+                  />
+                ),
+              };
+            });
         },
         onPick: (pick) => {
-          const group = ctx.modelDirectories.harnessCatalog
-            .getSnapshot()
-            .value?.groups.find((item) => item.id === pick.candidate.value);
+          const group = delegationGroupsOf(pick.session.sessionId).find(
+            (item) => item.id === pick.candidate.value,
+          );
           if (!supportsDelegation(pick.session.sessionId) || !group) {
             notify(pick.session.sessionId, t("discovery.stale"));
             return "handled";
@@ -404,4 +444,6 @@ export function registerHarnessDiscovery(ctx: Context): void {
       }),
     "ui-codexhost: delegation discovery",
   );
+
+  registerRemoteHostDelegation(ctx, { hostIdOf, supportsDelegation, notify });
 }

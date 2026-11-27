@@ -9,17 +9,16 @@ import {
   type ReactNode,
 } from "react";
 import { Button, Modal, Switch } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   REMOTE_PEER_COLORS,
   remotePeerWorkspaceId,
   resolveRemotePeerColor,
   type RemotePeerAddParams,
   type RemotePeerColor,
+  type RemotePeerPairingReport,
   type RemotePeerSummary,
   type RemotePeerTestParams,
   type RemotePeerTestResult,
-  type RemotePeerTransportKind,
   type RemotePeerUpdateParams,
 } from "@codexhost/shared-contracts";
 import { remotePeersApi } from "./api.ts";
@@ -29,7 +28,17 @@ import {
   persistAndDispatchHostScopeWorkspaceSelection,
 } from "./remote-peers-events.ts";
 import { CheckMarkIcon } from "./RemoteHostIcon.tsx";
+import {
+  errorMessageOf,
+  isMeshEligiblePeer,
+  SelfOriginPicker,
+  TRANSPORT_LABEL,
+  useShareableSelfOrigins,
+  type RemotePeersTranslate,
+} from "./RemotePeerPairing.tsx";
 import css from "./RemotePeersPanel.module.css";
+
+export { errorMessageOf, TRANSPORT_LABEL, type RemotePeersTranslate };
 
 const AUTO_PROBE_DEBOUNCE_MS = 400;
 
@@ -69,29 +78,21 @@ function ChevronDownIcon({ className, expanded }: { className?: string; expanded
   );
 }
 
-export type RemotePeersTranslate = PropsLocale<"codexhostImport">["t"];
 type AddMode = "link" | "manual";
-
-export const TRANSPORT_LABEL: Record<RemotePeerTransportKind, Parameters<RemotePeersTranslate>[0]> =
-  {
-    relay: "remotePeers.transport.relay",
-    tailscale: "remotePeers.transport.tailscale",
-    lan: "remotePeers.transport.lan",
-    custom: "remotePeers.transport.custom",
-  };
-
-export const errorMessageOf = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
 
 export function AddPeerModal({
   suggestedColor,
+  existingPeers,
   onClose,
   onAdded,
+  onOpenShareTab,
   t,
 }: {
   suggestedColor?: RemotePeerColor;
+  existingPeers: readonly RemotePeerSummary[];
   onClose: () => void;
-  onAdded: () => Promise<void>;
+  onAdded: (pairing?: RemotePeerPairingReport) => Promise<void>;
+  onOpenShareTab: () => void;
   t: RemotePeersTranslate;
 }): ReactNode {
   const [mode, setMode] = useState<AddMode>("link");
@@ -105,7 +106,30 @@ export function AddPeerModal({
   const [testResult, setTestResult] = useState<RemotePeerTestResult | null>(null);
   const [selectedProjectIds, setSelectedProjectIds] = useState<ReadonlySet<string> | null>(null);
   const [projectsExpanded, setProjectsExpanded] = useState(false);
+  const [pairBack, setPairBack] = useState(false);
+  const [selectedSelfOrigin, setSelectedSelfOrigin] = useState<string | undefined>(undefined);
+  const [selectedMeshPeerIds, setSelectedMeshPeerIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [formError, setFormError] = useState<string | null>(null);
+
+  const selfState = useShareableSelfOrigins();
+  const meshCandidates = existingPeers.filter(isMeshEligiblePeer);
+  const targetUnsupported =
+    testResult !== null && testResult.ok && testResult.supportsPeerPairing === false;
+  const hasSelfShare = selfState.origins.length > 0;
+  const effectiveSelfOrigin =
+    selfState.origins.find((item) => item.origin === selectedSelfOrigin)?.origin ??
+    selfState.origins[0]?.origin;
+  const effectivePairBack = !targetUnsupported && pairBack && hasSelfShare;
+  const effectiveMeshPeerIds = targetUnsupported
+    ? []
+    : meshCandidates
+        .filter((peer) => selectedMeshPeerIds.has(peer.peerId))
+        .map((peer) => peer.peerId);
+  const allMeshSelected =
+    meshCandidates.length > 0 && effectiveMeshPeerIds.length === meshCandidates.length;
+  const willPair = effectivePairBack || effectiveMeshPeerIds.length > 0;
 
   const testSeqRef = useRef(0);
   const mountedRef = useRef(true);
@@ -247,6 +271,15 @@ export function AddPeerModal({
     });
   };
 
+  const toggleMeshPeer = (peerId: string): void => {
+    setSelectedMeshPeerIds((current) => {
+      const next = new Set(current);
+      if (next.has(peerId)) next.delete(peerId);
+      else next.add(peerId);
+      return next;
+    });
+  };
+
   const handleAdd = async (event?: FormEvent): Promise<void> => {
     event?.preventDefault();
     const built = buildCredentials();
@@ -254,12 +287,22 @@ export function AddPeerModal({
       setFormError(built.message);
       return;
     }
+    const addParams: RemotePeerAddParams = {
+      ...built.addParams,
+      ...(effectivePairBack
+        ? {
+            pairBack: true,
+            ...(effectiveSelfOrigin !== undefined ? { selfOrigin: effectiveSelfOrigin } : {}),
+          }
+        : {}),
+      ...(effectiveMeshPeerIds.length > 0 ? { meshPeerIds: effectiveMeshPeerIds } : {}),
+    };
     testSeqRef.current += 1;
     setTesting(false);
     setAdding(true);
     setFormError(null);
     try {
-      const { peer } = await remotePeersApi.add(built.addParams);
+      const { peer, pairing } = await remotePeersApi.add(addParams);
       if (
         probedProjects.length > 0 &&
         selectedProjectIds !== null &&
@@ -271,7 +314,7 @@ export function AddPeerModal({
         persistAndDispatchHostScopeWorkspaceSelection(peer.hostId, workspaceIds);
       }
       dispatchRemotePeersUpdated();
-      await onAdded();
+      await onAdded(pairing);
       onClose();
     } catch (cause) {
       setFormError(t("remotePeers.actionFailed", { message: errorMessageOf(cause) }));
@@ -329,7 +372,13 @@ export function AddPeerModal({
             disabled={adding}
             aria-busy={adding}
           >
-            {t(adding ? "remotePeers.adding" : "remotePeers.add")}
+            {t(
+              adding
+                ? willPair
+                  ? "remotePeers.addingAndPairing"
+                  : "remotePeers.adding"
+                : "remotePeers.add",
+            )}
           </Button>
         </>
       }
@@ -527,6 +576,112 @@ export function AddPeerModal({
             )}
           </div>
         )}
+
+        <div className={css.pairingSection}>
+          <div className={css.pairingSwitchRow}>
+            <div className={css.switchText}>
+              <span className={css.switchTitle}>{t("remotePeers.pairing.pairBack")}</span>
+              <span className={css.hint}>{t("remotePeers.pairing.pairBackHint")}</span>
+            </div>
+            <Switch
+              checked={effectivePairBack}
+              disabled={adding || targetUnsupported || !hasSelfShare}
+              label={t("remotePeers.pairing.pairBack")}
+              onChange={setPairBack}
+            />
+          </div>
+
+          {targetUnsupported ? (
+            <p className={css.pairingWarning}>{t("remotePeers.pairing.unsupportedTarget")}</p>
+          ) : selfState.status === "loading" ? (
+            <p className={css.pairingNotice}>{t("remotePeers.pairing.checkingSelf")}</p>
+          ) : !hasSelfShare ? (
+            <div className={css.pairingNoticeRow}>
+              <span className={css.pairingNotice}>{t("remotePeers.pairing.noSelfShare")}</span>
+              <button
+                type="button"
+                className={css.inlineLinkButton}
+                disabled={adding}
+                onClick={() => {
+                  onClose();
+                  onOpenShareTab();
+                }}
+              >
+                {t("remotePeers.pairing.goToShare")}
+              </button>
+            </div>
+          ) : (
+            effectivePairBack && (
+              <SelfOriginPicker
+                origins={selfState.origins}
+                value={effectiveSelfOrigin}
+                onChange={setSelectedSelfOrigin}
+                disabled={adding}
+                t={t}
+              />
+            )
+          )}
+
+          {meshCandidates.length > 0 && !targetUnsupported && (
+            <>
+              <div className={css.pairingDivider} />
+              <div className={css.meshInlineBlock}>
+                <div className={css.meshBoxHeader}>
+                  <span className={css.meshInlineTitle}>{t("remotePeers.pairing.meshTitle")}</span>
+                  {meshCandidates.length >= 2 && (
+                    <div className={css.meshToolbarActions}>
+                      <button
+                        type="button"
+                        className={css.projectsAction}
+                        disabled={adding || allMeshSelected}
+                        onClick={() =>
+                          setSelectedMeshPeerIds(new Set(meshCandidates.map((peer) => peer.peerId)))
+                        }
+                      >
+                        {t("remotePeers.projectsScope.selectAll")}
+                      </button>
+                      <button
+                        type="button"
+                        className={css.projectsAction}
+                        disabled={adding || effectiveMeshPeerIds.length === 0}
+                        onClick={() => setSelectedMeshPeerIds(new Set())}
+                      >
+                        {t("remotePeers.projectsScope.clear")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className={css.meshHostList}>
+                  {meshCandidates.map((peer) => {
+                    const checked = selectedMeshPeerIds.has(peer.peerId);
+                    const peerColor = resolveRemotePeerColor(peer.hostId, peer.color);
+                    return (
+                      <label key={peer.peerId} className={css.meshHostRow}>
+                        <input
+                          type="checkbox"
+                          className={css.projectCheckbox}
+                          checked={checked}
+                          disabled={adding}
+                          onChange={() => toggleMeshPeer(peer.peerId)}
+                        />
+                        <span
+                          className={css.colorDot}
+                          data-color={peerColor}
+                          data-state={peer.state}
+                          aria-hidden="true"
+                        />
+                        <span className={css.meshHostName}>{peer.name}</span>
+                        <span className={css.meshHostMeta}>
+                          {t(TRANSPORT_LABEL[peer.transportKind])}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
 
         {formError !== null && (
           <p className={css.error} role="alert">

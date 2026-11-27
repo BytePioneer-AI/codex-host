@@ -10,6 +10,7 @@ export const REMOTE_PEERS_METHODS = {
   remove: "codexhost/remote-peers/remove",
   reconnect: "codexhost/remote-peers/reconnect",
   test: "codexhost/remote-peers/test",
+  syncMesh: "codexhost/remote-peers/syncMesh",
   listDirs: "codexhost/remote-peers/listDirs",
   createDir: "codexhost/remote-peers/createDir",
   createWorkspace: "codexhost/remote-peers/createWorkspace",
@@ -88,6 +89,11 @@ export const remotePeerSummarySchema = z.object({
   encrypted: z.boolean(),
   enabled: z.boolean(),
   state: remotePeerStateSchema,
+  supportsPeerPairing: z.boolean().optional(),
+  /** Omitted when either side's node mapping is unknown. */
+  pairedBack: z.boolean().optional(),
+  /** Other configured remote peerIds on this Hub present in this peer's `manifest.peerNodes`. */
+  linkedPeerIds: z.array(remotePeerIdSchema).max(128).optional(),
   latencyMs: z.number().int().nonnegative().optional(),
   version: z.string().max(128).optional(),
   platform: z.string().max(64).optional(),
@@ -112,12 +118,64 @@ export const remotePeerAddParamsSchema = z
     token: z.string().min(1).max(2048).optional(),
     name: z.string().trim().min(1).max(120).optional(),
     color: remotePeerColorSchema.optional(),
+    pairBack: z.boolean().optional(),
+    meshPeerIds: z.array(remotePeerIdSchema).max(64).optional(),
+    selfOrigin: z.string().min(1).max(2048).optional(),
   })
   .refine(
     (input) => Boolean(input.connectionUrl) || (Boolean(input.origin) && Boolean(input.token)),
     "Provide either connectionUrl or both origin and token",
   );
 export type RemotePeerAddParams = z.infer<typeof remotePeerAddParamsSchema>;
+
+export const remotePeerIntroduceParamsSchema = z.strictObject({
+  origin: z.string().min(1).max(2048),
+  token: z.string().min(1).max(2048),
+  name: z.string().trim().min(1).max(120).optional(),
+  color: remotePeerColorSchema.optional(),
+  expectedNodeId: remotePeerNodeIdSchema.optional(),
+});
+export type RemotePeerIntroduceParams = z.infer<typeof remotePeerIntroduceParamsSchema>;
+
+export const remotePeerIntroduceResultSchema = z.object({
+  status: z.enum(["added", "updated", "existing"]),
+  peerId: remotePeerIdSchema,
+  hostId: remotePeerHostIdSchema,
+  nodeId: remotePeerNodeIdSchema.optional(),
+});
+export type RemotePeerIntroduceResult = z.infer<typeof remotePeerIntroduceResultSchema>;
+
+export const remotePeerPairingStatusSchema = z.enum([
+  "added",
+  "updated",
+  "existing",
+  "failed",
+  "skipped",
+]);
+export type RemotePeerPairingStatus = z.infer<typeof remotePeerPairingStatusSchema>;
+
+export const remotePeerPairingStepSchema = z.object({
+  targetPeerId: remotePeerIdSchema,
+  targetName: z.string().min(1).max(120),
+  introducedHost: z.union([z.literal("local"), remotePeerIdSchema]),
+  introducedName: z.string().min(1).max(120),
+  status: remotePeerPairingStatusSchema,
+  error: z.string().max(1000).optional(),
+});
+export type RemotePeerPairingStep = z.infer<typeof remotePeerPairingStepSchema>;
+
+export const remotePeerPairingReportSchema = z.object({
+  results: z.array(remotePeerPairingStepSchema),
+});
+export type RemotePeerPairingReport = z.infer<typeof remotePeerPairingReportSchema>;
+
+export const remotePeerSyncMeshParamsSchema = z.object({
+  peerIds: z.array(remotePeerIdSchema).max(64).optional(),
+  includeSelf: z.boolean().optional(),
+  includeMesh: z.boolean().optional(),
+  selfOrigin: z.string().min(1).max(2048).optional(),
+});
+export type RemotePeerSyncMeshParams = z.infer<typeof remotePeerSyncMeshParamsSchema>;
 
 export const remotePeerUpdateParamsSchema = z.object({
   peerId: remotePeerIdSchema,
@@ -165,6 +223,9 @@ export type RemotePeerTestProject = z.infer<typeof remotePeerTestProjectSchema>;
 
 export const remotePeerTestResultSchema = z.object({
   ok: z.boolean(),
+  nodeId: remotePeerNodeIdSchema.optional(),
+  supportsPeerPairing: z.boolean().optional(),
+  pairedBack: z.boolean().optional(),
   latencyMs: z.number().int().nonnegative().optional(),
   origin: z.string().max(2048).optional(),
   transportKind: remotePeerTransportKindSchema.optional(),
@@ -196,6 +257,8 @@ export const remotePeerCapabilitiesSchema = z.object({
   officePreview: z.literal(1).optional(),
   /** /api/peer/v1/delegation is available for fixed-whitelist cross-host delegation. */
   delegation: z.literal(1).optional(),
+  /** POST /api/peer/v1/peers is available. */
+  peerPairing: z.literal(1).optional(),
 });
 export type RemotePeerCapabilities = z.infer<typeof remotePeerCapabilitiesSchema>;
 
@@ -358,3 +421,41 @@ export const remotePeerWorkspaceMutationResultSchema = z.object({
 export type RemotePeerWorkspaceMutationResult = z.infer<
   typeof remotePeerWorkspaceMutationResultSchema
 >;
+
+export const DELEGATION_REMOTE_HOSTS_METHOD = "codexhost/delegation/remoteHosts";
+export const DELEGATION_HOST_HARNESSES_METHOD = "codexhost/delegation/hostHarnesses";
+
+export const delegationRemoteHostsParamsSchema = z.object({
+  sessionHostId: z.string().min(1).max(128).optional(),
+});
+export type DelegationRemoteHostsParams = z.infer<typeof delegationRemoteHostsParamsSchema>;
+
+export const delegationRemoteHostOptionSchema = z.object({
+  hostId: z.union([z.literal("local"), remotePeerHostIdSchema]),
+  name: z.string().min(1).max(120),
+  isLocal: z.boolean().optional(),
+  color: remotePeerColorSchema.optional(),
+  hostname: z.string().max(255).optional(),
+});
+export type DelegationRemoteHostOption = z.infer<typeof delegationRemoteHostOptionSchema>;
+
+export const delegationRemoteHostsResultSchema = z.object({
+  hosts: z.array(delegationRemoteHostOptionSchema),
+});
+export type DelegationRemoteHostsResult = z.infer<typeof delegationRemoteHostsResultSchema>;
+
+export const delegationHostHarnessesParamsSchema = z.object({
+  hostId: z.union([z.literal("local"), remotePeerHostIdSchema]),
+});
+export type DelegationHostHarnessesParams = z.infer<typeof delegationHostHarnessesParamsSchema>;
+
+export const delegationHostHarnessOptionSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
+  name: z.string().min(1).max(120),
+});
+export type DelegationHostHarnessOption = z.infer<typeof delegationHostHarnessOptionSchema>;
+
+export const delegationHostHarnessesResultSchema = z.object({
+  harnesses: z.array(delegationHostHarnessOptionSchema),
+});
+export type DelegationHostHarnessesResult = z.infer<typeof delegationHostHarnessesResultSchema>;

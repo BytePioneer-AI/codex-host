@@ -1,5 +1,9 @@
-/** Pure perspective translation for `thread://<id>?hostId=<hostId>` links across paired Peers. */
-import { peerIdFromRemoteHostId } from "@codexhost/shared-contracts";
+/** Pure perspective translation for `thread://...?hostId=...` and `subagent://codexhost-remote/...` links across paired Peers. */
+import {
+  DELEGATION_MENTION_PATH_PREFIX,
+  REMOTE_DELEGATION_MENTION_PATH_PREFIX,
+  peerIdFromRemoteHostId,
+} from "@codexhost/shared-contracts";
 
 /**
  * Matches `thread://<encodedId>?hostId=<encodedHostId>` inside prose or Markdown links
@@ -7,6 +11,9 @@ import { peerIdFromRemoteHostId } from "@codexhost/shared-contracts";
  */
 const THREAD_HOST_LINK_RE =
   /(?<![\w:/])thread:\/\/([^/?#\s<>()[\]`"'，。！？；：、]+)\?hostId=([^\s<>()[\]`"'，。！？；：、]+(?<![.,;]))/gu;
+
+const REMOTE_DELEGATION_LINK_RE =
+  /\[@([^\]\n]+)\]\((<)?subagent:\/\/codexhost-remote\/([A-Za-z0-9_%-]+)(?:\/([a-z0-9][a-z0-9-]*))?(>)?\)/gu;
 
 export interface PeerOutboundLinkContext {
   /** Target Peer's hostId in the sender's (Hub A) perspective (`remote-peer:<peerB_on_A>`). */
@@ -58,9 +65,53 @@ function rewriteThreadHostLinks(
   );
 }
 
+function rewriteRemoteDelegationLinks(
+  text: string,
+  mapHostId: (decodedHostId: string) => string | undefined,
+  collapseLocalWithHarness: boolean,
+): string {
+  if (!text.includes(REMOTE_DELEGATION_MENTION_PATH_PREFIX)) return text;
+  return text.replace(
+    REMOTE_DELEGATION_LINK_RE,
+    (
+      fullMatch,
+      label: string,
+      openAngle: string | undefined,
+      rawHostId: string,
+      harnessId: string | undefined,
+      closeAngle: string | undefined,
+    ): string => {
+      if (Boolean(openAngle) !== Boolean(closeAngle)) return fullMatch;
+      let decodedHostId: string;
+      try {
+        decodedHostId = decodeURIComponent(rawHostId);
+      } catch {
+        return fullMatch;
+      }
+      if (decodedHostId !== "local" && peerIdFromRemoteHostId(decodedHostId) === undefined) {
+        return fullMatch;
+      }
+      const mapped = mapHostId(decodedHostId);
+      if (!mapped || mapped === decodedHostId) return fullMatch;
+      const open = openAngle ?? "";
+      const close = closeAngle ?? "";
+      if (collapseLocalWithHarness && mapped === "local" && harnessId !== undefined) {
+        return `[@${label}](${open}${DELEGATION_MENTION_PATH_PREFIX}${harnessId}${close})`;
+      }
+      const path =
+        harnessId === undefined
+          ? `${REMOTE_DELEGATION_MENTION_PATH_PREFIX}${encodeURIComponent(mapped)}`
+          : `${REMOTE_DELEGATION_MENTION_PATH_PREFIX}${encodeURIComponent(mapped)}/${harnessId}`;
+      return `[@${label}](${open}${path}${close})`;
+    },
+  );
+}
+
 /**
- * Translate Hub A-perspective `thread://...?hostId=...` links into Peer B's perspective:
- * 1. Links targeting B itself (by `targetHostId` or matching `targetNodeId`) become `hostId=local`.
+ * Translate Hub A-perspective `thread://...?hostId=...` and `subagent://codexhost-remote/...`
+ * links into Peer B's perspective:
+ * 1. Links targeting B itself (by `targetHostId` or matching `targetNodeId`) become `hostId=local`
+ *    (or `subagent://codexhost.<harnessId>` for remote delegation mentions that carry a Harness).
  * 2. Links targeting A (`local`) or another Peer C whose nodeId appears in B's `peerNodes` become
  *    B's corresponding `remote-peer:<peerX_on_B>`.
  * 3. Desktop SSH/control links, unknown hosts, or nodes B has not paired remain verbatim.
@@ -69,7 +120,7 @@ export function translateThreadLinksForPeer(
   text: string,
   context: PeerOutboundLinkContext,
 ): string {
-  return rewriteThreadHostLinks(text, (hostId) => {
+  const mapHostId = (hostId: string): string | undefined => {
     if (hostId !== "local" && peerIdFromRemoteHostId(hostId) === undefined) return undefined;
     if (hostId === context.targetHostId) return "local";
     const sourceNodeId = context.nodeIdForHostId?.(hostId);
@@ -84,7 +135,9 @@ export function translateThreadLinksForPeer(
       }
     }
     return undefined;
-  });
+  };
+  const withThreads = rewriteThreadHostLinks(text, mapHostId);
+  return rewriteRemoteDelegationLinks(withThreads, mapHostId, true);
 }
 
 /**
@@ -101,13 +154,15 @@ export function translateThreadLinksFromPeer(
 ): string {
   const peerNodes = context.sourcePeerNodes;
   if (!peerNodes) return text;
-  return rewriteThreadHostLinks(text, (hostId) => {
+  const mapHostId = (hostId: string): string | undefined => {
     if (peerIdFromRemoteHostId(hostId) === undefined) return undefined;
     if (!Object.hasOwn(peerNodes, hostId)) return undefined;
     const nodeId = peerNodes[hostId];
     if (!nodeId) return undefined;
     return context.hostIdForNodeId(nodeId);
-  });
+  };
+  const withThreads = rewriteThreadHostLinks(text, mapHostId);
+  return rewriteRemoteDelegationLinks(withThreads, mapHostId, false);
 }
 
 /** Map `text` fields on content part arrays without mutating inputs or touching non-text parts. */

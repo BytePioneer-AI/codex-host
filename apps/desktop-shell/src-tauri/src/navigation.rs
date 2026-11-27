@@ -127,12 +127,21 @@ mod tests {
         let zoom_pos = script
             .find("window.__codexhostZoom = Object.freeze")
             .expect("zoom bridge registration must exist");
+        let visibility_pos = script
+            .find("window.__codexhostSetWindowHidden =")
+            .expect("window visibility bridge registration must exist");
         let root_pos = script
             .find("document.documentElement")
             .expect("root attribute setup must exist");
         assert!(
-            bridge_pos < root_pos && zoom_pos < root_pos,
+            bridge_pos < root_pos && zoom_pos < root_pos && visibility_pos < root_pos,
             "bridges must be registered before any document.documentElement access at document_start"
+        );
+        assert!(
+            script.contains("window_visibility_get")
+                && script.contains("codexhost:window-hidden-change")
+                && script.contains("data-codexhost-window-hidden"),
+            "visibility bridge must sync initial state, notify Web UI, and toggle the root attribute"
         );
 
         let keydown_pos = script

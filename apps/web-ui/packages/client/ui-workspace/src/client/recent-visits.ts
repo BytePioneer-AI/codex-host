@@ -13,6 +13,11 @@ import { sessionActivity } from "./tree.ts";
 
 export type { RecentVisit } from "./recent-visit-cache.ts";
 
+export interface IdleTabExpirationResult {
+  readonly changed: boolean;
+  readonly nextDelayMs: number | undefined;
+}
+
 export class RecentVisits {
   /** Only current-Host-confirmed records reach presentation. */
   readonly entries = createSnapshotStore<readonly RecentVisit[]>([]);
@@ -125,8 +130,12 @@ export class RecentVisits {
     this.publish();
   }
 
-  /** Expiry only removes idle UI entries, using existing metadata and genuine interaction status. */
-  expireInactive(timeoutMs: number, statuses: SessionStatusSnapshot, now = Date.now()): boolean {
+  /** Remove idle UI entries and report the shortest remaining delay among eligible background tabs. */
+  expireInactive(
+    timeoutMs: number,
+    statuses: SessionStatusSnapshot,
+    now = Date.now(),
+  ): IdleTabExpirationResult {
     const list = this.sessions.list.getSnapshot();
     if (
       !this.active ||
@@ -134,12 +143,13 @@ export class RecentVisits {
       timeoutMs <= 0 ||
       list.phase !== "ready" ||
       list.loading === true ||
-      list.listError != null ||
+      (list.listError != null && list.listErrorPage !== "more") ||
       this.workspaces.list.getSnapshot().phase !== "ready"
     )
-      return false;
+      return { changed: false, nextDelayMs: undefined };
+    const listIds = new Set(list.ids);
     const confirmed = new Set(this.entries.getSnapshot().map((entry) => entry.sessionId));
-    const expired = (entry: RecentVisit): boolean => {
+    const idleSince = (entry: RecentVisit): number | undefined => {
       const summary = list.byId[entry.sessionId];
       if (
         entry.sessionId === this.current?.sessionId ||
@@ -148,23 +158,47 @@ export class RecentVisits {
         summary.blank ||
         (summary.retainedBy.mainView ?? 0) > 0 ||
         summary.running ||
-        statuses.get(entry.sessionId)?.pendingInteraction !== undefined ||
-        (typeof entry.target !== "string" &&
-          statuses.get(entry.sessionId)?.running === undefined) ||
         !Number.isFinite(summary.updatedAt)
       )
-        return false;
+        return undefined;
+      const status = statuses.get(entry.sessionId);
+      if (status?.pendingInteraction !== undefined) return undefined;
+      const timing = summary.projectionValues?.subagentTiming;
+      if (timing?.active !== undefined) return undefined;
+      if (typeof entry.target !== "string") {
+        // Subagent rows outside Host `list.ids` require an explicit status or completed timing projection.
+        const runningConfirmed =
+          status?.running !== undefined ||
+          listIds.has(entry.sessionId) ||
+          timing?.lastTurnCompleted !== undefined;
+        if (!runningConfirmed) return undefined;
+      }
       const activity = sessionActivity(summary, list, statuses);
-      if (activity.running || activity.runningSubagentCount > 0) return false;
-      return now - Math.max(entry.lastVisitedAt, summary.updatedAt) >= timeoutMs;
+      if (activity.running || activity.runningSubagentCount > 0) return undefined;
+      return Math.max(entry.lastVisitedAt, summary.updatedAt);
     };
-    const removed = new Set(this.records.filter(expired).map((entry) => entry.sessionId));
-    if (removed.size === 0) return false;
+    const removed = new Set<SessionId>();
+    let nextDelayMs: number | undefined;
+    for (const entry of this.records) {
+      const since = idleSince(entry);
+      if (since === undefined) continue;
+      const remaining = timeoutMs - (now - since);
+      if (remaining <= 0) {
+        removed.add(entry.sessionId);
+      } else if (nextDelayMs === undefined || remaining < nextDelayMs) {
+        nextDelayMs = remaining;
+      }
+    }
+    if (removed.size === 0) return { changed: false, nextDelayMs };
     this.records = this.records.filter((entry) => !removed.has(entry.sessionId));
     // Recheck the latest stored visit so another browser tab's fresh open is not erased.
-    this.cache.update([], (entry) => removed.has(entry.sessionId) && expired(entry));
+    this.cache.update([], (entry) => {
+      if (!removed.has(entry.sessionId)) return false;
+      const since = idleSince(entry);
+      return since !== undefined && now - since >= timeoutMs;
+    });
     this.publish();
-    return true;
+    return { changed: true, nextDelayMs };
   }
 
   private remember(entry: RecentVisit): void {
@@ -237,10 +271,13 @@ export class RecentVisits {
   /** Restore metadata with bounded concurrency; never open history or recursively discover children. */
   private restoreSummaries(selectedId = this.current?.sessionId): void {
     if (this.restoring) return;
+    const list = this.sessions.list.getSnapshot();
+    const loadedIds = new Set(list.ids);
     const pending = this.records.filter(
       (entry) =>
         entry.sessionId !== selectedId &&
-        this.sessions.list.getSnapshot().byId[entry.sessionId] === undefined,
+        (list.byId[entry.sessionId] === undefined ||
+          (typeof entry.target !== "string" && !loadedIds.has(entry.sessionId))),
     );
     if (pending.length === 0) return;
     this.restoring = true;
@@ -250,9 +287,12 @@ export class RecentVisits {
         const entry = pending[index++];
         if (entry === undefined) return;
         const id = entry.sessionId;
+        const snapshot = this.sessions.list.getSnapshot();
         if (
-          !this.records.some((entry) => entry.sessionId === id) ||
-          this.sessions.list.getSnapshot().byId[id] !== undefined
+          !this.records.some((record) => record.sessionId === id) ||
+          (typeof entry.target === "string"
+            ? snapshot.byId[id] !== undefined
+            : snapshot.ids.includes(id))
         )
           continue;
         try {

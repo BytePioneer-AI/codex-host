@@ -36,69 +36,13 @@
   <a href="#커뮤니티">커뮤니티</a>
 </p>
 
-</div>
+<br />
 
----
-
-## 왜 CodexHost인가요?
-
-터미널 Agent는 실행에 강하지만 창을 여러 개 띄우면 검토와 맥락이 끊어집니다. 일반 멀티 모델 채팅 앱은 화면만 합칠 뿐 각 Agent의 네이티브 기능을 잃기 쉽습니다.
-
-CodexHost는 세 번째 길을 선택했습니다:
-
-> **네이티브 런타임을 그대로 유지한 채, 모든 주요 코딩 Agent를 하나의 공유 호스트와 다중 기기 워크스페이스에 통합합니다.**
-
-<table>
-<tr>
-
-<td width="25%" valign="top">
-
-### 독립 데스크톱 & 실시간 동기화
-
-공식 Codex Desktop 없이 바로 쓰는 자체 데스크톱 앱을 제공합니다.
-
-Web·모바일(및 선택적 공식 데스크톱 모드)과 하나의 로컬 Host를 공유합니다.
-
-</td>
-
-<td width="25%" valign="top">
-
-### 진짜 Agent 협업
-
-`#`으로 병렬 네이티브 하위 세션을 위임하고 완료 결과를 자동 회수합니다.
-
-대화 도중 다른 Agent로 컨텍스트를 무손실 인계할 수 있습니다.
-
-</td>
-
-<td width="25%" valign="top">
-
-### 멀티 호스트 & 모바일
-
-Mac, Linux 개발 서버, Windows PC를 하나의 사이드바에 통합합니다.
-
-자리를 비워도 휴대폰에서 바로 승인하고 답장하세요.
-
-</td>
-
-<td width="25%" valign="top">
-
-### 네이티브 · 로컬 우선
-
-공식 SDK / RPC / ACP로 직접 연결하며 기존 로컬 로그인을 그대로 사용합니다.
-
-계정 불필요, 제3자 프록시 없음.
-
-</td>
-
-</tr>
-</table>
-
-<div align="center">
-
-**단순한 채팅 래퍼가 아니며, 익숙한 도구를 버릴 필요도 없습니다.**
-
-### 멀티 Agent · 멀티 머신 개발을 위한 로컬 워크스페이스입니다.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-hero-en-dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-hero-en-light.png" />
+  <img src="../imgs/readme-hero-en-light.png" alt="CodexHost 독립 데스크톱 워크벤치: 멀티 Agent 병렬 위임 및 원격 호스트" width="100%" />
+</picture>
 
 </div>
 
@@ -108,7 +52,7 @@ Mac, Linux 개발 서버, Windows PC를 하나의 사이드바에 통합합니�
 
 ## 다운로드 및 설치
 
-CodexHost는 무료 오픈소스입니다. 로컬 및 LAN 환경의 모든 기능은 **계정 등록 없이**, **공식 Codex Desktop 미설치 상태에서도** 바로 사용할 수 있습니다.
+무료 오픈소스입니다. 로컬 및 LAN 기능은 **계정 등록 없이**, **공식 Codex Desktop 미설치 상태에서도** 바로 사용할 수 있습니다.
 
 | 플랫폼 | 패키지 및 안내 | 다운로드 |
 | :--- | :--- | :--- |
@@ -156,102 +100,30 @@ codexhost stop     # 모든 백그라운드 서비스 종료 (npm 재설치 전 
 
 ---
 
-## 하나의 호스트, 세 가지 사용 방식
+## 주요 기능
 
-<table>
-<tr>
-
-<td width="33%" valign="top">
-
-### 독립 데스크톱
-
-**바로 실행, 더 가벼운 메모리.**
-
-Tauri 기반 네이티브 데스크톱 셸로 공식 Codex Desktop 없이도 macOS / Windows / Linux에서 동일하게 동작합니다.
-
-</td>
-
-<td width="33%" valign="top">
-
-### 공식 Codex 확장
-
-**익숙한 화면에 멀티 Agent를.**
-
-공식 설치 파일을 건드리지 않고 Codex Desktop을 확장해 Diff 검토, Worktree, 승인 흐름을 그대로 유지합니다.
-
-</td>
-
-<td width="33%" valign="top">
-
-### Web & 모바일
-
-**어디서나 실시간으로 확인.**
-
-반응형 Web UI와 Android 네이티브 APK, iOS PWA로 이동 중에도 진행 상황을 확인하고 승인/답장할 수 있습니다.
-
-</td>
-
-</tr>
-</table>
-
-```text
-    독립 데스크톱 (Tauri)       공식 Codex Desktop       Web / PWA & Android
-             │                          │                         │
-             └──────────────────────────┼─────────────────────────┘
-                                        ▼
-                            공유 로컬 Host (단일 진실 공급원)
-                  세션 · 대기열 · 승인 · Worktree · 사용량 · 확장
-                                        │
-               ┌────────────────────────┼────────────────────────┐
-               ▼                        ▼                        ▼
-       네이티브 Codex 런타임    19+ 외부 Agent 어댑터      원격 Peer Hub / Relay
-```
+- **자체 독립 데스크톱 & 다중 기기 실시간 동기화**: macOS / Windows / Linux용 경량 Tauri 데스크톱 앱을 기본 제공해 공식 Codex Desktop 없이도 바로 실행됩니다. 공식 Codex Desktop 사용 시 비침습 확장 모드도 지원하며 Web·Android·iOS PWA와 하나의 로컬 Host를 공유합니다.
+- **`#` 멀티 Agent 병렬 위임 & 무손실 인계**: 입력창에서 `#`으로 `Claude Code`, `Pi`, `Grok`, `AGY` 등의 독립 네이티브 하위 세션을 별도 Git Worktree에서 병렬 실행하고 결과를 자동 회수하며, 대화 중 [크로스 Agent 인계(Handoff)](../architecture/cross-harness-handoff.md)로 컨텍스트를 그대로 넘길 수 있습니다.
+- **네이티브 런타임 완전 보존**: 공식 SDK / RPC 및 [ACP](https://agentclientprotocol.com/)로 직접 연결해 **Plan Mode**, **진행 중 개입(Steer)**, **백그라운드 터미널**, **임의 메시지 Fork**, **실시간 비용/캐시 지표**, 로컬 계정 가져오기를 그대로 유지합니다.
+- **통합 확장, Skills & 자동화**: 한 번 설치한 [Host 확장](../architecture/desktop-ui-extensions.md)이 데스크톱과 Web에 동시에 적용되며, [통합 Skill 라이브러리](../architecture/skill-library.md), [Schedules](../product/harness-schedules.md) 예약 실행, [CLI / MCP / HTTP](../architecture/external-clients.md)(`codexhost delegate`) 외부 오케스트레이션을 지원합니다.
+- **로컬 우선 프라이버시**: 코드, 대화 기록, 자격 증명은 모두 내 기기에 머물며 제3자 프록시 없이 공식 모델 서비스에 직접 연결됩니다.
 
 ---
 
-## 멀티 Agent 협업: 위임과 무손실 인계
+## 멀티 호스트 & 모바일
 
-입력창에서 `#`을 입력해 다른 Agent에게 독립적인 네이티브 하위 세션을 병렬로 맡기고, 완료 결과를 원래 세션으로 자동 회수합니다. 대화 중 **[크로스 Agent 무손실 인계(Handoff)](../architecture/cross-harness-handoff.md)**로 전체 맥락을 그대로 넘길 수도 있습니다.
+Mac, Linux 개발 서버, Windows PC를 하나의 사이드바에 통합하고, 자리를 비워도 휴대폰에서 바로 승인하고 답장하세요.
 
-```text
-                     메인 세션 (예: Codex / Claude Code)
-                                    │
-                ┌───────────────────┼───────────────────┐
-                ▼                   ▼                   ▼
-          #claude-code             #pi                #agy
-      독립 Worktree 코드 리뷰   간헐적 테스트 디버깅   프론트엔드 및 문서 작성
-                │                   │                   │
-                └───────────────────┴───────────────────┘
-                                    ▼
-                     결과 자동 회수 · 언제든 무손실 컨텍스트 인계
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-remote-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-remote-en-light.png" />
+    <img src="../imgs/readme-remote-en-light.png" alt="CodexHost 멀티 호스트 Peer Hub 및 모바일 Relay 원격 승인 화면" width="100%" />
+  </picture>
+</p>
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>병렬 Agent 세션</strong><br /><sub>서로 간섭 없는 독립 네이티브 세션</sub></p>
-      <img src="../product/images/multi-agent-parallel-sessions.png" alt="사이드바에서 병렬로 실행 중인 여러 Agent 위임 세션" />
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>완료 시 자동 보고</strong><br /><sub>위임 작업이 끝나면 원래 세션에 즉시 알림</sub></p>
-      <img src="../product/images/multi-agent-completion-notice.png" alt="위임 작업 완료 후 원래 세션에 표시되는 알림" />
-    </td>
-  </tr>
-</table>
-
----
-
-## 자리를 비워도 모든 머신이 손안에
-
-```text
-  MacBook Pro (로컬)  ──┐
-  Linux 개발 서버(Peer) ┼──► 통합 사이드바 (Peer Hub) ──► LAN / Tailscale / 암호화 Relay ──► 휴대폰 / 모든 브라우저
-  Windows PC (Peer)   ──┘
-```
-
-- **[멀티 호스트 Peer Hub](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 한 사이드바에 모아 원격 위임과 파일 미리보기를 지원합니다.
-- **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 LAN, Tailscale 또는 암호화 Relay로 접속하며, 사내 규정 준수를 위한 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.
-- **로컬 우선 프라이버시**: 코드, 대화 기록, 자격 증명은 모두 내 컴퓨터에 머물며 공식 서비스에 직접 연결됩니다.
+- **[멀티 호스트 Peer Hub](../product/multi-remote-peers.md)**: 원격 머신을 한 사이드바에 모아 크로스 호스트 위임과 원격 파일 미리보기를 제공합니다.
+- **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 LAN, Tailscale, 암호화 Relay로 접속하며 필요 시 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.
 
 <details>
 <summary><b>고급: SSH 원격 및 Windows Remote Control 연결</b></summary>
@@ -265,43 +137,9 @@ Tauri 기반 네이티브 데스크톱 셸로 공식 Codex Desktop 없이도 mac
 
 ---
 
-## 네이티브 깊이와 개방형 생태계
-
-<table>
-<tr>
-
-<td width="33%" valign="top">
-
-### 네이티브 런타임 기능
-
-**Plan Mode**, **진행 중 개입(Steer)**, **백그라운드 터미널**, **임의 메시지 Fork**, **실시간 비용/캐시 지표**, **로컬 계정 원클릭 가져오기**를 그대로 유지합니다.
-
-</td>
-
-<td width="33%" valign="top">
-
-### 통합 확장 & Skill 라이브러리
-
-한 번 설치한 [Host 확장](../architecture/desktop-ui-extensions.md)이 데스크톱과 Web에 동시에 적용되며, [통합 Skill 라이브러리](../architecture/skill-library.md)로 모든 Agent가 같은 워크플로를 공유합니다.
-
-</td>
-
-<td width="33%" valign="top">
-
-### 예약 작업 & 외부 오케스트레이션
-
-[Schedules](../product/harness-schedules.md)로 정기 점검을 자동화하고, [CLI / MCP / HTTP](../architecture/external-clients.md)(`codexhost delegate`)로 스크립트나 봇에서도 로컬 Agent를 제어합니다.
-
-</td>
-
-</tr>
-</table>
-
----
-
 ## 지원 Agent
 
-네이티브 **Codex**와 공식 SDK / RPC 및 [ACP](https://agentclientprotocol.com/)로 사전 탑재된 **19개 이상의 코딩 Agent**를 지원합니다. 상세 지원 표는 **[기능 경계 문서 →](../harnesses/capability-boundaries.md)**를 참고하세요.
+네이티브 **Codex**와 로컬 CLI·자격 증명을 그대로 재사용하는 **19개 이상의 사전 탑재 코딩 Agent**를 지원합니다. 상세 지원 표는 **[기능 경계 문서 →](../harnesses/capability-boundaries.md)**를 참고하세요.
 
 <details>
 <summary><b>지원되는 전체 Agent 목록 보기</b></summary>

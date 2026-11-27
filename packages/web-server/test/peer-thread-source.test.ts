@@ -137,6 +137,7 @@ it("paginates catalog/read, supplements tree ancestors, and enforces cursor prog
     host: new PeerChHostClient(
       makeFakeTransport((_r, body) => {
         if (body.method === "codexhost/thread/tree/read") return { parents: {} };
+        if (body.method === "codexhost/thread/pins/list") return { threadIds: [] };
         pageCount++;
         return {
           threads: [makeRow(`t-${pageCount}`)],
@@ -991,4 +992,102 @@ it("clears archivedIds when ancestor supplement thread/read explicitly returns a
   );
   assert.equal(listed.unarchivedIds?.has("parent"), true);
   assert.equal(listed.retainedAncestorIds?.has("parent") ?? false, false);
+});
+
+it("reads and mutates remote pins, preserves newer writes across in-flight lists, and degrades on legacy peers", async (t) => {
+  const epoch = randomUUID();
+  let remotePins = ["t1"];
+  let listPinsCalls = 0;
+  let pinsUnavailable = false;
+  let holdPinsRead: PromiseWithResolvers<string[]> | undefined;
+
+  const fake = makeFakeTransport(async (_r, body) => {
+    const method = body.method;
+    const params = (body.params ?? {}) as Record<string, unknown>;
+    if (method === "codexhost/thread/catalog/read") {
+      return {
+        threads: [makeRow("t1", "codexhost"), makeRow("t2", "openai")],
+        ownership: [
+          { threadId: "t1", owner: "external", harnessId: "claude-code" },
+          { threadId: "t2", owner: "codex" },
+        ],
+        officialCursor: { live: null },
+        archivedThreadIds: [],
+      };
+    }
+    if (method === "codexhost/thread/tree/read") return { parents: {} };
+    if (method === "codexhost/thread/pins/list") {
+      listPinsCalls++;
+      if (pinsUnavailable) {
+        throw new RpcError("remote/request-failed", "Method not found", { hostCode: -32601 });
+      }
+      if (holdPinsRead) {
+        const pending = holdPinsRead;
+        holdPinsRead = undefined;
+        return { threadIds: await pending.promise };
+      }
+      return { threadIds: [...remotePins] };
+    }
+    if (method === "codexhost/thread/pins/set") {
+      const threadId = String(params.threadId);
+      const pinned = Boolean(params.pinned);
+      remotePins = pinned
+        ? [...new Set([...remotePins, threadId])]
+        : remotePins.filter((id) => id !== threadId);
+      return { threadIds: [...remotePins] };
+    }
+    throw new Error(`Unexpected method: ${String(method)}`);
+  }, epoch);
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-pins",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  fake.emit({ type: "connection", online: true });
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+
+  // 1. Initial list populates pinnedIds.
+  const first = await source.listThreads();
+  assert.deepEqual(first.pinnedIds, ["t1"]);
+  assert.deepEqual(source.cachedPinnedIds(), ["t1"]);
+
+  // 2. Concurrent pin write while listThreads() is in flight must not be overwritten by the stale read.
+  holdPinsRead = Promise.withResolvers<string[]>();
+  const staleGate = holdPinsRead;
+  const inFlightList = source.listThreads();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const afterPin = await source.pinSession("t2", true);
+  assert.deepEqual(afterPin, ["t1", "t2"]);
+  staleGate.resolve(["t1"]);
+  const finishedList = await inFlightList;
+  assert.deepEqual(finishedList.pinnedIds, ["t1", "t2"]);
+
+  // 3. Archiving drops the thread from cached pins.
+  source.setArchived("t1", true);
+  assert.deepEqual(source.cachedPinnedIds(), ["t2"]);
+
+  // 4. Legacy peer returning -32601 degrades silently to [] without blocking listThreads, and resets on hello.
+  pinsUnavailable = true;
+  const callsBeforeUnavailable = listPinsCalls;
+  const degraded = await source.listThreads();
+  assert.deepEqual(degraded.rows.map((r) => r.id).sort(), ["t1", "t2"]);
+  assert.deepEqual(degraded.pinnedIds, []);
+  assert.equal(listPinsCalls, callsBeforeUnavailable + 1);
+
+  // Subsequent list skips pins RPC while marked unavailable.
+  await source.listThreads();
+  assert.equal(listPinsCalls, callsBeforeUnavailable + 1);
+
+  // Reconnect hello clears pinsUnavailable so upgraded peers resume syncing.
+  pinsUnavailable = false;
+  remotePins = ["t2"];
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 2 }, reset: false });
+  const recovered = await source.listThreads();
+  assert.deepEqual(recovered.pinnedIds, ["t2"]);
+  assert.equal(listPinsCalls, callsBeforeUnavailable + 2);
 });

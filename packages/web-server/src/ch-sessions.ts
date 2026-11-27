@@ -333,7 +333,7 @@ export class ChSessions {
   private refreshPins(): Promise<string[]> {
     return this.pins.refresh().catch((error: unknown) => {
       console.error("[session/list] native pins unavailable", error);
-      return this.workspaces.pinnedSessionIds();
+      return this.workspaces.localPinnedSessionIds();
     });
   }
   private async listAll(
@@ -1395,9 +1395,9 @@ export class ChSessions {
         await this.owner(id);
         if (!this.threads.hasHarness(id))
           throw new RpcError("session/not-found", "This Thread is not in the shared catalog.");
-        const pinnedSessionIds = await this.pins.sync({ threadId: id, pinned });
+        await this.pins.sync({ threadId: id, pinned });
         await this.refresh().catch(() => undefined);
-        return { pinnedSessionIds };
+        return { pinnedSessionIds: this.workspaces.pinnedSessionIds() };
       });
     }
     rpc.register("workspace/moveSessionToSection", async (args) => {

@@ -6,6 +6,7 @@ import type { ShortcutCommand, ShortcutCommandId } from "@deepseek-ai/dsh-client
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { UiWorkspace } from "./navigation.ts";
+import { canForkSession } from "./session-actions/capabilities.ts";
 
 /** Transient requests consumed by the existing workspace browser. */
 export interface WorkspaceShortcutState {
@@ -198,6 +199,8 @@ export function installWorkspaceShortcuts(
     () => {
       const target = current();
       if (target === undefined) return { status: "blocked", reason: t("shortcut.noSession") };
+      if (!canForkSession(target))
+        return { status: "blocked", reason: t("shortcut.remoteForkUnsupported") };
       if (target.blank) return { status: "blocked", reason: t("shortcut.noCompletedTurn") };
       return {
         status: "handled",

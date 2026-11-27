@@ -17,31 +17,33 @@ import type {
   SessionMenuItemProps,
   SessionRowActionProps,
 } from "../contract/slots.ts";
+import { canPinSession } from "./capabilities.ts";
 import css from "../rows/Rows.module.css";
 
 type PinState = Pick<
   SessionMenuItemProps<PinSessionInjected>,
-  "sessionId" | "usePinned" | "useArchived"
+  "sessionId" | "usePinned" | "useArchived" | "useSessions"
 >;
 
-/** The row's pin and archive membership, one Set lookup each. */
-function usePinState({ sessionId, usePinned, useArchived }: PinState) {
+/** The row's pin, archive, and host capability membership. */
+function usePinState({ sessionId, usePinned, useArchived, useSessions }: PinState) {
   return {
     pinned: usePinned((pinned) => pinned.has(sessionId)),
     archived: useArchived((archived) => archived.has(sessionId)),
+    supported: useSessions((list) => canPinSession(list.byId[sessionId])),
   };
 }
 
 /**
- * Menu row (order 100): pin or unpin by the row's current state; absent on archived rows.
+ * Menu row (order 100): pin or unpin by the row's current state; absent on archived or unsupported remote rows.
  * @param props - owner share, the pin share, and the menu open state.
- * @returns the row, or null for an archived Session.
+ * @returns the row, or null for an archived or unsupported remote Session.
  */
 export function PinSessionMenuItem(props: SessionMenuItemProps<PinSessionInjected>) {
   const { sessionId, useMenuOpenState, pinSession, unpinSession, t } = props;
   const [, setMenuOpen] = useMenuOpenState();
-  const { pinned, archived } = usePinState(props);
-  if (archived) return null;
+  const { pinned, archived, supported } = usePinState(props);
+  if (archived || !supported) return null;
   return (
     <MenuItemButton
       icon={pinned ? <IconPinFillRegular /> : <IconPinOutlineRegular />}
@@ -56,14 +58,14 @@ export function PinSessionMenuItem(props: SessionMenuItemProps<PinSessionInjecte
 }
 
 /**
- * Hover/focus button (order 200, rightmost); touch uses the menu instead. Absent on archived rows.
+ * Hover/focus button (order 200, rightmost); touch uses the menu instead. Absent on archived or unsupported remote rows.
  * @param props - owner share and the pin share.
- * @returns the button, or null for an archived Session.
+ * @returns the button, or null for an archived or unsupported remote Session.
  */
 export function PinSessionRowButton(props: SessionRowActionProps<PinSessionInjected>) {
   const { sessionId, pinSession, unpinSession, t } = props;
-  const { pinned, archived } = usePinState(props);
-  if (archived) return null;
+  const { pinned, archived, supported } = usePinState(props);
+  if (archived || !supported) return null;
   return (
     <Tooltip
       label={t(pinned ? "actions.unpin" : "actions.pin")}

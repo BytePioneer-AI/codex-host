@@ -295,6 +295,7 @@ export class Workspaces {
   private referenceGroups: Map<string, string | undefined> | undefined;
   private referenceProjectless: ReadonlySet<string> = new Set();
   private referencePins: string[] | undefined;
+  private remotePins: readonly string[] = [];
   private referenceProjectRoots: ReadonlySet<string> = new Set();
   private referenceArchives: string[] | undefined;
   private remoteArchives: readonly string[] = [];
@@ -630,6 +631,14 @@ export class Workspaces {
     this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
   }
 
+  /** Confirmed remote Peer pins augment, never replace, the local owner's projection. */
+  setRemotePins(ids: readonly string[]): void {
+    const next = [...new Set(ids)];
+    if (JSON.stringify(next) === JSON.stringify(this.remotePins)) return;
+    this.remotePins = next;
+    this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
+  }
+
   /** Read-only native Thread sections; only the app-server and Desktop persist them. */
   private referenceThreadSections: ThreadSectionView[] = [];
 
@@ -686,11 +695,16 @@ export class Workspaces {
     this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
   }
 
+  /** Local owner pin facts used independently of remote Peer projections. */
+  localPinnedSessionIds(): string[] {
+    return this.referencePins === undefined
+      ? [...this.state.pinnedSessionIds]
+      : [...new Set(this.referencePins)];
+  }
+
   /** Authoritative visible pin list used by both the stream and RPC replies. */
   pinnedSessionIds(): string[] {
-    return this.referencePins === undefined
-      ? this.state.pinnedSessionIds
-      : [...new Set(this.referencePins)];
+    return [...new Set([...this.localPinnedSessionIds(), ...this.remotePins])];
   }
 
   get(workspaceId: string): WorkspaceView | undefined {

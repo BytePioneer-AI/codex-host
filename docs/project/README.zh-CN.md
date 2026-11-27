@@ -25,8 +25,8 @@
 <h2>一个工作台，调度所有编程 Agent。</h2>
 
 <p>
-  把 <b>Codex</b>、<b>Claude Code</b>、<b>Pi</b>、<b>Grok</b> 等 19+ 款编程 Agent 聚进 <b>CodexHost 自有独立桌面端</b>；<br />
-  无需安装官方 Codex Desktop（也可选兼容增强），与 Web、手机实时同步，随时多机接力。
+  把 <b>Codex</b>、<b>Claude Code</b>、<b>Pi</b>、<b>Grok</b> 等 19+ 款编程 Agent 聚进同一个轻量桌面端；<br />
+  开箱即用，无需官方 Codex Desktop（也支持无缝增强），与 Web、手机实时同步，随时多机接力。
 </p>
 
 <p>
@@ -48,11 +48,61 @@
 
 ---
 
+## 核心特性
+
+<table>
+<tr>
+
+<td width="25%" valign="top">
+
+### 独立桌面，多端同步
+
+自带独立桌面端，无需依赖官方 Codex Desktop，与 Web、手机实时同步。
+
+共用同一本地 Host，也可选兼容增强官方客户端。
+
+</td>
+
+<td width="25%" valign="top">
+
+### Agent 间真正分工
+
+`#` 派发并行原生子会话，跑完自动回流结果。
+
+聊到一半还能跨 Agent 无损交接上下文。
+
+</td>
+
+<td width="25%" valign="top">
+
+### 多机与手机掌控
+
+Mac、Linux、Windows 收进同一侧栏。
+
+Peer Hub 跨机调度，离开电脑用手机随时审批回复。
+
+</td>
+
+<td width="25%" valign="top">
+
+### 原生协议，本地优先
+
+直连各家官方 SDK / RPC / ACP，复用本机订阅与凭据。
+
+无账号门槛，无第三方代理。
+
+</td>
+
+</tr>
+</table>
+
+---
+
 <a id="下载与安装"></a>
 
 ## 下载与安装
 
-开源免费。本机与局域网内的全部功能**无需注册账号**，自带独立桌面端，**不要求安装官方 Codex Desktop**。
+CodexHost 开源免费。本机与局域网内的全部功能**无需注册账号**，也**不要求预先安装官方 Codex Desktop**。
 
 | 平台 | 形态与环境说明 | 获取方式 |
 | :--- | :--- | :--- |
@@ -100,30 +150,108 @@ codexhost stop     # 停止全部后台服务（npm 覆盖安装前请先执行�
 
 ---
 
-## 核心能力
+## 一个后台，三种用法
 
-- **自有独立桌面端，多端实时同步**：自带基于 Tauri 的轻量跨平台桌面应用，开箱即用、无需安装官方 Codex Desktop；已装官方桌面端时也可无侵入切换增强模式，与 Web、Android、iOS PWA 共用同一本地 Host。
-- **`#` 多 Agent 并行委派与无损交接**：输入框打 `#` 即可拉起 `Claude Code`、`Pi`、`Grok`、`AGY` 等独立原生子会话在各自 Git Worktree 并行推进，跑完自动回流；聊到一半也能用 [跨 Agent 无损交接（Handoff）](../architecture/cross-harness-handoff.md) 无缝接棒。
-- **原生运行时能力，不降级成聊天壳**：直连各家官方 SDK / RPC 与 [ACP](https://agentclientprotocol.com/)，完整保留 **Plan Mode**、**运行中插话（Steer）**、**后台终端**、**任意消息 Fork**、**实时费用/缓存命中率** 与本机账号一键复用。
-- **双端扩展、Skill 库与定时编排**：[Host 扩展](../architecture/desktop-ui-extensions.md) 装一次桌面与 Web 同步生效，[统一 Skill 库](../architecture/skill-library.md) 让所有 Agent 共享同一套规范，支持 [Schedules](../product/harness-schedules.md) 定时巡检与 [CLI / MCP / HTTP](../architecture/external-clients.md)（`codexhost delegate`）外部调度。
-- **本地优先与隐私边界**：代码、对话历史与各家凭据全部留在自己机器上，直连官方模型服务，不经第三方代理。
+CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景随时切换最顺手的入口：
+
+<table>
+<tr>
+
+<td width="33%" valign="top">
+
+### 独立桌面端
+
+**开箱即用，更低内存。**
+
+基于 Tauri 的轻量原生桌面壳，无需安装官方 Codex Desktop，macOS / Windows / Linux 体验一致。
+
+</td>
+
+<td width="33%" valign="top">
+
+### 官方 Codex 增强
+
+**保留习惯，能力倍增。**
+
+无侵入增强官方 Codex Desktop，不修改官方安装包，原生 Diff 审查、Worktree 与审批体验原样保留。
+
+</td>
+
+<td width="33%" valign="top">
+
+### Web 与手机端
+
+**随时随地，实时接管。**
+
+浏览器打开同款界面，搭配 Android 原生 APK 与 iOS PWA，离开工位照样查看进度、审批命令与回复。
+
+</td>
+
+</tr>
+</table>
+
+```text
+    独立桌面端 (Tauri)       官方 Codex Desktop       Web / PWA & Android
+            │                        │                        │
+            └────────────────────────┼────────────────────────┘
+                                     ▼
+                         本地共享 Host（唯一真相源）
+               会话目录 · 队列 · 审批 · Worktree · 用量 · 扩展
+                                     │
+               ┌─────────────────────┼─────────────────────┐
+               ▼                     ▼                     ▼
+        原生 Codex 运行时     19+ 外部 Agent 适配器     远端 Peer Hub / Relay
+```
 
 ---
 
-## 多机聚合与手机远程
+## 多 Agent 协作：不只是并排，而是分工与接力
 
-把多台 Mac、Linux 与 Windows 开发机收进同一侧栏，离开电脑也能在手机上查看进度、审批命令并回复。
+一个 Agent 忙不过来，或者不同任务适合不同模型——在输入框打 `#` 选择目标 Agent，即可拆出独立原生子会话并行执行；聊到一半也能用 **[跨 Agent 无损交接（Handoff）](../architecture/cross-harness-handoff.md)** 把完整上下文无缝交给另一款 Agent 接着干。
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-remote-zh-dark.png" />
-    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-remote-zh-light.png" />
-    <img src="../imgs/readme-remote-zh-light.png" alt="CodexHost 多机 Peer Hub 与手机端远程审批同步" width="100%" />
-  </picture>
-</p>
+```text
+                     主会话（例如 Codex / Claude Code）
+                                    │
+                ┌───────────────────┼───────────────────┐
+                ▼                   ▼                   ▼
+          #claude-code             #pi                #agy
+        独立 Worktree 审查      排查偶发单测        编写前端与文档
+                │                   │                   │
+                └───────────────────┴───────────────────┘
+                                    ▼
+                      结果自动回流主会话 · 支持随时无损交接
+```
 
-- **[多远端主机聚合（Peer Hub）](../product/multi-remote-peers.md)**：跨机派活与远端文件预览，本地与云端开发机统一管理。
-- **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，支持局域网、Tailscale 与加密中转；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。
+> 让 `#claude-code` 独立审查这次修改并指出兼容性风险。  
+> 让 `#pi` 排查这个测试为什么偶发失败。  
+> 让 `#agy` 补齐前端页面与使用文档。
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>多个 Agent 并行</strong><br /><sub>各自独立原生会话，互不打扰</sub></p>
+      <img src="../product/images/multi-agent-parallel-sessions.png" alt="多个 Agent 的委派会话在侧边栏中并行运行" />
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>做完自动汇报</strong><br /><sub>委派任务完成后自动通知主会话</sub></p>
+      <img src="../product/images/multi-agent-completion-notice.png" alt="委派任务完成后在发起会话中显示的通知" />
+    </td>
+  </tr>
+</table>
+
+---
+
+## 离开电脑，多台机器照样在手边
+
+```text
+  MacBook Pro (本机)  ──┐
+  Linux 开发机 (Peer) ──┼──► 同一侧栏 (Peer Hub) ──► 局域网 / Tailscale / 加密 Relay ──► 手机 / 任意电脑
+  Windows 主机 (Peer) ──┘
+```
+
+- **[多远端主机聚合（Peer Hub）](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 开发机聚合进同一侧栏，支持跨主机委派任务与远端文件预览。
+- **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，支持局域网、Tailscale 与加密中转连接；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。
+- **本地优先与隐私边界**：代码、对话历史与各家 Agent 凭据全部留在你自己的机器上，直连官方模型服务，不经任何第三方代理。
 
 <details>
 <summary><b>进阶：SSH 远程与 Windows Remote Control 连接</b></summary>
@@ -138,11 +266,51 @@ codexhost stop     # 停止全部后台服务（npm 覆盖安装前请先执行�
 
 ---
 
+## 原生深度与开放生态
+
+<table>
+<tr>
+
+<td width="33%" valign="top">
+
+### 原生运行时能力
+
+不把 Agent 降级成纯聊天框。
+
+完整保留 **Plan Mode**、**运行中插话（Steer）**、**后台终端**、**任意消息 Fork**、**实时费用/缓存命中率** 与 **本机账号一键复用**。
+
+</td>
+
+<td width="33%" valign="top">
+
+### 双端扩展与 Skill 库
+
+装一次，桌面与 Web 同步生效。
+
+通过 [Host 扩展体系](../architecture/desktop-ui-extensions.md) 定制面板与挂件，用 [统一 Skill 库](../architecture/skill-library.md) 让所有 Agent 共享同一套工作规范。
+
+</td>
+
+<td width="33%" valign="top">
+
+### 定时任务与开放编排
+
+不止人能用，脚本与外部程序也能调。
+
+用 [Schedules](../product/harness-schedules.md) 定时自动巡检；通过 [CLI / MCP / HTTP](../architecture/external-clients.md)（`codexhost delegate`）从终端或 Bot 调度本机全部 Agent。
+
+</td>
+
+</tr>
+</table>
+
+---
+
 <a id="支持的-agent"></a>
 
 ## 支持的 Agent
 
-原生支持 **Codex** 与 **19+ 款预装编程 Agent**，自动复用本机已登录 CLI 与配置。详见 **[各 Harness 能力边界文档 →](../harnesses/capability-boundaries.md)**。
+原生支持 **Codex**，并通过官方 SDK / RPC 与 [ACP](https://agentclientprotocol.com/) 预装接入 **19+ 款编程 Agent**（自动复用本机已登录 CLI 与配置）。详细能力支持见 **[各 Harness 能力边界文档 →](../harnesses/capability-boundaries.md)**。
 
 <details>
 <summary><b>查看全部预装支持的 Agent</b></summary>

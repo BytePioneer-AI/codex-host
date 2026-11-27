@@ -25,8 +25,8 @@
 <h2>Run every coding agent, as one workspace.</h2>
 
 <p>
-  Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents inside <b>CodexHost's own standalone desktop app</b> —<br />
-  no official Codex Desktop required (optional enhancement supported), with live Web, Mobile, and multi-machine sync.
+  Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents in one lightweight desktop app —<br />
+  works out of the box without official Codex Desktop (optional enhancement supported), synced live with Web &amp; Mobile across machines.
 </p>
 
 <p>
@@ -48,11 +48,61 @@
 
 ---
 
+## Key Capabilities
+
+<table>
+<tr>
+
+<td width="25%" valign="top">
+
+### Own Desktop, Live Sync
+
+Ships with its own standalone desktop app — no official Codex Desktop required.
+
+Shares one local Host with Web, Mobile, and optional Codex Desktop mode.
+
+</td>
+
+<td width="25%" valign="top">
+
+### Real Agent Teamwork
+
+Type `#` to dispatch parallel native child sessions that report back automatically.
+
+Hand off full context across agents mid-task.
+
+</td>
+
+<td width="25%" valign="top">
+
+### Multi-Host & Mobile
+
+Pull Macs, Linux dev boxes, and Windows rigs into one sidebar.
+
+Approve, inspect, and reply from your phone anywhere.
+
+</td>
+
+<td width="25%" valign="top">
+
+### Native & Local-First
+
+Connects over official SDKs, RPC, and ACP using your existing local logins.
+
+No account required. Zero third-party proxy.
+
+</td>
+
+</tr>
+</table>
+
+---
+
 <a id="download--install"></a>
 
 ## Download & Install
 
-Free and open source. Local and LAN features work **without an account** and **do not require official Codex Desktop**.
+CodexHost is free and open source. Local and LAN features work **without an account** and **do not require official Codex Desktop**.
 
 | Platform | Package & Notes | Download |
 | :--- | :--- | :--- |
@@ -100,30 +150,108 @@ codexhost stop     # Stop all background services (run before npm reinstall)
 
 ---
 
-## Highlights
+## One Host, Three Ways to Work
 
-- **Own Standalone Desktop + Live Multi-Surface Sync**: Ships with a lightweight Tauri desktop app on macOS, Windows, and Linux—no official Codex Desktop required. Already using Codex Desktop? Enhance it non-invasively while sharing the same local Host live with Web, Android, and iOS PWA.
-- **`#` Multi-Agent Delegation & Lossless Handoff**: Type `#` in the composer to dispatch isolated native child sessions (`Claude Code`, `Pi`, `Grok`, `AGY`, etc.) in separate Git worktrees with automatic flowback, or use [Cross-Harness Handoff](docs/architecture/cross-harness-handoff.md) to transfer full context mid-thread.
-- **Native Runtime Fidelity**: Connects via official SDKs, RPC, and [ACP](https://agentclientprotocol.com/) without stripping capabilities—preserving **Plan Mode**, **mid-turn Steering**, **background terminals**, **branch/worktree Fork**, **live cost & cache metrics**, and existing local logins.
-- **Unified Extensions, Skills & Automation**: Install [Host Extensions](docs/architecture/desktop-ui-extensions.md) once for both Desktop and Web, share reusable workflows via the [Unified Skill Library](docs/architecture/skill-library.md), schedule recurring runs with [Schedules](docs/product/harness-schedules.md), and drive local agents from scripts/bots via [CLI, MCP & HTTP](docs/architecture/external-clients.md) (`codexhost delegate`).
-- **Local-First Privacy**: Code, threads, and credentials stay on your own machines and connect directly to official providers—zero third-party proxy.
+A single local Host keeps sessions, approvals, queues, and extensions as one source of truth across every client:
+
+<table>
+<tr>
+
+<td width="33%" valign="top">
+
+### Standalone Desktop
+
+**Ready out of the box, lighter footprint.**
+
+Native Tauri desktop shell that works on macOS, Windows, and Linux without requiring official Codex Desktop.
+
+</td>
+
+<td width="33%" valign="top">
+
+### Official Codex Enhanced
+
+**Keep your habits, multiply your agents.**
+
+Enhances official Codex Desktop non-invasively without modifying its installer—preserving native diff review, worktrees, and approvals.
+
+</td>
+
+<td width="33%" valign="top">
+
+### Web & Mobile
+
+**Stay in reach away from your desk.**
+
+Full responsive Web UI paired with the native Android APK and iOS PWA to inspect progress, approve commands, and reply anywhere.
+
+</td>
+
+</tr>
+</table>
+
+```text
+    Standalone Desktop (Tauri)    Official Codex Desktop       Web / PWA & Android
+                │                           │                           │
+                └───────────────────────────┼───────────────────────────┘
+                                            ▼
+                             Shared Local Host (Single Source)
+                  Threads · Queues · Approvals · Worktrees · Usage · Extensions
+                                            │
+                  ┌─────────────────────────┼─────────────────────────┐
+                  ▼                         ▼                         ▼
+         Native Codex Runtime      19+ External Agent Adapters    Remote Peer Hub / Relay
+```
 
 ---
 
-## Multi-Host & Mobile
+## Multi-Agent Teamwork: Delegate & Hand Off
 
-Pull Macs, Linux dev servers, and Windows workstations into one sidebar, and approve or reply from your phone anywhere.
+When one agent isn't enough—or different tasks fit different models—type `#` in the composer to spin up isolated native child sessions in parallel, or use **[Cross-Harness Handoff](docs/architecture/cross-harness-handoff.md)** to transfer full conversation context cleanly to another agent mid-thread.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-remote-en-dark.png" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-remote-en-light.png" />
-    <img src="docs/imgs/readme-remote-en-light.png" alt="CodexHost Multi-Host Peer Hub and Mobile Relay approval view" width="100%" />
-  </picture>
-</p>
+```text
+                     Main Thread (e.g. Codex / Claude Code)
+                                    │
+                ┌───────────────────┼───────────────────┐
+                ▼                   ▼                   ▼
+          #claude-code             #pi                #agy
+      Worktree code review    Debug flaky tests    Frontend & docs
+                │                   │                   │
+                └───────────────────┴───────────────────┘
+                                    ▼
+                 Results flow back automatically · Lossless Handoff anytime
+```
 
-- **[Multi-Host Peer Hub](docs/product/multi-remote-peers.md)**: Aggregate remote machines into one sidebar with cross-host delegation and remote file previews.
-- **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever needed.
+> Ask `#claude-code` to review this diff independently and call out compatibility risks.  
+> Ask `#pi` to investigate why this integration test flakes.  
+> Ask `#agy` to build the frontend view and update the docs.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Parallel Agent Sessions</strong><br /><sub>Independent native threads side by side</sub></p>
+      <img src="docs/product/images/multi-agent-parallel-sessions.png" alt="Multiple delegated agent sessions running in parallel in the sidebar" />
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>Automatic Completion Flowback</strong><br /><sub>Originating thread is notified as soon as delegated work finishes</sub></p>
+      <img src="docs/product/images/multi-agent-completion-notice.png" alt="Completion notification delivered back to the originating session" />
+    </td>
+  </tr>
+</table>
+
+---
+
+## Step Away. Every Machine Stays Within Reach.
+
+```text
+  MacBook Pro (Local) ──┐
+  Linux Dev Box (Peer) ─┼──► Unified Sidebar (Peer Hub) ──► LAN / Tailscale / Encrypted Relay ──► Phone / Any Browser
+  Windows Rig (Peer)  ──┘
+```
+
+- **[Multi-Host Peer Hub](docs/product/multi-remote-peers.md)**: Aggregate Macs, Linux servers, and Windows workstations into one sidebar with cross-host delegation and remote file previews.
+- **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever compliance requires it.
+- **Local-First Privacy**: Your code, threads, and agent credentials stay on your own machines and connect directly to official providers—never proxied through third-party servers.
 
 <details>
 <summary><b>Advanced: SSH Remote & Windows Remote Control</b></summary>
@@ -138,11 +266,51 @@ You can also reuse official Codex Desktop remote channels to control agents on a
 
 ---
 
+## Native Depth & Open Ecosystem
+
+<table>
+<tr>
+
+<td width="33%" valign="top">
+
+### Native Runtime Fidelity
+
+Never dumbed down to a plain chat box.
+
+Preserves **Plan Mode**, **mid-turn Steering**, **background terminals**, **branch/worktree Fork**, **live cost & cache metrics**, and **local account import**.
+
+</td>
+
+<td width="33%" valign="top">
+
+### Unified Extensions & Skills
+
+Install once; runs on Desktop and Web.
+
+Extend panels and widgets via [Host Extensions](docs/architecture/desktop-ui-extensions.md) and share reusable workflows across every agent with the [Unified Skill Library](docs/architecture/skill-library.md).
+
+</td>
+
+<td width="33%" valign="top">
+
+### Schedules & External APIs
+
+Built for both humans and automation.
+
+Run recurring checks via [Schedules](docs/product/harness-schedules.md), or orchestrate every local agent from scripts and bots via [CLI, MCP & HTTP](docs/architecture/external-clients.md) (`codexhost delegate`).
+
+</td>
+
+</tr>
+</table>
+
+---
+
 <a id="supported-agents"></a>
 
 ## Supported Agents
 
-Native **Codex** plus **19+ preinstalled coding agents** reusing your local CLIs and credentials. See **[Capability Boundaries →](docs/harnesses/capability-boundaries.md)**.
+Native **Codex** plus **19+ preinstalled coding agents** connected through official SDKs, RPC, and [ACP](https://agentclientprotocol.com/)—reusing the CLIs and credentials already logged in on your machine. See the full feature matrix in **[Capability Boundaries →](docs/harnesses/capability-boundaries.md)**.
 
 <details>
 <summary><b>View all preinstalled coding agents</b></summary>
@@ -176,8 +344,8 @@ Native **Codex** plus **19+ preinstalled coding agents** reusing your local CLIs
 
 ## Community
 
-- **GitHub**: Report bugs or request agent adapters in [Issues](https://github.com/BytePioneer-AI/codex-host/issues), and share workflows in [Discussions](https://github.com/BytePioneer-AI/codex-host/discussions).
-- **WeChat Group**: Scan the QR code below with note **"CodexHost"** to join the developer group.
+- **GitHub**: Report bugs or request new agent adapters via [Issues](https://github.com/BytePioneer-AI/codex-host/issues), and share workflows or ideas in [Discussions](https://github.com/BytePioneer-AI/codex-host/discussions).
+- **WeChat Group**: Scan the QR code below with note **"CodexHost"** to join the developer community group.
 
 <details>
 <summary><b>Show WeChat Group QR Code</b></summary>

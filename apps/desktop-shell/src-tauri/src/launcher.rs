@@ -286,8 +286,9 @@ impl Launcher {
         let args = ["launch"];
         let mut command = self.command(&args)?;
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        codexhost_platform::configure_detached_service_command(&mut command)
-            .map_err(|error| format!("Cannot detach `codexhost launch`: {error}"))?;
+        // `spawn_detached_service` applies the detached configuration itself;
+        // configuring here too would register `pre_exec(setsid)` twice and
+        // fail with `EPERM` on the second call on macOS/Linux.
         let mut child = codexhost_platform::spawn_detached_service(&mut command)
             .map_err(|error| format!("Cannot run `codexhost launch`: {error}"))?;
         let stdout = child.stdout.take().expect("piped launcher stdout");

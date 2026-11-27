@@ -41,7 +41,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-hero-en-dark.png" />
   <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-hero-en-light.png" />
-  <img src="../imgs/readme-hero-en-light.png" alt="CodexHost 독립 데스크톱 워크벤치: 멀티 Agent 병렬 위임 및 원격 호스트" width="100%" />
+  <img src="../imgs/readme-hero-en-light.png" alt="CodexHost 데스크톱 워크벤치 실제 화면: 사이드바 위임 트리와 Codex·Claude Code·Grok 멀티 세션 병렬 위임" width="100%" />
 </picture>
 
 </div>

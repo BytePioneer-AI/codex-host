@@ -41,7 +41,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-hero-zh-dark.png" />
   <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-hero-zh-light.png" />
-  <img src="../imgs/readme-hero-zh-light.png" alt="CodexHost 独立桌面端工作台：多 Agent 并行委派与多机侧栏" width="100%" />
+  <img src="../imgs/readme-hero-zh-light.png" alt="CodexHost 桌面工作台实景：侧栏委派树与 Codex、Claude Code、Grok 多会话并行委派" width="100%" />
 </picture>
 
 </div>

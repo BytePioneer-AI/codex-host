@@ -41,7 +41,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-hero-en-dark.png" />
   <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-hero-en-light.png" />
-  <img src="docs/imgs/readme-hero-en-light.png" alt="CodexHost standalone desktop workbench with parallel multi-agent delegation and remote hosts" width="100%" />
+  <img src="docs/imgs/readme-hero-en-light.png" alt="CodexHost desktop workbench with Sidebar Thread Tree and parallel multi-agent delegation across Codex, Claude Code, and Grok" width="100%" />
 </picture>
 
 </div>

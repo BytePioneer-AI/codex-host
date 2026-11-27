@@ -66,6 +66,7 @@ export function SectionHeading({
   onDragOver,
   onDrop,
 }: SectionHeadingProps) {
+  const activeProjectDrop = onDragOver || onDrop ? undefined : projectDrop;
   const foldable = expanded !== undefined && onToggle !== undefined && rowKey !== undefined;
   const content = (
     <>
@@ -124,32 +125,32 @@ export function SectionHeading({
       data-row-key={rowKey}
       data-section-drop-target={dropTarget || undefined}
       aria-label={label}
-      data-project-drop-active={projectDrop?.active || undefined}
+      data-project-drop-active={activeProjectDrop?.active || undefined}
       onDragOver={
-        projectDrop
+        activeProjectDrop
           ? (event) => {
               event.preventDefault();
               event.stopPropagation();
               event.dataTransfer.dropEffect = "move";
-              projectDrop.hover();
+              activeProjectDrop.hover();
             }
           : onDragOver
       }
       onDragLeave={
-        projectDrop &&
+        activeProjectDrop &&
         ((event) => {
           if (!(
             event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)
           ))
-            projectDrop.leave();
+            activeProjectDrop.leave();
         })
       }
       onDrop={
-        projectDrop
+        activeProjectDrop
           ? (event) => {
               event.preventDefault();
               event.stopPropagation();
-              projectDrop.drop();
+              activeProjectDrop.drop();
             }
           : onDrop
       }

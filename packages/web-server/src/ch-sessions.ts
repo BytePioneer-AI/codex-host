@@ -128,7 +128,6 @@ export class ChSessions {
   private readonly attachments: ChAttachments | undefined;
   private readonly fileInputs: ChFileInputs | undefined;
   private rows = new Map<string, ChThread>();
-  private readonly workspacePageRows = new Set<string>();
   private publishedCatalog: Map<string, string> | undefined;
   private readonly handoffs = new Map<string, ThreadHandoffMetadata | null>();
   /** Loaded rows accumulate across partial official pages; drafts are not Host Threads. */
@@ -139,6 +138,7 @@ export class ChSessions {
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
+  private archiveRevision = 0;
   private refreshingProjectAssignments: Map<string, string> | undefined;
   private readonly archiveOperations = new Map<string, symbol>();
   private readonly queueOperations = new Map<string, Promise<void>>();
@@ -386,6 +386,7 @@ export class ChSessions {
     // Publish after any catalog read already in flight, never over its older section snapshot.
     while (this.refreshing) await this.refreshing.catch(() => undefined);
     if (this.closed) return;
+    const archiveRevision = this.archiveRevision;
     const read = this.readThreadSections();
     this.refreshing = read.then(
       () => undefined,
@@ -395,42 +396,8 @@ export class ChSessions {
     try {
       snapshot = await read;
       if (this.closed) return;
-      const archived = new Set(this.workspaces.localArchivedSessionIds());
-      const sections: Array<Omit<ThreadSectionView, "workspaceIds">> = [];
-      const capability = snapshot[THREAD_SECTION_CAPABILITY];
-      const referenced = this.workspaces.sectionMemberIds();
-      let complete = true;
-      let destination: string | null = null;
-      for (const { id, name, appearance, threads } of snapshot.sections) {
-        const threadIds: string[] = [];
-        for (const thread of threads) {
-          if (thread.archived === true) continue;
-          if (
-            typeof thread.id !== "string" ||
-            archived.has(thread.id) ||
-            !referenced.has(thread.id) ||
-            !this.publishedCatalog?.has(thread.id) ||
-            !this.threads.hasHarness(thread.id)
-          ) {
-            complete = false;
-            break;
-          }
-          threadIds.push(thread.id);
-          if (thread.id === move?.threadId) destination = id;
-        }
-        if (!complete) break;
-        sections.push(
-          capability && appearance !== undefined
-            ? { id, name, appearance, threadIds }
-            : { id, name, threadIds },
-        );
-      }
-      if (
-        complete &&
-        (!move || destination === move.sectionId) &&
-        this.workspaces.applyThreadSectionMove(sections, capability, move?.threadId)
-      )
-        return;
+      if (this.archiveRevision !== archiveRevision) snapshot = undefined;
+      else if (this.applySectionMove(snapshot, move)) return;
     } catch (error) {
       const unsupported =
         error instanceof RpcError &&
@@ -442,6 +409,42 @@ export class ChSessions {
       this.refreshing = undefined;
     }
     await this.refresh(undefined, false, undefined, undefined, !move, snapshot);
+  }
+
+  private applySectionMove(
+    snapshot: ClientThreadSections,
+    move?: { threadId: string; sectionId: string | null },
+  ): boolean {
+    const archived = new Set(this.workspaces.localArchivedSessionIds());
+    const sections: Array<Omit<ThreadSectionView, "workspaceIds">> = [];
+    const capability = snapshot[THREAD_SECTION_CAPABILITY];
+    const referenced = this.workspaces.sectionMemberIds();
+    let destination: string | null = null;
+    for (const { id, name, appearance, threads } of snapshot.sections) {
+      const threadIds: string[] = [];
+      for (const thread of threads) {
+        if (thread.archived === true) continue;
+        if (
+          typeof thread.id !== "string" ||
+          archived.has(thread.id) ||
+          !referenced.has(thread.id) ||
+          !this.publishedCatalog?.has(thread.id) ||
+          !this.threads.hasHarness(thread.id)
+        )
+          return false;
+        threadIds.push(thread.id);
+        if (thread.id === move?.threadId) destination = id;
+      }
+      sections.push(
+        capability && appearance !== undefined
+          ? { id, name, appearance, threadIds }
+          : { id, name, threadIds },
+      );
+    }
+    return (
+      (!move || destination === move.sectionId) &&
+      this.workspaces.applyThreadSectionMove(sections, capability, move?.threadId)
+    );
   }
 
   private refreshPins(): Promise<string[]> {
@@ -522,7 +525,6 @@ export class ChSessions {
       }
       const harnessId = ownership.get(id);
       if (!harnessId) continue;
-      if (!this.rows.has(id)) this.workspacePageRows.add(id);
       this.rows.set(id, row);
       this.threads.setHarness(id, harnessId);
     }
@@ -581,13 +583,13 @@ export class ChSessions {
     ]);
     if (this.closed) return;
     const found = new Map(snapshot.threads.map((row) => [row.id, row]));
+    const headIds =
+      cursor === undefined && !includeArchived ? this.tree.withAncestors(found.keys()) : null;
     const snapshotArchives = new Set<string>(snapshot.archivedThreadIds);
     const archivedIds = new Set(this.workspaces.localArchivedSessionIds());
     for (const id of snapshotArchives) archivedIds.add(id);
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
     const ownership = catalogOwnership(snapshot, found);
-    const referenced = sections && this.workspaces.sectionMemberIds();
-    const newSectionMembers = new Set<string>();
     const threadSectionsV1 = sections?.[THREAD_SECTION_CAPABILITY];
     const threadSections = sections?.sections.map(({ id, name, appearance, threads }) => {
       const threadIds: string[] = [];
@@ -604,13 +606,10 @@ export class ChSessions {
           const row = thread as unknown as ChThread;
           found.set(threadId, row);
           ownership.set(threadId, "codex");
-          if (cursor === undefined || !this.publishedCatalog?.has(threadId))
-            snapshot.threads.push(row);
         }
         if (thread.archived === false && !snapshotArchives.has(threadId))
           archivedIds.delete(threadId);
         threadIds.push(threadId);
-        if (!referenced?.has(threadId)) newSectionMembers.add(threadId);
       }
       return threadSectionsV1 && appearance !== undefined
         ? { id, name, threadIds, appearance }
@@ -668,26 +667,29 @@ export class ChSessions {
     timing.count("visibleRows", rows.size);
     await this.syncWorkspace(timing, projects);
     if (this.closed) return;
-    // Notifications received during catalog or ancestor reads supersede their membership.
-    for (const [id, archived] of archiveChanges) {
-      if (archived) archivedIds.add(id);
-      else archivedIds.delete(id);
-    }
-    timing.measureSync("archive_sync", () =>
-      this.workspaces.setReferenceArchives([...archivedIds].sort()),
-    );
-    for (const id of found.keys()) this.workspacePageRows.delete(id);
-    const headIds =
-      cursor === undefined ? this.tree.withAncestors(snapshot.threads.map((row) => row.id)) : null;
+    const projectedSections =
+      threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects)
+        ? threadSections
+        : undefined;
+    const before = this.publishedCatalog;
+    const sectionIds = projectedSections
+      ? new Set(projectedSections.flatMap(({ threadIds }) => threadIds))
+      : this.workspaces.sectionMemberIds();
+    if (!projectedSections)
+      for (const id of sectionIds) if (!before?.has(id)) sectionIds.delete(id);
     await timing.measure("catalog_publish", () =>
-      this.publishCatalogChanges(headIds, newSectionMembers),
+      this.publishCatalogChanges(timing, headIds, sectionIds, archivedIds, archiveChanges),
     );
+    if (this.closed) return;
     // Project members resolve to Workspaces, which exist once their roots are synced.
-    if (threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects)) {
+    if (projectedSections) {
+      const archived = new Set(this.workspaces.localArchivedSessionIds());
       this.workspaces.setReferenceThreadSections(
-        threadSections.map((section) => ({
+        projectedSections.map((section) => ({
           ...section,
-          threadIds: section.threadIds.filter((id) => !archivedIds.has(id)),
+          threadIds: section.threadIds.filter(
+            (id) => !archived.has(id) && this.publishedCatalog?.has(id),
+          ),
         })),
         definitions.projects,
         definitions.sectionProjects,
@@ -695,6 +697,17 @@ export class ChSessions {
       );
     } else if (sectionsUnsupported || (threadSections && !threadSectionsV1)) {
       this.workspaces.setReferenceThreadSections(undefined);
+    }
+    const pageIds = new Set(snapshot.threads.map(({ id }) => id));
+    for (const id of sectionIds) {
+      const row = rows.get(id);
+      if (
+        row &&
+        this.publishedCatalog?.has(id) &&
+        (cursor === undefined || !before?.has(id)) &&
+        !pageIds.has(id)
+      )
+        snapshot.threads.push(row);
     }
     this.catalogReadAt = Date.now();
     return { ...snapshot, sectionFailure };
@@ -808,22 +821,41 @@ export class ChSessions {
     };
   }
   private async publishCatalogChanges(
+    timing: SessionListTiming,
     headIds: ReadonlySet<string> | null,
-    newSectionMembers: ReadonlySet<string>,
+    sectionIds: ReadonlySet<string>,
+    archivedIds: Set<string>,
+    archiveChanges: ReadonlyMap<string, boolean>,
   ): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map<string, string>();
     const changed: ChThread[] = [];
     for (const row of this.rows.values()) {
-      const newlyReferenced = newSectionMembers.has(row.id);
-      if (!before?.has(row.id) && !headIds?.has(row.id) && !newlyReferenced) continue;
+      const priorKey = before?.get(row.id);
+      const sectionMember = sectionIds.has(row.id);
+      if (!sectionMember) {
+        if (headIds === null) {
+          if (priorKey === undefined) continue;
+        } else if (!headIds.has(row.id)) {
+          continue;
+        }
+      }
       const key = this.catalogKey(row);
       next.set(row.id, key);
-      // The first head is already delivered by session/list. A private continuation
-      // row only enters the shared catalog when a head page or a section exposes it.
-      if (newlyReferenced || (before && before.get(row.id) !== key)) changed.push(row);
+      // The first head is delivered by session/list; section frames have no summaries.
+      if (priorKey !== key && (before || sectionMember)) changed.push(row);
     }
     const summaries = await Promise.all(changed.map((row) => this.summary(row)));
+    if (this.closed) return;
+    // Notifications received during catalog, ancestor, or summary reads supersede their archive state.
+    for (const [id, archived] of archiveChanges) {
+      if (archived) archivedIds.add(id);
+      else archivedIds.delete(id);
+    }
+    for (const id of archivedIds) next.delete(id);
+    timing.measureSync("archive_sync", () =>
+      this.workspaces.setReferenceArchives([...archivedIds].sort()),
+    );
     this.publishedCatalog = next;
     // Previously opened Threads retain sequenced browser projections even after
     // unfollow. Cached catalog hints cannot replace them. Push the authoritative
@@ -838,6 +870,7 @@ export class ChSessions {
     // keep its sequenced values. Advance the reserved sequence below its next view.
     if (this.controls.size > 0) {
       for (const { sessionId } of summaries) {
+        if (!next.has(sessionId)) continue;
         const row = this.rows.get(sessionId);
         const seq = row ? this.threads.reserveDroppedProjectionSeq(sessionId) : undefined;
         if (!row || seq === undefined) continue;
@@ -846,10 +879,12 @@ export class ChSessions {
             sink.push({ type: "projection", sessionId, key, value, seq });
       }
     }
-    for (const row of summaries) this.events.emit("api-session/added", row);
+    for (const row of summaries)
+      if (next.has(row.sessionId)) this.events.emit("api-session/added", row);
+    // Cached history can slide out of a head page without being deleted.
     if (before)
       for (const id of before.keys())
-        if (!next.has(id)) {
+        if (!this.rows.has(id)) {
           this.handoffs.delete(id);
           this.events.emit("api-session/removed", id);
         }
@@ -1389,7 +1424,8 @@ export class ChSessions {
       this.workspaces.addDraftReference(thread.id, undefined);
     }
     this.events.emit("api-session/added", await this.summary(thread));
-    this.publishedCatalog?.set(thread.id, this.catalogKey(thread));
+    if (!this.workspaces.isArchived(thread.id))
+      this.publishedCatalog?.set(thread.id, this.catalogKey(thread));
     this.events.emit("codexhost/session-bound", draft.id, thread.id);
     // Navigation reads the retained draft during binding; remove its row only afterward.
     // Keep the alias for in-flight requests, without deleting the native Thread.
@@ -1500,10 +1536,13 @@ export class ChSessions {
   }
 
   private updateArchive(id: string, archived: boolean): void {
+    this.archiveRevision++;
     this.refreshingArchiveChanges?.set(id, archived);
     const ids = new Set(this.workspaces.localArchivedSessionIds());
-    if (archived) ids.add(id);
-    else ids.delete(id);
+    if (archived) {
+      ids.add(id);
+      this.publishedCatalog?.delete(id);
+    } else ids.delete(id);
     this.workspaces.setReferenceArchives([...ids].sort());
   }
 

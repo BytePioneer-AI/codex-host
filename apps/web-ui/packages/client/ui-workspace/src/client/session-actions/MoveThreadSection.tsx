@@ -30,7 +30,7 @@ export interface ThreadSectionMoveRequest {
 
 export interface ThreadSectionMenuInjected {
   hooks: {
-    sectionMoveHarnesses: HostObservable<ReadonlyMap<SessionId, string>>;
+    nativeThreads: HostObservable<ReadonlySet<SessionId>>;
     sectionWorkspace: HostObservable<WorkspaceSnapshot>;
     sectionSessions: HostObservable<SessionListState>;
     scopedSessionIds: HostObservable<ReadonlySet<SessionId> | null>;

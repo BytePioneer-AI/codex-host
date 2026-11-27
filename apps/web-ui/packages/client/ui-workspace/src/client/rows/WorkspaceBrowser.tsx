@@ -1124,7 +1124,7 @@ function SessionTree({
     if (canExpand) rowKeys.push(`overflow:${group.key}`);
     const workspaceMarker =
       workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
-        ? workspaceDrag.over.half
+        ? (workspaceDrag?.over?.half ?? null)
         : null;
     const canMoveToSection = workspaceId !== undefined && sectionProjects.has(workspaceId);
     const workspaceDragProps =
@@ -1478,7 +1478,7 @@ function SessionTree({
     !workspaceListHasLeadingChrome &&
     shownWorkspaceRoots[0]?.workspaceId !== undefined &&
     workspaceDrag?.over?.id === shownWorkspaceRoots[0].workspaceId &&
-    workspaceDrag.over.half === "before";
+    workspaceDrag?.over?.half === "before";
   const groupRows: ReactNode[] = [];
   if (showWorkspacesSection) rowKeys.push(`section:${WORKSPACES_SECTION_KEY}`);
   if (workspacesSectionExpanded) {

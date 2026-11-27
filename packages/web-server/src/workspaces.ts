@@ -1531,19 +1531,17 @@ export class Workspaces {
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       this.publishPinnedWorkspaces();
       if (
-        this.referenceThreadSections.some(({ workspaceIds }) =>
+        this.officialThreadSections?.some(({ workspaceIds }) =>
           workspaceIds?.includes(workspace.workspaceId),
         )
       ) {
-        this.publishReferenceThreadSections(
-          this.referenceThreadSections.map((section) => {
-            if (!section.workspaceIds?.includes(workspace.workspaceId)) return section;
-            const { workspaceIds, ...rest } = section;
-            const remaining = workspaceIds.filter((id) => id !== workspace.workspaceId);
-            return remaining.length ? { ...rest, workspaceIds: remaining } : rest;
-          }),
-          this.referenceThreadSectionsV1,
-        );
+        this.officialThreadSections = this.officialThreadSections.map((section) => {
+          if (!section.workspaceIds?.includes(workspace.workspaceId)) return section;
+          const { workspaceIds, ...rest } = section;
+          const remaining = workspaceIds.filter((id) => id !== workspace.workspaceId);
+          return remaining.length ? { ...rest, workspaceIds: remaining } : rest;
+        });
+        this.publishProjectSections();
       }
       return { deleted: true };
     });

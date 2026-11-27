@@ -10,6 +10,7 @@ import {
   Toast,
   focusWithoutRing,
   isBehindModal,
+  pointerModality,
   rankByName,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
@@ -397,7 +398,14 @@ export function ShortcutReference({
               className={css.resetAll}
               disabled={busy || config.status !== "ready" || modifiedCount === 0}
               onClick={(event) => {
-                event.currentTarget.focus();
+                const button = event.currentTarget;
+                if (button.ownerDocument.activeElement !== button) {
+                  if (event.detail !== 0 || pointerModality()) {
+                    focusWithoutRing(button, { preventScroll: true });
+                  } else {
+                    button.focus({ preventScroll: true });
+                  }
+                }
                 setTarget(null);
                 setResetRevision(config.revision);
               }}

@@ -39,5 +39,9 @@ export function annotationLabels(t: ChatViewSlotProps["t"]): ResponseAnnotationL
     remove: (index) => t("annotation.remove", { index }),
     selectedText: t("annotation.selectedText"),
     userComment: t("annotation.userComment"),
+    editPlaceholder: t("selection.commentPlaceholder"),
+    save: t("annotation.save"),
+    cancel: t("message.edit.cancel"),
+    removeAction: t("annotation.removeAction"),
   };
 }

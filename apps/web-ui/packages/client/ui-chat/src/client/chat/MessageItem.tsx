@@ -1,6 +1,10 @@
 import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import { parseAnnotatedMessage, parseThreadWatchNotice } from "@codexhost/shared-contracts";
+import {
+  parseAnnotatedMessage,
+  parseThreadWatchNotice,
+  responseAnnotationsOf,
+} from "@codexhost/shared-contracts";
 import type { ResponseAnnotation } from "@codexhost/shared-contracts";
 import { ResponseAnnotationChip } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ResponseAnnotationLabels } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -355,9 +359,20 @@ export function PendingSteeringBubble({
   renderMessageImages: ChatNodeOwnerProps["renderMessageImages"];
   t: ChatViewSlotProps["t"];
 }): ReactNode {
+  const responseAnnotations = useMemo(() => {
+    const out: ResponseAnnotation[] = [];
+    for (const block of content) {
+      const b = block as { type?: string; text?: string };
+      if (b.type === "text" && typeof b.text === "string") {
+        out.push(...responseAnnotationsOf(b.text));
+      }
+    }
+    return out;
+  }, [content]);
   return (
     <UserStyleBubble
       content={content}
+      responseAnnotations={responseAnnotations}
       renderMessageImages={renderMessageImages}
       pending
       t={t}
@@ -389,6 +404,10 @@ export function PendingSubmissionBubble({
     () => (submission.text === "" ? [] : [{ type: "text", text: submission.text }]),
     [submission.text],
   );
+  const responseAnnotations = useMemo(
+    () => responseAnnotationsOf(submission.text),
+    [submission.text],
+  );
   const previewAttachments = useMemo<readonly PresentedAttachment[]>(
     () =>
       submission.attachments.map((attachment) => ({
@@ -416,6 +435,7 @@ export function PendingSubmissionBubble({
   return (
     <UserStyleBubble
       content={content}
+      responseAnnotations={responseAnnotations}
       previewAttachments={previewAttachments}
       renderMessageImages={renderMessageImages}
       pending={submission.placement === "steering"}

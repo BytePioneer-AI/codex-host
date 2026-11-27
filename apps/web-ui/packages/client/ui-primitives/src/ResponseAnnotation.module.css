@@ -136,6 +136,122 @@
   white-space: pre;
 }
 
+.cardEditField {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 28px;
+  max-height: 112px;
+  field-sizing: content;
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 8px;
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 19px;
+  resize: none;
+  outline: none;
+}
+
+.cardEditField::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.cardEditField:focus {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, transparent);
+}
+
+.cardActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.cardActionGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cardRemoveBtn,
+.cardCancelBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+  transition:
+    background-color 110ms ease,
+    color 110ms ease;
+}
+
+.cardRemoveBtn:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.cardCancelBtn:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.cardSaveBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 110ms ease,
+    opacity 110ms ease;
+}
+
+.cardSaveBtn:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.cardSaveBtn:disabled,
+.cardRemoveBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cardKbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  opacity: 0.72;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+}
+
 /* Embedded composer annotation tray (Kettu .ks-comments structure on --dsw-* tokens) */
 .tray {
   display: flex;
@@ -303,6 +419,18 @@
 
 .trayComment {
   cursor: text;
+  box-sizing: border-box;
+  width: calc(100% + 8px);
+  margin: 2px -4px 0;
+  padding: 1px 4px;
+  border-radius: 5px;
+  transition: background-color 110ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .trayComment:hover {
+    background: var(--dsw-alias-interactive-bg-active);
+  }
 }
 
 .trayCommentEmpty {
@@ -335,6 +463,14 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, transparent);
 }
 
+.trayActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.trayEditBtn,
 .trayRemove {
   display: inline-grid;
   place-items: center;
@@ -354,6 +490,9 @@
     color 110ms ease;
 }
 
+.trayRow:hover .trayEditBtn,
+.trayRowHovered .trayEditBtn,
+.trayRow:focus-within .trayEditBtn,
 .trayRow:hover .trayRemove,
 .trayRowHovered .trayRemove,
 .trayRow:focus-within .trayRemove {
@@ -361,8 +500,18 @@
 }
 
 @media (hover: none), (pointer: coarse) {
+  .trayEditBtn,
   .trayRemove {
     opacity: 0.85;
+  }
+
+  .cardEditField {
+    font-size: 16px;
+    line-height: 22px;
+  }
+
+  .cardKbd {
+    display: none;
   }
 }
 
@@ -370,13 +519,16 @@
   .trayRow,
   .trayNumber,
   .trayQuote,
+  .trayComment,
   .trayClear,
+  .trayEditBtn,
   .trayRemove {
     transition: none;
   }
 }
 
 @media (hover: hover) and (pointer: fine) {
+  .trayEditBtn:hover,
   .trayRemove:hover {
     background: var(--dsw-alias-interactive-bg-active);
     color: var(--dsw-alias-label-primary);

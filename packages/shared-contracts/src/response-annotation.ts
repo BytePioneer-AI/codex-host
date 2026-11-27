@@ -31,6 +31,9 @@ export const RESPONSE_ANNOTATIONS_REQUEST_HEADER = "## My request:";
 /** The separator a request body follows, in every form Desktop has written. */
 const REQUEST_SEPARATOR = /## My request(?: for Codex)?:/gu;
 
+/** Envelope-local request separator immediately following `</response-annotations>`. */
+const ENVELOPE_REQUEST_SEPARATOR = /^\s*## My request(?: for Codex)?:[ \t]*(?:\r?\n|$)/u;
+
 /**
  * Instructions that make the annotations addressable in the reply. The reply
  * cites each answered selection as `:codex-annotation{index="N"}`.
@@ -84,15 +87,21 @@ export interface ParsedAnnotatedMessage {
   readonly body: string;
 }
 
-function readSection(text: string): string {
+function readSectionSpan(
+  text: string,
+): { readonly json: string; readonly closeEnd: number } | undefined {
   // The block is always the message prefix (a body that happens to quote the
   // heading is not a block), so the heading must open the message.
   const start = text.trimStart().startsWith(RESPONSE_ANNOTATIONS_HEADER) ? 0 : text.length;
   const open = text.indexOf(`\n${RESPONSE_ANNOTATIONS_OPEN}\n`, start);
-  if (open < 0) return "";
+  if (open < 0) return undefined;
   const from = open + 1 + RESPONSE_ANNOTATIONS_OPEN.length + 1;
   const close = text.indexOf(`\n${RESPONSE_ANNOTATIONS_CLOSE}`, from);
-  return close < 0 ? "" : text.slice(from, close);
+  if (close < 0) return undefined;
+  return {
+    json: text.slice(from, close),
+    closeEnd: close + 1 + RESPONSE_ANNOTATIONS_CLOSE.length,
+  };
 }
 
 /**
@@ -103,6 +112,34 @@ function readSection(text: string): string {
 export function parseAnnotatedMessage(text: string): ParsedAnnotatedMessage {
   const annotations = readAnnotations(text);
   return { annotations, body: requestBody(text) };
+}
+
+/**
+ * Losslessly split a composed annotated message back into its annotations and
+ * original request body for composer editing or queue previews.
+ *
+ * Plain messages without a valid leading annotation block are returned
+ * verbatim even if their prose contains `## My request:`, and a request body
+ * containing literal `## My request:` lines keeps everything after the
+ * annotation block's own separator.
+ * @param text - the message text as sent.
+ * @returns parsed annotations and the lossless body (or the original text untouched).
+ */
+export function splitAnnotatedMessage(text: string): ParsedAnnotatedMessage {
+  const section = readSectionSpan(text);
+  if (section === undefined) return { annotations: [], body: text };
+  const annotations = parseAnnotationJson(section.json);
+  if (annotations.length === 0) return { annotations: [], body: text };
+  const afterClose = text.slice(section.closeEnd);
+  const separator = ENVELOPE_REQUEST_SEPARATOR.exec(afterClose);
+  if (separator === null) return { annotations: [], body: text };
+  const rawBody = afterClose.slice(separator[0].length);
+  const body = rawBody.endsWith("\r\n")
+    ? rawBody.slice(0, -2)
+    : rawBody.endsWith("\n")
+      ? rawBody.slice(0, -1)
+      : rawBody;
+  return { annotations, body };
 }
 
 /** The body after the last request separator, as Desktop reads it. */
@@ -120,8 +157,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * The annotations of one block, validated as a whole: an entry that is not
  * this shape invalidates the block rather than renumbering the rest.
  */
-function readAnnotations(text: string): readonly ResponseAnnotation[] {
-  const json = readSection(text);
+function parseAnnotationJson(json: string): readonly ResponseAnnotation[] {
   if (json === "") return [];
   let parsed: unknown;
   try {
@@ -144,6 +180,11 @@ function readAnnotations(text: string): readonly ResponseAnnotation[] {
     });
   }
   return annotations;
+}
+
+function readAnnotations(text: string): readonly ResponseAnnotation[] {
+  const section = readSectionSpan(text);
+  return section === undefined ? [] : parseAnnotationJson(section.json);
 }
 
 /**

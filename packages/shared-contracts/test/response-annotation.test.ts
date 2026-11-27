@@ -11,6 +11,7 @@ import {
   parseAnnotatedMessage,
   responseAnnotationIndex,
   responseAnnotationsOf,
+  splitAnnotatedMessage,
 } from "../src/index.js";
 
 /**
@@ -97,6 +98,36 @@ describe("parsing a logged message", () => {
       const text = `\n${RESPONSE_ANNOTATIONS_HEADER}\n${RESPONSE_ANNOTATIONS_OPEN}\n${json}\n${RESPONSE_ANNOTATIONS_CLOSE}\n\n## My request:\nbody\n`;
       expect(parseAnnotatedMessage(text)).toEqual({ annotations: [], body: "body" });
     }
+  });
+});
+
+describe("lossless splitting for editing", () => {
+  it.each(GOLDEN.cases)(
+    "round-trips $name back into annotations and body",
+    ({ annotations, body }) => {
+      const text = composeAnnotatedMessage(annotations, body);
+      expect(splitAnnotatedMessage(text)).toEqual({ annotations, body });
+    },
+  );
+
+  it("preserves plain messages verbatim even when they contain a request header", () => {
+    const plain = "Context before\n## My request:\nActual prompt";
+    expect(splitAnnotatedMessage(plain)).toEqual({ annotations: [], body: plain });
+  });
+
+  it("preserves literal request headers and blank lines inside an annotated body", () => {
+    const annotations = [{ text: "selected", annotation: "fix this" }];
+    const body = "First line\n\n## My request:\nQuoted section";
+    const composed = composeAnnotatedMessage(annotations, body);
+    expect(splitAnnotatedMessage(composed)).toEqual({ annotations, body });
+  });
+
+  it("keeps malformed or headerless blocks verbatim rather than truncating user text", () => {
+    const malformed = `\n${RESPONSE_ANNOTATIONS_HEADER}\n${RESPONSE_ANNOTATIONS_OPEN}\n{not json\n${RESPONSE_ANNOTATIONS_CLOSE}\n\n## My request:\nbody\n`;
+    expect(splitAnnotatedMessage(malformed)).toEqual({ annotations: [], body: malformed });
+
+    const headerless = `\n${RESPONSE_ANNOTATIONS_HEADER}\n${RESPONSE_ANNOTATIONS_OPEN}\n[{"text":"a"}]\n${RESPONSE_ANNOTATIONS_CLOSE}\nno separator here`;
+    expect(splitAnnotatedMessage(headerless)).toEqual({ annotations: [], body: headerless });
   });
 });
 

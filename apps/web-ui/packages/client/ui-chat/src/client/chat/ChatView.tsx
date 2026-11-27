@@ -337,6 +337,14 @@ export function ChatView({
     [inputActions],
   );
   const running = useSession((s) => s.running);
+  const subagent = useSession((s) => s.subagent);
+  const removed = useSession((s) => s.removed);
+  const canAnnotate =
+    inputActions !== undefined &&
+    !removed &&
+    (subagent === null ||
+      (subagent.address.mode === "continuable" && subagent.parentAvailable === true));
+  const [composingAnswerKey, setComposingAnswerKey] = useState<string | null>(null);
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
   const recoveryLasting = useSustainedRecovery(carrier !== "connected");
   const compacting = useProjection("compacting");
@@ -534,6 +542,13 @@ export function ChatView({
     }
     return null;
   }, [entries, messageEditing.draft?.seq, nodeStore]);
+  const composingFlowKey = useMemo(
+    () =>
+      composingAnswerKey !== null
+        ? resolveRevealTargetFlowKey(composingAnswerKey, entries, groupedChat)
+        : null,
+    [composingAnswerKey, entries, groupedChat],
+  );
   const revealTargetFlowKey = useMemo(
     () =>
       viewRequest?.view === "chat" && annotationToReveal?.anchor !== undefined
@@ -554,6 +569,7 @@ export function ChatView({
     listRef: scroll.listRef,
     columnRef: scroll.columnRef,
     editingFlowKey,
+    composingFlowKey,
     revealTargetFlowKey,
     savedAnchorFlowKey,
     busyTurn: scroll.busyTurn,
@@ -735,7 +751,7 @@ export function ChatView({
           </div>
         </div>
       </div>
-      {inputActions !== undefined && (
+      {canAnnotate && (
         <SelectionActions
           key={sessionId}
           labels={{
@@ -748,6 +764,7 @@ export function ChatView({
           }}
           onAdd={attachSelection}
           container={scroll.columnRef}
+          onComposingAnswerChange={setComposingAnswerKey}
         />
       )}
       {!scroll.followingTail && (

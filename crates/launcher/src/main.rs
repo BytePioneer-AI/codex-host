@@ -2,6 +2,7 @@
 
 mod active_update;
 mod autostart;
+mod cli_help;
 mod compatibility;
 mod console;
 mod desktop_attachment;
@@ -1918,6 +1919,10 @@ fn is_delegation_host_command(arguments: &[String]) -> bool {
 
 fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(synopsis) = cli_help::subcommand_usage(&arguments) {
+        println!("usage: {synopsis}");
+        return ExitCode::SUCCESS;
+    }
     #[cfg(target_os = "windows")]
     let start_menu_launch = arguments.as_slice() == [START_MENU_ARGUMENT];
     #[cfg(target_os = "windows")]

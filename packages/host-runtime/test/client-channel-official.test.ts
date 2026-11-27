@@ -493,17 +493,31 @@ it("uses official profiles and waits for settings confirmation; forwards command
     result: { effectivePermissionModeId: CODEX_APPROVE_FOR_ME_MODE },
   });
 
-  const manual = selectPermission(":workspace");
-  await vi.waitFor(() => expect(updates[0]?.approvalsReviewer).toBe("user"));
-  expect(updates.shift()).toEqual({
-    threadId: "official",
-    permissions: ":workspace",
-    approvalsReviewer: "user",
+  const readOnly = selectPermission(":read-only");
+  await vi.waitFor(() => expect(updates[0]?.permissions).toBe(":read-only"));
+  expect(updates.shift()).toEqual({ threadId: "official", permissions: ":read-only" });
+  settings = { ...settings, activePermissionProfile: { id: ":read-only" } };
+  notifySettings();
+  await expect(readOnly).resolves.toMatchObject({
+    result: { effectivePermissionModeId: ":read-only" },
   });
-  settings = { ...settings, approvalsReviewer: "user" };
+
+  const manual = selectPermission(":workspace");
+  await vi.waitFor(() => expect(updates[0]?.permissions).toBe(":workspace"));
+  const manualUpdate = updates.shift();
+  settings = {
+    ...settings,
+    activePermissionProfile: { id: ":workspace" },
+    approvalsReviewer: manualUpdate?.approvalsReviewer ?? settings.approvalsReviewer ?? null,
+  };
   notifySettings();
   await expect(manual).resolves.toMatchObject({
     result: { effectivePermissionModeId: ":workspace" },
+  });
+  expect(manualUpdate).toEqual({
+    threadId: "official",
+    permissions: ":workspace",
+    approvalsReviewer: "user",
   });
 });
 

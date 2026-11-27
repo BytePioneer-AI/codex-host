@@ -318,7 +318,7 @@ import {
   CODEX_APPROVE_FOR_ME_MODE,
   CODEX_WORKSPACE_PROFILE,
   codexApproveForMeSettings,
-  nativePermissionModeId,
+  isAutomaticCodexReviewer,
 } from "./codex-runtime/native-permission-presets.js";
 import {
   updateNativeThreadSettings,
@@ -5032,7 +5032,7 @@ export class AppServerHost {
         settings.permissions === CODEX_WORKSPACE_PROFILE &&
           settings.approvalsReviewer === undefined &&
           isRecord(resumed.result) &&
-          nativePermissionModeId(resumed.result) === CODEX_APPROVE_FOR_ME_MODE
+          isAutomaticCodexReviewer(resumed.result.approvalsReviewer)
           ? { ...settings, approvalsReviewer: "user" }
           : settings,
       );

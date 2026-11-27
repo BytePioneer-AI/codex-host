@@ -385,7 +385,7 @@ Web 默认包含就绪的官方 Codex 与外部会话 Harness。`--harness <id,.
 
 Host 优先使用 Desktop 自带程序，其次使用本机不低于 0.161.0 的 `codex`，拒绝 shim 或代理。Web 先启动时沿用最近记录的 Desktop 参数，没有记录时使用基线参数；Desktop 接入且参数不同时，空闲后台可替换，有活动 Turn 时保留。原生 home 取自 `CODEX_HOME`，未设置时为 `~/.codex`。不提供按会话自定义 CLI 路径或版本。
 
-模型目录来自官方 `model/list`，权限菜单保留 `permissionProfile/list` 返回的可选档案。工作区档案可选且 Codex 允许按需审批和自动审查时，菜单同时提供「帮我授权」。该选项使用原生 `:workspace`、`on-request` 和 `auto_review`。Web 根据新建响应、恢复响应和设置更新通知显示原生已确认的组合，包括在 Desktop 启用的设置。从「帮我授权」切回「工作区写入」时，审批请求重新交给用户。新 Codex Thread 优先使用已保存且仍有效的权限偏好；没有有效偏好时，默认选择原生目录中可选的 `:danger-full-access`（完全访问），界面使用草稿选择作为 `thread/start` 的权限设置，不把档案列表顺序当作默认值。原生目录未提供该档案时不传 `permissions`，界面显示“跟随 Codex 设置”。Model、Thinking、权限选择调用 `thread/settings/update`，等待匹配的 `thread/settings/updated` 后发布确认值，影响后续 Turn。未确认或未报告的配置不冒充已生效状态。
+模型目录来自官方 `model/list`，权限菜单保留 `permissionProfile/list` 返回的可选档案。工作区档案可选且 Codex 允许按需审批和自动审查时，菜单同时提供「帮我授权」。该选项使用原生 `:workspace`、`on-request` 和 `auto_review`。Web 根据新建响应、恢复响应和设置更新通知显示原生已确认的组合，包括在 Desktop 启用的设置。如果会话当前使用自动审批，选择「工作区写入」会将审批请求交回给用户。新 Codex Thread 优先使用已保存且仍有效的权限偏好；没有有效偏好时，默认选择原生目录中可选的 `:danger-full-access`（完全访问），界面使用草稿选择作为 `thread/start` 的权限设置，不把档案列表顺序当作默认值。原生目录未提供该档案时不传 `permissions`，界面显示“跟随 Codex 设置”。Model、Thinking、权限选择调用 `thread/settings/update`，等待匹配的 `thread/settings/updated` 后发布确认值，影响后续 Turn。未确认或未报告的配置不冒充已生效状态。
 
 Turn 运行中排队发送进入官方队列，Web 可编辑、删除和立即发送，Desktop 看到同一队列。立即发送在活动 Turn 内使用原生 Steer，确认接受后删除原队列项；空闲时启动该队列项。拒绝或结果未知不自动回退或重发。官方停止中断 Turn，不保证结束原生后台终端；后台命令可以继续运行，Web 不隐式强杀或清理它们。`/compact` 与 `/review` 分别调用官方压缩和 Review 方法；Skill 菜单采用官方启用目录。置顶与用量复用同一官方 Thread。
 

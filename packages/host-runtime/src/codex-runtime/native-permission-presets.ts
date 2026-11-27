@@ -9,6 +9,12 @@ export const codexApproveForMeSettings = {
   approvalsReviewer: "auto_review",
 };
 
+export function isAutomaticCodexReviewer(reviewer: unknown): boolean {
+  return (
+    reviewer === codexApproveForMeSettings.approvalsReviewer || reviewer === "guardian_subagent"
+  );
+}
+
 function record(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -24,9 +30,7 @@ export function canSelectCodexApproveForMe(result: unknown): boolean {
       (Array.isArray(allowedApprovalPolicies) && allowedApprovalPolicies.includes("on-request"))) &&
     (allowedApprovalsReviewers == null ||
       (Array.isArray(allowedApprovalsReviewers) &&
-        allowedApprovalsReviewers.some(
-          (reviewer) => reviewer === "auto_review" || reviewer === "guardian_subagent",
-        )))
+        allowedApprovalsReviewers.some(isAutomaticCodexReviewer)))
   );
 }
 
@@ -51,8 +55,7 @@ export function nativePermissionModeId(settings: JsonObject): string | undefined
   if (
     workspace &&
     settings.approvalPolicy === codexApproveForMeSettings.approvalPolicy &&
-    (settings.approvalsReviewer === codexApproveForMeSettings.approvalsReviewer ||
-      settings.approvalsReviewer === "guardian_subagent")
+    isAutomaticCodexReviewer(settings.approvalsReviewer)
   )
     return CODEX_APPROVE_FOR_ME_MODE;
   return id;

@@ -25,8 +25,8 @@
 <h2>Run every coding agent, as one workspace.</h2>
 
 <p>
-  Open source and local-first. Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents in one workbench —<br />
-  switch freely between Standalone Desktop, official Codex Desktop, Web, and Mobile with live multi-machine sync.
+  Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents inside <b>CodexHost's own standalone desktop app</b> —<br />
+  no official Codex Desktop required (optional enhancement supported), with live Web, Mobile, and multi-machine sync.
 </p>
 
 <p>
@@ -53,11 +53,11 @@ CodexHost takes a third path:
 
 <td width="25%" valign="top">
 
-### One Host, Live Sync
+### Own Desktop, Live Sync
 
-Standalone Desktop, official Codex Desktop, and Web / Mobile share a single local Host.
+Ships with its own standalone desktop app — no official Codex Desktop required.
 
-Switch surfaces anytime without losing state.
+Shares one local Host with Web, Mobile, and optional Codex Desktop mode.
 
 </td>
 

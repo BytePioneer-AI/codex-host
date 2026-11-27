@@ -25,8 +25,8 @@
 <h2>하나의 워크스페이스에서 모든 코딩 Agent를 지휘하세요.</h2>
 
 <p>
-  오픈소스 · 로컬 우선. <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b> 등 19개 이상의 코딩 Agent를 한 곳에 모았습니다.<br />
-  독립 데스크톱, 공식 Codex Desktop, Web과 모바일이 실시간으로 동기화됩니다.
+  <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b> 등 19개 이상의 코딩 Agent를 <b>CodexHost 자체 독립 데스크톱 앱</b>에 통합했습니다.<br />
+  공식 Codex Desktop 없이 바로 실행되며(선택적 확장 지원), Web·모바일과 실시간 다중 머신 동기화를 제공합니다.
 </p>
 
 <p>
@@ -53,11 +53,11 @@ CodexHost는 세 번째 길을 선택했습니다:
 
 <td width="25%" valign="top">
 
-### 하나의 호스트, 3단 동기화
+### 독립 데스크톱 & 실시간 동기화
 
-경량 독립 데스크톱, 공식 Codex Desktop, Web/모바일이 같은 로컬 Host를 공유합니다.
+공식 Codex Desktop 없이 바로 쓰는 자체 데스크톱 앱을 제공합니다.
 
-언제든 끊김 없이 전환하세요.
+Web·모바일(및 선택적 공식 데스크톱 모드)과 하나의 로컬 Host를 공유합니다.
 
 </td>
 

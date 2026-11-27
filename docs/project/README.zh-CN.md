@@ -22,11 +22,11 @@
   <a href="README.ko.md">한국어</a>
 </p>
 
-<h2>在 Codex 里，调度所有编程 Agent。</h2>
+<h2>一个工作台，调度所有编程 Agent。</h2>
 
 <p>
-  开源免费，本地优先。把 <b>Codex</b>、<b>Claude Code</b>、<b>Pi</b>、<b>Grok</b> 等 19+ 款编程 Agent 聚进同一工作台；<br />
-  独立桌面端、官方 Codex Desktop 与 Web/手机实时同步，离开电脑照样多机接力。
+  把 <b>Codex</b>、<b>Claude Code</b>、<b>Pi</b>、<b>Grok</b> 等 19+ 款编程 Agent 聚进 <b>CodexHost 自有独立桌面端</b>；<br />
+  无需安装官方 Codex Desktop（也可选兼容增强），与 Web、手机实时同步，随时多机接力。
 </p>
 
 <p>
@@ -53,11 +53,11 @@ CodexHost 选择了第三条路：
 
 <td width="25%" valign="top">
 
-### 一个后台，三端同步
+### 独立桌面，多端同步
 
-轻量独立桌面端、官方 Codex Desktop 与 Web/手机共用同一本地 Host。
+自带独立桌面端，无需依赖官方 Codex Desktop，与 Web、手机实时同步。
 
-不用重来，随时无缝切换。
+共用同一本地 Host，也可选兼容增强官方客户端。
 
 </td>
 

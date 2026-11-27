@@ -54,12 +54,37 @@ function parseEnvironment(output: Buffer | string): Record<string, string> | nul
 function mergeMissingEnvironment(
   environment: NodeJS.ProcessEnv,
   shellEnvironment: Readonly<Record<string, string>>,
+  platform: NodeJS.Platform,
 ): NodeJS.ProcessEnv {
   const merged = { ...environment };
   for (const [name, value] of Object.entries(shellEnvironment)) {
+    if (name === "PATH" && platform === "darwin") {
+      const path = mergeMacPath(merged.PATH, value);
+      if (path !== undefined) merged.PATH = path;
+      continue;
+    }
     if (merged[name] === undefined) merged[name] = value;
   }
   return merged;
+}
+
+function mergeMacPath(hostPath: string | undefined, shellPath: string): string | undefined {
+  const hostEntries = hostPath?.split(path.posix.delimiter) ?? [];
+  const seen = new Set(
+    hostEntries
+      .filter((entry) => entry.length > 0 && path.posix.isAbsolute(entry))
+      .map((entry) => path.posix.resolve(entry)),
+  );
+  const additions: string[] = [];
+  for (const entry of shellPath.split(path.posix.delimiter)) {
+    if (entry.length === 0 || !path.posix.isAbsolute(entry)) continue;
+    const normalized = path.posix.resolve(entry);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    additions.push(entry);
+  }
+  if (hostPath === undefined && additions.length === 0) return undefined;
+  return [...hostEntries, ...additions].join(path.posix.delimiter);
 }
 
 /**
@@ -78,7 +103,7 @@ export async function withUserShellEnvironment(
 
   const cacheKey = `${platform}\0${shell}\0${environment.HOME}`;
   const cached = dependencies ? undefined : shellEnvironmentCache.get(cacheKey);
-  if (cached) return mergeMissingEnvironment(environment, cached);
+  if (cached) return mergeMissingEnvironment(environment, cached, platform);
 
   const run =
     dependencies?.run ??
@@ -106,7 +131,7 @@ export async function withUserShellEnvironment(
     const loaded = result.status === 0 ? parseEnvironment(result.stdout) : null;
     if (!loaded) return environment;
     if (!dependencies) shellEnvironmentCache.set(cacheKey, loaded);
-    return mergeMissingEnvironment(environment, loaded);
+    return mergeMissingEnvironment(environment, loaded, platform);
   } catch {
     return environment;
   }

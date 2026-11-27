@@ -59,6 +59,10 @@ interface WorkspacesServiceLike {
   readonly list: ObservableStoreLike<{ readonly items: readonly WorkspaceItemLike[] }>;
 }
 
+interface LayoutServiceLike {
+  readonly panelInfo: ObservableStoreLike<{ readonly activePanelId: string | null }>;
+}
+
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -81,7 +85,20 @@ function getWorkspacesService(ctx: ClientContext): WorkspacesServiceLike | undef
     : undefined;
 }
 
+function getLayoutService(ctx: ClientContext): LayoutServiceLike | undefined {
+  const candidate = ctx.get("layout" as never) as Partial<LayoutServiceLike> | undefined;
+  return candidate?.panelInfo &&
+    typeof candidate.panelInfo.getSnapshot === "function" &&
+    typeof candidate.panelInfo.subscribe === "function"
+    ? (candidate as LayoutServiceLike)
+    : undefined;
+}
+
 function readActiveSessionSnapshot(ctx: ClientContext): WebExtensionActiveSession | null {
+  const layout = getLayoutService(ctx);
+  if (layout !== undefined && layout.panelInfo.getSnapshot().activePanelId !== null) {
+    return null;
+  }
   const sessions = getSessionsService(ctx);
   if (sessions === undefined) return null;
   const list = sessions.list.getSnapshot();
@@ -92,32 +109,38 @@ function readActiveSessionSnapshot(ctx: ClientContext): WebExtensionActiveSessio
 
   const workspaceItems = getWorkspacesService(ctx)?.list.getSnapshot().items ?? [];
   let workspace: WorkspaceItemLike | undefined;
+  let inheritedCwd: string | null = null;
   let isRemote = false;
   const seen = new Set<string>();
   let cursor: string | undefined = active.id;
 
   while (cursor !== undefined && !seen.has(cursor)) {
-    seen.add(cursor);
-    const matchingWorkspace = workspaceItems.find((item) => item.sessionIds.includes(cursor!));
+    const currentId = cursor;
+    seen.add(currentId);
+    if (inheritedCwd === null) {
+      inheritedCwd = nonEmptyString(list.byId[currentId]?.cwd);
+    }
+    const matchingWorkspace = workspaceItems.find((item) => item.sessionIds.includes(currentId));
     if (workspace === undefined && matchingWorkspace !== undefined) {
       workspace = matchingWorkspace;
     }
     if (
-      cursor.startsWith("web-remote:") ||
-      cursor.startsWith("remote-control:") ||
-      list.byId[cursor]?.projectionValues?.remoteHost != null ||
-      list.projectionsBySession?.[cursor]?.values?.remoteHost != null ||
+      currentId.startsWith("web-remote:") ||
+      currentId.startsWith("remote-control:") ||
+      list.byId[currentId]?.projectionValues?.remoteHost != null ||
+      list.projectionsBySession?.[currentId]?.values?.remoteHost != null ||
       matchingWorkspace?.remote !== undefined
     ) {
       isRemote = true;
     }
-    cursor = sessions.subagentAddress?.(cursor)?.parentSessionId ?? list.byId[cursor]?.parentId;
+    cursor =
+      sessions.subagentAddress?.(currentId)?.parentSessionId ?? list.byId[currentId]?.parentId;
   }
 
   return {
     id: active.id,
     title: active.displayTitle,
-    cwd: nonEmptyString(active.cwd) ?? nonEmptyString(workspace?.path),
+    cwd: inheritedCwd ?? nonEmptyString(workspace?.path),
     workspaceId: workspace?.workspaceId ?? null,
     isBlank: Boolean(active.blank),
     isRemote,
@@ -286,8 +309,8 @@ export function createWebExtensionApi(
             conversation.querySelector<HTMLElement>('[data-cx-region="composer-dock"]') ?? undefined
           );
         }
-        // When the full app shell is mounted without a main conversation (e.g. Settings/Plugins),
-        // avoid mounting into an embedded sidebar composer dock.
+        // When the full app shell is mounted without a main conversation (e.g. Plugins or other
+        // global main panels), avoid mounting into an embedded sidebar composer dock.
         if (doc.querySelector('[data-cx-region="app"]') !== null) return undefined;
       }
       return doc.querySelector<HTMLElement>(`[data-cx-region="${target}"]`) ?? undefined;
@@ -334,6 +357,10 @@ export function createWebExtensionApi(
     const workspaces = getWorkspacesService(ctx);
     if (workspaces !== undefined) {
       unsubscribers.push(workspaces.list.subscribe(syncActiveSession));
+    }
+    const layout = getLayoutService(ctx);
+    if (layout !== undefined) {
+      unsubscribers.push(layout.panelInfo.subscribe(syncActiveSession));
     }
     detachSessionStores = () => {
       for (const unsubscribe of unsubscribers.splice(0)) {

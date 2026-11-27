@@ -60,7 +60,7 @@ export interface WebExtensionApi {
   };
   backend: { invoke(method: string, params?: JsonValue): Promise<JsonValue> };
   session: {
-    /** Current main-view session snapshot, or null when no session is selected. */
+    /** Current main-view session snapshot, or null when no session is active or a global main panel is shown. */
     getActive(): WebExtensionActiveSession | null;
     /** Subscribe to main-view active-session changes without replaying the initial snapshot. */
     onChange(listener: (session: WebExtensionActiveSession | null) => void): () => void;

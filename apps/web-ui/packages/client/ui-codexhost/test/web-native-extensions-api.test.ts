@@ -159,6 +159,8 @@ describe("WebExtensionApi session context and composer-dock region", () => {
     });
     const subagentParents: Record<string, { parentSessionId: string }> = {
       "child-of-remote": { parentSessionId: "parent-remote" },
+      "child-of-worktree": { parentSessionId: "local" },
+      "child-of-projectless": { parentSessionId: "parent-projectless" },
     };
     const managed = createWebExtensionApi({
       ctx: createMockCtx({
@@ -293,6 +295,66 @@ describe("WebExtensionApi session context and composer-dock region", () => {
       isRemote: true,
     });
 
+    // Subagent without its own cwd inherits its parent's worktree cwd instead of the main workspace path.
+    sessionsStore.set({
+      byId: {
+        local: {
+          id: "local",
+          displayTitle: "Worktree parent",
+          cwd: "/repo/worktrees/feat",
+          running: false,
+          blank: false,
+          retainedBy: {},
+        },
+        "child-of-worktree": {
+          id: "child-of-worktree",
+          displayTitle: "Worktree subagent",
+          running: true,
+          blank: false,
+          retainedBy: { mainView: 1 },
+        },
+      },
+    });
+    expect(managed.api.session.getActive()).toEqual({
+      id: "child-of-worktree",
+      title: "Worktree subagent",
+      cwd: "/repo/worktrees/feat",
+      workspaceId: "ws-1",
+      isBlank: false,
+      isRemote: false,
+      running: true,
+    });
+
+    // Subagent under a projectless parent inherits its parent's cwd even without a workspace.
+    sessionsStore.set({
+      byId: {
+        "parent-projectless": {
+          id: "parent-projectless",
+          displayTitle: "Projectless parent",
+          cwd: "/tmp/standalone",
+          running: false,
+          blank: false,
+          retainedBy: {},
+        },
+        "child-of-projectless": {
+          id: "child-of-projectless",
+          displayTitle: "Projectless subagent",
+          running: false,
+          blank: false,
+          retainedBy: { mainView: 1 },
+        },
+      },
+    });
+    expect(managed.api.session.getActive()).toEqual({
+      id: "child-of-projectless",
+      title: "Projectless subagent",
+      cwd: "/tmp/standalone",
+      workspaceId: null,
+      isBlank: false,
+      isRemote: false,
+      running: false,
+    });
+
     managed.reclaim();
   });
 
@@ -312,10 +374,14 @@ describe("WebExtensionApi session context and composer-dock region", () => {
     const workspacesStore = createStore<{ items: WorkspaceFixture[] }>({
       items: [{ workspaceId: "ws-1", path: "/repo/one", sessionIds: ["s1"] }],
     });
+    const panelInfoStore = createStore<{ activePanelId: string | null }>({
+      activePanelId: null,
+    });
     const managed = createWebExtensionApi({
       ctx: createMockCtx({
         sessions: { list: sessionsStore },
         workspaces: { list: workspacesStore },
+        layout: { panelInfo: panelInfoStore },
       }),
       document,
       entry: createEntry(),
@@ -326,6 +392,7 @@ describe("WebExtensionApi session context and composer-dock region", () => {
     // No underlying store subscription until a listener is registered.
     expect(sessionsStore.listenerCount()).toBe(0);
     expect(workspacesStore.listenerCount()).toBe(0);
+    expect(panelInfoStore.listenerCount()).toBe(0);
 
     const events: Array<WebExtensionActiveSession | null> = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -340,6 +407,7 @@ describe("WebExtensionApi session context and composer-dock region", () => {
     expect(events).toHaveLength(0);
     expect(sessionsStore.listenerCount()).toBe(1);
     expect(workspacesStore.listenerCount()).toBe(1);
+    expect(panelInfoStore.listenerCount()).toBe(1);
 
     // Unrelated catalog update does not trigger listeners.
     sessionsStore.set({
@@ -381,23 +449,38 @@ describe("WebExtensionApi session context and composer-dock region", () => {
     expect(events).toHaveLength(2);
     expect(events[1]?.workspaceId).toBe("ws-2");
 
-    // Clearing mainView emits null.
-    sessionsStore.set({ byId: {} });
+    // Opening a global main panel (e.g. Plugins) hides the conversation: getActive() becomes null
+    // and onChange emits null, then re-emits the session when returning to the conversation.
+    panelInfoStore.set({ activePanelId: "codexhost-plugins" });
+    expect(managed.api.session.getActive()).toBeNull();
     expect(events).toHaveLength(3);
     expect(events[2]).toBeNull();
+
+    panelInfoStore.set({ activePanelId: null });
+    expect(managed.api.session.getActive()?.id).toBe("s1");
+    expect(events).toHaveLength(4);
+    expect(events[3]?.id).toBe("s1");
+
+    // Clearing mainView emits null.
+    sessionsStore.set({ byId: {} });
+    expect(events).toHaveLength(5);
+    expect(events[4]).toBeNull();
 
     // Unsubscribing all listeners detaches store subscriptions.
     stopBad();
     stopGood();
     expect(sessionsStore.listenerCount()).toBe(0);
     expect(workspacesStore.listenerCount()).toBe(0);
+    expect(panelInfoStore.listenerCount()).toBe(0);
 
     // Re-subscribe then reclaim: store subscriptions detach and API guards reject calls.
     managed.api.session.onChange(() => undefined);
     expect(sessionsStore.listenerCount()).toBe(1);
+    expect(panelInfoStore.listenerCount()).toBe(1);
     managed.reclaim();
     expect(sessionsStore.listenerCount()).toBe(0);
     expect(workspacesStore.listenerCount()).toBe(0);
+    expect(panelInfoStore.listenerCount()).toBe(0);
     expect(() => managed.api.session.getActive()).toThrow(/unloading|aborted/iu);
     expect(() => managed.api.session.onChange(() => undefined)).toThrow(/unloading|aborted/iu);
     errorSpy.mockRestore();
@@ -429,7 +512,8 @@ describe("WebExtensionApi session context and composer-dock region", () => {
     managed.reclaim();
     expect(document.getElementById("main-dock")?.children).toHaveLength(1);
 
-    // When conversation is not mounted in the app shell (e.g. Settings/Plugins), do not mount into embedded docks.
+    // When conversation is not mounted in the app shell (e.g. Plugins or other global main panels),
+    // do not mount into embedded docks.
     document.body.innerHTML = `
       <div data-cx-region="app">
         <aside data-cx-region="sidebar">

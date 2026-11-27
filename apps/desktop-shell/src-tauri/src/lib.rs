@@ -622,7 +622,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         } => (instance, activations),
         Claim::Forwarded => return Ok(()),
     };
-    let launcher = Arc::new(Launcher::new(&std::env::current_exe()?, options.data_dir));
+    let launcher = Arc::new(Launcher::new(
+        &std::env::current_exe()?,
+        options.data_dir,
+        options.explicit_data_dir,
+    ));
     let zoom_controller = ZoomController::load(&launcher.data_dir);
     let initial_zoom_percent = zoom_controller.percent();
     let boot_nanos = std::time::SystemTime::now()

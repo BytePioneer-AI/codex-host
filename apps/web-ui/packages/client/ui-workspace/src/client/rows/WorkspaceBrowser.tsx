@@ -733,8 +733,10 @@ function SessionTree({
       ),
     [list, rowState, statuses, forestRoots],
   );
+  const projectSessionIds = new Set<string>(
+    allWorkspaces.flatMap((workspace) => workspace.sessionIds),
+  );
   const rowKeys: string[] = [];
-  const shownProjectIds = new Set<string>();
   if (pinnedRows.length > 0) {
     rowKeys.push(`section:${PINNED_SECTION_KEY}`);
     if (pinnedSectionExpanded)
@@ -765,7 +767,7 @@ function SessionTree({
       sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
       current,
       revealSessionId,
-      workspaceId === undefined ? shownProjectIds : undefined,
+      workspaceId === undefined ? projectSessionIds : undefined,
     );
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
@@ -787,10 +789,7 @@ function SessionTree({
         : linkedRows.has(id)
           ? `linked:${group.key}:${id}`
           : `session:${id}`;
-    for (const node of sessions) {
-      rowKeys.push(rowKeyOf(node.id));
-      if (workspaceId !== undefined) shownProjectIds.add(node.id);
-    }
+    for (const node of sessions) rowKeys.push(rowKeyOf(node.id));
     const groupHasMore = group.remote ? false : list.hasMore;
     const canExpand = group.expanded && (visible.hiddenCount > 0 || groupHasMore);
     if (canExpand) rowKeys.push(`overflow:${group.key}`);

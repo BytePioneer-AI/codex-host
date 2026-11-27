@@ -50,6 +50,7 @@
 ### Hub 管理 RPC（`codexhost/remote-peers/*`）与安全边界
 
 - **本地配置持久化**：保存在当前 `web-server` 数据目录（`--data` / `CODEXHOST_WEB_DATA`）下的 `remote-peers-v1.json`（POSIX 权限 `0600`）；读取时做 Schema 校验，文件损坏时记录告警并回退为空列表，不阻塞服务启动。Access Token 永远不会通过任何 list/summary RPC 返回给前端。
+- **重复 Peer**：`add` 和 `update` 不会覆盖其他记录。规范化 `origin` 或已知 `nodeId` 与另一条 Peer 记录相同时，返回 `remote/duplicate-peer`，不修改已保存的配置。
 - **权限分级**：
   - `add`、`update`、`remove`、`test`、`syncMesh` 涉及修改 Peer 拓扑、触发服务端出站探测或推送互配凭据，仅允许本机已认证会话（`ctx.auth.local === true`）调用。
   - `list`、`reconnect`、`listDirs`、`createDir`、`createWorkspace`、`renameWorkspace`、`deleteWorkspace` 对所有已认证会话（含移动端与远程 Web）开放。

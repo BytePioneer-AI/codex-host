@@ -2,6 +2,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { FileUploadTiming } from "./ch-file-inputs.ts";
 import type { ChSessions } from "./ch-sessions.ts";
+import { parseContentLength } from "./http-content-length.ts";
+import { uploadErrorDetails } from "./peer-request-error.ts";
 import { RpcError } from "./transport.ts";
 
 export interface RemoteFileUploadTarget {
@@ -10,6 +12,7 @@ export interface RemoteFileUploadTarget {
     chunks: AsyncIterable<Uint8Array>,
     name?: string,
     imageMediaType?: string,
+    contentLength?: number,
   ): Promise<unknown>;
 }
 
@@ -29,6 +32,7 @@ export async function serveFileUpload(
   let firstByteMs: number | undefined;
   let bodyEndMs: number | undefined;
   let ok = false;
+  let failure: ReturnType<typeof uploadErrorDetails> | undefined;
   const send = (status: number, body: unknown) =>
     response
       .writeHead(status, {
@@ -71,11 +75,18 @@ export async function serveFileUpload(
     const name = url.searchParams.get("name") ?? undefined;
     const imageMediaType = url.searchParams.get("imageMediaType") ?? undefined;
     const value = isRemote
-      ? await remoteSessions?.uploadFile(id, chunks(), name, imageMediaType)
+      ? await remoteSessions?.uploadFile(
+          id,
+          chunks(),
+          name,
+          imageMediaType,
+          parseContentLength(request.headers["content-length"]),
+        )
       : await sessions?.uploadFile(id, chunks(), name, imageMediaType, timing);
     ok = true;
     send(200, { ok: true, value });
   } catch (error) {
+    failure = uploadErrorDetails(error);
     send(200, {
       ok: false,
       error: {
@@ -95,6 +106,7 @@ export async function serveFileUpload(
           viaRelay,
           httpVersion: request.httpVersion,
           ok,
+          ...failure,
           totalMs: rounded(performance.now() - started),
           firstByteMs: rounded(firstByteMs),
           bodyEndMs: rounded(bodyEndMs),

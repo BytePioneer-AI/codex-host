@@ -13,6 +13,7 @@ import {
   type PeerDnsLookup,
   type PeerRecord,
 } from "./peer-host-store.ts";
+import { peerRequestError, readPeerJson } from "./peer-request-error.ts";
 import { RpcError } from "./transport.ts";
 
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
@@ -86,7 +87,7 @@ export async function peerFetch(
       ...(signal === undefined ? {} : { signal }),
     };
     const res = await fetch(record.origin + path, requestInit);
-    if (res.ok) return res;
+    if (res.ok || (res.status === 304 && headers.has("if-none-match"))) return res;
     const failure = await res
       .json()
       .then((payload: unknown) => {
@@ -100,7 +101,10 @@ export async function peerFetch(
           };
         return undefined;
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        if (error instanceof SyntaxError) return undefined;
+        throw error;
+      });
     if (res.status === 401 || (res.status === 403 && !failure?.message))
       throw new RpcError("remote/auth-error", "Remote peer rejected the access token", {
         httpStatus: res.status,
@@ -115,7 +119,7 @@ export async function peerFetch(
     );
   } catch (err) {
     if (err instanceof RpcError) throw err;
-    throw new RpcError("remote/offline", "Remote peer is unreachable");
+    throw peerRequestError(signal?.aborted ? signal.reason : err);
   } finally {
     if (timer !== null) clearTimeout(timer);
   }
@@ -472,12 +476,11 @@ export class PeerHostClient {
       throw new RpcError("remote/offline", "Remote peer is not connected");
     }
     const res = await this.fetch(`/api/ch/v1/${route}`, "POST", body);
-    let payload: unknown;
-    try {
-      payload = await res.json();
-    } catch {
-      throw new RpcError("remote/read-failed", "Remote peer returned invalid JSON");
-    }
+    const payload = await readPeerJson(
+      res,
+      "remote/read-failed",
+      "Remote peer returned invalid JSON",
+    );
     if (!payload || typeof payload !== "object" || !("result" in payload)) {
       throw new RpcError("remote/read-failed", "Remote peer response missing result");
     }

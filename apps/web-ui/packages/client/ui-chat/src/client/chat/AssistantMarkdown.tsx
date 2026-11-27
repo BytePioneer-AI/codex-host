@@ -108,6 +108,8 @@ export interface AssistantMarkdownProps {
   revealProcess?: (() => void) | undefined;
   /** Resolved prose file mentions for this Assistant's closing turn. */
   mentions?: MarkdownFileMentions | undefined;
+  /** Harness file citations; the view's openFile opens the cited path. */
+  fileCitations?: MarkdownFileMentions | undefined;
   /** How the reply's annotation citations resolve, when its Turn carries any. */
   responseAnnotations?: MarkdownResponseAnnotations | undefined;
   /** The owning view's locale seat, passed down as a plain prop. */
@@ -126,6 +128,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   usePresentation,
   revealProcess,
   mentions,
+  fileCitations,
   responseAnnotations,
   t,
 }: AssistantMarkdownProps) {
@@ -160,6 +163,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
             breaks
             labels={labels}
             fileMentions={mentions}
+            fileCitations={fileCitations}
             pathImages={pathImages}
             responseAnnotations={responseAnnotations}
           />,

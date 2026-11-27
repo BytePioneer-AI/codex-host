@@ -134,11 +134,12 @@ export function splitAnnotatedMessage(text: string): ParsedAnnotatedMessage {
   const separator = ENVELOPE_REQUEST_SEPARATOR.exec(afterClose);
   if (separator === null) return { annotations: [], body: text };
   const rawBody = afterClose.slice(separator[0].length);
-  const body = rawBody.endsWith("\r\n")
-    ? rawBody.slice(0, -2)
-    : rawBody.endsWith("\n")
-      ? rawBody.slice(0, -1)
-      : rawBody;
+  const body =
+    separator[0].endsWith("\r\n") && rawBody.endsWith("\r\n")
+      ? rawBody.slice(0, -2)
+      : rawBody.endsWith("\n")
+        ? rawBody.slice(0, -1)
+        : rawBody;
   return { annotations, body };
 }
 

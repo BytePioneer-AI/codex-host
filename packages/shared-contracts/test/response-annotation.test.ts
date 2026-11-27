@@ -115,9 +115,9 @@ describe("lossless splitting for editing", () => {
     expect(splitAnnotatedMessage(plain)).toEqual({ annotations: [], body: plain });
   });
 
-  it("preserves literal request headers and blank lines inside an annotated body", () => {
+  it("preserves literal request headers, blank lines, and trailing CR inside an annotated body", () => {
     const annotations = [{ text: "selected", annotation: "fix this" }];
-    const body = "First line\n\n## My request:\nQuoted section";
+    const body = "First line\n\n## My request:\nQuoted section\r";
     const composed = composeAnnotatedMessage(annotations, body);
     expect(splitAnnotatedMessage(composed)).toEqual({ annotations, body });
   });

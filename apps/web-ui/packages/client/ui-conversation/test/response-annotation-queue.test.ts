@@ -33,17 +33,15 @@ describe("SessionInputShell response annotations", () => {
           annotation: "clarify this",
           anchor: {
             answerKey: "answer-1",
-            startOffset: 10,
-            endOffset: 24,
-            quote: "selected quote",
-            prefix: "before ",
-            suffix: " after",
+            start: 10,
+            end: 24,
           },
         },
         { focus: "end" },
       );
 
       expect(id).toBeDefined();
+      if (id === undefined) throw new Error("expected annotation id");
       expect(shell.state.getSnapshot().responseAnnotations).toEqual([
         {
           id,
@@ -51,19 +49,16 @@ describe("SessionInputShell response annotations", () => {
           annotation: "clarify this",
           anchor: {
             answerKey: "answer-1",
-            startOffset: 10,
-            endOffset: 24,
-            quote: "selected quote",
-            prefix: "before ",
-            suffix: " after",
+            start: 10,
+            end: 24,
           },
         },
       ]);
 
       // Updating the comment trims whitespace and allows clearing back to quote-only.
-      shell.actions.updateResponseAnnotation(id!, "  revised note  ");
+      shell.actions.updateResponseAnnotation(id, "  revised note  ");
       expect(shell.state.getSnapshot().responseAnnotations[0]?.annotation).toBe("revised note");
-      shell.actions.updateResponseAnnotation(id!, "   ");
+      shell.actions.updateResponseAnnotation(id, "   ");
       expect(shell.state.getSnapshot().responseAnnotations[0]?.annotation).toBeUndefined();
     } finally {
       shell.dispose();
@@ -83,11 +78,8 @@ describe("SessionInputShell response annotations", () => {
     try {
       const anchor = {
         answerKey: "answer-9",
-        startOffset: 4,
-        endOffset: 18,
-        quote: "first sentence",
-        prefix: "pre ",
-        suffix: " post",
+        start: 4,
+        end: 18,
       };
       shell.actions.addResponseAnnotation({
         text: "first sentence",

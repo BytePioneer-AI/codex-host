@@ -84,20 +84,19 @@ function appendDetails(
   open: boolean,
 ): number {
   let depth = 1;
+  let inFence = false;
   let index = start + 1;
   const innerLines: string[] = [];
   while (index < lines.length && depth > 0) {
     const current = lines[index] ?? "";
-    const trimmed = current.trim();
-    if (DETAILS_OPEN_PATTERN.test(trimmed)) {
-      depth += 1;
-      innerLines.push(current);
-    } else if (DETAILS_CLOSE_PATTERN.test(trimmed)) {
-      depth -= 1;
-      if (depth > 0) innerLines.push(current);
-    } else {
-      innerLines.push(current);
+    if (FENCE_PATTERN.test(current)) {
+      inFence = !inFence;
+    } else if (!inFence) {
+      const trimmed = current.trim();
+      if (DETAILS_OPEN_PATTERN.test(trimmed)) depth += 1;
+      else if (DETAILS_CLOSE_PATTERN.test(trimmed)) depth -= 1;
     }
+    if (depth > 0) innerLines.push(current);
     index += 1;
   }
 

@@ -13,12 +13,14 @@ const MOTION_MAX_GAP_MS = 150;
 const MOTION_MIN_REPLACEMENTS = 2;
 const MOTION_IDLE_MS = SIDEBAR_INTERACTION_IDLE_MS;
 
-interface PictureSample {
+export interface PictureSample {
   readonly at: number;
   readonly bytes: number;
   readonly pixels: number;
   readonly changed: boolean;
   readonly replacedPending: boolean;
+  /** True when the sample actually compared this picture against the previous one. */
+  readonly compared?: boolean;
 }
 
 /** One quality decision per tab. All times are monotonic and supplied by the caller. */

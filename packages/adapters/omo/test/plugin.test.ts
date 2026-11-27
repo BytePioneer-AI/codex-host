@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { harnessPluginManifestSchema } from "@codexhost/shared-contracts";
+import type { HarnessAdapter } from "@codexhost/harness-adapter";
 
 import { packageMetadata } from "../src/index.js";
 import { createHarnessAdapter } from "../src/plugin.js";
@@ -66,8 +67,9 @@ describe("OmO plugin factory", () => {
       platform: process.platform,
       managedRemoteHost: false,
     });
-    expect(adapter.harnessId).toBe("omo");
-    expect(typeof adapter.installation).toBe("function");
+    const contract: HarnessAdapter = adapter;
+    expect(contract.harnessId).toBe("omo");
+    expect(typeof contract.installation).toBe("function");
     expect("install" in adapter).toBe(false);
     expect(packageMetadata).toMatchObject({
       name: "@codexhost/adapter-omo",

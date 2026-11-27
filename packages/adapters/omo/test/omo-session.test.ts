@@ -13,7 +13,7 @@ import type {
   HostItemSnapshot,
   HostThreadSnapshot,
 } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import { OmoHarnessSession, type OmoHarnessSessionOptions } from "../src/omo-session.js";
 import { OmoRpcSession, type OmoRpcProcessAdapter } from "../src/omo-rpc-session.js";
@@ -206,7 +206,7 @@ async function createSessionFixture(
   if (state.sessionId && state.sessionFile) {
     initialState = {
       nativeRef: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: state.sessionId,
         locator: { sessionPath: state.sessionFile, cwd },
         formatVersion: 1,
@@ -214,7 +214,6 @@ async function createSessionFixture(
     };
   }
   const session = new OmoHarnessSession(rpc, {
-    cwd,
     initialState,
     commandTimeoutMs: 2_000,
     abortTimeoutMs: 1_000,

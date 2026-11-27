@@ -11,7 +11,11 @@ import type {
   HostEvent,
   HostUsage,
 } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  harnessModelRefSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 
 import { OmoHarnessSession, type OmoHarnessSessionOptions } from "../src/omo-session.js";
 import { OmoRpcSession, type OmoRpcProcessAdapter } from "../src/omo-rpc-session.js";
@@ -107,7 +111,7 @@ async function createSessionFixture(
   if (state.sessionId && state.sessionFile) {
     initialState = {
       nativeRef: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: state.sessionId,
         locator: { sessionPath: state.sessionFile, cwd },
         formatVersion: 1,
@@ -115,7 +119,6 @@ async function createSessionFixture(
     };
   }
   const session = new OmoHarnessSession(rpc, {
-    cwd,
     initialState,
     commandTimeoutMs: 2_000,
     abortTimeoutMs: 1_000,
@@ -170,7 +173,9 @@ class OutputQueue {
   }
 
   /** The next `session.usage.changed` event, skipping other output. */
-  async nextUsage(timeoutMs = 5_000): Promise<HostEvent> {
+  async nextUsage(
+    timeoutMs = 5_000,
+  ): Promise<Extract<HostEvent, { type: "session.usage.changed" }>> {
     for (;;) {
       const event = await this.nextEvent(timeoutMs);
       if (event.type === "session.usage.changed") return event;
@@ -341,7 +346,7 @@ describe("OmO autonomous engine Turns", () => {
     // The selection is in flight; the engine Turn starts behind it.
     const selection = fixtureSession.session.execute({
       type: "model.select",
-      model: { id: "synthetic-provider/other-model" },
+      model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
     });
     await fixtureSession.rpc.send("autonomous.run", { text: "queued engine result" });
 

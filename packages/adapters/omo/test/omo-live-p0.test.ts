@@ -22,6 +22,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+
 import { createHarnessAdapter } from "../src/plugin.js";
 
 /** A clean-Host-like environment pinned to a throwaway agent directory. */
@@ -96,9 +98,13 @@ describe.skipIf(process.env.CODEXHOST_OMO_LIVE !== "1")(
           const session = opened.value;
           const nativeRef = session.initialState.nativeRef;
           expect(nativeRef?.nativeSessionId).toBeTruthy();
-          const sessionPath = nativeRef?.locator?.sessionPath;
+          const locator = nativeRef?.locator;
+          const sessionPath =
+            typeof locator === "object" && locator !== null && !Array.isArray(locator)
+              ? locator.sessionPath
+              : undefined;
           expect(typeof sessionPath).toBe("string");
-          expect((sessionPath ?? "").startsWith(agentDir)).toBe(true);
+          expect(typeof sessionPath === "string" && sessionPath.startsWith(agentDir)).toBe(true);
 
           const snapshot = await session.readSnapshot();
           expect(snapshot.ok).toBe(true);
@@ -108,7 +114,7 @@ describe.skipIf(process.env.CODEXHOST_OMO_LIVE !== "1")(
           await session.close();
           const after = await session.execute({
             type: "turn.start",
-            turnId: "live-after-close",
+            turnId: hostTurnIdSchema.parse("live-after-close"),
             input: [{ type: "text", text: "must not run" }],
           });
           expect(after.ok).toBe(false);

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { OmoProtocolError } from "../src/omo-protocol.js";
+import { OmoProtocolError, type OmoEventFrame } from "../src/omo-protocol.js";
 import {
   OmoRpcClosedError,
   OmoRpcCommandTimeoutError,
@@ -13,7 +13,6 @@ import {
   OmoRpcResponseError,
   OmoRpcSession,
   omoRpcProcessCommand,
-  type OmoRpcEventFrame,
   type OmoRpcProcessAdapter,
 } from "../src/omo-rpc-session.js";
 import { isWindowsUncDirectory } from "../src/omo-unc-launch.js";
@@ -115,9 +114,9 @@ function createSession(
 }
 
 function nextEvent(
-  iterator: AsyncIterableIterator<OmoRpcEventFrame>,
+  iterator: AsyncIterableIterator<OmoEventFrame>,
   timeoutMs = 2_000,
-): Promise<OmoRpcEventFrame> {
+): Promise<OmoEventFrame> {
   return bounded(
     iterator.next().then((result) => {
       if (result.done) throw new Error("the event iterator ended before the expected event");
@@ -129,7 +128,7 @@ function nextEvent(
 }
 
 async function expectIteratorDone(
-  iterator: AsyncIterableIterator<OmoRpcEventFrame>,
+  iterator: AsyncIterableIterator<OmoEventFrame>,
   timeoutMs = 2_000,
 ): Promise<void> {
   await bounded(

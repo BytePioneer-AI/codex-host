@@ -7,8 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { HarnessOutput, HostEvent, HarnessSessionState } from "@codexhost/harness-adapter";
 import {
+  harnessIdSchema,
+  harnessModelRefSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -133,7 +137,7 @@ async function createSessionFixture(
   const initialState: HarnessSessionState = rpc.state.sessionFile
     ? {
         nativeRef: {
-          harnessId: "omo",
+          harnessId: harnessIdSchema.parse("omo"),
           nativeSessionId: rpc.state.sessionId ?? "synthetic-session-id",
           locator: { sessionPath: rpc.state.sessionFile, cwd },
           formatVersion: 1,
@@ -141,7 +145,6 @@ async function createSessionFixture(
       }
     : {};
   const session = new OmoHarnessSession(rpc, {
-    cwd,
     initialState,
     commandTimeoutMs: 2_000,
     abortTimeoutMs: 1_000,
@@ -166,7 +169,7 @@ async function createSessionFixture(
 }
 
 function modelSelect(id: string) {
-  return { type: "model.select" as const, model: { id } };
+  return { type: "model.select" as const, model: harnessModelRefSchema.parse({ id }) };
 }
 
 describe("OmO permission catalog freeze", () => {
@@ -313,7 +316,7 @@ describe("OmO thinking selection", () => {
     const fixtureSession = await createSessionFixture();
     const selected = await fixtureSession.session.execute({
       type: "thinking.select",
-      thinkingOptionId: "high",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
     });
     expect(selected).toEqual({ ok: true, value: { completed: true } });
     const state = await fixtureSession.queue.nextStateChanged();
@@ -339,7 +342,7 @@ describe("OmO thinking selection", () => {
     const fixtureSession = await createSessionFixture();
     const selected = await fixtureSession.session.execute({
       type: "thinking.select",
-      thinkingOptionId: "ultra",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("ultra"),
     });
     expect(selected).toMatchObject({
       ok: false,
@@ -356,7 +359,7 @@ describe("OmO thinking selection", () => {
     });
     const selected = await fixtureSession.session.execute({
       type: "thinking.select",
-      thinkingOptionId: "low",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
     });
     expect(selected).toMatchObject({
       ok: false,
@@ -371,7 +374,7 @@ describe("OmO thinking selection", () => {
     await fixtureSession.controls({ confirmThinking: false });
     const selected = await fixtureSession.session.execute({
       type: "thinking.select",
-      thinkingOptionId: "high",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
     });
     expect(selected).toMatchObject({
       ok: false,
@@ -468,7 +471,7 @@ describe("OmO selection concurrency and lifecycle", () => {
     });
     const started = await fixtureSession.session.execute({
       type: "turn.start",
-      turnId: "turn-mid-select",
+      turnId: hostTurnIdSchema.parse("turn-mid-select"),
       input: [{ type: "text", text: "long running" }],
     });
     expect(started).toEqual({ ok: true, value: { turnId: "turn-mid-select" } });
@@ -483,7 +486,7 @@ describe("OmO selection concurrency and lifecycle", () => {
 
     const cancelled = await fixtureSession.session.execute({
       type: "turn.cancel",
-      turnId: "turn-mid-select",
+      turnId: hostTurnIdSchema.parse("turn-mid-select"),
     });
     expect(cancelled).toEqual({ ok: true, value: { cancellationRequested: true } });
     for (;;) {
@@ -518,7 +521,10 @@ describe("OmO selection concurrency and lifecycle", () => {
       fixtureSession.session.execute(modelSelect("synthetic-provider/other-model")),
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
     await expect(
-      fixtureSession.session.execute({ type: "thinking.select", thinkingOptionId: "high" }),
+      fixtureSession.session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
   });
 });
@@ -537,7 +543,7 @@ async function expectPublishedOnlyAfterConfirmation(fixtureSession: FixtureSessi
   });
   const selected = await fixtureSession.session.execute({
     type: "thinking.select",
-    thinkingOptionId: "high",
+    thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
   });
   expect(selected).toEqual({ ok: true, value: { completed: true } });
   const state = await fixtureSession.queue.nextStateChanged();

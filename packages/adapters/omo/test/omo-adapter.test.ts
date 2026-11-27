@@ -16,9 +16,12 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  harnessIdSchema,
   harnessInspectionSchema,
   harnessModelCatalogSchema,
+  harnessModelRefSchema,
   harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
@@ -655,7 +658,7 @@ function syntheticDerivationSource(
 
 function derivationRef(cwd: string, sessionFile: string, sessionId: string): NativeSessionRef {
   return {
-    harnessId: "omo",
+    harnessId: harnessIdSchema.parse("omo"),
     nativeSessionId: sessionId,
     locator: { sessionPath: sessionFile, cwd },
     formatVersion: 1,
@@ -767,6 +770,8 @@ describe("OmO Adapter inspect", () => {
     // so the light path must carry the frozen Permission Mode catalog that
     // `selectPermissionMode: true` promises (the same refine as the full path).
     const parsedAvailability = harnessInspectionSchema.parse(availability);
+    expect(parsedAvailability.status).toBe("ready");
+    if (parsedAvailability.status !== "ready") throw new Error("expected a ready inspection");
     expect(parsedAvailability.permissionModes?.modes.map((mode) => mode.id)).toEqual([
       "full-access",
       "workspace",
@@ -930,7 +935,7 @@ describe("OmO Adapter open", () => {
     const result = await fixture.adapter.open({
       kind: "create",
       cwd,
-      model: { id: "synthetic-provider/other-model" },
+      model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected an open Session");
@@ -957,7 +962,7 @@ describe("OmO Adapter open", () => {
     const result = await fixture.adapter.open({
       kind: "create",
       cwd,
-      thinkingOptionId: "high",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected an open Session");
@@ -977,8 +982,8 @@ describe("OmO Adapter open", () => {
     const result = await fixture.adapter.open({
       kind: "create",
       cwd,
-      model: { id: "synthetic-provider/other-model" },
-      thinkingOptionId: "high",
+      model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected an open Session");
@@ -1000,7 +1005,7 @@ describe("OmO Adapter open", () => {
     const result = await fixture.adapter.open({
       kind: "create",
       cwd,
-      model: { id: "requested/other-model" },
+      model: harnessModelRefSchema.parse({ id: "requested/other-model" }),
     });
     expect(result).toMatchObject({
       ok: false,
@@ -1018,7 +1023,7 @@ describe("OmO Adapter open", () => {
     const result = await fixture.adapter.open({
       kind: "create",
       cwd,
-      model: { id: "synthetic-provider/other-model" },
+      model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
     });
     expect(result).toMatchObject({
       ok: false,
@@ -1036,7 +1041,7 @@ describe("OmO Adapter open", () => {
     const result = await fixture.adapter.open({
       kind: "create",
       cwd,
-      thinkingOptionId: "high",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
     });
     expect(result).toMatchObject({
       ok: false,
@@ -1086,7 +1091,7 @@ describe("OmO Adapter open", () => {
     const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
     const fixture = sessionFixture(cwd);
     const nativeRef: NativeSessionRef = {
-      harnessId: "omo",
+      harnessId: harnessIdSchema.parse("omo"),
       nativeSessionId: "session-alpha",
       locator: { sessionPath: sessionFile, cwd: path.resolve(cwd) },
       formatVersion: 1,
@@ -1110,7 +1115,7 @@ describe("OmO Adapter open", () => {
       FAKE_OMO_STATE_FILE: sessionFile,
     });
     const nativeRef: NativeSessionRef = {
-      harnessId: "omo",
+      harnessId: harnessIdSchema.parse("omo"),
       nativeSessionId: "session-alpha",
       locator: { sessionPath: sessionFile, cwd: path.resolve(cwd) },
       formatVersion: 1,
@@ -1131,7 +1136,7 @@ describe("OmO Adapter open", () => {
     const otherFile = path.join(cwd, "sessions", "other.jsonl");
     const fixture = sessionFixture(cwd, { FAKE_OMO_REPORTED_FILE: otherFile });
     const nativeRef: NativeSessionRef = {
-      harnessId: "omo",
+      harnessId: harnessIdSchema.parse("omo"),
       nativeSessionId: "session-alpha",
       locator: { sessionPath: sessionFile, cwd: path.resolve(cwd) },
       formatVersion: 1,
@@ -1323,7 +1328,7 @@ describe("OmO Adapter open", () => {
       kind: "fork",
       sourceRef,
       checkpoint: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: "session-source",
         checkpointId: "u2",
         formatVersion: 1,
@@ -1357,7 +1362,7 @@ describe("OmO Adapter open", () => {
       kind: "fork",
       sourceRef,
       checkpoint: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: "session-source",
         checkpointId: "u2",
         formatVersion: 1,
@@ -1394,7 +1399,7 @@ describe("OmO Adapter open", () => {
       kind: "fork",
       sourceRef: derivationRef(real, sourceFile, "session-source"),
       checkpoint: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: "session-source",
         checkpointId: "u2",
         formatVersion: 1,
@@ -1422,7 +1427,7 @@ describe("OmO Adapter open", () => {
       kind: "fork",
       sourceRef: derivationRef(cwd, sourceFile, "session-source"),
       checkpoint: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: "session-source",
         checkpointId: "missing",
         formatVersion: 1,
@@ -1492,8 +1497,8 @@ describe("OmO Adapter open", () => {
       kind: "rollbackLastTurn",
       sourceRef: derivationRef(cwd, sourceFile, "session-source"),
       cwd,
-      model: { id: "synthetic-provider/other-model" },
-      thinkingOptionId: "high",
+      model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
       permissionModeId: harnessPermissionModeIdSchema.parse("read-only"),
     });
     if (!result.ok) throw new Error("expected a derived Session");
@@ -1524,7 +1529,7 @@ describe("OmO Adapter open", () => {
       kind: "fork",
       sourceRef: derivationRef(cwd, sourceFile, "session-source"),
       checkpoint: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: "session-source",
         checkpointId: "u1",
         formatVersion: 1,
@@ -1537,7 +1542,7 @@ describe("OmO Adapter open", () => {
     await expect(
       result.value.execute({
         type: "model.select",
-        model: { id: "synthetic-provider/other-model" },
+        model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
       }),
     ).resolves.toMatchObject({ ok: true });
     expect(readFileSync(derivedFile)).not.toEqual(derivedBefore);
@@ -1560,13 +1565,13 @@ describe("OmO Adapter open", () => {
       fixture.adapter.open({
         kind: "fork",
         sourceRef: {
-          harnessId: "omo",
+          harnessId: harnessIdSchema.parse("omo"),
           nativeSessionId: "session-source",
           locator: { sessionPath: path.join(cwd, "source.jsonl"), cwd },
           formatVersion: 1,
         },
         checkpoint: {
-          harnessId: "omo",
+          harnessId: harnessIdSchema.parse("omo"),
           nativeSessionId: "another-session",
           checkpointId: "u1",
           formatVersion: 1,
@@ -1669,7 +1674,7 @@ describe("OmO Adapter open", () => {
     const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
     const fixture = sessionFixture(cwd);
     const nativeRef: NativeSessionRef = {
-      harnessId: "omo",
+      harnessId: harnessIdSchema.parse("omo"),
       nativeSessionId: "session-alpha",
       locator: { sessionPath: sessionFile, cwd: path.resolve(cwd) },
       formatVersion: 1,
@@ -1680,8 +1685,8 @@ describe("OmO Adapter open", () => {
       cwd,
       // Persisted hints, not commands: the Session file already restored the
       // native state, and only that state may be published.
-      model: { id: "requested/other-model" },
-      thinkingOptionId: "high",
+      model: harnessModelRefSchema.parse({ id: "requested/other-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
       permissionModeId: harnessPermissionModeIdSchema.parse("read-only"),
     });
     expect(result.ok).toBe(true);

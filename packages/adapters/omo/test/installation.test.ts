@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import type { HarnessInstallationState } from "@codexhost/shared-contracts";
+
 import {
   createOmoInstallation,
   OMO_MANUAL_UPDATE_URL,
@@ -271,7 +273,7 @@ describe("OmO installation update orchestration", () => {
       updateAvailable: false,
       canUpdate: true,
     });
-    const state = await installation("check");
+    const state: HarnessInstallationState = await installation("check");
     expect(state.manualUpdateUrl).toBeUndefined();
     await expect(installation("update", "5.1.83")).resolves.toMatchObject({
       currentVersion: "5.1.83",

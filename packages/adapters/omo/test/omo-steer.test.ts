@@ -12,7 +12,7 @@ import type {
   HostItemSnapshot,
   HostThreadSnapshot,
 } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
   OmoRpcCommandTimeoutError,
@@ -196,7 +196,7 @@ async function createSteerFixture(
   if (state.sessionId && state.sessionFile) {
     initialState = {
       nativeRef: {
-        harnessId: "omo",
+        harnessId: harnessIdSchema.parse("omo"),
         nativeSessionId: state.sessionId,
         locator: { sessionPath: state.sessionFile, cwd },
         formatVersion: 1,

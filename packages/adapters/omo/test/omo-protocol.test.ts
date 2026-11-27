@@ -227,7 +227,7 @@ describe("LF-only JSONL framing", () => {
 
     expect(frames).toHaveLength(1);
     expect(frames[0]).toMatchObject({ type: "message_update", payload });
-    expect((frames[0] as { payload: string }).payload).toHaveLength(payload.length);
+    expect(frames[0]?.payload).toHaveLength(payload.length);
   });
 
   it("reports an incomplete frame at stream end instead of returning a partial value", () => {

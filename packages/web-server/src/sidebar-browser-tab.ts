@@ -591,6 +591,7 @@ export class SidebarBrowserTab {
     const cast = this.casting;
     if (cast?.cdp !== cdp) return;
     const now = performance.now();
+    let changed = true;
     if (this.currentCast(cast)) {
       const image = Buffer.from(frame.data, "base64");
       const sample = cast.sample(frame.data, image.length, now, () => {
@@ -599,10 +600,16 @@ export class SidebarBrowserTab {
         return false;
       });
       this.pictureQuality.picture(sample);
-      if (cast.allowPicture(now)) this.deliver(image, cast);
+      changed = sample.changed;
+      // Do not re-deliver an identical picture, while still delivering a newer frame whose
+      // earlier arrival was rate-limited by allowPicture().
+      if (cast.needsDelivery(frame.data) && cast.allowPicture(now)) {
+        cast.markDelivered(frame.data);
+        this.deliver(image, cast);
+      }
       if (sample.changed || cast.mode === "motion") this.adapt(now);
     }
-    cast.acknowledge(frame.sessionId, now, () => this.casting === cast);
+    cast.acknowledge(frame.sessionId, now, () => this.casting === cast, changed);
   }
 
   private async snapshot(cdp: CDPSession, casting: SidebarBrowserCast): Promise<void> {
@@ -709,6 +716,7 @@ export class SidebarBrowserTab {
     ) {
       const now = performance.now();
       this.pictureQuality.input(now);
+      this.casting?.resetPace();
       this.adapt(now);
     }
     const take = this.inputBatcher.enqueue(viewer, page, message);

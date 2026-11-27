@@ -40,6 +40,17 @@ import css from "./SidebarRoot.module.css";
 /** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
 const COLLAPSE_SETTLE_MS = 150;
 
+/** Persisted expand/collapse preference for secondary navigation rows below New Session. */
+const PANEL_GROUP_STORAGE_KEY = "codexhost.sidebar.panelsExpanded";
+
+function readPanelsExpanded(): boolean {
+  try {
+    return window.localStorage.getItem(PANEL_GROUP_STORAGE_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
 /**
  * How long the column's scrollbars stay drawn after the pointer leaves it.
  * The bar is a pointer affordance here, and hiding it on the leave event
@@ -136,6 +147,18 @@ export function SidebarRoot({
   // Wide content stays mounted while the collapse animates (fading via
   // .collapsed .wide), unmounts at settle, and remounts right away on expand.
   const [settled, setSettled] = useState(collapsed);
+  const [panelsExpanded, setPanelsExpanded] = useState<boolean>(() => readPanelsExpanded());
+  const togglePanelsExpanded = (): void => {
+    setPanelsExpanded((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(PANEL_GROUP_STORAGE_KEY, String(next));
+      } catch {
+        // Ignore storage errors in restricted environments.
+      }
+      return next;
+    });
+  };
   useEffect(() => {
     if (!collapsed) {
       setSettled(false);
@@ -331,68 +354,100 @@ export function SidebarRoot({
       </div>
 
       {/* The label fades before the hover/focus shortcut, including on translucent backgrounds. */}
-      <Tooltip
-        label={t("session.new.label")}
-        shortcutKeys={newShortcut?.keys}
-        delayMs={500}
-        side={captionTooltipSide}
-        disabled={wide}
-      >
-        <button
-          type="button"
-          className={css.newSession}
-          aria-label={t("session.new.label")}
-          aria-keyshortcuts={newShortcut?.aria}
-          onClick={() => {
-            phoneSidebar?.close();
-            startSession();
-          }}
+      <div className={clsx(css.newSessionRow, wide && !panelsExpanded && css.newSessionRowCompact)}>
+        <Tooltip
+          label={t("session.new.label")}
+          shortcutKeys={newShortcut?.keys}
+          delayMs={500}
+          side={captionTooltipSide}
+          disabled={wide}
         >
-          <span className={css.newSessionLabelMask}>
-            <span className={css.newSessionContent}>
-              {wide ? (
-                <IconNewChatOutlineMedium size={18} />
-              ) : (
-                <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />
-              )}
-              {wide && (
-                <span className={clsx(css.newSessionLabel, css.wide)}>{t("session.new")}</span>
-              )}
+          <button
+            type="button"
+            className={css.newSession}
+            aria-label={t("session.new.label")}
+            aria-keyshortcuts={newShortcut?.aria}
+            onClick={() => {
+              phoneSidebar?.close();
+              startSession();
+            }}
+          >
+            <span className={css.newSessionLabelMask}>
+              <span className={css.newSessionContent}>
+                {wide ? (
+                  <IconNewChatOutlineMedium size={18} />
+                ) : (
+                  <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />
+                )}
+                {wide && (
+                  <span className={clsx(css.newSessionLabel, css.wide)}>{t("session.new")}</span>
+                )}
+              </span>
             </span>
-          </span>
-          {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && (
-            <span className={css.newSessionShortcut} aria-hidden="true">
-              <ShortcutKeys keys={newShortcut.keys} />
-            </span>
-          )}
-        </button>
-      </Tooltip>
+            {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && (
+              <span className={css.newSessionShortcut} aria-hidden="true">
+                <ShortcutKeys keys={newShortcut.keys} />
+              </span>
+            )}
+          </button>
+        </Tooltip>
+        {wide && (
+          <Tooltip label={t("panels.label")} delayMs={350} side="right">
+            <button
+              type="button"
+              className={css.panelToggleBtn}
+              aria-label={t("panels.label")}
+              aria-expanded={panelsExpanded}
+              onClick={togglePanelsExpanded}
+            >
+              <svg
+                className={clsx(css.panelToggleChevron, panelsExpanded && css.panelToggleChevronOpen)}
+                width="14"
+                height="14"
+                viewBox="0 0 14 14"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3.75 5.5L7 8.75L10.25 5.5"
+                  stroke="currentColor"
+                  strokeWidth="1.45"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </Tooltip>
+        )}
+      </div>
 
-      <nav className={css.panelList} aria-label={t("panels.label")}>
-        {panels.map(({ id, label }) => (
-          <PanelRow
-            key={id}
-            id={id}
-            label={label}
-            wide={wide}
-            usePanelInfo={usePanelInfo}
-            selectPanel={selectPanel}
-            renderSlot={renderSlot}
-          />
-        ))}
-        {renderSlot("sidebar.primary.action", {
-          size: wide ? 16 : 18,
-          renderAction: ({ label, icon, onClick, active }) => (
-            <PanelNavigationRow
+      {(!wide || panelsExpanded) && (
+        <nav className={css.panelList} aria-label={t("panels.label")}>
+          {panels.map(({ id, label }) => (
+            <PanelRow
+              key={id}
+              id={id}
               label={label}
-              icon={icon}
-              onClick={onClick}
-              active={active}
               wide={wide}
+              usePanelInfo={usePanelInfo}
+              selectPanel={selectPanel}
+              renderSlot={renderSlot}
             />
-          ),
-        })}
-      </nav>
+          ))}
+          {renderSlot("sidebar.primary.action", {
+            size: wide ? 16 : 18,
+            renderAction: ({ label, icon, onClick, active }) => (
+              <PanelNavigationRow
+                label={label}
+                icon={icon}
+                onClick={onClick}
+                active={active}
+                wide={wide}
+              />
+            ),
+          })}
+        </nav>
+      )}
 
       {/* The browsing region fills the column between the controls and the
           foot in both states; its rail icon column rides the same slot. */}

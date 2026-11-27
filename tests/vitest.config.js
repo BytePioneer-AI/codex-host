@@ -21,6 +21,7 @@ const include = [
   "apps/web-ui/packages/client/ui-primitives/test/*.test.ts",
   "apps/web-ui/packages/client/ui-sidebar-browser/test/*.test.ts",
   "apps/web-ui/packages/client/ui-sidebar-documentpreview/test/*.test.ts",
+  "apps/web-ui/packages/client/ui-sidebar-files/test/*.test.ts",
   "apps/web-ui/packages/client/ui-workspace/test/recent-visits.test.ts",
   "apps/web-ui/packages/client/web/test/*.test.ts",
   "apps/web-ui/packages/client/hmr/tests/*.spec.ts",

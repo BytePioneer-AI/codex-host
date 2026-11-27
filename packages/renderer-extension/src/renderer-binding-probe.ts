@@ -130,6 +130,8 @@ import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics
 import { createRendererSkillLibrary, type RendererSkillContext } from "./renderer-skill-library.js";
 import { installRendererSkillReferences } from "./renderer-skill-reference.js";
 import {
+  DELEGATION_MENTION_MENU_SELECTOR,
+  DELEGATION_MENTION_STYLE_SELECTOR,
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
 } from "./renderer-delegation-mention.js";
@@ -766,10 +768,26 @@ export function applyComposerModelWrite(
   return write();
 }
 
+function isDelegationMentionMutationNode(node: Node): boolean {
+  return (
+    node instanceof Element &&
+    (node.matches(DELEGATION_MENTION_MENU_SELECTOR) ||
+      node.matches(DELEGATION_MENTION_STYLE_SELECTOR) ||
+      node.closest(DELEGATION_MENTION_MENU_SELECTOR) !== null)
+  );
+}
+
 export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
   const target =
     mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
   if (!target) return true;
+  if (isDelegationMentionMutationNode(target)) return false;
+  if (
+    mutation.type === "childList" &&
+    (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0) &&
+    [...mutation.addedNodes, ...mutation.removedNodes].every(isDelegationMentionMutationNode)
+  )
+    return false;
   // Identity changes are lifecycle events even after the marker is removed.
   if (
     mutation.type === "attributes" &&

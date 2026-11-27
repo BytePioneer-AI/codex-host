@@ -18,6 +18,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { ExtensionContributionRegistry } from "./contributions.ts";
 import type { WebNativeExtensionRpcClient } from "./rpc.ts";
+import { createTabIconContribution } from "./tab-icon.ts";
 
 // IDs and marker names both permit "-", so guard per-element attribute ownership across extensions.
 const markerOwners = new WeakMap<Element, Map<string, string>>();
@@ -110,6 +111,8 @@ export function createWebExtensionApi(
   const marked = new Map<Element, Map<string, string | null>>();
   const storageListeners = new Set<(values: JsonObject) => void>();
   const trackedDisposers = new Set<WebExtensionDispose>();
+  const tabIcon = createTabIconContribution(doc);
+  trackedDisposers.add(() => tabIcon.dispose());
   let currentSettingsRevision = entry.settingsRevision;
   let stopping = false;
 
@@ -180,6 +183,12 @@ export function createWebExtensionApi(
     id,
     apiVersion: 1,
     signal: controller.signal,
+    tabIcon: {
+      set: (value) => {
+        guard();
+        tabIcon.set(value);
+      },
+    },
     dom: {
       mount(
         target: HTMLElement | WebExtensionRegion,

@@ -52,6 +52,8 @@ fn main() {
                 "notification_set_enabled",
                 "notification_send",
                 "notification_open_settings",
+                "extension_window_drag",
+                "extension_window_hit_regions",
             ])),
     )
     .expect("build Tauri desktop shell");

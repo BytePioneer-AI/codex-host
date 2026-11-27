@@ -148,7 +148,7 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app, None),
             "official" => run_action(app, Launcher::open_codex),
-            "connect" => show_main(app, Some("connect-devices")),
+            "connect" => show_main(app, Some("/#connect-devices")),
             "native-default" => {
                 run_action(app, |launcher| launcher.set_surface(Surface::NativeShell))
             }

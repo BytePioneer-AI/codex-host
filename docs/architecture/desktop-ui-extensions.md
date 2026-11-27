@@ -132,6 +132,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 - ESM 模块（导出 `activate(api)`）与可选样式表，运行在 Web/PWA 宿主（`apps/web-ui/packages/client/ui-codexhost/src/client/native-extensions/`）。
 - 浏览器宿主通过 `codexhost/extensions/snapshot` 获取当前已启用快照，并订阅 `GET /api/ch/v1/events` 的 `extensions-changed` 事件驱动对账（单标签页引用计数复用，且在支持 Web Locks + `BroadcastChannel` 的同源多标签页间共享 1 条事件流，避免耗尽 HTTP/1.1 连接池），仅激活含 `manifest.web` 的条目；同代次仅设置修订变化时原地通知 `storage.onChange` 而不重建 DOM。
 - 传统 DSH Web 插件的独立管理/恢复入口（`WebUiExtensions` / `/extensions`）与之隔离并保持独立可用。
+- `api.tabIcon?.set(pngDataUrl | null)` 提交属于当前扩展的标签页图标贡献。仅接受小于 128 KiB 的 PNG data URL；传 `null` 清除本扩展贡献。宿主在文档隐藏（`visibilityState === "hidden"`）、显式清除或扩展卸载时按原 DOM 顺序恢复原有 `link[rel~="icon"]` 节点，多个 Web 扩展之间保持独立所有权并在全部释放后自动清理监听器。该接口仅作用于当前 CodexHost 文档。
 
 ## 单实例 Node 后端（`backend`）
 
@@ -139,6 +140,44 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 - `ctx` 提供 `extensionId`、`extensionDir`、`dataDir`（`$CODEXHOST_DATA_DIR/host-extension-data/<id>`）、`handle(method, handler)`、`readSettings()` 与 `writeSettings(values)`；可返回同步或异步清理函数 / `{ dispose() }`。
 - `HostExtensionManager` 在共享 Host 启动时自动拉起已启用后端，在启停、更新、卸载、恢复与 Host 关闭时串行对账并优雅回收旧进程。更新失败或异常退出记录在诊断日志与 `backendState: "failed"`，不会拖垮 Host。
 - **进程隔离不是权限沙箱**：后端以当前本机用户权限运行，只启用你信任的扩展。
+
+### 通用宿主后端能力：任务活动摘要、Harness 展示元数据与托管原生浮窗
+
+支持这些能力的宿主会在 `HostExtensionBackendContext`（定义于 [`packages/shared-contracts/src/extension-services.ts`](../../packages/shared-contracts/src/extension-services.ts)）上提供可选的 `ctx.activity`、`ctx.harnesses` 与 `ctx.windows`。扩展应对这些属性做存在性检查，并在旧宿主、SSH 远程托管或未安装独立 Desktop Shell 时优雅降级。
+
+| 接口 | 契约与行为 |
+| --- | --- |
+| `ctx.activity.read()` | 返回 `ExtensionActivitySnapshot`（`{ epoch, revision, running, waiting, sessions, notifications }`）。`sessions` 最多 32 条，按 `waiting > running > failed > completed/idle` 与更新时间排序，仅包含 `threadId`、`title`、`project`、可选 `harness: { id, name }`、`state` 与 `updatedAt`；`notifications` 最多 256 条，包含 `threadId`、`key`、`kind`（`completed` / `failed` / `approval` / `question`）与递增 `revision`。**不暴露**提示词、工具输出或对话 Transcript。 |
+| `ctx.harnesses.describe(id)` | 按需读取已安装 Harness 的 `ExtensionHarnessPresentation`（`id`、`name`、可选 `icon` 与受限 `iconStyle`），未找到时返回 `null`。官方会话使用保留标识 `codex`。与通用设置（上限 4）、活动摘要（上限 4）、窗口导航（上限 4）使用**独立 IPC 并发配额**（Harness 元数据上限 16），避免并发拉取图标时挤占设置或误报缺失。 |
+| `ctx.windows.available` | 宿主是否在当前安装布局中找到独立 CodexHost Desktop Shell 可执行文件（`CODEXHOST_DESKTOP_SHELL_PATH`）。 |
+| `ctx.windows.clickThroughSupported` | 当前宿主显示服务是否支持基于全局光标坐标的透明区域点击穿透。macOS、Windows 与 Linux X11 为 `true`（当 `available` 为 `true`）；**Linux Wayland 为 `false`**。 |
+| `ctx.windows.open({ url, width, height })` | 为当前扩展后端幂等地打开单个无边框、透明、置顶、跳过任务栏的受管原生浮窗。仅接受显式端口且无 userinfo 的 `http://127.0.0.1:<port>/...`，逻辑宽高限定在 `96..=640`；更换 URL 需先 `close()` 再 `open()`。 |
+| `ctx.windows.close()` | 关闭当前扩展后端持有的原生浮窗。扩展禁用、更新、卸载、异常退出及共享 Host 退出时都会自动销毁窗口并回收进程树。 |
+| `ctx.windows.showHost(route?)` | 唤起并导航**独立 CodexHost Desktop Shell** 主窗口（不会控制独立的官方 Codex Desktop 进程）。仅允许根相对路径 `/`、`/?...` 或 `/#...`（≤ 2048 字符，禁止控制字符、空白、反斜杠及 `token` 查询参数），自动保留主壳已有 Web 登录态。 |
+
+#### 活动摘要生命周期与状态语义
+
+- **按需订阅与释放**：SSH 远程托管禁用扩展时不创建活动跟踪器；常规模式下仅在启用后端首次调用 `ctx.activity.read()` 时订阅 `ClientChannelEvents`，并在最后一个消费活动摘要的扩展后端停止/失败或 Host 退出时自动退订并清空状态。
+- **不唤醒冷会话**：改名或元数据变更事件（`thread/name/*`、`thread/metadata/*`）仅刷新已跟踪会话的轻量元数据，不触发会读取冷历史或恢复外部 Session 的 `clientSnapshot()` 路径；冷外部会话活动读取同样直接消费已持久化元数据与子 Agent 运行态。
+- **子 Agent 活跃态与重试**：结合 `activeTurnId` 与投影后的 `thread.status.type === "active"` 判断运行态，父 Thread Turn 结束但子 Agent 仍在运行时保持 `running` 并延后发出完成通知，直至全部子 Agent 结束转入 `idle`。快照读取瞬时失败时在同一生命周期内执行有界重试而不丢弃完成标记；重试耗尽后再移除不可读条目。重启 Host 会更换 `epoch`，扩展可用 `(epoch, revision)` 维护已读位置；历史快照不会自行产生完成通知。
+
+#### 托管原生浮窗安全边界与平台支持矩阵
+
+原生浮窗由独立 Rust Desktop Shell 以 `--extension-window` 辅助模式启动，不占用主壳单实例锁。窗口仅允许导航到初始 loopback URL（严格校验 origin + path + query）并拒绝所有新窗口弹窗；capability（`extension-window`）仅向 `extension` webview 开放 `extension_window_drag` 与 `extension_window_hit_regions` 两个最小命令。页面可通过注入的冻结桥接 `window.codexhostWindow` 调用：
+
+- `window.codexhostWindow.clickThroughSupported`：只读布尔值，标明当前环境是否启用点击穿透；
+- `window.codexhostWindow.startDragging()`：触发原生窗口拖动；
+- `window.codexhostWindow.setHitRegions([{ x, y, width, height }])`：以窗口逻辑坐标声明最多 16 个交互矩形（范围 `0..=640`）；返回 `Promise<boolean>`（支持点击穿透时生效并返回 `true`，降级环境校验后返回 `false`）。
+
+窗口初始位置基于配置的逻辑宽高与显示器缩放系数计算（不依赖隐藏窗口的 `outer_size()`），位置持久化在扩展私有数据目录并在显示器布局变化后自动恢复到可见区域。
+
+| 平台 / 环境 | `ctx.windows.available` | 透明置顶与拖动 | 点击穿透（`setHitRegions`） | `showHost(route?)` 目标 |
+| --- | --- | --- | --- | --- |
+| macOS（独立 Desktop Shell） | 支持（Host 本机） | 支持 | 支持（`clickThroughSupported: true`） | 独立 CodexHost Desktop Shell |
+| Windows（独立 Desktop Shell） | 支持（Host 本机） | 支持 | 支持（`clickThroughSupported: true`） | 独立 CodexHost Desktop Shell |
+| Linux X11（独立 Desktop Shell） | 支持（Host 本机） | 支持 | 支持（`clickThroughSupported: true`） | 独立 CodexHost Desktop Shell |
+| Linux Wayland（独立 Desktop Shell） | 支持（Host 本机） | 支持 | **显式降级不支持**（`clickThroughSupported: false`，不启用全局光标轮询与点击穿透，避免交互锁死） | 独立 CodexHost Desktop Shell |
+| 无独立 Desktop Shell / 仅官方 Codex Desktop / 远程浏览器 | `false`（远程访问只在 Host 本机可用） | 不可用 | `false` | 不可用（不会控制独立 Codex Desktop 进程） |
 
 ## 统一 Host RPC、Web 薄代理与市场
 

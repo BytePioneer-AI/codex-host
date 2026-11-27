@@ -555,11 +555,11 @@
   --phone-drawer-highlight: color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent);
 }
 
-@supports (backdrop-filter: blur(18px)) or (-webkit-backdrop-filter: blur(18px)) {
+@supports (backdrop-filter: blur(24px)) or (-webkit-backdrop-filter: blur(24px)) {
   .phoneDrawer {
-    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 38%, transparent);
-    -webkit-backdrop-filter: blur(18px);
-    backdrop-filter: blur(18px);
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 92%, transparent);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    backdrop-filter: blur(24px) saturate(150%);
   }
 }
 

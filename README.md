@@ -1,342 +1,400 @@
 <div align="center">
 
-# CodexHost
-
-**Use 15+ Agents like Claude Code, Pi and Grok inside Codex Desktop, without switching apps**
-
-They get the same Diff review, Fork and approvals as Codex, and can hand work to each other.
-
-There is also a **Web app**: the same Codex interface with lower memory use, so you can use every Agent on this computer remotely from your phone or any other computer.
-
-⭐ If CodexHost is useful to you, please give it a star! ⭐
-
-<p align="center">
-  <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
-  <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a>
-  <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
-  <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="docs/imgs/badge-opencode.svg" /></a>
-  <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
-  <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a><br />
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH" src="https://img.shields.io/badge/DSH-4D6BFE?logo=deepseek&logoColor=white" /></a>
-  <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="https://img.shields.io/badge/Qwen_Code-6950EF?logo=qwen&logoColor=white" /></a>
-  <a href="https://docs.devin.ai/cli"><img alt="Devin" src="docs/imgs/badge-devin.svg" /></a>
-  <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/badge-agy.svg" /></a>
-  <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="docs/imgs/badge-kiro.svg" /></a>
-  <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="docs/imgs/badge-codebuddy.svg" /></a><br />
-  <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="docs/imgs/badge-workbuddy.svg" /></a>
-  <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="docs/imgs/badge-cursor.svg" /></a>
-  <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="docs/imgs/badge-hermes.svg" /></a>
-  <a href="https://qoder.com/cli"><img alt="Qoder" src="docs/imgs/badge-qoder.svg" /></a>
-  <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="docs/imgs/badge-kimi.svg" /></a>
-  <a href="https://zcode.z.ai/"><img alt="ZCode" src="docs/imgs/badge-zcode.svg" /></a>
-  <a href="docs/harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-lockup-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-lockup-light.png" />
+    <img src="docs/imgs/readme-lockup-light.png" alt="CodexHost" width="290" />
+  </picture>
 </p>
 
-<p align="center"><a href="https://chost.dev/en"><strong>CodexHost Website</strong></a> · <a href="https://chost.dev/en/download"><strong>Download</strong></a> · <a href="#quick-start">Quick Start</a> · <a href="#desktop">Desktop</a> · <a href="#collaboration">Cross-Agent Collaboration</a> · <a href="#join-the-community">微信交流群</a> · <a href="docs/project/README.zh-CN.md">简体中文</a> · <a href="docs/project/README.ko.md">한국어</a></p>
+<p>
+  <a href="https://github.com/BytePioneer-AI/codex-host/stargazers"><img src="https://img.shields.io/github/stars/BytePioneer-AI/codex-host?style=flat-square&label=%E2%98%85&labelColor=27272a&color=0d9488" alt="Stars" /></a>
+  <a href="https://github.com/BytePioneer-AI/codex-host/releases/latest"><img src="https://img.shields.io/github/v/release/BytePioneer-AI/codex-host?label=release&style=flat-square&labelColor=27272a&color=0f766e" alt="Latest release" /></a>
+  <a href="https://www.npmjs.com/package/@codexhost/cli"><img src="https://img.shields.io/npm/d18m/@codexhost/cli?label=npm&style=flat-square&labelColor=27272a&color=0f766e" alt="npm downloads" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/BytePioneer-AI/codex-host?label=license&style=flat-square&labelColor=27272a&color=52525b" alt="License" /></a>
+  <a href="#download--install"><img src="https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Mobile-3f3f46?style=flat-square" alt="Platforms" /></a>
+</p>
 
-<img width="90%" src="docs/imgs/hero-desktop-phone.png" alt="Several Agent sessions and the Diff review panel in Codex Desktop, with the same session open on a phone at the bottom right">
+<p>
+  <strong>English</strong> ·
+  <a href="docs/project/README.zh-CN.md">简体中文</a> ·
+  <a href="docs/project/README.ko.md">한국어</a>
+</p>
+
+<h2>Run every coding agent, as one workspace.</h2>
+
+<p>
+  Open source and local-first. Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents in one workbench —<br />
+  switch freely between Standalone Desktop, official Codex Desktop, Web, and Mobile with live multi-machine sync.
+</p>
+
+<p>
+  <b><a href="https://chost.dev/en/download">Download CodexHost</a></b> &nbsp;·&nbsp;
+  <b><a href="https://chost.dev/en">Website →</a></b> &nbsp;·&nbsp;
+  <a href="docs">Docs</a> &nbsp;·&nbsp;
+  <a href="#community">Community</a>
+</p>
 
 </div>
 
-## Sponsors
+---
 
-<details open>
-<summary>Click to collapse</summary>
+## Why CodexHost?
+
+Terminal agents excel at execution, yet juggling five windows fragments review and context. Generic multi-model chat wrappers unify the UI, yet strip away native agent capabilities.
+
+CodexHost takes a third path:
+
+> **Drive every coding agent's real native runtime inside one shared-host workspace synced across desktop, web, and mobile.**
 
 <table>
 <tr>
-<td width="180"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="docs/imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="160"></a></td>
-<td>Thanks to <b>VibeAPI</b> for sponsoring this project! Built for power developers and teams, VibeAPI provides unified access to mainstream AI models, focusing on the Codex and Claude series with a self-managed, traceable account pool. It offers ultra-fast time to first token, 99.9% SLA availability, and cache hit rates of 95%+. Human technical support is available 24/7, with corporate invoicing and enterprise partnerships fully supported. <a href="https://vibeapi.cc/sign-up?aff=AOYp">Grab some cyber goodies →</a></td>
+
+<td width="25%" valign="top">
+
+### One Host, Live Sync
+
+Standalone Desktop, official Codex Desktop, and Web / Mobile share a single local Host.
+
+Switch surfaces anytime without losing state.
+
+</td>
+
+<td width="25%" valign="top">
+
+### Real Agent Teamwork
+
+Type `#` to dispatch parallel native child sessions that report back automatically.
+
+Hand off full context across agents mid-task.
+
+</td>
+
+<td width="25%" valign="top">
+
+### Multi-Host & Mobile
+
+Pull Macs, Linux dev boxes, and Windows rigs into one sidebar.
+
+Approve, inspect, and reply from your phone anywhere.
+
+</td>
+
+<td width="25%" valign="top">
+
+### Native & Local-First
+
+Connects over official SDKs, RPC, and ACP using your existing local logins.
+
+No account required. Zero third-party proxy.
+
+</td>
+
 </tr>
 </table>
-</details>
-
-<a id="quick-start"></a>
-
-## Quick Start
-
-**Option 1: npm** (macOS / Windows / Linux)
-
-```bash
-npm install -g @codexhost/cli
-codexhost          # start Codex Desktop
-codexhost web      # start Web and open it in your browser
-codexhost stop     # stop all CodexHost background services
-```
-
-**Option 2: Installer** (macOS / Windows / Linux)
-
-Grab the installer for your platform from [Releases](https://github.com/BytePioneer-AI/codex-host/releases); Linux uses a `.tar.gz` archive, see the [Linux guide](docs/platforms/linux/linux.md#archive). For Web: open codexhost after installing, then visit http://127.0.0.1:4400 locally.
-
-**Option 3: WinGet** (Windows x64 / ARM64)
-
-Install or upgrade with the same command:
-
-```powershell
-winget install --id BytePioneer-AI.CodexHost --exact
-```
-
-> Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
-
-**Upgrade and stop:** run `codexhost update` to upgrade, and `codexhost stop` to stop all background services. Before installing over an existing npm installation, run `codexhost stop` first.
-
-**Keep Web access private:** access tokens, login links and QR codes let anyone who has them operate your computer. Do not share them.
-
-<details>
-<summary>Installation troubleshooting</summary>
-
-**codexhost does not start, or Codex opens without codexhost features**
-
-Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:4399/`. It shows why the last start failed, the Codex Desktop version and Host Runtime logs, and can update codexhost while Codex is not running.
-
-**macOS: "App can't be verified" on first launch**
-
-```bash
-xattr -dr com.apple.quarantine /Applications/codexhost.app
-```
-
-**Windows: using a portable Codex Desktop**
-
-1. Point `CODEXHOST_INSTALL_ROOT` at the folder where you extracted Codex Desktop:
-
-   ```powershell
-   [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
-   ```
-
-2. Completely quit any running Codex Desktop and `codexhost` processes (check notification area or Task Manager if necessary), open a fresh terminal, and run `codexhost`.
-
-   > CodexHost discovers version metadata from `AppxManifest.xml`, `resources/app.asar`, or `package.json`. The Console Overview displays the detected Desktop version, source (`Portable / Unpacked` vs `Windows AppX/MSIX`), and installation path.
-
-</details>
-
-<a id="desktop"></a>
-
-## Use every Agent in Codex Desktop
-
-No more switching apps: **Pi, Claude Code, Grok Build and 15+ other Agents** all run in the same Codex Desktop window. Every session is in the sidebar, and you can switch Agents from the bottom-right of the composer.
-
-https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
-
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <p><strong>Diff review panel</strong><br /><sub>Every turn summarizes its changes; click Review to open the full Diff</sub></p>
-      <img src="docs/imgs/highlight-diff-review.png" alt="Change summary card in the conversation and the full Diff in the review panel">
-    </td>
-    <td width="33%" valign="top">
-      <p><strong>Fork from any message</strong><br /><sub>Branch in the current workspace, or in a new Worktree for parallel work</sub></p>
-      <img src="docs/imgs/highlight-fork-worktree.png" alt="Menu for creating a branch from a message, in this workspace or a new worktree">
-    </td>
-    <td width="33%" valign="top">
-      <p><strong>Visible Subagents</strong><br /><sub>Each Subagent has its own icon; open its full conversation on the right</sub></p>
-      <img src="docs/imgs/highlight-subagent.png" alt="Status of 4 Subagents in the main conversation, with one opened on the right">
-    </td>
-  </tr>
-</table>
-
-<details>
-<summary>More: tool details, usage, account import, diagram rendering</summary>
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Tool calls and thinking</strong><br /><sub>Expand any edit, command or thinking step to see the details</sub></p>
-      <img src="docs/imgs/highlight-tool-details.png" alt="An expanded edit entry showing the Diff of a newly created file">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Usage at a glance</strong><br /><sub>Cache hit rate, cost estimate and context usage, live</sub></p>
-      <img src="docs/imgs/highlight-usage.png" alt="Usage popover: context, cache hit rate, cache reads and writes, total tokens, cost estimate">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>One-click account import</strong><br /><sub>Copy your locally signed-in Codex and Grok credentials to Pi, with live quota</sub></p>
-      <img src="docs/imgs/highlight-account-import.png" alt="Account settings: 5-hour and 7-day remaining quota, and accounts imported into Pi">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Better than a terminal</strong><br /><sub>Left: Codex Desktop + Pi renders the Mermaid diagram; right: the Pi TUI only shows the source</sub></p>
-      <img src="docs/imgs/codex-vs-pi-agent-tui.png" alt="Comparison of Mermaid diagram rendering between Pi with Codex Desktop and the Pi Agent TUI">
-    </td>
-  </tr>
-</table>
-
-</details>
-
-<details>
-<summary>Feature support by Agent</summary>
-
-| Capability | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="docs/imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="docs/imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="docs/imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="docs/imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="packages/adapters/kimi-code/assets/icon.svg" width="28" height="28" /></a> | <a href="docs/harnesses/copilot/copilot-harness-integration.md"><img alt="Copilot" src="packages/adapters/copilot/assets/icon.png" width="28" height="28" /></a> | <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="packages/adapters/qwen-code/assets/icon.svg" width="28" height="28" /></a> | <a href="docs/harnesses/devin/devin-cli-acp-integration.md"><img alt="Devin" src="packages/adapters/devin/assets/icon.svg" width="28" height="28" /></a> |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Streaming responses | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool status | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
-| Questions / cancellation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
-| Model / Thinking selection | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — | ✅ / ◐ |
-| Tool approvals | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Permission modes | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cross-Agent task collaboration | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ◐ |
-| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ◐ | ✅ | — | ◐ |
-| Context compaction | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | — | — |
-| Slash commands | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
-| Edit previous message | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
-
-</details>
-
-<a id="collaboration"></a>
-
-## Agents hand work to each other
-
-Type `#` in the chat input, pick an Agent, and hand it a self-contained task:
-
-> Have `#claude-code` review this change on its own and flag any compatibility risks.
->
-> Have `#pi` figure out why this test is flaky.
->
-> Have `#omp` implement this feature while I keep working on the docs.
-
-Every delegated task runs as a separate native session in the target Agent. It shows up in the conversation list, so you can open it anytime to check progress or continue the conversation. When it finishes, the result returns to the session that started it.
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Agents work in parallel</strong><br /><sub>Each in its own session, without interfering</sub></p>
-      <img src="docs/product/images/multi-agent-parallel-sessions.png" alt="Delegated sessions of several Agents running in parallel in the sidebar">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Reports back when done</strong><br /><sub>The originating session is notified when a delegated task ends</sub></p>
-      <img src="docs/product/images/multi-agent-completion-notice.png" alt="Notice shown in the originating session after a delegated task completes">
-    </td>
-  </tr>
-</table>
-
-**For developers:** local programs such as terminal scripts, Claude Desktop and always-on bots can also hand tasks to these Agents and wait for results through the `codexhost delegate` / `codexhost thread` commands or MCP. See [external clients](docs/architecture/external-clients.md).
-
-<details>
-<summary><h3 id="remote-harness">Advanced: use Agents on another machine from your local UI</h3></summary>
-
-Tasks run on the other machine while the UI stays in your local Codex Desktop. Both machines need the same CodexHost version.
-
-| Remote machine | How to connect |
-| --- | --- |
-| macOS / Linux | [SSH](#ssh) |
-| Windows | [Remote Control](#remote-control-experimental) (experimental) |
-
-#### SSH
-
-Before you start, add the remote machine in Codex Desktop under **Settings → Connections → SSH**. Your local machine can run macOS, Linux or Windows.
 
 <div align="center">
-  <img width="70%" src="docs/imgs/remote-ssh-connections.png" alt="SSH connections added under Settings → Connections → SSH in Codex Desktop">
+
+**Not a chat wrapper. Never forces you to abandon your workflow.**
+
+### One local workspace for multi-agent, multi-machine engineering.
+
 </div>
 
-1. Install and start codexhost on the remote machine:
+---
 
-   ```bash
-   npm install -g @codexhost/cli
-   codexhost remote install
-   codexhost remote start
-   codexhost remote status
-   ```
+<a id="download--install"></a>
 
-2. On your local machine, launch Codex Desktop through codexhost and open the SSH workspace.
-3. Pick an Agent from the composer's Agent / Model selector.
+## Download & Install
 
-[SSH setup, diagnostics and uninstall →](docs/platforms/remote/remote-ssh-host.md)
+CodexHost is free and open source. Local and LAN features work **without an account** and **do not require official Codex Desktop**.
 
-#### Remote Control (Experimental)
+| Platform | Package & Notes | Download |
+| :--- | :--- | :--- |
+| **macOS** | Apple Silicon & Intel · Standalone `.dmg` _(also enhances official Codex Desktop if installed)_ | [**Download from Website**](https://chost.dev/en/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
+| **Windows** | x64 & ARM64 · `.exe` installer / WinGet _(supports portable Codex Desktop too)_ | [**Download from Website**](https://chost.dev/en/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
+| **Linux** | x64 & ARM64 · Self-contained `.tar.gz` _(Desktop app & headless Web daemon)_ | [**Download from Website**](https://chost.dev/en/download) · [Linux Guide](docs/platforms/linux/linux.md) |
+| **Android** | Lightweight native `.apk` · Push alerts, QR pairing & multi-host switching | [**Download from Website**](https://chost.dev/en/download#mobile) · [Android Notes](apps/android-shell/README.md) |
+| **iPhone & iPad** | Safari "Add to Home Screen" PWA · Direct LAN, Tailscale, or encrypted Relay | [**Mobile Setup Guide**](https://chost.dev/en/download#mobile) |
+| **CLI** | Node.js 22.19+ / 24 or Windows WinGet | `npm install -g @codexhost/cli` · `winget install --id BytePioneer-AI.CodexHost --exact` |
 
-Use Agents on a Windows machine from another computer, built on the pairing and sign-in of Codex Desktop's official Remote Control.
+<details>
+<summary><b>Common CLI commands (Desktop / Web / Upgrade / Stop)</b></summary>
 
-Before you start, make sure official Remote Control can already run Codex tasks. No public services or ports are opened, and Agent credentials never leave the Windows machine.
+<br />
 
-[Remote Control setup, transport boundary and diagnostics →](docs/platforms/remote/remote-control-host.md)
+```bash
+codexhost          # Launch standalone Desktop or enhanced official Codex Desktop
+codexhost app      # Open lightweight standalone Desktop directly
+codexhost web      # Start local Web UI and open in your browser
+codexhost status   # Inspect background Host and service status
+codexhost update   # Upgrade to the latest release
+codexhost stop     # Stop all background services (run before npm reinstall)
+```
+
+> **Keep Web access private:** access tokens, login links, and pairing QR codes grant full control of your machine. Never share them publicly.
 
 </details>
 
-<a id="join-the-community"></a>
+<details>
+<summary><b>Installation troubleshooting (macOS Gatekeeper / Windows portable / Console)</b></summary>
 
-## 微信交流群
+<br />
 
-<table align="center">
+- **Launch failed or official Codex Desktop opened without CodexHost**: run `codexhost console` (Windows: Start Menu → `codexhost console`) to open `http://127.0.0.1:4399/` for logs, version detection, and updates.
+- **macOS: "App can't be verified" on first launch**:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/codexhost.app
+  ```
+- **Windows: portable unpacked Codex Desktop**: set `CODEXHOST_INSTALL_ROOT` to your unpacked directory, exit all running processes, reopen your terminal, and run `codexhost`:
+  ```powershell
+  [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
+  ```
+
+</details>
+
+---
+
+## One Host, Three Ways to Work
+
+A single local Host keeps sessions, approvals, queues, and extensions as one source of truth across every client:
+
+<table>
+<tr>
+
+<td width="33%" valign="top">
+
+### Standalone Desktop
+
+**Ready out of the box, lighter footprint.**
+
+Native Tauri desktop shell that works on macOS, Windows, and Linux without requiring official Codex Desktop.
+
+</td>
+
+<td width="33%" valign="top">
+
+### Official Codex Enhanced
+
+**Keep your habits, multiply your agents.**
+
+Enhances official Codex Desktop non-invasively without modifying its installer—preserving native diff review, worktrees, and approvals.
+
+</td>
+
+<td width="33%" valign="top">
+
+### Web & Mobile
+
+**Stay in reach away from your desk.**
+
+Full responsive Web UI paired with the native Android APK and iOS PWA to inspect progress, approve commands, and reply anywhere.
+
+</td>
+
+</tr>
+</table>
+
+```text
+    Standalone Desktop (Tauri)    Official Codex Desktop       Web / PWA & Android
+                │                           │                           │
+                └───────────────────────────┼───────────────────────────┘
+                                            ▼
+                             Shared Local Host (Single Source)
+                  Threads · Queues · Approvals · Worktrees · Usage · Extensions
+                                            │
+                  ┌─────────────────────────┼─────────────────────────┐
+                  ▼                         ▼                         ▼
+         Native Codex Runtime      19+ External Agent Adapters    Remote Peer Hub / Relay
+```
+
+---
+
+## Multi-Agent Teamwork: Delegate & Hand Off
+
+When one agent isn't enough—or different tasks fit different models—type `#` in the composer to spin up isolated native child sessions in parallel, or use **[Cross-Harness Handoff](docs/architecture/cross-harness-handoff.md)** to transfer full conversation context cleanly to another agent mid-thread.
+
+```text
+                     Main Thread (e.g. Codex / Claude Code)
+                                    │
+                ┌───────────────────┼───────────────────┐
+                ▼                   ▼                   ▼
+          #claude-code             #pi                #agy
+      Worktree code review    Debug flaky tests    Frontend & docs
+                │                   │                   │
+                └───────────────────┴───────────────────┘
+                                    ▼
+                 Results flow back automatically · Lossless Handoff anytime
+```
+
+> Ask `#claude-code` to review this diff independently and call out compatibility risks.  
+> Ask `#pi` to investigate why this integration test flakes.  
+> Ask `#agy` to build the frontend view and update the docs.
+
+<table>
   <tr>
-    <td>
-      <strong>微信交流群</strong><br />
-      <sub>Scan the QR code to add me on WeChat (note “CodexHost”) and I will invite you to our WeChat group.</sub>
-      <ul>
-        <li><sub>Get help with installation</sub></li>
-        <li><sub>Share feature ideas and feedback</sub></li>
-        <li><sub>Talk about development</sub></li>
-        <li><sub>For bugs, please open an <strong>issue</strong></sub></li>
-      </ul>
-      <sub><strong>Contributions are welcome.</strong></sub>
+    <td width="50%" valign="top">
+      <p><strong>Parallel Agent Sessions</strong><br /><sub>Independent native threads side by side</sub></p>
+      <img src="docs/product/images/multi-agent-parallel-sessions.png" alt="Multiple delegated agent sessions running in parallel in the sidebar" />
     </td>
-    <td align="center">
-      <img width="230" alt="WeChat contact QR code" src="docs/imgs/wechat-contact-qrcode.jpg" />
+    <td width="50%" valign="top">
+      <p><strong>Automatic Completion Flowback</strong><br /><sub>Originating thread is notified as soon as delegated work finishes</sub></p>
+      <img src="docs/product/images/multi-agent-completion-notice.png" alt="Completion notification delivered back to the originating session" />
     </td>
   </tr>
 </table>
 
+---
+
+## Step Away. Every Machine Stays Within Reach.
+
+```text
+  MacBook Pro (Local) ──┐
+  Linux Dev Box (Peer) ─┼──► Unified Sidebar (Peer Hub) ──► LAN / Tailscale / Encrypted Relay ──► Phone / Any Browser
+  Windows Rig (Peer)  ──┘
+```
+
+- **[Multi-Host Peer Hub](docs/product/multi-remote-peers.md)**: Aggregate Macs, Linux servers, and Windows workstations into one sidebar with cross-host delegation and remote file previews.
+- **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever compliance requires it.
+- **Local-First Privacy**: Your code, threads, and agent credentials stay on your own machines and connect directly to official providers—never proxied through third-party servers.
+
 <details>
-<summary><h3>Architecture and development</h3></summary>
+<summary><b>Advanced: SSH Remote & Windows Remote Control</b></summary>
 
-#### How it works
+<br />
 
-Most multi-agent clients build their own chat UI and plug Agents in through a common protocol. CodexHost does it differently:
+You can also reuse official Codex Desktop remote channels to control agents on another machine (both sides must run the same CodexHost version):
+- **macOS / Linux (SSH Remote)**: run `codexhost remote install && codexhost remote start` on the remote host — see [SSH Remote Guide →](docs/platforms/remote/remote-ssh-host.md)
+- **Windows (Remote Control · Experimental)**: reuses official Remote Control pairing without opening public ports — see [Remote Control Guide →](docs/platforms/remote/remote-control-host.md)
 
-- **Desktop:** extends the official Codex Desktop via CDP / Electron Inspector, with no rebuilt chat UI and no patched installer
-- **Protocol:** a CLI Shim sits in front of the official app-server and passes native Codex requests through untouched
-- **Agents:** each Agent is integrated through its own native interface where one exists (Pi over RPC, Claude Code via the Agent SDK), falling back to [ACP](https://agentclientprotocol.com/) otherwise. Streaming, tool status, diffs, approvals and questions all render in Codex Desktop's native UI
-- **Orchestration:** delegated tasks run as independent native sessions in the target Agent; the caller can wait for the result or let it run in the background
-- **Web:** Desktop and Web connect to the same background Host, so there is one copy of each session, approval and question, and both sides see the same state
+</details>
 
-#### Development
+---
 
-Please read the [contributing guide](CONTRIBUTING.md) before opening an issue or PR. See [repository maintenance automation](docs/operations/repository-maintenance.md) for PR title labels, CI summaries and pre-release checks.
+## Native Depth & Open Ecosystem
 
-Requirements: the official Codex Desktop, Node.js 22.19+ or 24, and Rust.
+<table>
+<tr>
+
+<td width="33%" valign="top">
+
+### Native Runtime Fidelity
+
+Never dumbed down to a plain chat box.
+
+Preserves **Plan Mode**, **mid-turn Steering**, **background terminals**, **branch/worktree Fork**, **live cost & cache metrics**, and **local account import**.
+
+</td>
+
+<td width="33%" valign="top">
+
+### Unified Extensions & Skills
+
+Install once; runs on Desktop and Web.
+
+Extend panels and widgets via [Host Extensions](docs/architecture/desktop-ui-extensions.md) and share reusable workflows across every agent with the [Unified Skill Library](docs/architecture/skill-library.md).
+
+</td>
+
+<td width="33%" valign="top">
+
+### Schedules & External APIs
+
+Built for both humans and automation.
+
+Run recurring checks via [Schedules](docs/product/harness-schedules.md), or orchestrate every local agent from scripts and bots via [CLI, MCP & HTTP](docs/architecture/external-clients.md) (`codexhost delegate`).
+
+</td>
+
+</tr>
+</table>
+
+---
+
+<a id="supported-agents"></a>
+
+## Supported Agents
+
+Native **Codex** plus **19+ preinstalled coding agents** connected through official SDKs, RPC, and [ACP](https://agentclientprotocol.com/)—reusing the CLIs and credentials already logged in on your machine. See the full feature matrix in **[Capability Boundaries →](docs/harnesses/capability-boundaries.md)**.
+
+<details>
+<summary><b>View all preinstalled coding agents</b></summary>
+
+<br />
+
+| | | | |
+| :--- | :--- | :--- | :--- |
+| [Codex](https://openai.com/codex/) | [Claude Code](https://code.claude.com/docs/en/quickstart) | [Pi](https://pi.dev/) | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
+| [OpenCode](https://opencode.ai/docs/) | [Grok](https://grok.com/) | [Cursor CLI](https://cursor.com/docs/cli/overview) | [GitHub Copilot](docs/harnesses/copilot/copilot-harness-integration.md) |
+| [Antigravity (AGY)](https://antigravity.google/product/antigravity-cli) | [Devin](https://docs.devin.ai/cli) | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | [Qwen Code](https://github.com/QwenLM/qwen-code) |
+| [Kimi Code](https://moonshotai.github.io/kimi-code/) | [Kiro CLI](https://kiro.dev/docs/cli/) | [CodeBuddy](https://www.codebuddy.cn/home/) | [WorkBuddy](https://www.workbuddy.ai/docs/workbuddy/Quickstart) |
+| [Qoder / Qoder CN](https://qoder.com/cli) | [Hermes](https://hermes-agent.nousresearch.com/docs) | [ZCode](https://zcode.z.ai/) | [Build a custom Harness →](.agents/skills/codexhost-add-harness/SKILL.md) |
+
+</details>
+
+---
+
+## Sponsors
+
+<table>
+<tr>
+<td width="160" align="center"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="docs/imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="145" /></a></td>
+<td>Thanks to <b>VibeAPI</b> for sponsoring CodexHost! Built for developers and teams, VibeAPI provides unified access to Codex, Claude, and leading AI models with a traceable self-managed account pool, 99.9% SLA, 95%+ cache hit rate, 24/7 human support, and enterprise invoicing. <a href="https://vibeapi.cc/sign-up?aff=AOYp">Learn more about VibeAPI →</a></td>
+</tr>
+</table>
+
+---
+
+<a id="community"></a>
+
+## Community
+
+- **GitHub**: Report bugs or request new agent adapters via [Issues](https://github.com/BytePioneer-AI/codex-host/issues), and share workflows or ideas in [Discussions](https://github.com/BytePioneer-AI/codex-host/discussions).
+- **WeChat Group**: Scan the QR code below with note **"CodexHost"** to join the developer community group.
+
+<details>
+<summary><b>Show WeChat Group QR Code</b></summary>
+
+<br />
+
+<p align="center">
+  <img width="210" alt="WeChat Group QR Code" src="docs/imgs/wechat-contact-qrcode.jpg" />
+</p>
+
+</details>
+
+<details>
+<summary><b>Build from Source & Development</b></summary>
+
+<br />
+
+Requirements: Node.js 22.19+ or 24, Rust (plus official Codex Desktop if developing the enhanced desktop mode). See [CONTRIBUTING.md](CONTRIBUTING.md) and [Repository Maintenance](docs/operations/repository-maintenance.md).
 
 ```bash
 git clone https://github.com/BytePioneer-AI/codex-host
 cd codex-host
 npm ci
-npm start
+npm run start:app   # Launch standalone Desktop
 ```
 
 | Command | Purpose |
-| --- | --- |
-| `npm start` | Build and start Desktop. |
-| `npm start web` | Build and start Web with Web UI hot reload (default). |
-| `npm start web -- --no-watch` | Build and start Web without hot reload. |
-| `npm stop` | Stop the current user's local codexhost services across worktrees. |
-
-#### Runtime architecture
-
-Using Pi as an example, here is how a single request flows from left to right: Desktop → shared layer → Pi plugin → native process.
-
-<div align="center">
-  <img width="100%" src="docs/imgs/pi-runtime-architecture.png" alt="Runtime architecture using Pi: Desktop to the shared layer, then the Pi plugin and native process">
-</div>
-
-#### Adding a Harness
-
-Most of the work is implementing the plugin's Manifest, factory, Adapter and Session, plus the native communication and translation logic. The Renderer still has some hard-coded wiring, so full Desktop integration takes extra work.
-Tip: point your coding Agent at the in-repo [codexhost-add-harness Skill](.agents/skills/codexhost-add-harness/SKILL.md). It covers plugin structure, the shared Adapter interface, capability implementation and testing requirements.
+| :--- | :--- |
+| `npm run start:app` | Build and launch standalone Desktop |
+| `npm run start:web` | Build and launch standalone Web UI (hot reload enabled) |
+| `npm start` | Build and launch official Codex Desktop enhanced mode |
+| `npm stop` | Stop local codexhost background services for the current user |
 
 </details>
 
-## Acknowledgements
+---
 
-- Thanks to the [LINUX DO](https://linux.do/) community for their ongoing support.
-- Thanks to [Paseo](https://github.com/getpaseo/paseo), whose approach to multi-Harness integration and architecture inspired ours.
-- Thanks to [DSH (DeepSeek Harness)](https://github.com/deepseek-ai/deepseek-harness); CodexHost's Web client is built on DSH Web.
+## Acknowledgements & Contributors
 
-## Contributors
-
-Thanks to everyone who has contributed to CodexHost.
+Thanks to the [LINUX DO](https://linux.do/) community, [Paseo](https://github.com/getpaseo/paseo) (multi-harness architecture inspiration), [DSH (DeepSeek Harness)](https://github.com/deepseek-ai/deepseek-harness) (Web UI foundation), and everyone contributing to CodexHost.
 
 <a href="https://github.com/BytePioneer-AI/codex-host/graphs/contributors">
-  <img alt="CodexHost contributors" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
+  <img alt="CodexHost Contributors" src="https://contrib.rocks/image?repo=BytePioneer-AI/codex-host" />
 </a>
 
 ## Star History
@@ -349,3 +407,6 @@ Thanks to everyone who has contributed to CodexHost.
   </picture>
 </a>
 
+## License
+
+Released under the [LGPL-3.0](LICENSE) License.

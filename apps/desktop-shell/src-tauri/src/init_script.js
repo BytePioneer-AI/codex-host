@@ -170,6 +170,84 @@ function __codexhostDesktopShellInit(config) {
     applyShellHidden(hidden, revision);
   };
 
+  if (!isEmbeddedPage) {
+    const notificationClickListeners = new Set();
+    let pendingNotificationClick = null;
+
+    const normalizePermission = (value) =>
+      value === "granted" || value === "denied" || value === "prompt" || value === "unsupported"
+        ? value
+        : "unsupported";
+
+    const dispatchNotificationClick = (payload) => {
+      const normalized =
+        payload &&
+        typeof payload === "object" &&
+        typeof payload.sessionId === "string" &&
+        payload.sessionId.length > 0
+          ? { sessionId: payload.sessionId }
+          : {};
+      try {
+        window.dispatchEvent(
+          new CustomEvent("codexhost://notification-click", { detail: normalized }),
+        );
+      } catch {}
+      if (notificationClickListeners.size === 0) {
+        pendingNotificationClick = normalized;
+        return;
+      }
+      for (const listener of [...notificationClickListeners]) {
+        try {
+          listener(normalized);
+        } catch {}
+      }
+    };
+
+    window.__codexhostDispatchNotificationClick = dispatchNotificationClick;
+    window.__codexhostNotifications = Object.freeze({
+      getState: async () => {
+        const raw = await invoke("notification_get_state");
+        return {
+          enabled: Boolean(raw?.enabled),
+          permission: normalizePermission(raw?.permission),
+        };
+      },
+      requestPermission: async () =>
+        normalizePermission(await invoke("notification_request_permission")),
+      setEnabled: async (enabled) =>
+        Boolean(await invoke("notification_set_enabled", { enabled: Boolean(enabled) })),
+      send: async (payload) =>
+        Boolean(
+          await invoke("notification_send", {
+            payload: {
+              title: String(payload?.title ?? ""),
+              body: String(payload?.body ?? ""),
+              tag: typeof payload?.tag === "string" ? payload.tag : null,
+              sessionId: typeof payload?.sessionId === "string" ? payload.sessionId : null,
+              kind: typeof payload?.kind === "string" ? payload.kind : null,
+            },
+          }),
+        ),
+      onClick: (listener) => {
+        if (typeof listener !== "function") return () => {};
+        notificationClickListeners.add(listener);
+        if (pendingNotificationClick !== null) {
+          const queued = pendingNotificationClick;
+          pendingNotificationClick = null;
+          try {
+            listener(queued);
+          } catch {}
+        }
+        return () => {
+          notificationClickListeners.delete(listener);
+        };
+      },
+      openSystemSettings: async () => {
+        await invoke("notification_open_settings");
+      },
+    });
+  }
+
   if (isEmbeddedPage) {
     let deadKey = false;
     const resetDeadKey = () => {

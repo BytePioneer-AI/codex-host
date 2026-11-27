@@ -86,10 +86,15 @@ import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.
 import { webExtensionAppearance } from "./native-extensions/surface.ts";
 import { watchAuthentication } from "./auth-watch.ts";
 import { watchReleaseAnnouncement } from "./release-announcement.ts";
-import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
+import {
+  ensureServiceWorker,
+  resubmitNotifications,
+  shouldDeliverShellNotification,
+} from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
-import { isDesktopShell, PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { getShellNotificationBridge, isNativeShell } from "./shell-notifications.ts";
 import { WallpaperController } from "./wallpaper.ts";
 import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import {
@@ -200,7 +205,7 @@ export function apply(ctx: ClientContext): void {
     ),
   );
   const installation = ctx.get("pwaInstall");
-  if (installation !== undefined && !isDesktopShell()) {
+  if (installation !== undefined && !isNativeShell()) {
     ctx.slots.inject("settings.general.item", () =>
       ctx.slots.register(
         {
@@ -685,6 +690,46 @@ export function apply(ctx: ClientContext): void {
   // Deep links (`?session=<id>`, used by notification clicks) and service-worker messages.
   ensureServiceWorker();
   resubmitNotifications();
+  const shellNotifications = getShellNotificationBridge();
+  if (shellNotifications !== undefined) {
+    ctx.effect(
+      () =>
+        ctx.remote.$on("codexhost/notification", (message) => {
+          void (async () => {
+            const state = await shellNotifications.getState().catch(() => undefined);
+            if (state === undefined) return;
+            const deliver = shouldDeliverShellNotification({
+              enabled: state.enabled,
+              permission: state.permission,
+              visibilityState: document.visibilityState,
+              hasFocus: document.hasFocus(),
+              ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
+              isSessionInMainView: (sessionId) =>
+                (ctx.sessions.list.getSnapshot().byId[sessionId as SessionId]?.retainedBy
+                  .mainView ?? 0) > 0,
+            });
+            if (!deliver) return;
+            await shellNotifications
+              .send({
+                kind: message.kind,
+                title: message.title,
+                body: message.body,
+                ...(message.tag === undefined ? {} : { tag: message.tag }),
+                ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
+              })
+              .catch(() => undefined);
+          })();
+        }),
+      "ui-codexhost: shell notifications delivery",
+    );
+    ctx.effect(
+      () =>
+        shellNotifications.onClick(({ sessionId }) => {
+          if (typeof sessionId === "string" && sessionId.length > 0) face.openSession(sessionId);
+        }),
+      "ui-codexhost: shell notification clicks",
+    );
+  }
   ctx.effect(
     () => watchAuthentication((ctx.get("connection") as ConnectionHandle).state),
     "ui-codexhost: enter sign-in when the token is revoked",

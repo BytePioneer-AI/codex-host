@@ -14,6 +14,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import { createDesktopExtensionPageHost } from "./desktop-extension-page-host.js";
 import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import { renderDesktopExtensionCard } from "./desktop-extensions-card.js";
+import { createDesktopCatalogIconLoader } from "./desktop-extensions-catalog-icons.js";
 import { createDesktopExtensionCreateModal } from "./desktop-extensions-create-modal.js";
 import { createDesktopExtensionDetailModal } from "./desktop-extensions-detail-modal.js";
 import { createDesktopExtensionImportModal } from "./desktop-extensions-import-modal.js";
@@ -31,7 +32,6 @@ import {
   catalogDisplayName,
   contentLocaleMessages,
   createEl,
-  deriveCapabilityBadges,
   derivePlatformBadge,
   errorMessage,
   extensionDescription,
@@ -47,6 +47,7 @@ import {
   needsAttention,
   matchesCatalogSearchQuery,
   matchesInstalledSearchQuery,
+  parseSafeExtensionIconUrl,
   readContentLocalePreference,
   resolveAttentionDetail,
   resolveInstalledExtensionIconUrl,
@@ -64,7 +65,7 @@ import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
 const POLL_INTERVAL_MS = 5_000;
 const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/host-extensions/";
 
-type ActiveTab = "installed" | "marketplace";
+type NavView = "all" | "installed" | DesktopExtensionCategory;
 
 function writeContentLocalePreference(
   ownerWindow: Window | null,
@@ -85,6 +86,9 @@ export interface RendererDesktopExtensionsClient {
   listHostExtensionCatalog?(
     input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalog>>;
+  readHostExtensionCatalogIcon?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalogIcon>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalogIcon>>;
   installHostExtension?(
     input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.install>>;
@@ -145,51 +149,175 @@ export function createDesktopExtensionsSettingsPage(
       const pageViewHost = createEl(document, "div", "settings-extensions__page-host");
       pageViewHost.hidden = true;
 
-      // Header: title on left; compact Language + Create + Import + Refresh + More ("...") menu on right.
-      const header = createEl(
-        document,
-        "div",
-        "settings-remote__header settings-extensions__header",
-      );
-      const headerLeft = createEl(document, "div", "settings-extensions__header-left");
+      // Hero Header: editorial title + subtitle on left; direct Create & Import actions on right.
+      const header = createEl(document, "header", "settings-extensions__hero");
+      const heroCopy = createEl(document, "div", "settings-extensions__hero-copy");
       const title = createEl(
         document,
         "h1",
-        "settings-section-label",
+        "settings-extensions__title",
         messages.pageLabels["desktop-extensions"],
       );
-      headerLeft.append(title);
+      const subtitle = createEl(document, "p", "settings-extensions__subtitle", copy.subtitle);
+      heroCopy.append(title, subtitle);
 
-      const toolbar = createEl(document, "div", "settings-remote__toolbar");
+      const heroActions = createEl(document, "div", "settings-extensions__hero-actions");
 
-      const localeWrap = createEl(document, "div", "settings-extensions__locale");
-      const localeButton = createEl(
+      const createButton = createEl(document, "button", "settings-extensions__create-button");
+      createButton.type = "button";
+      createButton.dataset.action = "open-create";
+      createButton.append(
+        createRendererSettingsIcon("sparkles", 13),
+        createEl(document, "span", "", copy.createButton),
+      );
+
+      const importButton = createEl(document, "button", "settings-extensions__import-button");
+      importButton.type = "button";
+      importButton.dataset.action = "open-import";
+      importButton.append(
+        createRendererSettingsIcon("upload", 13),
+        createEl(document, "span", "", copy.importButton),
+      );
+
+      heroActions.append(createButton, importButton);
+      header.append(heroCopy, heroActions);
+
+      // Single sticky navigation bar: All + Installed | categories on left; Search + Filter + More on right.
+      const stickyBar = createEl(document, "div", "settings-extensions__sticky-bar");
+      stickyBar.hidden = true;
+
+      const navTabs = createEl(document, "nav", "settings-extensions__nav-tabs");
+      navTabs.setAttribute("role", "tablist");
+      navTabs.setAttribute("aria-label", copy.tabListLabel);
+
+      const allTabButton = createEl(
         document,
         "button",
-        "settings-command-button settings-command-button--secondary settings-extensions__locale-button",
+        "settings-extensions__nav-tab",
+        copy.tabAll,
       );
-      localeButton.type = "button";
-      localeButton.dataset.action = "content-locale-menu";
-      localeButton.title = copy.contentLocaleLabel;
-      localeButton.setAttribute("aria-label", copy.contentLocaleLabel);
-      localeButton.setAttribute("aria-haspopup", "menu");
-      localeButton.setAttribute("aria-expanded", "false");
-      const localeShortLabel = createEl(document, "span", "settings-extensions__locale-label");
-      localeButton.append(
-        createRendererSettingsIcon("globe", 13),
-        localeShortLabel,
-        createRendererSettingsIcon("chevron-down", 12),
+      allTabButton.type = "button";
+      allTabButton.dataset.nav = "all";
+      allTabButton.dataset.tab = "marketplace";
+      allTabButton.setAttribute("role", "tab");
+      allTabButton.setAttribute("aria-selected", "false");
+
+      const installedTabButton = createEl(
+        document,
+        "button",
+        "settings-extensions__nav-tab settings-extensions__nav-tab--installed",
+      );
+      installedTabButton.type = "button";
+      installedTabButton.dataset.nav = "installed";
+      installedTabButton.dataset.tab = "installed";
+      installedTabButton.setAttribute("role", "tab");
+      installedTabButton.setAttribute("aria-selected", "false");
+      const installedTabLabel = createEl(document, "span");
+      const installedTabUpdateDot = createEl(
+        document,
+        "span",
+        "settings-extensions__tab-update-dot",
+      );
+      installedTabUpdateDot.hidden = true;
+      installedTabUpdateDot.setAttribute("aria-hidden", "true");
+      installedTabButton.append(installedTabLabel, installedTabUpdateDot);
+
+      const navDivider = createEl(document, "span", "settings-extensions__nav-divider");
+      navDivider.setAttribute("aria-hidden", "true");
+      navDivider.hidden = true;
+
+      navTabs.append(allTabButton, installedTabButton, navDivider);
+
+      const barActions = createEl(document, "div", "settings-extensions__bar-actions");
+
+      const searchBox = createEl(document, "div", "settings-extensions__search");
+      const searchIcon = createEl(document, "span", "settings-extensions__search-icon");
+      searchIcon.append(createRendererSettingsIcon("search", 13));
+      const searchInput = createEl(document, "input", "settings-extensions__search-input");
+      searchInput.type = "search";
+      searchInput.placeholder = copy.searchPlaceholder;
+      searchInput.setAttribute("aria-label", copy.searchLabel);
+      const clearSearchButton = createEl(document, "button", "settings-extensions__search-clear");
+      clearSearchButton.type = "button";
+      clearSearchButton.title = copy.clearSearch;
+      clearSearchButton.setAttribute("aria-label", copy.clearSearch);
+      clearSearchButton.hidden = true;
+      clearSearchButton.append(createRendererSettingsIcon("close", 12));
+      searchBox.append(searchIcon, searchInput, clearSearchButton);
+
+      // Filter popover: capability/platform filters + content language switcher.
+      const filterWrap = createEl(document, "div", "settings-extensions__filter");
+      const filterButton = createEl(document, "button", "settings-extensions__filter-button");
+      filterButton.type = "button";
+      filterButton.dataset.action = "filter-menu";
+      filterButton.title = copy.capabilityFilterLabel;
+      filterButton.setAttribute("aria-label", copy.capabilityFilterLabel);
+      filterButton.setAttribute("aria-haspopup", "menu");
+      filterButton.setAttribute("aria-expanded", "false");
+      const filterLabelSpan = createEl(document, "span", "", copy.filterButton);
+      const filterActiveDot = createEl(document, "span", "settings-extensions__filter-dot");
+      filterActiveDot.hidden = true;
+      filterActiveDot.setAttribute("aria-hidden", "true");
+      filterButton.append(
+        createRendererSettingsIcon("sliders", 13),
+        filterLabelSpan,
+        filterActiveDot,
+        createRendererSettingsIcon("chevron-down", 11),
       );
 
-      const localeMenu = createEl(
+      const filterMenu = createEl(
         document,
         "div",
-        "settings-extensions-menu settings-extensions-menu--compact",
+        "settings-extensions-menu settings-extensions-menu--filter",
       );
-      localeMenu.dataset.menu = "content-locale";
-      localeMenu.setAttribute("role", "menu");
-      localeMenu.setAttribute("aria-label", copy.contentLocaleLabel);
-      localeMenu.hidden = true;
+      filterMenu.dataset.menu = "filter";
+      filterMenu.setAttribute("role", "menu");
+      filterMenu.setAttribute("aria-label", copy.capabilityFilterLabel);
+      filterMenu.hidden = true;
+
+      const capabilityHeading = createEl(
+        document,
+        "div",
+        "settings-extensions-menu__heading",
+        copy.capabilityFilterLabel,
+      );
+      filterMenu.append(capabilityHeading);
+
+      const capabilityOptionButtons = new Map<
+        ExtensionCapabilityFilter,
+        { readonly button: HTMLButtonElement; readonly checkSlot: HTMLSpanElement }
+      >();
+      for (const filter of CAPABILITY_FILTER_ORDER) {
+        const itemButton = createEl(
+          document,
+          "button",
+          "settings-extensions-menu__item settings-extensions-menu__item--radio",
+        );
+        itemButton.type = "button";
+        itemButton.setAttribute("role", "menuitemradio");
+        itemButton.dataset.capabilityFilter = filter;
+        const labelSpan = createEl(
+          document,
+          "span",
+          "settings-extensions-menu__item-label",
+          capabilityFilterLabel(filter, copy),
+        );
+        const checkSlot = createEl(document, "span", "settings-extensions-menu__check");
+        checkSlot.append(createRendererSettingsIcon("check", 13));
+        itemButton.append(labelSpan, checkSlot);
+        filterMenu.append(itemButton);
+        capabilityOptionButtons.set(filter, { button: itemButton, checkSlot });
+      }
+
+      const filterDivider = createEl(document, "div", "settings-extensions-menu__divider");
+      filterDivider.setAttribute("role", "separator");
+      const localeHeading = createEl(
+        document,
+        "div",
+        "settings-extensions-menu__heading",
+        copy.contentLocaleLabel,
+      );
+      filterMenu.append(filterDivider, localeHeading);
 
       const localeOptions: readonly {
         readonly value: DesktopExtensionContentLocalePreference;
@@ -221,45 +349,12 @@ export function createDesktopExtensionsSettingsPage(
         const checkSlot = createEl(document, "span", "settings-extensions-menu__check");
         checkSlot.append(createRendererSettingsIcon("check", 13));
         itemButton.append(labelSpan, checkSlot);
-        localeMenu.append(itemButton);
+        filterMenu.append(itemButton);
         localeOptionButtons.set(option.value, { button: itemButton, checkSlot });
       }
-      localeWrap.append(localeButton, localeMenu);
+      filterWrap.append(filterButton, filterMenu);
 
-      const createButton = createEl(
-        document,
-        "button",
-        "settings-command-button settings-command-button--secondary settings-extensions__create-button",
-      );
-      createButton.type = "button";
-      createButton.dataset.action = "open-create";
-      createButton.append(
-        createRendererSettingsIcon("sparkles", 14),
-        createEl(document, "span", "", copy.createButton),
-      );
-
-      const importButton = createEl(
-        document,
-        "button",
-        "settings-command-button settings-command-button--secondary settings-extensions__import-button",
-      );
-      importButton.type = "button";
-      importButton.dataset.action = "open-import";
-      importButton.append(
-        createRendererSettingsIcon("upload", 14),
-        createEl(document, "span", "", copy.importButton),
-      );
-
-      const refreshButton = createEl(
-        document,
-        "button",
-        "settings-icon-button settings-remote__refresh",
-      );
-      refreshButton.type = "button";
-      refreshButton.title = copy.refresh;
-      refreshButton.setAttribute("aria-label", copy.refresh);
-      refreshButton.append(createRendererSettingsIcon("refresh", 16));
-
+      // More ("...") menu: refresh catalog, copy extensions directory, recovery.
       const moreWrap = createEl(document, "div", "settings-extensions__more");
       const moreButton = createEl(
         document,
@@ -278,6 +373,18 @@ export function createDesktopExtensionsSettingsPage(
       moreMenu.dataset.menu = "more";
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
+
+      const refreshMenuItem = createEl(document, "button", "settings-extensions-menu__item");
+      refreshMenuItem.type = "button";
+      refreshMenuItem.setAttribute("role", "menuitem");
+      refreshMenuItem.dataset.action = "refresh";
+      const refreshMenuLabel = createEl(
+        document,
+        "span",
+        "settings-extensions-menu__item-label",
+        copy.refreshMarket,
+      );
+      refreshMenuItem.append(createRendererSettingsIcon("refresh", 14), refreshMenuLabel);
 
       const copyDirectoryMenuItem = createEl(document, "button", "settings-extensions-menu__item");
       copyDirectoryMenuItem.type = "button";
@@ -311,70 +418,11 @@ export function createDesktopExtensionsSettingsPage(
         createEl(document, "span", "settings-extensions-menu__item-label", copy.recoveryMenuItem),
       );
 
-      moreMenu.append(copyDirectoryMenuItem, menuDivider, recoveryMenuItem);
+      moreMenu.append(refreshMenuItem, copyDirectoryMenuItem, menuDivider, recoveryMenuItem);
       moreWrap.append(moreButton, moreMenu);
 
-      toolbar.append(localeWrap, createButton, importButton, refreshButton, moreWrap);
-      header.append(headerLeft, toolbar);
-
-      // Persistent top navigation row: segmented tabs (Installed / Marketplace) + search input.
-      const controlsBar = createEl(document, "div", "settings-extensions__toolbar");
-      controlsBar.hidden = true;
-
-      const tabList = createEl(document, "div", "settings-extensions-segmented");
-      tabList.setAttribute("role", "tablist");
-      tabList.setAttribute("aria-label", copy.tabListLabel);
-
-      const installedTabButton = createEl(document, "button", "settings-extensions-segmented__tab");
-      installedTabButton.type = "button";
-      installedTabButton.dataset.tab = "installed";
-      installedTabButton.setAttribute("role", "tab");
-      installedTabButton.setAttribute("aria-selected", "true");
-      const installedTabLabel = createEl(document, "span");
-      const installedTabUpdateDot = createEl(
-        document,
-        "span",
-        "settings-extensions-segmented__update-dot",
-      );
-      installedTabUpdateDot.hidden = true;
-      installedTabUpdateDot.setAttribute("aria-hidden", "true");
-      installedTabButton.append(installedTabLabel, installedTabUpdateDot);
-
-      const marketplaceTabButton = createEl(
-        document,
-        "button",
-        "settings-extensions-segmented__tab",
-      );
-      marketplaceTabButton.type = "button";
-      marketplaceTabButton.dataset.tab = "marketplace";
-      marketplaceTabButton.setAttribute("role", "tab");
-      marketplaceTabButton.setAttribute("aria-selected", "false");
-      marketplaceTabButton.textContent = copy.tabMarketplace;
-
-      tabList.append(installedTabButton, marketplaceTabButton);
-
-      const searchBox = createEl(document, "div", "settings-extensions__search");
-      const searchIcon = createEl(document, "span", "settings-extensions__search-icon");
-      searchIcon.append(createRendererSettingsIcon("search", 13));
-      const searchInput = createEl(document, "input", "settings-extensions__search-input");
-      searchInput.type = "search";
-      searchInput.placeholder = copy.searchPlaceholder;
-      searchInput.setAttribute("aria-label", copy.searchLabel);
-      const clearSearchButton = createEl(document, "button", "settings-extensions__search-clear");
-      clearSearchButton.type = "button";
-      clearSearchButton.title = copy.clearSearch;
-      clearSearchButton.setAttribute("aria-label", copy.clearSearch);
-      clearSearchButton.hidden = true;
-      clearSearchButton.append(createRendererSettingsIcon("close", 12));
-      searchBox.append(searchIcon, searchInput, clearSearchButton);
-      controlsBar.append(tabList, searchBox);
-
-      // Capability and category filters.
-      const capabilitySlot = createEl(document, "div", "settings-extensions__capability-slot");
-      capabilitySlot.hidden = true;
-
-      const categorySlot = createEl(document, "div", "settings-extensions__category-slot");
-      categorySlot.hidden = true;
+      barActions.append(searchBox, filterWrap, moreWrap);
+      stickyBar.append(navTabs, barActions);
 
       const banner = createEl(document, "div", "settings-extensions__banner");
       banner.hidden = true;
@@ -395,29 +443,24 @@ export function createDesktopExtensionsSettingsPage(
 
       const body = createEl(document, "div", "settings-extensions__body");
 
-      listViewWrap.append(
-        header,
-        controlsBar,
-        capabilitySlot,
-        categorySlot,
-        banner,
-        diagnosticsPanel,
-        body,
-      );
+      listViewWrap.append(header, stickyBar, banner, diagnosticsPanel, body);
       root.append(listViewWrap, pageViewHost);
       context.content.append(root);
 
+      const initialHasCatalog =
+        typeof resolveAvailableClient(getClient)?.listHostExtensionCatalog === "function";
+
       let disposed = false;
       let moreMenuOpen = false;
-      let localeMenuOpen = false;
+      let filterMenuOpen = false;
       let contentLocalePreference: DesktopExtensionContentLocalePreference =
         readContentLocalePreference(ownerWindow);
-      let activeTab: ActiveTab = "installed";
+      let activeView: NavView = initialHasCatalog ? "all" : "installed";
       let listing: HostExtensionsListResult | null = null;
       let catalog: HostExtensionsCatalogResult | null = null;
       let catalogById = new Map<string, HostExtensionCatalogEntry>();
       let unavailable = false;
-      let catalogUnavailable = false;
+      let catalogUnavailable = !initialHasCatalog;
       let catalogError: string | null = null;
       let loading = false;
       let catalogLoading = false;
@@ -430,12 +473,20 @@ export function createDesktopExtensionsSettingsPage(
       let pollTimer: ReturnType<typeof setTimeout> | undefined;
       let activeRecoveryDialog: HTMLDialogElement | null = null;
       let selectedCapability: ExtensionCapabilityFilter = "all";
-      let selectedCategory: DesktopExtensionCategory | null = null;
       let searchQuery = "";
       let modalFeedback: {
         readonly extensionId: string;
         readonly feedback: DesktopExtensionFeedback;
       } | null = null;
+
+      const isInstalledView = (): boolean => activeView === "installed";
+      const activeCategory = (): DesktopExtensionCategory | null =>
+        activeView !== "all" && activeView !== "installed" ? activeView : null;
+
+      const catalogIconLoader = createDesktopCatalogIconLoader(() => {
+        const client = resolveAvailableClient(getClient);
+        return client?.readHostExtensionCatalogIcon?.bind(client);
+      });
 
       const hasPendingMutations = (): boolean =>
         pendingMutations.size > 0 || importing || recovering;
@@ -455,11 +506,22 @@ export function createDesktopExtensionsSettingsPage(
       const resolveContentLocale = (): DesktopExtensionContentLocale =>
         contentLocalePreference === "system" ? messages.locale : contentLocalePreference;
 
-      const syncLocaleControl = (): void => {
+      const syncFilterControl = (): void => {
         const effective = resolveContentLocale();
-        localeShortLabel.textContent = effective === "zh-CN" ? "中" : "EN";
-        localeButton.dataset.contentLocale = contentLocalePreference;
-        localeButton.dataset.effectiveLocale = effective;
+        const capabilityActive = selectedCapability !== "all";
+        const anyFilterActive = capabilityActive || contentLocalePreference !== "system";
+        filterLabelSpan.textContent = capabilityActive
+          ? capabilityFilterLabel(selectedCapability, copy)
+          : copy.filterButton;
+        filterButton.dataset.active = anyFilterActive ? "true" : "false";
+        filterButton.dataset.contentLocale = contentLocalePreference;
+        filterButton.dataset.effectiveLocale = effective;
+        filterActiveDot.hidden = !anyFilterActive;
+        for (const [filter, entry] of capabilityOptionButtons) {
+          const selected = filter === selectedCapability;
+          entry.button.setAttribute("aria-checked", String(selected));
+          entry.checkSlot.hidden = !selected;
+        }
         for (const [value, entry] of localeOptionButtons) {
           const selected = value === contentLocalePreference;
           entry.button.setAttribute("aria-checked", String(selected));
@@ -521,6 +583,14 @@ export function createDesktopExtensionsSettingsPage(
         host: root,
         signal: context.signal,
         messages,
+        catalogIconLoader,
+        assetClient: {
+          async readAsset(input) {
+            const reader = resolveAvailableClient(getClient)?.readHostExtensionAsset;
+            if (!reader) throw new Error("Host extension asset RPC is unavailable");
+            return reader(input);
+          },
+        },
         settingsClient: {
           async getSettings(id) {
             const getter = resolveAvailableClient(getClient)?.getHostExtensionSettings;
@@ -604,17 +674,34 @@ export function createDesktopExtensionsSettingsPage(
         bannerRetry.hidden = !next.retryable;
       };
 
-      const syncToolbarState = (): void => {
-        const activeLoading = activeTab === "installed" ? loading : catalogLoading;
-        refreshButton.disabled = activeLoading || recovering;
-        refreshButton.setAttribute("aria-busy", String(activeLoading));
-        refreshButton.title = activeLoading ? copy.refreshing : copy.refresh;
-        refreshButton.setAttribute("aria-label", activeLoading ? copy.refreshing : copy.refresh);
+      const computeAvailableCategories = (): readonly DesktopExtensionCategory[] => {
+        const present = new Set<DesktopExtensionCategory>();
+        if (catalog && catalog.extensions.length > 0) {
+          for (const entry of catalog.extensions) {
+            for (const category of entry.categories ?? []) {
+              present.add(category);
+            }
+          }
+        } else if (listing) {
+          for (const item of listing.extensions) {
+            if (item.state === "valid") {
+              for (const category of item.manifest.categories ?? []) {
+                present.add(category);
+              }
+            }
+          }
+        }
+        return CATEGORY_ORDER.filter((category) => present.has(category));
+      };
 
-        const { canInstall, canRecover } = clientCapabilities();
-        importButton.disabled = importing || recovering || !canInstall;
-        recoveryMenuItem.disabled = hasPendingMutations() || !canRecover;
+      const syncNavTabs = (): void => {
+        const availableCategories = computeAvailableCategories();
+        const currentCategory = activeCategory();
+        if (currentCategory && !availableCategories.includes(currentCategory)) {
+          activeView = catalogUnavailable ? "installed" : "all";
+        }
 
+        const contentCopy = contentLocaleMessages(resolveContentLocale());
         installedTabLabel.textContent = formatMessage(copy.tabInstalled, {
           count: String(listing?.extensions.length ?? 0),
         });
@@ -626,21 +713,45 @@ export function createDesktopExtensionsSettingsPage(
           "aria-description",
           hasInstalledUpdates ? copy.installedUpdatesAvailable : "",
         );
-        marketplaceTabButton.textContent = catalog
-          ? formatMessage(copy.tabMarketplaceCount, { count: String(catalog.extensions.length) })
-          : copy.tabMarketplace;
-        installedTabButton.setAttribute("aria-selected", String(activeTab === "installed"));
-        marketplaceTabButton.setAttribute("aria-selected", String(activeTab === "marketplace"));
-        syncLocaleControl();
+        allTabButton.setAttribute("aria-selected", String(activeView === "all"));
+        installedTabButton.setAttribute("aria-selected", String(activeView === "installed"));
+        navDivider.hidden = availableCategories.length === 0;
+
+        const categoryNodes: HTMLElement[] = [];
+        for (const category of availableCategories) {
+          const btn = createEl(
+            document,
+            "button",
+            "settings-extensions__nav-tab",
+            contentCopy.categories[category],
+          );
+          btn.type = "button";
+          btn.dataset.nav = category;
+          btn.dataset.category = category;
+          btn.setAttribute("role", "tab");
+          btn.setAttribute("aria-selected", String(activeView === category));
+          btn.addEventListener("click", () => switchView(category));
+          categoryNodes.push(btn);
+        }
+        navTabs.replaceChildren(allTabButton, installedTabButton, navDivider, ...categoryNodes);
+      };
+
+      const syncToolbarState = (): void => {
+        const activeLoading = isInstalledView() ? loading : catalogLoading;
+        refreshMenuItem.disabled = activeLoading || recovering;
+        refreshMenuLabel.textContent = activeLoading ? copy.refreshing : copy.refreshMarket;
+
+        const { canInstall, canRecover } = clientCapabilities();
+        importButton.disabled = importing || recovering || !canInstall;
+        createButton.disabled = recovering;
+        recoveryMenuItem.disabled = hasPendingMutations() || !canRecover;
+
+        syncNavTabs();
+        syncFilterControl();
       };
 
       const renderDiagnostics = (): void => {
-        if (
-          activeTab !== "installed" ||
-          !listing ||
-          unavailable ||
-          listing.diagnostics.length === 0
-        ) {
+        if (!isInstalledView() || !listing || unavailable || listing.diagnostics.length === 0) {
           diagnosticsPanel.hidden = true;
           diagnosticsPanel.replaceChildren();
           return;
@@ -713,7 +824,7 @@ export function createDesktopExtensionsSettingsPage(
         resetButton.type = "button";
         resetButton.addEventListener("click", () => {
           selectedCapability = "all";
-          selectedCategory = null;
+          if (activeCategory()) activeView = "all";
           searchQuery = "";
           searchInput.value = "";
           clearSearchButton.hidden = true;
@@ -723,87 +834,15 @@ export function createDesktopExtensionsSettingsPage(
         body.replaceChildren(...prefixNodes, empty);
       };
 
-      const renderCapabilityFilterBar = (show: boolean): void => {
-        if (!show) {
-          capabilitySlot.hidden = true;
-          capabilitySlot.replaceChildren();
-          return;
-        }
-        const filterBar = createEl(document, "div", "settings-extensions__filters");
-        filterBar.setAttribute("role", "group");
-        filterBar.setAttribute("aria-label", copy.capabilityFilterLabel);
-        for (const filter of CAPABILITY_FILTER_ORDER) {
-          const pill = createEl(
-            document,
-            "button",
-            "settings-extensions-filter-pill",
-            capabilityFilterLabel(filter, copy),
-          );
-          pill.type = "button";
-          pill.dataset.capabilityFilter = filter;
-          pill.setAttribute("aria-pressed", String(selectedCapability === filter));
-          pill.addEventListener("click", () => {
-            if (selectedCapability === filter) return;
-            selectedCapability = filter;
-            render();
-          });
-          filterBar.append(pill);
-        }
-        capabilitySlot.hidden = false;
-        capabilitySlot.replaceChildren(filterBar);
-      };
-
-      const renderCategoryFilterBar = (
-        presentCategories: ReadonlySet<DesktopExtensionCategory>,
-      ): void => {
-        const availableCategories = CATEGORY_ORDER.filter((category) =>
-          presentCategories.has(category),
-        );
-        if (availableCategories.length === 0) {
-          selectedCategory = null;
-          categorySlot.hidden = true;
-          categorySlot.replaceChildren();
-          return;
-        }
-        if (selectedCategory && !availableCategories.includes(selectedCategory)) {
-          selectedCategory = null;
-        }
-
-        const filterBar = createEl(document, "div", "settings-extensions__filters");
-        filterBar.setAttribute("role", "group");
-        filterBar.setAttribute("aria-label", copy.categoryFilterLabel);
-
-        const addFilterPill = (label: string, category: DesktopExtensionCategory | null): void => {
-          const pill = createEl(document, "button", "settings-extensions-filter-pill", label);
-          pill.type = "button";
-          pill.dataset.category = category ?? "all";
-          pill.setAttribute("aria-pressed", String(selectedCategory === category));
-          pill.addEventListener("click", () => {
-            if (selectedCategory === category) return;
-            selectedCategory = category;
-            render();
-          });
-          filterBar.append(pill);
-        };
-
-        const filterCopy = contentLocaleMessages(resolveContentLocale());
-        addFilterPill(filterCopy.categoryAll, null);
-        for (const category of availableCategories) {
-          addFilterPill(filterCopy.categories[category], category);
-        }
-        categorySlot.hidden = false;
-        categorySlot.replaceChildren(filterBar);
-      };
-
-      const setLocaleMenuOpen = (open: boolean): void => {
+      const setFilterMenuOpen = (open: boolean): void => {
         if (open && moreMenuOpen) setMoreMenuOpen(false);
-        localeMenuOpen = open;
-        localeMenu.hidden = !open;
-        localeButton.setAttribute("aria-expanded", String(open));
+        filterMenuOpen = open;
+        filterMenu.hidden = !open;
+        filterButton.setAttribute("aria-expanded", String(open));
       };
 
       const setMoreMenuOpen = (open: boolean): void => {
-        if (open && localeMenuOpen) setLocaleMenuOpen(false);
+        if (open && filterMenuOpen) setFilterMenuOpen(false);
         moreMenuOpen = open;
         moreMenu.hidden = !open;
         moreButton.setAttribute("aria-expanded", String(open));
@@ -811,7 +850,7 @@ export function createDesktopExtensionsSettingsPage(
 
       const closeHeaderMenus = (): void => {
         if (moreMenuOpen) setMoreMenuOpen(false);
-        if (localeMenuOpen) setLocaleMenuOpen(false);
+        if (filterMenuOpen) setFilterMenuOpen(false);
       };
 
       const openDetailModal = (extensionId: string): void => {
@@ -908,14 +947,30 @@ export function createDesktopExtensionsSettingsPage(
 
         const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
 
+        const targets = itemTargets(item);
+        const webOnly = targets.includes("web") && !targets.includes("desktop");
+        const localIcon =
+          item.state === "valid" ? parseSafeExtensionIconUrl(item.iconDataUrl) : null;
+        const cachedProxyIcon =
+          !localIcon && catalogEntry?.icon ? catalogIconLoader.getCached(catalogEntry) : undefined;
+        const shouldLoadViaRpc =
+          !localIcon &&
+          !cachedProxyIcon &&
+          Boolean(catalogEntry?.icon) &&
+          catalogIconLoader.isAvailable();
         return renderDesktopExtensionCard({
           document,
           messages,
           contentLocale,
           extensionId: item.id,
           cardKind: "installed",
+          layout: "row",
           displayName,
-          iconUrl: resolveInstalledExtensionIconUrl(item, catalogEntry),
+          iconUrl: cachedProxyIcon ?? resolveInstalledExtensionIconUrl(item, catalogEntry),
+          resolveIconUrl:
+            shouldLoadViaRpc && catalogEntry
+              ? () => catalogIconLoader.load(catalogEntry)
+              : undefined,
           author:
             (item.state === "valid" ? item.manifest.author : undefined) ?? catalogEntry?.author,
           version: item.state === "valid" ? item.manifest.version : undefined,
@@ -927,8 +982,9 @@ export function createDesktopExtensionsSettingsPage(
           attention,
           attentionId: attention ? errorId : undefined,
           categories: item.state === "valid" ? item.manifest.categories : undefined,
-          platformBadge: derivePlatformBadge(itemTargets(item), copy),
-          capabilityBadges: deriveCapabilityBadges(itemCapabilities(item), copy),
+          platformBadge: webOnly ? derivePlatformBadge(targets, copy) : null,
+          incompatiblePlatformLabel: webOnly ? copy.platformWebOnlyShort : undefined,
+          capabilityBadges: [],
           secondaryAction: openPageButton,
           actionControl: toggle,
           busy: isExtBusy,
@@ -942,46 +998,20 @@ export function createDesktopExtensionsSettingsPage(
 
       const renderInstalledTab = (): void => {
         if (!listing) {
-          renderCapabilityFilterBar(false);
-          categorySlot.hidden = true;
-          categorySlot.replaceChildren();
           if (loading) renderLoading(copy.loading);
           else body.replaceChildren();
           return;
         }
         if (listing.extensions.length === 0) {
-          selectedCapability = "all";
-          selectedCategory = null;
-          renderCapabilityFilterBar(false);
-          categorySlot.hidden = true;
-          categorySlot.replaceChildren();
           renderEmptyBox(copy.emptyTitle, copy.emptyDescription, copy.emptyPathHint);
           return;
         }
-
-        renderCapabilityFilterBar(true);
-
-        const presentCategories = new Set<DesktopExtensionCategory>();
-        for (const item of listing.extensions) {
-          if (item.state === "valid") {
-            for (const category of item.manifest.categories ?? []) {
-              presentCategories.add(category);
-            }
-          }
-        }
-        renderCategoryFilterBar(presentCategories);
 
         const normalizedQuery = searchQuery.trim().toLowerCase();
         const visibleExtensions = listing.extensions.filter((item) => {
           if (
             selectedCapability !== "all" &&
             !matchesCapabilityFilter(selectedCapability, itemCapabilities(item), itemTargets(item))
-          ) {
-            return false;
-          }
-          if (
-            selectedCategory &&
-            (item.state !== "valid" || !item.manifest.categories?.includes(selectedCategory))
           ) {
             return false;
           }
@@ -1015,8 +1045,8 @@ export function createDesktopExtensionsSettingsPage(
 
         const allExtensions = listing.extensions;
         const { canUpdate } = clientCapabilities();
-        const buildGrid = (items: readonly HostExtensionListItem[]): HTMLElement => {
-          const grid = createEl(document, "div", "settings-extensions-grid");
+        const buildRowGrid = (items: readonly HostExtensionListItem[]): HTMLElement => {
+          const grid = createEl(document, "div", "settings-extensions-row-grid");
           for (const item of items) {
             grid.append(
               renderExtensionCard(item, allExtensions, catalogById.get(item.id), canUpdate),
@@ -1025,59 +1055,57 @@ export function createDesktopExtensionsSettingsPage(
           return grid;
         };
 
-        if (attentionItems.length === 0) {
-          const grid = buildGrid(normalItems);
-          grid.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
-          body.replaceChildren(grid);
-          return;
+        const sections = createEl(document, "div", "settings-extensions-sections");
+        sections.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
+
+        if (attentionItems.length > 0) {
+          const attentionSection = createEl(document, "section", "settings-extensions-section");
+          attentionSection.dataset.extensionGroup = "attention";
+          const headingId = preferenceId("host-ext-group-attention");
+          attentionSection.setAttribute("aria-labelledby", headingId);
+
+          const heading = createEl(document, "h2", "settings-extensions-section__title");
+          heading.id = headingId;
+          heading.append(
+            createEl(document, "span", "", copy.attentionHeading),
+            createEl(
+              document,
+              "span",
+              "settings-extensions-section__count",
+              String(attentionItems.length),
+            ),
+          );
+          attentionSection.append(heading, buildRowGrid(attentionItems));
+          sections.append(attentionSection);
         }
-
-        const groupsContainer = createEl(document, "div", "settings-extensions__groups");
-        groupsContainer.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
-
-        const attentionSection = createEl(document, "section", "settings-extensions__group");
-        attentionSection.dataset.extensionGroup = "attention";
-        const headingId = preferenceId("host-ext-group-attention");
-        attentionSection.setAttribute("aria-labelledby", headingId);
-
-        const groupHead = createEl(document, "div", "settings-extensions__group-head");
-        const groupTitle = createEl(
-          document,
-          "h2",
-          "settings-extensions__group-title",
-          copy.attentionHeading,
-        );
-        groupTitle.id = headingId;
-        const groupCount = createEl(
-          document,
-          "span",
-          "settings-extensions__group-count",
-          String(attentionItems.length),
-        );
-        groupHead.append(groupTitle, groupCount);
-        attentionSection.append(groupHead, buildGrid(attentionItems));
-        groupsContainer.append(attentionSection);
 
         if (normalItems.length > 0) {
-          groupsContainer.append(buildGrid(normalItems));
+          const installedSection = createEl(document, "section", "settings-extensions-section");
+          installedSection.dataset.extensionGroup = "installed";
+          const heading = createEl(document, "h2", "settings-extensions-section__title");
+          heading.append(
+            createEl(document, "span", "", copy.sectionInstalled),
+            createEl(
+              document,
+              "span",
+              "settings-extensions-section__count",
+              String(normalItems.length),
+            ),
+          );
+          installedSection.append(heading, buildRowGrid(normalItems));
+          sections.append(installedSection);
         }
 
-        body.replaceChildren(groupsContainer);
+        body.replaceChildren(sections);
       };
 
       const renderMarketplaceTab = (): void => {
         if (catalogUnavailable) {
-          renderCapabilityFilterBar(false);
-          categorySlot.hidden = true;
-          categorySlot.replaceChildren();
           renderEmptyBox(copy.marketplaceUnavailableTitle, copy.marketplaceUnavailableDescription);
           return;
         }
 
         if (!catalog) {
-          renderCapabilityFilterBar(false);
-          categorySlot.hidden = true;
-          categorySlot.replaceChildren();
           if (catalogLoading) {
             renderLoading(copy.marketplaceLoading);
             return;
@@ -1117,11 +1145,6 @@ export function createDesktopExtensionsSettingsPage(
         const prefixNodes = fallbackNotice ? [fallbackNotice] : [];
 
         if (catalog.extensions.length === 0) {
-          selectedCapability = "all";
-          selectedCategory = null;
-          renderCapabilityFilterBar(false);
-          categorySlot.hidden = true;
-          categorySlot.replaceChildren();
           const empty = createEl(
             document,
             "div",
@@ -1137,16 +1160,7 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
 
-        renderCapabilityFilterBar(true);
-
-        const presentCategories = new Set<DesktopExtensionCategory>();
-        for (const entry of catalog.extensions) {
-          for (const category of entry.categories ?? []) {
-            presentCategories.add(category);
-          }
-        }
-        renderCategoryFilterBar(presentCategories);
-
+        const category = activeCategory();
         const normalizedQuery = searchQuery.trim().toLowerCase();
         const visibleEntries = catalog.extensions.filter((entry) => {
           if (
@@ -1155,7 +1169,7 @@ export function createDesktopExtensionsSettingsPage(
           ) {
             return false;
           }
-          if (selectedCategory && !entry.categories?.includes(selectedCategory)) {
+          if (category && !entry.categories?.includes(category)) {
             return false;
           }
           return matchesCatalogSearchQuery(entry, normalizedQuery);
@@ -1171,14 +1185,19 @@ export function createDesktopExtensionsSettingsPage(
           installedById.set(item.id, item);
         }
 
+        const isDefaultHome =
+          activeView === "all" && normalizedQuery === "" && selectedCapability === "all";
         const { canInstall } = clientCapabilities();
-        const grid = renderDesktopExtensionsMarketplaceGrid({
+        const marketView = renderDesktopExtensionsMarketplaceGrid({
           document,
           messages,
           contentLocale: resolveContentLocale(),
           catalog,
           visibleEntries,
           installedById,
+          isDefaultHome,
+          selectedCategory: category,
+          catalogIconLoader,
           canInstall,
           pendingMutations,
           globalBusy: recovering,
@@ -1187,9 +1206,8 @@ export function createDesktopExtensionsSettingsPage(
             void installFromCatalog(entry, isUpdate);
           },
           onViewInstalled: () => {
-            activeTab = "installed";
+            activeView = "installed";
             selectedCapability = "all";
-            selectedCategory = null;
             searchQuery = "";
             searchInput.value = "";
             clearSearchButton.hidden = true;
@@ -1203,7 +1221,7 @@ export function createDesktopExtensionsSettingsPage(
           },
         });
 
-        body.replaceChildren(...prefixNodes, grid);
+        body.replaceChildren(...prefixNodes, marketView);
       };
 
       const render = (): void => {
@@ -1211,19 +1229,16 @@ export function createDesktopExtensionsSettingsPage(
         renderDiagnostics();
 
         if (unavailable) {
-          controlsBar.hidden = true;
-          renderCapabilityFilterBar(false);
-          categorySlot.hidden = true;
-          categorySlot.replaceChildren();
+          stickyBar.hidden = true;
           renderEmptyBox(copy.unavailableTitle, copy.unavailableDescription);
           detailModal.sync(buildDetailModalState());
           return;
         }
 
-        controlsBar.hidden = false;
+        stickyBar.hidden = false;
         clearSearchButton.hidden = searchQuery.length === 0;
 
-        if (activeTab === "installed") {
+        if (isInstalledView()) {
           renderInstalledTab();
         } else {
           renderMarketplaceTab();
@@ -1351,7 +1366,7 @@ export function createDesktopExtensionsSettingsPage(
         if (!client?.listHostExtensionCatalog) {
           catalogUnavailable = true;
           catalogLoading = false;
-          if (activeTab === "marketplace") render();
+          if (!isInstalledView()) render();
           return;
         }
 
@@ -1388,7 +1403,7 @@ export function createDesktopExtensionsSettingsPage(
             return;
           }
           catalogError = errorMessage(error);
-          if (!silent && activeTab === "marketplace" && catalog) {
+          if (!silent && !isInstalledView() && catalog) {
             setFeedback({
               tone: "danger",
               text: formatMessage(copy.marketplaceLoadFailed, { message: catalogError }),
@@ -1482,9 +1497,8 @@ export function createDesktopExtensionsSettingsPage(
         try {
           const result = await install({ source });
           if (disposed || context.signal.aborted) return;
-          activeTab = "installed";
+          activeView = "installed";
           selectedCapability = "all";
-          selectedCategory = null;
           searchQuery = "";
           searchInput.value = "";
           clearSearchButton.hidden = true;
@@ -1825,15 +1839,15 @@ export function createDesktopExtensionsSettingsPage(
         modal.showModal();
       };
 
-      const switchTab = (next: ActiveTab): void => {
-        if (activeTab === next) return;
+      const switchView = (next: NavView): void => {
+        if (activeView === next) return;
         closeHeaderMenus();
         if (pageHost.isOpen) pageHost.close();
-        activeTab = next;
+        activeView = next;
         setFeedback(null);
         render();
         if (
-          next === "marketplace" &&
+          next !== "installed" &&
           !catalog &&
           !catalogLoading &&
           !catalogUnavailable &&
@@ -1861,19 +1875,19 @@ export function createDesktopExtensionsSettingsPage(
         if (moreMenuOpen && !(event?.target && isWithinElement(event.target, moreWrap))) {
           setMoreMenuOpen(false);
         }
-        if (localeMenuOpen && !(event?.target && isWithinElement(event.target, localeWrap))) {
-          setLocaleMenuOpen(false);
+        if (filterMenuOpen && !(event?.target && isWithinElement(event.target, filterWrap))) {
+          setFilterMenuOpen(false);
         }
       };
 
       const onDocumentKeyDown = (event?: Event): void => {
-        if (!moreMenuOpen && !localeMenuOpen) return;
+        if (!moreMenuOpen && !filterMenuOpen) return;
         const key = (event as KeyboardEvent | undefined)?.key;
         if (key !== "Escape") return;
         event?.preventDefault?.();
-        if (localeMenuOpen) {
-          setLocaleMenuOpen(false);
-          localeButton.focus?.();
+        if (filterMenuOpen) {
+          setFilterMenuOpen(false);
+          filterButton.focus?.();
         }
         if (moreMenuOpen) {
           setMoreMenuOpen(false);
@@ -1881,14 +1895,23 @@ export function createDesktopExtensionsSettingsPage(
         }
       };
 
-      localeButton.addEventListener("click", (event) => {
+      filterButton.addEventListener("click", (event) => {
         event.stopPropagation?.();
-        setLocaleMenuOpen(!localeMenuOpen);
+        setFilterMenuOpen(!filterMenuOpen);
       });
+
+      for (const [filter, { button }] of capabilityOptionButtons) {
+        button.addEventListener("click", () => {
+          setFilterMenuOpen(false);
+          if (selectedCapability === filter) return;
+          selectedCapability = filter;
+          render();
+        });
+      }
 
       for (const [value, { button }] of localeOptionButtons) {
         button.addEventListener("click", () => {
-          setLocaleMenuOpen(false);
+          setFilterMenuOpen(false);
           if (contentLocalePreference === value) return;
           contentLocalePreference = value;
           writeContentLocalePreference(ownerWindow, value);
@@ -1900,6 +1923,20 @@ export function createDesktopExtensionsSettingsPage(
       moreButton.addEventListener("click", (event) => {
         event.stopPropagation?.();
         setMoreMenuOpen(!moreMenuOpen);
+      });
+
+      refreshMenuItem.addEventListener("click", () => {
+        setMoreMenuOpen(false);
+        if (recovering) return;
+        if (!isInstalledView()) {
+          if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: false });
+          if (!loading) void loadInstalled({ silent: true, keepFeedback: true });
+        } else {
+          if (!loading) void loadInstalled({ silent: false, keepFeedback: false });
+          if (!catalogLoading && !catalogUnavailable) {
+            void loadCatalog({ forceRefresh: true, silent: true });
+          }
+        }
       });
 
       copyDirectoryMenuItem.addEventListener("click", () => {
@@ -1928,8 +1965,8 @@ export function createDesktopExtensionsSettingsPage(
         openRecoveryDialog();
       });
 
-      installedTabButton.addEventListener("click", () => switchTab("installed"));
-      marketplaceTabButton.addEventListener("click", () => switchTab("marketplace"));
+      allTabButton.addEventListener("click", () => switchView("all"));
+      installedTabButton.addEventListener("click", () => switchView("installed"));
 
       searchInput.addEventListener("input", () => {
         searchQuery = searchInput.value;
@@ -1959,20 +1996,9 @@ export function createDesktopExtensionsSettingsPage(
         importModal.open();
       });
 
-      refreshButton.addEventListener("click", () => {
-        if (recovering) return;
-        closeHeaderMenus();
-        if (activeTab === "marketplace") {
-          if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: false });
-        } else if (!loading) {
-          void loadInstalled({ silent: false, keepFeedback: false });
-          if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: true });
-        }
-      });
-
       bannerRetry.addEventListener("click", () => {
         if (recovering) return;
-        if (activeTab === "marketplace") {
+        if (!isInstalledView()) {
           if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: false });
         } else if (!loading) {
           void loadInstalled({ silent: false, keepFeedback: false });
@@ -1990,9 +2016,9 @@ export function createDesktopExtensionsSettingsPage(
       document.addEventListener?.("click", onDocumentClick);
       document.addEventListener?.("keydown", onDocumentKeyDown);
 
-      void loadInstalled({ silent: false });
+      void loadInstalled({ silent: activeView !== "installed" });
       if (resolveAvailableClient(getClient)?.listHostExtensionCatalog) {
-        void loadCatalog({ silent: true });
+        void loadCatalog({ silent: activeView === "installed" });
       }
 
       return () => {

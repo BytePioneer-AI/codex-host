@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { ExtensionBackendProcess } from "@codexhost/extension-backend";
 import {
   discoverHostExtensions,
+  fetchCachedCatalogIcon,
   fetchHostExtensionCatalog,
   hostExtensionDataDirectory,
   HostExtensionInstallConflict,
@@ -115,7 +116,10 @@ export class HostExtensionManager {
 
   list(): Promise<HostExtensionsRpcResult<typeof RPC.list>> {
     return this.#run(async () => {
-      const { extensions, configuration, diagnostics } = await discoverHostExtensions(this.dataDir);
+      const { extensions, configuration, diagnostics } = await discoverHostExtensions(
+        this.dataDir,
+        { includeScreenshots: false },
+      );
       return {
         revision: this.#revision,
         configuration,
@@ -179,7 +183,33 @@ export class HostExtensionManager {
   }
 
   catalog(input: HostExtensionsRpcParams<typeof RPC.catalog>) {
-    return fetchHostExtensionCatalog(input);
+    const forceRefresh = input.forceRefresh ?? false;
+    return fetchHostExtensionCatalog({
+      dataDir: this.dataDir,
+      forceRefresh,
+      staleWhileRevalidate: input.staleWhileRevalidate ?? !forceRefresh,
+      fallbackToCache: true,
+    });
+  }
+
+  async catalogIcon(
+    input: HostExtensionsRpcParams<typeof RPC.catalogIcon>,
+  ): Promise<HostExtensionsRpcResult<typeof RPC.catalogIcon>> {
+    const catalog = await fetchHostExtensionCatalog({
+      dataDir: this.dataDir,
+      staleWhileRevalidate: true,
+      fallbackToCache: true,
+    });
+    const entry = catalog.extensions.find((item) => item.id === input.id);
+    if (!entry?.icon) {
+      throw new Error("Extension icon is not available");
+    }
+    const { mimeType, bytes } = await fetchCachedCatalogIcon({
+      dataDir: this.dataDir,
+      iconUrl: entry.icon,
+      signal: this.#closeController.signal,
+    });
+    return { mimeType, base64: bytes.toString("base64") };
   }
 
   install({ source }: HostExtensionsRpcParams<typeof RPC.install>) {

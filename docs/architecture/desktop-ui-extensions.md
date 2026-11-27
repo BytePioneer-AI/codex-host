@@ -146,8 +146,9 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 
 | RPC 方法 | 用途 |
 | --- | --- |
-| `list` / `snapshot` | 返回含修订号与诊断的管理列表 / 仅供已启用扩展使用的运行态快照 |
-| `catalog` | 并发竞速拉取市场索引 `catalog.v2.json`（GitHub Raw 与 jsDelivr 镜像，5 分钟缓存） |
+| `list` / `snapshot` | 返回含修订号与诊断的管理列表（默认省略大图截图以减小轮询载荷；详情弹窗按需经 `asset` 懒加载）/ 仅供已启用扩展使用的运行态快照 |
+| `catalog` | 并发竞速拉取市场索引 `catalog.v2.json`（GitHub Raw 与 jsDelivr 镜像，支持磁盘持久化 SWR 缓存与后台下载量合并；可选 `featured` / `featuredOrder` 精选字段） |
+| `catalogIcon` | 按目录扩展 ID 拉取并磁盘缓存远程光栅图标（仅允许 HTTPS 与 PNG/JPEG/WEBP 魔数校验，防止 SSRF 与外链直连超时） |
 | `install` / `update` / `uninstall` | 支持 `catalog`、`github`、`zip`（base64；拒绝 `localZipPath`）与 `localDir`；代次原子替换 |
 | `enable` / `disable` / `recover` | 带 `expectedRevision` 乐观锁更新 `enabled.json`；`recover` 一键清空启用列表 |
 | `asset` | 安全读取公开静态资源、声明的前端入口及包内 `.mjs` 模块，严格禁止读取 `backend.entry` 或路径穿越 |
@@ -158,9 +159,10 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 - **Web 薄代理（`packages/web-server`）**：不持有任何扩展磁盘目录或子进程，全部在现有 `auth.gate` 鉴权与同源门禁（`--no-auth` / `--safe-mode` 返回 `403`）之后代理至共享 Host：
   - `POST /api/ch/v1/rpc` 与 `GET /api/ch/v1/events`：透传 `codexhost/extensions/*` RPC 与 `extensions-changed` 事件；
   - `POST /api/extensions/upload`（`Content-Type: application/zip`，≤ 64 MiB）：流式读取 ZIP 后转为 `install` / `update` RPC；
+  - `GET` / `HEAD /api/extensions/catalog-icon?id=<id>`：向 Host 请求已校验并缓存的市场图标字节，返回私有缓存头、`X-Content-Type-Options: nosniff` 与 `Cross-Origin-Resource-Policy: same-origin`；
   - `GET` / `HEAD /api/extensions/assets/:id/:activationId/:digest/*`：向 Host 请求资产并返回 `Cache-Control: private, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`；对缺失、代次不匹配及 `backend.entry` 统一返回 `404`。
 - **Console 转发（`packages/console-server`）**：`/api/extensions/*` 写操作转发至共享 Host RPC，共享 Host 未运行时返回 `503`；只读列表与市场查询在离线时支持直接读取磁盘/拉取目录。
-- **双端统一 UI**：Desktop「设置 → 插件」和 Web「插件」工作区内的插件中心提供统一的管理界面。正常已安装插件在同一网格按本地化名称排列，只有异常插件单独列在顶部。卡片和详情标明适用平台（`Codex Desktop · CH Web` / `仅 Codex Desktop` / `仅 CH Web`），并支持按适用平台、能力（`独立页面` / `挂件` / `后台`）和分类筛选。插件中心在后台加载市场目录，目录可用后显示市场数量；有新版本的插件可直接从「已安装」卡片更新。已启用且含 `page` 的扩展可从 Desktop 设置左侧的「插件页面」分组或 Web 主工作区顶部的切页栏打开，也可从插件中心点击「打开页面」。`settingsSchema` 表单只在插件详情中显示，用于编辑共享设置。Desktop 侧栏也支持旧版 `api.settings.registerPage` 自定义页；同一扩展声明了 `page` 时优先展示独立页面。
+- **双端统一 UI**：Desktop「设置 → 插件」和 Web「插件」工作区内的插件中心提供一致的导航与布局。顶部标题右侧保留「制作插件」与「导入插件」，下方单行吸顶导航按「全部 / 已安装 (N) / 分类」排列，右侧收纳搜索、能力与内容语言「筛选」浮层及「更多（刷新/复制目录/紧急恢复）」菜单。默认市场首页展示 3 列「精选推荐」卡片（优先目录显式 `featured: true` 按 `featuredOrder` 排序，未标记时按官方、下载量、图标、跨平台、Star 与 ID 稳定兜底前 3）与 2 列无框「社区扩展」列表；「已安装」页采用 2 列无框列表并保留启停开关、更新按钮、打开页面入口与异常提示。市场图标在 Web 走 `/api/extensions/catalog-icon` 代理，在 Desktop 走 `codexhost/extensions/catalogIcon` RPC 内存缓存，已安装扩展优先复用本地 `iconDataUrl`。卡片仅在跨端不适用时提示「仅桌面端 / 仅 Web 端」，完整平台与能力徽章、截图画廊及 `settingsSchema` 设置表单在插件详情弹窗中展示。Desktop 侧栏也支持旧版 `api.settings.registerPage` 自定义页；同一扩展声明了 `page` 时优先展示独立页面。
 
 ## 作者与打包指南
 

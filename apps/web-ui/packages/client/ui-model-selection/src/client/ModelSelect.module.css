@@ -1,5 +1,6 @@
 .root {
   position: relative;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -86,14 +87,16 @@
 }
 
 /* Phone capacity includes this bounded name, independent of the composer's
-   compact variables. Effort stays in the existing menu and accessible label. */
+   compact variables, while allowing the label to shrink when narrow rows need
+   room for sibling controls. Effort stays in the existing menu and accessible label. */
 :global([data-phone]) .trigger {
-  max-width: none;
+  max-width: 100%;
 }
 
 :global([data-phone]) .triggerLabel {
   display: block;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100px;
 }
 

@@ -101,10 +101,12 @@ Each computer shows its own available actions. Operations run only when you clic
 - **Update remote service** appears when the remote end is too old to report its version. Click to install the local version over SSH, then reconfigure and start the remote service.
 - **Restart and connect** appears when a newer build is installed but an older build is running. Click to restart immediately.
 - **Reconnect** appears when a connection fails. It disconnects and connects again right away.
-- **Repair remote service** appears only when remote status is unavailable, the connection failed, or an update failed. It stops the service, removes its connection setup, configures it again and starts it. It does not uninstall or update the codexhost package.
+- **Repair remote service** appears only when remote status is unavailable, the connection failed, or an update failed. It stops the service, removes its connection setup, configures it again and starts it. It does not uninstall or update the codexhost package; if the remote platform package is missing, repair reports the missing package without modifying npm packages.
 - **Check again** retries an unavailable remote status. A failed check does not mean the service is missing.
 
-Updates, restarts and repairs run immediately and may interrupt active conversations. There is no task-completion wait.
+Installations and updates first download both the target CLI package and the matching platform package into npm's cache on the remote computer. If either package is not yet available on npm or fails to download, the existing installation and running service stay untouched.
+
+Once ready, updates, restarts and repairs run immediately and may interrupt active conversations. There is no task-completion wait.
 
 The page does not install or update in the background. These actions update codexhost software, not project files or conversation history.
 

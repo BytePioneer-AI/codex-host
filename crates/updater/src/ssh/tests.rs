@@ -481,11 +481,12 @@ fn maintenance_finds_tools_beside_the_recorded_node() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(root.join(".codexhost/remote")).unwrap();
     std::fs::write(root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
-    for tool in ["node", "npm", "codexhost"] {
-        use std::os::unix::fs::PermissionsExt;
-        let path = bin.join(tool);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    executable(
+        &bin.join("node"),
+        "#!/bin/sh\ncase \"$*\" in *process.platform*) echo linux-x64;; esac\n",
+    );
+    for tool in ["npm", "codexhost"] {
+        executable(&bin.join(tool), "#!/bin/sh\nexit 0\n");
     }
     let mut r = request();
     for (action, version) in [("update", Some("1.2.3")), ("repair", None)] {
@@ -546,6 +547,58 @@ fn install_refuses_to_replace_existing_remote_services() {
     assert!(value.contains("@codexhost/cli@1.2.3"));
     assert!(!value.contains("remote stop"));
 }
+
+#[cfg(unix)]
+#[test]
+fn update_prefetches_the_platform_package_before_stopping_and_fails_closed_if_missing() {
+    let root = std::env::temp_dir().join(format!(
+        "codexhost-ssh-update-prefetch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let manifest = root.join(".codexhost/remote/manifest.json");
+    std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    std::fs::write(&manifest, "{}").unwrap();
+    let platform_spec = "@codexhost/cli-linux-x64@1.2.4";
+    let mocks = r#"
+node(){ case "$*" in *process.platform*) printf '%s' "$TEST_PLATFORM_TARGET";; *) :;; esac; }
+npm(){ printf '%s\n' "$*" >> "$HOME/calls"; if [ "$1" = cache ] && [ "$3" = "$MISSING_PACKAGE" ]; then return 1; fi; }
+codexhost(){ printf '%s\n' "$*" >> "$HOME/calls"; }
+"#;
+    let mut r = request();
+    r.action = "update".into();
+    r.version = Some("1.2.4".into());
+    let result = Command::new("/bin/sh")
+        .args(["-c", &format!("{mocks}{}", script(&r).unwrap())])
+        .env("HOME", &root)
+        .env("TEST_PLATFORM_TARGET", "linux-x64")
+        .env("MISSING_PACKAGE", platform_spec)
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        result.status.code(),
+        Some(53),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("calls")).unwrap(),
+        format!(
+            "cache add @codexhost/cli@1.2.4 --fetch-retries=0 --fetch-timeout=30000\ncache add {platform_spec} --fetch-retries=0 --fetch-timeout=30000\n"
+        )
+    );
+    assert!(
+        manifest.exists(),
+        "prefetch failure must keep the service installed"
+    );
+    assert!(!root.join(".codexhost/ssh-setup.lock").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn executes_initial_setup_and_refuses_an_existing_installation() {
@@ -561,7 +614,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     let mut r = request();
     r.action = "install".into();
     r.version = Some("1.2.3".into());
-    let mocks = r#"node(){ :; }; npm(){ printf '%s\n' "$*" >> "$HOME/calls"; }; codex(){ :; }; codexhost(){ printf '%s\n' "$*" >> "$HOME/calls"; }; "#;
+    let mocks = r#"node(){ case "$*" in *process.platform*) echo darwin-arm64;; *) :;; esac; }; npm(){ printf '%s\n' "$*" >> "$HOME/calls"; }; codex(){ :; }; codexhost(){ printf '%s\n' "$*" >> "$HOME/calls"; }; "#;
     let value = format!("{mocks}{}", script(&r).unwrap());
     let first = Command::new("sh")
         .args(["-c", &value])
@@ -594,7 +647,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
         .unwrap();
     assert!(updated.status.success());
     let calls = format!(
-        "{calls}view @codexhost/cli@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g @codexhost/cli@1.2.4\nremote install\nremote stop\nremote start\n"
+        "{calls}cache add @codexhost/cli@1.2.4 --fetch-retries=0 --fetch-timeout=30000\ncache add @codexhost/cli-darwin-arm64@1.2.4 --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g --prefer-offline @codexhost/cli@1.2.4 @codexhost/cli-darwin-arm64@1.2.4\nremote install\nremote stop\nremote start\n",
     );
     assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), calls);
     assert!(!root.join(".codexhost/ssh-setup.lock").exists());

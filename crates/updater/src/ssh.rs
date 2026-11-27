@@ -76,7 +76,23 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         "update" => {
             let version = release_version(request)?;
             Ok(format!(
-                "{node}set -e; {lock}[ -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 52; command -v npm >/dev/null 2>&1 || exit 56; npm view @codexhost/cli@{version} version --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53; if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}; command -v codexhost >/dev/null || exit 54; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
+                r#"{node}set -e; {lock}
+[ -f "$HOME/.codexhost/remote/manifest.json" ] || exit 52
+command -v npm >/dev/null 2>&1 || exit 56
+TARGET=$(node -p 'process.platform + "-" + process.arch') || exit 44
+case "$TARGET" in darwin-arm64|darwin-x64|linux-arm64|linux-x64) ;; *) exit 44;; esac
+CLI_SPEC='@codexhost/cli@{version}'
+PLATFORM_SPEC="@codexhost/cli-$TARGET@{version}"
+for PACKAGE in "$CLI_SPEC" "$PLATFORM_SPEC"; do
+  npm cache add "$PACKAGE" --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53
+done
+if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi
+npm install -g --prefer-offline "$CLI_SPEC" "$PLATFORM_SPEC" >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}
+command -v codexhost >/dev/null || exit 54
+codexhost remote install >/dev/null 2>&1 || exit 47
+codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50
+codexhost remote start >/dev/null 2>&1 || {started} || exit 48
+printf '\n__CODEXHOST_SSH_STATE__=installed\n'"#
             ))
         }
         // A damaged installation is exactly what the CLI refuses to stop, so the first stop is
@@ -222,7 +238,7 @@ pub fn apply() -> Result<(), Box<dyn Error>> {
         return Err(match status.code() {
             Some(43) => "Remote service is already installed. Connect and use its update button",
             Some(52) => "Remote service is not installed. Use Install and connect instead",
-            Some(53) => "This release is not published on npm, or the remote computer cannot reach the registry",
+            Some(53) => "This release or its platform package is not published on npm, or the remote computer cannot reach the registry",
             Some(54) => "codexhost was installed but is not on the remote PATH. Update this remote manually",
             Some(44) => "Only Mac and Linux remote computers are supported",
             Some(45) => "Node.js was not detected over SSH. Install it on the remote computer or add it to the login shell PATH, then retry",

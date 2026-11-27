@@ -104,7 +104,9 @@ Each computer shows its own available actions. Operations run only when you clic
 - **Repair remote service** appears only when remote status is unavailable, the connection failed, or an update failed. It stops the service, removes its connection setup, configures it again and starts it. It does not uninstall or update the codexhost package.
 - **Check again** retries an unavailable remote status. A failed check does not mean the service is missing.
 
-Updates, restarts and repairs run immediately and may interrupt active conversations. There is no task-completion wait.
+Updates first download the target CLI and platform packages using npm on the remote computer. If either download fails, the current installation and service stay in place.
+
+Once ready, updates, restarts and repairs may interrupt active conversations. There is no task-completion wait.
 
 The page does not install or update in the background. These actions update codexhost software, not project files or conversation history.
 

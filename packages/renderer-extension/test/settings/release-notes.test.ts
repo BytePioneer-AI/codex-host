@@ -139,4 +139,44 @@ describe("Release notes Markdown", () => {
     expect(visibleText(body)).toContain("codexhost");
     expect(visibleText(body)).not.toContain("<details>");
   });
+
+  it("keeps literal details tags inside fenced code", () => {
+    const codeLines = ["</details>", "<details open>", "  <p>Literal HTML</p>"];
+    const root = render(
+      [
+        "<details>",
+        "<summary>HTML example</summary>",
+        "",
+        "```html",
+        ...codeLines,
+        "```",
+        "",
+        "<details open>",
+        "<summary>Nested notes</summary>",
+        "Nested content.",
+        "</details>",
+        "Still inside the outer details.",
+        "</details>",
+        "Outside the details.",
+      ].join("\n"),
+    );
+
+    expect(root.children.map((child) => (child as FakeElement).tagName)).toEqual(["details", "p"]);
+    const [details, outside] = root.children as FakeElement[];
+    const body = details.children[1] as FakeElement;
+    expect(body.children.map((child) => (child as FakeElement).tagName)).toEqual([
+      "pre",
+      "details",
+      "p",
+    ]);
+    const [pre, nested, inside] = body.children as FakeElement[];
+    const code = pre.children[0] as FakeElement;
+    expect(code.tagName).toBe("code");
+    expect(code.className).toBe("language-html");
+    expect(code.textContent).toBe(codeLines.join("\n"));
+    expect(nested.attributes.has("open")).toBe(true);
+    expect(visibleText(nested)).toBe("Nested notes Nested content.");
+    expect(visibleText(inside)).toBe("Still inside the outer details.");
+    expect(visibleText(outside)).toBe("Outside the details.");
+  });
 });

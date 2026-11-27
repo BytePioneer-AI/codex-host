@@ -196,6 +196,42 @@ pub(super) fn ensure(
     result
 }
 
+fn serve_command(options: &Options, node_ready: &Path) -> Result<Command, Box<dyn Error>> {
+    let mut command = Command::new(&options.node);
+    clean(&mut command);
+    command
+        .current_dir(&options.data)
+        .arg("--disable-warning=UNDICI-EHPA")
+        .arg(node_entrypoint_path(&options.runtime))
+        .arg("--background")
+        .arg("--ready-file")
+        .arg(node_ready)
+        .arg("--ch-data")
+        .arg(&options.data)
+        .arg("--ch-node")
+        .arg(&options.host_node)
+        .arg("--ch-host-runtime")
+        .arg(&options.host_runtime)
+        .arg("--ch-plugins")
+        .arg(
+            options
+                .host_runtime
+                .parent()
+                .ok_or("Host Runtime has no parent")?
+                .join("plugins"),
+        )
+        .arg("--ch-launcher")
+        .arg(env::current_exe()?)
+        .env("CODEXHOST_DATA_DIR", &options.data)
+        .envs(codexhost_platform::proxy_environment())
+        .stderr(Stdio::piped());
+    if let Some(path) = codexhost_platform::user_shell_path() {
+        command.env("PATH", path);
+    }
+    configure_background_command(&mut command);
+    Ok(command)
+}
+
 fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
     let ready = options
         .ready
@@ -212,35 +248,7 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
     let outcome = (|| -> Result<(), Box<dyn Error>> {
         loop {
             remove_file(&node_ready)?;
-            let mut command = Command::new(&options.node);
-            clean(&mut command);
-            command
-                .current_dir(&options.data)
-                .arg("--disable-warning=UNDICI-EHPA")
-                .arg(node_entrypoint_path(&options.runtime))
-                .arg("--background")
-                .arg("--ready-file")
-                .arg(&node_ready)
-                .arg("--ch-data")
-                .arg(&options.data)
-                .arg("--ch-node")
-                .arg(&options.host_node)
-                .arg("--ch-host-runtime")
-                .arg(&options.host_runtime)
-                .arg("--ch-plugins")
-                .arg(
-                    options
-                        .host_runtime
-                        .parent()
-                        .ok_or("Host Runtime has no parent")?
-                        .join("plugins"),
-                )
-                .arg("--ch-launcher")
-                .arg(env::current_exe()?)
-                .env("CODEXHOST_DATA_DIR", &options.data)
-                .envs(codexhost_platform::proxy_environment())
-                .stderr(Stdio::piped());
-            configure_background_command(&mut command);
+            let mut command = serve_command(options, &node_ready)?;
             let mut child = spawn_supervised(&mut command)?;
             let mut stderr = child.take_stderr().expect("piped Web stderr");
             let diagnostics = thread::spawn(move || {

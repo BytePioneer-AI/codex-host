@@ -268,3 +268,62 @@ fn stalled_shutdown_terminates_the_captured_fixture_process() {
     assert!(!child.wait().unwrap().success());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn serve_command_injects_macos_login_shell_path_under_minimal_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const TEST: &str =
+        "host_service::tests::serve_command_injects_macos_login_shell_path_under_minimal_path";
+    const MARKER: &str = "CODEXHOST_TEST_HOST_SERVE_MACOS_PATH";
+    if let Some(root) = env::var_os(MARKER) {
+        let root = std::path::PathBuf::from(root);
+        let options = super::Options {
+            node: root.join("node"),
+            runtime: root.join("host-runtime.mjs"),
+            data: root.clone(),
+            ready: None,
+            extras: Vec::new(),
+        };
+        let command = super::serve_command(&options, &root.join("node.ready")).unwrap();
+        let path = command
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then_some(value))
+            .flatten()
+            .expect("PATH must be injected on macOS");
+        assert_eq!(
+            path,
+            "/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        );
+        return;
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "codexhost-host-path-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let fake_shell = root.join("zsh");
+    fs::write(
+        &fake_shell,
+        "#!/bin/sh\nprintf '\\0CODEXHOST_LOGIN_PATH_V1\\0/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin\\0'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_shell, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let status = Command::new(env::current_exe().unwrap())
+        .args(["--exact", TEST])
+        .env(MARKER, &root)
+        .env("HOME", &root)
+        .env("SHELL", &fake_shell)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .status()
+        .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert!(status.success());
+}

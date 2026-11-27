@@ -125,7 +125,7 @@ describe("fetchLatestNpmRelease", () => {
   const fallbackNpmCliPath = "/prefix/lib/node_modules/npm/bin/npm-cli.js";
 
   it("reads the stable version from the registry dist-tags", async () => {
-    const asked: readonly string[][] = [];
+    const asked: (readonly string[])[] = [];
     const version = await fetchLatestNpmRelease(
       fallbackNodePath,
       fallbackNpmCliPath,

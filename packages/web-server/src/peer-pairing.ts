@@ -134,11 +134,11 @@ export async function syncPeerMesh(options: {
         targetName: target.record.name,
         introducedHost: introducedRecord?.peerId ?? "local",
         introducedName:
-          introduced === "local"
+          introducedRecord === undefined
             ? selfShare && "name" in selfShare
               ? selfShare.name
               : "Local Host"
-            : introducedRecord!.name,
+            : introducedRecord.name,
       };
       if (!options.isActivePeer(target)) {
         results[i] = { ...step, status: "skipped", error: "Remote peer is no longer available" };

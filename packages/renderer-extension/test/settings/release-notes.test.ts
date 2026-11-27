@@ -162,14 +162,14 @@ describe("Release notes Markdown", () => {
     );
 
     expect(root.children.map((child) => (child as FakeElement).tagName)).toEqual(["details", "p"]);
-    const [details, outside] = root.children as FakeElement[];
+    const [details, outside] = root.children as [FakeElement, FakeElement];
     const body = details.children[1] as FakeElement;
     expect(body.children.map((child) => (child as FakeElement).tagName)).toEqual([
       "pre",
       "details",
       "p",
     ]);
-    const [pre, nested, inside] = body.children as FakeElement[];
+    const [pre, nested, inside] = body.children as [FakeElement, FakeElement, FakeElement];
     const code = pre.children[0] as FakeElement;
     expect(code.tagName).toBe("code");
     expect(code.className).toBe("language-html");

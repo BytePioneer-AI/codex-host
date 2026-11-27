@@ -4,7 +4,7 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(250);
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Options {
     pub onboarding: bool,
+    pub route: Option<String>,
     pub data_dir: PathBuf,
     /// True when the data directory came from `--data-dir` or an absolute
     /// `CODEXHOST_DATA_DIR`, rather than being derived from the home directory.
@@ -29,11 +30,20 @@ impl Options {
         home: Option<OsString>,
     ) -> Result<Self, String> {
         let mut onboarding = false;
+        let mut route = None;
         let mut data_dir = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--onboarding") if !onboarding => onboarding = true,
+                Some("--route") if route.is_none() => {
+                    route = Some(
+                        args.next()
+                            .and_then(|value| value.into_string().ok())
+                            .filter(|value| crate::navigation::valid_host_route(value))
+                            .ok_or("--route requires a root-relative route")?,
+                    );
+                }
                 Some("--data-dir") if data_dir.is_none() => {
                     let path = args.next().map(PathBuf::from);
                     data_dir = Some(
@@ -43,10 +53,13 @@ impl Options {
                 }
                 _ => {
                     return Err(
-                        "Usage: codexhost-shell [--onboarding] [--data-dir <absolute path>]".into(),
+                        "Usage: codexhost-shell [--onboarding] [--data-dir <absolute path>] [--route <relative route>]".into(),
                     );
                 }
             }
+        }
+        if onboarding && route.is_some() {
+            return Err("--route cannot be combined with --onboarding".into());
         }
         let explicit_data_dir = data_dir.is_some()
             || data_env
@@ -66,6 +79,7 @@ impl Options {
             .ok_or("Cannot locate the CodexHost data directory")?;
         Ok(Self {
             onboarding,
+            route,
             data_dir,
             explicit_data_dir,
         })
@@ -416,17 +430,21 @@ mod tests {
             stopping: AtomicBool::new(false),
         };
         let command = launcher.command(&["console"]).unwrap();
-        assert!(command
-            .get_envs()
-            .all(|(key, _)| key != std::ffi::OsStr::new("CODEXHOST_DATA_DIR")));
+        assert!(
+            command
+                .get_envs()
+                .all(|(key, _)| key != std::ffi::OsStr::new("CODEXHOST_DATA_DIR"))
+        );
         let launcher = Launcher {
             explicit_data_dir: true,
             ..launcher
         };
         let command = launcher.command(&["console"]).unwrap();
-        assert!(command
-            .get_envs()
-            .any(|(key, _)| key == std::ffi::OsStr::new("CODEXHOST_DATA_DIR")));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, _)| key == std::ffi::OsStr::new("CODEXHOST_DATA_DIR"))
+        );
     }
 
     #[test]
@@ -454,6 +472,7 @@ mod tests {
             .unwrap(),
             Options {
                 onboarding: true,
+                route: None,
                 data_dir: cli,
                 explicit_data_dir: true,
             }
@@ -464,10 +483,20 @@ mod tests {
         assert!(!default.explicit_data_dir);
         assert!(!parse(vec![], None).unwrap().explicit_data_dir);
         assert!(parse(vec![], Some(&env)).unwrap().explicit_data_dir);
+        assert_eq!(
+            parse(
+                vec!["--route".into(), "/?session=thread-1".into()],
+                Some(&env),
+            )
+            .unwrap()
+            .route,
+            Some("/?session=thread-1".into())
+        );
         for args in [
             vec!["--data-dir"],
             vec!["--data-dir", "relative"],
             vec!["--onboarding", "--onboarding"],
+            vec!["--route", "/settings"],
             vec!["unexpected"],
         ] {
             assert!(parse(args.into_iter().map(OsString::from).collect(), None).is_err());

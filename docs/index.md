@@ -151,6 +151,7 @@
 | [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及原生插件和 Codex GUI 分端接入背景。 |
 | [`proposals/web-native-extensions.md`](proposals/web-native-extensions.md) | Web 原生扩展 Phase 1 契约：v2 清单、双轨管理、浏览器宿主、Node 后端和市场索引；包含三路并行实现的分工与接口。 |
 | [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA、Tauri v2 独立原生桌面壳、桌面壳缩放、默认桌面路由、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、源码构建、启动隔离及验收限制；开发 Web 或桌面入口时阅读。 |
+| [`product/pet-companion-extension.md`](product/pet-companion-extension.md) | 宠物伙伴扩展的原生浮窗、会话 Agent 图标、Web 标签页头像、在线市场、归属信息、导入与发布流程。 |
 | [`../apps/android-shell/README.md`](../apps/android-shell/README.md) | Android 轻量原生 APK 壳：免 GMS、多电脑管理、扫码配对、同源 WebView 隔离、构建与安全说明。 |
 | [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`../packages/remote-relay/README.md`](../packages/remote-relay/README.md) | 独立 Relay 的启动参数、部署要求、控制证书重载、协议与流量限制、元数据日志和本机验证；自建 Docker 部署见产品文档。 |

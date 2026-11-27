@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 2,
+  "id": "pet-companion",
+  "version": "1.0.0",
+  "name": { "en": "Pet Companion", "zh-CN": "宠物伙伴" },
+  "description": {
+    "en": "The CodexHost otter and market pets follow your tasks in an always-on-top desktop window and show notification avatars on Web.",
+    "zh-CN": "用默认 CodexHost 水獭或市场宠物，在独立置顶浮窗中陪伴任务，并在 Web 通知时显示宠物标签页头像。"
+  },
+  "details": {
+    "en": "## A companion for your work\nStart with the built-in **CodexHost Otter**, available offline from the first launch. Its full official vector artwork responds to running tasks, approvals, questions, completed turns and failures with gentle motion.\n\nHover the Desktop pet to open a task center with running, waiting and unread counts. Session rows show each Agent's actual icon, name and task state. Click to pin the panel, open a session, or switch to window preferences. The white/slate surfaces and teal accents follow the native CodexHost shell.\n\nBrowse **Codex Pets**, **Petdex** and **CodexPets.net** for more animated companions, switch pets at any time, or restore the default otter.\n\nOn Web, notifications replace this CodexHost tab's icon with the selected pet's avatar while the document is visible. Acknowledge notifications to restore the original icon.\n\nRequires a host with extension activity, native window and tab-icon services. Market author and supplied license information are retained with downloads.",
+    "zh-CN": "## 工作时的小伙伴\n首次启用即可使用内置的 **CodexHost 水獭**，无需联网下载。它沿用官方完整矢量形象，用轻量动画响应运行中、待授权、待回答、完成与失败状态。\n\n悬停桌面宠物即可打开任务中心，分别查看运行中、待处理和未读通知。每条会话展示实际 Agent 的图标、名称和任务状态；可以固定面板、打开会话，或切换到浮窗偏好。灰白／石墨底色与青绿点缀沿用 CodexHost 原生壳主题。\n\n也可以浏览 **Codex Pets**、**Petdex** 和 **CodexPets.net** 在线市场，下载喜欢的动画宠物，随时切换或恢复默认水獭。\n\nWeb 收到通知时，当前可见的 CodexHost 标签页图标会换成宠物头像；确认通知或切走页面后恢复原图标。\n\n需要支持扩展任务摘要、原生浮窗与标签页图标接口的新版宿主。下载时保留市场作者和素材包提供的许可信息。"
+  },
+  "author": "CodexHost contributors",
+  "icon": "assets/icon.png",
+  "categories": ["appearance", "workflow", "integrations"],
+  "page": {
+    "apiVersion": 1,
+    "entry": "page/index.mjs",
+    "style": "page/style.css",
+    "title": { "en": "Pet Companion", "zh-CN": "宠物伙伴" }
+  },
+  "web": { "apiVersion": 1, "entry": "web/index.mjs" },
+  "backend": { "apiVersion": 1, "entry": "backend/index.mjs" }
+}

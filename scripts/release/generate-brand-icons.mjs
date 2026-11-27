@@ -1,4 +1,4 @@
-// Generate native PNG and Windows ICO assets from the approved colored otter.
+// Generate native PNG and Windows ICO assets from the coastal wave badge app icon SVG.
 // Usage: node scripts/release/generate-brand-icons.mjs [--channel chrome|msedge]
 import { chromium } from "@playwright/test";
 import { readFile, writeFile } from "node:fs/promises";
@@ -7,27 +7,24 @@ import { parseArgs } from "node:util";
 
 const { values } = parseArgs({ options: { channel: { type: "string" } } });
 const assets = path.resolve(import.meta.dirname, "../../crates/launcher/assets");
+const desktopIcons = path.resolve(import.meta.dirname, "../../apps/desktop-shell/src-tauri/icons");
 const source = await readFile(
   path.resolve(
     import.meta.dirname,
-    "../../packages/renderer-extension/src/assets/codexhost-otter-color.svg",
+    "../../packages/renderer-extension/src/assets/codexhost-app-icon.svg",
   ),
   "utf8",
 );
-const artwork = source.replace("<svg ", '<svg x="8" y="8" width="48" height="48" ');
 const sizes = [16, 24, 32, 48, 64, 128, 256];
 const browser = await chromium.launch({ channel: values.channel });
 try {
   const page = await browser.newPage({ deviceScaleFactor: 1 });
   await page.setContent(`<!doctype html>
 <style>
-  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
   body > svg { display: block; width: 100%; height: 100%; }
 </style>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect x="4.4" y="4.4" width="55.1" height="55.1" rx="12" fill="#f4f5f7"/>
-  ${artwork}
-</svg>`);
+${source}`);
   await page.setViewportSize({ width: 1024, height: 1024 });
   await page.screenshot({ path: path.join(assets, "codexhost.png"), omitBackground: true });
   const images = [];
@@ -49,7 +46,9 @@ try {
     directory.writeUInt32LE(offset, entry + 12);
     offset += images[index].length;
   }
-  await writeFile(path.join(assets, "codexhost.ico"), Buffer.concat([directory, ...images]));
+  const ico = Buffer.concat([directory, ...images]);
+  await writeFile(path.join(assets, "codexhost.ico"), ico);
+  await writeFile(path.join(desktopIcons, "icon.ico"), ico);
 } finally {
   await browser.close();
 }

@@ -122,7 +122,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { unlink } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 
 import {
   HarnessOutputChannel,
@@ -771,6 +771,14 @@ export class OmoHarnessSession implements HarnessSession {
   #usageRefreshSequence = 0;
   /** Engine Turns waiting for the foreground slot, oldest first. */
   #pendingAutonomous: PendingAutonomousTurn[] = [];
+  /**
+   * A settled Turn's late-steer cleanup still owns the foreground slot: the
+   * native queue is being cleared before the Session faults, so a new prompt
+   * or engine Turn must not start under it.
+   */
+  #drainingSteerCleanup = false;
+  #steerCleanupDone: Promise<void> | null = null;
+  #resolveSteerCleanup: (() => void) | null = null;
   /** Latest `session_lifecycle` observation from the ordered event stream. */
   #lifecycle: OmoLifecycleObservation | null = null;
 
@@ -992,6 +1000,15 @@ export class OmoHarnessSession implements HarnessSession {
   // ---------------------------------------------------------------- turn start
 
   async #startTurn(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>> {
+    if (this.#drainingSteerCleanup) {
+      // Defer, never drop: admission completes only after the late-steer
+      // cleanup that still owns the slot. A faulting cleanup leaves the Session
+      // closed, so the prompt is refused instead of starting under the fault.
+      await this.#waitForSteerCleanup();
+      if (this.#phase !== "open") {
+        return { ok: false, error: invalidState("OmO Session is not open") };
+      }
+    }
     if (this.#accepting || this.#active) {
       return { ok: false, error: busy("OmO Session already has an active Turn") };
     }
@@ -1321,7 +1338,40 @@ export class OmoHarnessSession implements HarnessSession {
 
   /** The foreground slot is free for an engine Turn right now. */
   #autonomousStartClear(): boolean {
-    return this.#accepting === null && !this.#configuring && this.#active === null;
+    return (
+      this.#accepting === null &&
+      !this.#configuring &&
+      !this.#drainingSteerCleanup &&
+      this.#active === null
+    );
+  }
+
+  /** Opens the window in which a settled Turn's native queue is still cleared. */
+  #beginSteerCleanup(): void {
+    this.#drainingSteerCleanup = true;
+    this.#steerCleanupDone = new Promise<void>((resolve) => {
+      this.#resolveSteerCleanup = resolve;
+    });
+  }
+
+  /** Closes the cleanup window once, whether it completed or faulted. */
+  #finishSteerCleanup(): void {
+    if (!this.#drainingSteerCleanup) return;
+    this.#drainingSteerCleanup = false;
+    this.#steerCleanupDone = null;
+    const resolve = this.#resolveSteerCleanup;
+    this.#resolveSteerCleanup = null;
+    resolve?.();
+    if (this.#phase === "open") this.#drainPendingAutonomous();
+  }
+
+  /** Waits out the late-steer cleanup window before taking the foreground slot. */
+  async #waitForSteerCleanup(): Promise<void> {
+    while (this.#drainingSteerCleanup) {
+      const done = this.#steerCleanupDone;
+      if (done === null) return;
+      await done;
+    }
   }
 
   /**
@@ -1411,8 +1461,9 @@ export class OmoHarnessSession implements HarnessSession {
 
   /**
    * Drains engine Turns once the foreground slot is free. Each buffered frame
-   * replays through the normal handler, so an engine Turn that ran behind a
-   * host operation is published after it, never dropped.
+   * replays directly through projection: the pending queue may still hold the
+   * next engine Turn, and re-routing this Turn's id-less frames through the
+   * frame handler would append them to that entry instead of settling here.
    */
   #drainPendingAutonomous(): void {
     while (
@@ -1426,7 +1477,7 @@ export class OmoHarnessSession implements HarnessSession {
       for (const frame of entry.frames) {
         if (this.#phase !== "open") return;
         try {
-          this.#handleFrame(frame);
+          this.#dispatchFrame(frame);
         } catch (error) {
           this.#fault(
             new HarnessSessionFault({
@@ -2306,33 +2357,37 @@ export class OmoHarnessSession implements HarnessSession {
         active.acceptedSteerCount > 0 && error instanceof OmoSteerSettlementError;
     }
     if (this.#active !== active) return;
-    this.#finishTurn(
-      active,
-      this.#turnOutcome(active, identity, identityError),
-      identity?.nativeTurnRef,
-    );
-    if (this.#phase !== "open") return;
-    if (active.steerTargetEnded || steerSettlementFailure) {
+    const lateSteerCleanup = active.steerTargetEnded !== null || steerSettlementFailure;
+    // Set before the terminal so the finishing Turn's own drain cannot start an
+    // engine Turn inside the still-open cleanup window; the healthy path never
+    // touches it and releases the slot immediately.
+    if (lateSteerCleanup) this.#beginSteerCleanup();
+    try {
+      this.#finishTurn(
+        active,
+        this.#turnOutcome(active, identity, identityError),
+        identity?.nativeTurnRef,
+      );
+      if (this.#phase !== "open") return;
+      if (!lateSteerCleanup) return;
       // The engine may still hold the text natively (a steering queue can
       // outlive the run and survive reopening). Remove it before faulting so a
       // later resume cannot execute it as a phantom Turn; the returned text is
       // discarded, never resent.
       await this.#clearQueuedInput();
       if (this.#phase !== "open") return;
-    }
-    if (active.steerTargetEnded) {
-      // Publish the Turn first (above), then fault: the Host resumes from the
-      // persisted history instead of holding a dead run open.
-      this.#fault(
-        new HarnessSessionFault({
-          code: "invalidState",
-          message: active.steerTargetEnded.message,
-          retryable: false,
-        }),
-      );
-      return;
-    }
-    if (steerSettlementFailure) {
+      if (active.steerTargetEnded) {
+        // Publish the Turn first (above), then fault: the Host resumes from the
+        // persisted history instead of holding a dead run open.
+        this.#fault(
+          new HarnessSessionFault({
+            code: "invalidState",
+            message: active.steerTargetEnded.message,
+            retryable: false,
+          }),
+        );
+        return;
+      }
       // An accepted steer did not become exactly one persisted user entry. The
       // native queue may still hold the text for a later Turn, so this process
       // cannot be reused for one; close it and resume from history instead.
@@ -2343,6 +2398,8 @@ export class OmoHarnessSession implements HarnessSession {
           retryable: false,
         }),
       );
+    } finally {
+      this.#finishSteerCleanup();
     }
   }
 
@@ -2683,6 +2740,9 @@ export class OmoHarnessSession implements HarnessSession {
     }
     this.#event({ type: "session.faulted", error: normalized });
     this.#deferredFrames = [];
+    // A fault ends any late-steer cleanup window: a prompt deferred behind it
+    // must observe the closed Session instead of waiting forever.
+    this.#finishSteerCleanup();
     // A faulted Session releases its native process; the Host resumes from the
     // persisted history instead of holding a dead Turn open.
     void this.#rpc.close().catch(() => undefined);
@@ -2716,9 +2776,13 @@ export class OmoHarnessSession implements HarnessSession {
       // The engine process has exited. A create-kind Session that never
       // accepted a Turn is prewarm-only, and real 5.1.83 leaves its empty
       // session file behind (task-9 evidence); remove it so close leaves no
-      // orphan. A locked file simply keeps the pre-fix state — never a failed
-      // close.
-      await unlink(this.#prewarmSessionFile).catch(() => undefined);
+      // orphan. A prompt written while admission was still unprocessed has
+      // already persisted its user entry, so the file's content decides: only
+      // a file with no conversation is removed. A locked or unreadable file
+      // keeps the pre-fix state — never a failed close.
+      if (await prewarmSessionFileIsEmpty(this.#prewarmSessionFile)) {
+        await unlink(this.#prewarmSessionFile).catch(() => undefined);
+      }
     }
     const stillActive = this.#active;
     if (stillActive) {
@@ -2779,4 +2843,30 @@ function userMessageEntryId(entry: unknown): string | null {
   if (!isRecord(entry) || entry.type !== "message") return null;
   if (!isRecord(entry.message) || entry.message.role !== "user") return null;
   return nonEmptyString(entry.id);
+}
+
+/**
+ * Whether a prewarm Session file still holds no conversation. A prompt can be
+ * written to the engine before its admission answer lands, so the session file
+ * — not the admission flag — decides whether the file is safe to remove. An
+ * unreadable or unparseable file cannot be proven empty and is kept.
+ */
+async function prewarmSessionFileIsEmpty(file: string): Promise<boolean> {
+  let content: string;
+  try {
+    content = await readFile(file, "utf8");
+  } catch {
+    return false;
+  }
+  for (const line of content.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    if (isRecord(record) && record.type === "message") return false;
+  }
+  return true;
 }

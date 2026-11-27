@@ -321,6 +321,53 @@ describe("OmO autonomous engine Turns", () => {
     await fixtureSession.closeAll();
   });
 
+  it("drains two queued engine Turns without re-routing one Turn's frames into the other", async () => {
+    const fixtureSession = await createSessionFixture();
+    await fixtureSession.rpc.send("set_controls", { modelDelayMs: 250 });
+
+    // The selection holds the foreground slot while both engine Turns start, so
+    // both wait in the pending queue (A first, then B).
+    const selection = fixtureSession.session.execute({
+      type: "model.select",
+      model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
+    });
+    await fixtureSession.rpc.send("autonomous.run", {
+      message: "engine work A",
+      text: "result A",
+    });
+    await fixtureSession.rpc.send("autonomous.run", {
+      message: "engine work B",
+      text: "result B",
+    });
+    await expect(selection).resolves.toEqual({ ok: true, value: { completed: true } });
+
+    const events: HostEvent[] = [];
+    const terminals = new Map<string, Extract<HostEvent, { type: "turn.completed" }>>();
+    while (terminals.size < 2) {
+      const event = await fixtureSession.queue.nextEvent();
+      events.push(event);
+      if (event.type === "turn.completed") terminals.set(event.turnId, event);
+    }
+
+    // Each Turn publishes its own start and settles exactly once: A's frames
+    // never join B's buffered entry.
+    const starts = events.filter(
+      (event): event is Extract<HostEvent, { type: "turn.autonomous.started" }> =>
+        event.type === "turn.autonomous.started",
+    );
+    expect(starts).toHaveLength(2);
+    expect(new Set(starts.map((event) => event.turnId)).size).toBe(2);
+    expect(terminals.size).toBe(2);
+    for (const terminal of terminals.values()) {
+      expect(terminal.outcome).toMatchObject({ status: "succeeded" });
+      expect(terminal.ephemeral).toBeUndefined();
+    }
+    expect(agentMessageTexts(events, starts[0]?.turnId ?? "")).toEqual(["result A"]);
+    expect(agentMessageTexts(events, starts[1]?.turnId ?? "")).toEqual(["result B"]);
+    expect(events.some((event) => event.type === "session.faulted")).toBe(false);
+    await fixtureSession.closeAll();
+  });
+
   it("completes an engine Turn with no persisted user entry as ephemeral", async () => {
     const fixtureSession = await createSessionFixture();
     await fixtureSession.rpc.send("autonomous.run", { entry: false, text: "no entry" });

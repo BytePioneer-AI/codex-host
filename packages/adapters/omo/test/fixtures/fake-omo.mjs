@@ -156,6 +156,12 @@ const sessionControls = {
   confirmThinking: process.env.FAKE_OMO_SET_THINKING_CONFIRM !== "false",
   confirmPermission: process.env.FAKE_OMO_SET_PERMISSION_CONFIRM !== "false",
   promptTurnId: process.env.FAKE_OMO_PROMPT_NO_TURN_ID !== "1",
+  // A prompt can be answered after its user entry was already persisted: the
+  // Session write happened, admission is still unprocessed.
+  promptDelayMs: Number(process.env.FAKE_OMO_PROMPT_DELAY_MS ?? 0),
+  // Keeps a clear_queue command unanswered until `release.clear-queue`, so a
+  // test can drive host input into the cleanup window deterministically.
+  holdClearQueue: process.env.FAKE_OMO_HOLD_CLEAR_QUEUE === "1",
   steerMode: process.env.FAKE_OMO_STEER_MODE ?? "queue",
   // Usage/lifecycle surface (task 13): armed `get_session_stats` answers,
   // per-message Usage records for the usage script, the interrupt answer, and
@@ -196,6 +202,7 @@ const sessionSteer = {
   toolCommand: "ping -n 20 127.0.0.1",
   idleQueue: [],
 };
+let heldClearQueueAnswer = null;
 
 // Configuration surface: the live catalog the peer offers, mirrored to the
 // real engine's command set (get_protocol_info / get_available_models /
@@ -246,6 +253,11 @@ function appendUserEntry(message) {
     message: { role: "user", content: message, timestamp: Date.now() },
   };
   sessionEntries.push(entry);
+  // Real 5.1.83 persists each conversation entry into the session file as it
+  // streams; the file is the only durable proof a prompt reached the engine.
+  if (process.env.FAKE_OMO_SESSION_FILE) {
+    fs.appendFileSync(process.env.FAKE_OMO_SESSION_FILE, `${JSON.stringify(entry)}\n`);
+  }
   if (process.env.FAKE_OMO_NO_USER_ENTRY_EVENT !== "1") {
     write({ type: "entry_appended", entry });
   }
@@ -1034,6 +1046,10 @@ function handleSession(command) {
       if ("interruptAnswer" in command) sessionControls.interruptAnswer = command.interruptAnswer;
       if (typeof command.modelDelayMs === "number")
         sessionControls.modelDelayMs = command.modelDelayMs;
+      if (typeof command.promptDelayMs === "number")
+        sessionControls.promptDelayMs = command.promptDelayMs;
+      if ("holdClearQueue" in command)
+        sessionControls.holdClearQueue = command.holdClearQueue === true;
       respond(command, { ...sessionControls });
       return true;
     }
@@ -1050,7 +1066,22 @@ function handleSession(command) {
     case "clear_queue": {
       sessionReceived.clearQueues.push({ ...command });
       controlLog({ type: "clear_queue" });
-      respond(command, { steering: sessionSteer.idleQueue.splice(0), followUp: [] });
+      const answer = () =>
+        respond(command, { steering: sessionSteer.idleQueue.splice(0), followUp: [] });
+      if (sessionControls.holdClearQueue) {
+        heldClearQueueAnswer = answer;
+        return true;
+      }
+      answer();
+      return true;
+    }
+    case "release.clear-queue": {
+      const release = heldClearQueueAnswer;
+      heldClearQueueAnswer = null;
+      // Acknowledge the control command before the released answer faults the
+      // Session and closes the transport, or this response would be lost.
+      respond(command, { released: release !== null });
+      release?.();
       return true;
     }
     case "prompt": {
@@ -1071,13 +1102,20 @@ function handleSession(command) {
         respond(command, { disposition: "handled" });
         return true;
       }
-      state.currentTurnId = nativeTurnId;
-      respond(command, {
-        disposition: "started",
-        ...(sessionControls.promptTurnId ? { turnId: nativeTurnId } : {}),
-        clientTurnId: command.clientTurnId ?? null,
-      });
-      queueMicrotask(() => runTurnScript(script, command.clientTurnId ?? null));
+      const start = () => {
+        state.currentTurnId = nativeTurnId;
+        respond(command, {
+          disposition: "started",
+          ...(sessionControls.promptTurnId ? { turnId: nativeTurnId } : {}),
+          clientTurnId: command.clientTurnId ?? null,
+        });
+        queueMicrotask(() => runTurnScript(script, command.clientTurnId ?? null));
+      };
+      if (sessionControls.promptDelayMs > 0) {
+        setTimeout(start, sessionControls.promptDelayMs).unref?.();
+      } else {
+        start();
+      }
       return true;
     }
     case "steer": {

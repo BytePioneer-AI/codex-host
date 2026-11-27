@@ -553,6 +553,49 @@ describe("OmO Session steering", () => {
     await fixtureSession.closeAll();
   });
 
+  it("defers a host prompt that arrives during late-steer cleanup and faults without starting it", async () => {
+    const fixtureSession = await createSteerFixture({
+      FAKE_OMO_TURN_SCRIPT: "steer-window",
+      FAKE_OMO_STEER_MODE: "late-settle",
+      FAKE_OMO_HOLD_CLEAR_QUEUE: "1",
+    });
+    await startSteeredTurn(fixtureSession);
+    await expect(
+      fixtureSession.session.execute(turnSteer("turn-1", "never joined")),
+    ).rejects.toBeInstanceOf(OmoSteerTargetEndedError);
+
+    // The old Turn's terminal is published before its native queue cleanup,
+    // which the peer holds open.
+    const { terminal } = await collectTerminal(fixtureSession.queue, "turn-1");
+    expect(terminal.outcome).toMatchObject({ status: "succeeded" });
+    await vi.waitFor(
+      () => {
+        expect(fixtureSession.controlCommands()).toContainEqual({ type: "clear_queue" });
+      },
+      { timeout: 2_000, interval: 10 },
+    );
+
+    // The host prompt arrives while the cleanup await still owns the slot.
+    const admission = fixtureSession.session.execute(turnStart("turn-2", "next"));
+    // Against the unfixed path the prompt is written now; waiting (bounded) for
+    // the peer to record it keeps the red run deterministic.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const probe = await fixtureSession.probe();
+      if (probe.prompts.some((prompt) => prompt.clientTurnId === "turn-2")) break;
+    }
+    await fixtureSession.rpc.send("release.clear-queue");
+
+    // Admission completes only after cleanup. The cleanup faults the Session,
+    // so the prompt is refused instead of starting under the old Turn's fault.
+    await expect(admission).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    const fault = await fixtureSession.queue.nextEvent();
+    expect(fault).toMatchObject({ type: "session.faulted", error: { code: "invalidState" } });
+    await fixtureSession.queue.expectDone();
+  });
+
   it("stops declaring steer when the tool window closes and writes nothing", async () => {
     const fixtureSession = await createSteerFixture({ FAKE_OMO_TURN_SCRIPT: "steer-window" });
     await startSteeredTurn(fixtureSession);

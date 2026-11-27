@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -1074,6 +1074,33 @@ describe("OmO Session prewarm session-file cleanup", () => {
 
     expect(existsSync(sessionFile)).toBe(false);
     expect(readdirSync(path.join(cwd, "sessions"))).toEqual([]);
+  });
+
+  it("keeps a prewarmed session file whose prompt was persisted before admission was processed", async () => {
+    const cwd = temporaryDirectory();
+    const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
+    const fixtureSession = await createSessionFixture(
+      "session",
+      // The peer persists the user entry immediately; its admission answer is
+      // still in flight when close begins, so #turnAccepted stays false.
+      { FAKE_OMO_SESSION_FILE: sessionFile, FAKE_OMO_PROMPT_DELAY_MS: "1000" },
+      { session: { prewarmSessionFile: sessionFile } },
+    );
+    expect(existsSync(sessionFile)).toBe(true);
+
+    const admission = fixtureSession.session.execute(turnStart("turn-1", "hello"));
+    await vi.waitFor(
+      () => {
+        expect(readFileSync(sessionFile, "utf8")).toContain('"type":"message"');
+      },
+      { timeout: 2_000, interval: 10 },
+    );
+
+    await fixtureSession.session.close();
+    await expect(admission).resolves.toMatchObject({ ok: false });
+
+    // The file holds a conversation entry, so it is not an orphan prewarm.
+    expect(existsSync(sessionFile)).toBe(true);
   });
 
   it("keeps the session file once a Turn was accepted", async () => {

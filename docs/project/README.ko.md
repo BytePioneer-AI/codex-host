@@ -48,6 +48,24 @@
 
 ---
 
+<a id="스폰서"></a>
+
+<details open>
+<summary><b>스폰서</b></summary>
+
+<br />
+
+<table>
+<tr>
+<td width="160" align="center"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="145" /></a></td>
+<td><b>VibeAPI</b>의 후원에 감사드립니다! 개발자와 팀을 위해 Codex, Claude 등 주요 AI 모델의 통합 액세스, 99.9% SLA, 95%+ 캐시 적중률 및 24/7 기술 지원을 제공합니다. <a href="https://vibeapi.cc/sign-up?aff=AOYp">VibeAPI 알아보기 →</a></td>
+</tr>
+</table>
+
+</details>
+
+---
+
 ## 주요 기능
 
 <table>
@@ -311,17 +329,6 @@ Tauri 기반 네이티브 데스크톱 셸로 공식 Codex Desktop 없이도 mac
 | [Qoder / Qoder CN](https://qoder.com/cli) | [Hermes](https://hermes-agent.nousresearch.com/docs) | [ZCode](https://zcode.z.ai/) | [커스텀 Harness 추가 →](../../.agents/skills/codexhost-add-harness/SKILL.md) |
 
 </details>
-
----
-
-## 스폰서
-
-<table>
-<tr>
-<td width="160" align="center"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="145" /></a></td>
-<td><b>VibeAPI</b>의 후원에 감사드립니다! 개발자와 팀을 위해 Codex, Claude 등 주요 AI 모델의 통합 액세스, 99.9% SLA, 95%+ 캐시 적중률 및 24/7 기술 지원을 제공합니다. <a href="https://vibeapi.cc/sign-up?aff=AOYp">VibeAPI 알아보기 →</a></td>
-</tr>
-</table>
 
 ---
 

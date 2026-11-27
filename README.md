@@ -48,6 +48,24 @@
 
 ---
 
+<a id="sponsors"></a>
+
+<details open>
+<summary><b>Sponsors</b></summary>
+
+<br />
+
+<table>
+<tr>
+<td width="160" align="center"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="docs/imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="145" /></a></td>
+<td>Thanks to <b>VibeAPI</b> for sponsoring CodexHost! Built for developers and teams, VibeAPI provides unified access to Codex, Claude, and leading AI models with a traceable self-managed account pool, 99.9% SLA, 95%+ cache hit rate, 24/7 human support, and enterprise invoicing. <a href="https://vibeapi.cc/sign-up?aff=AOYp">Learn more about VibeAPI →</a></td>
+</tr>
+</table>
+
+</details>
+
+---
+
 ## Key Capabilities
 
 <table>
@@ -326,17 +344,6 @@ Native **Codex** plus **19+ preinstalled coding agents** connected through offic
 | [Qoder / Qoder CN](https://qoder.com/cli) | [Hermes](https://hermes-agent.nousresearch.com/docs) | [ZCode](https://zcode.z.ai/) | [Build a custom Harness →](.agents/skills/codexhost-add-harness/SKILL.md) |
 
 </details>
-
----
-
-## Sponsors
-
-<table>
-<tr>
-<td width="160" align="center"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="docs/imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="145" /></a></td>
-<td>Thanks to <b>VibeAPI</b> for sponsoring CodexHost! Built for developers and teams, VibeAPI provides unified access to Codex, Claude, and leading AI models with a traceable self-managed account pool, 99.9% SLA, 95%+ cache hit rate, 24/7 human support, and enterprise invoicing. <a href="https://vibeapi.cc/sign-up?aff=AOYp">Learn more about VibeAPI →</a></td>
-</tr>
-</table>
 
 ---
 

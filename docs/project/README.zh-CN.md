@@ -48,6 +48,24 @@
 
 ---
 
+<a id="赞助"></a>
+
+<details open>
+<summary><b>赞助</b></summary>
+
+<br />
+
+<table>
+<tr>
+<td width="160" align="center"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="145" /></a></td>
+<td>感谢 <b>VibeAPI</b> 赞助本项目！面向开发者与团队提供 Codex、Claude 等主流 AI 模型统一接入，坚持自建可溯源号池，SLA 稳定性 99.9%、缓存命中率 95%+，支持 7×24 人工技术支持与企业对公开票。<a href="https://vibeapi.cc/sign-up?aff=AOYp">前往了解 VibeAPI →</a></td>
+</tr>
+</table>
+
+</details>
+
+---
+
 ## 核心特性
 
 <table>
@@ -326,17 +344,6 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
 | [Qoder / Qoder CN](https://qoder.com/cli) | [Hermes](https://hermes-agent.nousresearch.com/docs) | [ZCode](https://zcode.z.ai/) | [新增自定义 Harness →](../../.agents/skills/codexhost-add-harness/SKILL.md) |
 
 </details>
-
----
-
-## 赞助
-
-<table>
-<tr>
-<td width="160" align="center"><a href="https://vibeapi.cc/sign-up?aff=AOYp"><img src="../imgs/sponsors/vibeapi.jpg" alt="VibeAPI" width="145" /></a></td>
-<td>感谢 <b>VibeAPI</b> 赞助本项目！面向开发者与团队提供 Codex、Claude 等主流 AI 模型统一接入，坚持自建可溯源号池，SLA 稳定性 99.9%、缓存命中率 95%+，支持 7×24 人工技术支持与企业对公开票。<a href="https://vibeapi.cc/sign-up?aff=AOYp">前往了解 VibeAPI →</a></td>
-</tr>
-</table>
 
 ---
 

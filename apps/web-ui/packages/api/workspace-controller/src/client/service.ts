@@ -103,6 +103,8 @@ export interface IWorkspaces {
    * @param sessionId - Session to unpin.
    */
   unpinSession(sessionId: SessionId): Promise<void>;
+  /** Place a local project in a sidebar section, or return it to Workspaces. */
+  moveWorkspaceToSection?(workspaceId: WorkspaceId, sectionId: string | null): Promise<void>;
   moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
   /**
    * Move a Session within one Workspace account.
@@ -183,6 +185,13 @@ export class WorkspaceController extends Service implements IWorkspaces {
   async moveSessionToSection(sessionId: SessionId, sectionId: string | null): Promise<void> {
     const result = await this.model.moveSessionToSection({ sessionId, sectionId });
     if (!result.ok) throw commandError("move to section", result.error);
+    if (result.value.sectionId !== sectionId)
+      throw new Error("The requested section change was not confirmed.");
+  }
+
+  async moveWorkspaceToSection(workspaceId: WorkspaceId, sectionId: string | null): Promise<void> {
+    const result = await this.model.moveWorkspaceToSection({ workspaceId, sectionId });
+    if (!result.ok) throw commandError("move project to section", result.error);
     if (result.value.sectionId !== sectionId)
       throw new Error("The requested section change was not confirmed.");
   }

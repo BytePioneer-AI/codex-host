@@ -91,7 +91,8 @@ import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
-import { SectionHeading } from "./SectionHeading.tsx";
+import { SectionHeading, type SectionHeadingProps } from "./SectionHeading.tsx";
+import { MoveSectionForm } from "./MoveSectionForm.tsx";
 import { HostScopeTabBar } from "./HostScopeFilter.tsx";
 import {
   APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
@@ -340,6 +341,7 @@ function sessionDragOrder(
 /** In-flight Workspace-row drag: source identity plus the current marker. */
 interface WorkspaceDragState {
   workspaceId: WorkspaceId;
+  overSection?: string | null;
   over: { id: WorkspaceId; half: "before" | "after" } | null;
 }
 
@@ -383,6 +385,7 @@ type SessionTreeProps = Pick<
   | "startSession"
   | "open"
   | "insertWorkspaceBefore"
+  | "moveWorkspaceToSection"
   | "loadMoreSessions"
   | "t"
   | "usePanelInfo"
@@ -500,6 +503,7 @@ function SessionTree({
   onSessionRenameRequest,
   renderSlot,
   insertWorkspaceBefore,
+  moveWorkspaceToSection,
   nestWorkspaces,
   groupExpansion,
   setGroupExpanded,
@@ -558,6 +562,51 @@ function SessionTree({
       for (const id of section.workspaceIds ?? []) if (!owners.has(id)) owners.set(id, section.id);
     return owners;
   }, [nativeSections]);
+  const [sectionMoveId, setSectionMoveId] = useState<WorkspaceId>();
+  const [sectionMoveError, setSectionMoveError] = useState(false);
+  const sectionProjects = useMemo(
+    () =>
+      new Set(
+        moveWorkspaceToSection && nativeSections.length > 0
+          ? allWorkspaces
+              .filter((workspace) => workspace.projectId && !workspace.remote)
+              .map((workspace) => workspace.workspaceId)
+          : [],
+      ),
+    [allWorkspaces, moveWorkspaceToSection, nativeSections.length],
+  );
+  useEffect(() => {
+    if (sectionMoveId && !sectionProjects.has(sectionMoveId)) setSectionMoveId(undefined);
+  }, [sectionMoveId, sectionProjects]);
+  const projectSectionDrop = (target: string | null): SectionHeadingProps["projectDrop"] => {
+    if (
+      !workspaceDrag ||
+      !moveWorkspaceToSection ||
+      !sectionProjects.has(workspaceDrag.workspaceId) ||
+      (sectionOf.get(workspaceDrag.workspaceId) ?? null) === target
+    )
+      return undefined;
+    return {
+      active: workspaceDrag.overSection === target,
+      hover: () => {
+        if (workspaceDrag.overSection !== target)
+          setWorkspaceDrag({ ...workspaceDrag, over: null, overSection: target });
+      },
+      leave: () =>
+        setWorkspaceDrag((active) =>
+          active?.overSection === target ? { workspaceId: active.workspaceId, over: null } : active,
+        ),
+      drop: () => {
+        if (workspaceDropCommitted.current) return;
+        workspaceDropCommitted.current = true;
+        setWorkspaceDrag(null);
+        setSectionMoveError(false);
+        moveWorkspaceToSection(workspaceDrag.workspaceId, target).catch(() =>
+          setSectionMoveError(true),
+        );
+      },
+    };
+  };
   const parents = useMemo(
     () => computeWorkspaceParents(workspaces, nestWorkspaces, sectionOf),
     [nestWorkspaces, sectionOf, workspaces],
@@ -798,8 +847,9 @@ function SessionTree({
       workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
         ? workspaceDrag.over.half
         : null;
+    const canMoveToSection = workspaceId !== undefined && sectionProjects.has(workspaceId);
     const workspaceDragProps =
-      workspaceId === undefined || sectioned
+      workspaceId === undefined || (sectioned && !canMoveToSection)
         ? undefined
         : {
             start: () => {
@@ -820,7 +870,9 @@ function SessionTree({
         ? undefined
         : (half: "before" | "after") => {
             setWorkspaceDrag((active) =>
-              active === null ? active : { ...active, over: { id: workspaceId, half } },
+              active === null
+                ? active
+                : { workspaceId: active.workspaceId, over: { id: workspaceId, half } },
             );
           };
     const dropWorkspace =
@@ -921,6 +973,9 @@ function SessionTree({
               group.workspaceId === undefined
                 ? undefined
                 : {
+                    ...(canMoveToSection
+                      ? { moveToSection: () => setSectionMoveId(workspaceId) }
+                      : {}),
                     rename: () => {
                       /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
                       if (group.workspaceId !== undefined)
@@ -1069,7 +1124,9 @@ function SessionTree({
   // Recents keeps the tail: the Workspace section ends with its own reveal
   // control rather than an unbounded run of folders, and folding that section
   // leaves Recents in place.
-  const showWorkspacesSection = workspaceRoots.length > 0 || hostScopeFiltered;
+  const defaultSectionDrop = projectSectionDrop(null);
+  const showWorkspacesSection =
+    workspaceRoots.length > 0 || hostScopeFiltered || !!defaultSectionDrop;
   const workspaceListHasLeadingChrome =
     showWorkspacesSection || pinnedRows.length > 0 || nativeLayout.length > 0;
   const workspaceDropAtListStart =
@@ -1148,6 +1205,7 @@ function SessionTree({
         <NativeSections
           sections={nativeLayout}
           groupRows={sectionGroupRows}
+          projectSectionDrop={projectSectionDrop}
           currentId={current}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
@@ -1172,6 +1230,7 @@ function SessionTree({
         {showWorkspacesSection && (
           <SectionHeading
             label={t("section.workspaces")}
+            projectDrop={defaultSectionDrop}
             expanded={workspacesSectionExpanded}
             onToggle={() => {
               if (workspacesSectionExpanded) setAllWorkspacesShown(false);
@@ -1183,6 +1242,21 @@ function SessionTree({
         {groupRows}
       </AnimatedRows>
       <span className={css.fade} />
+      {sectionMoveId && sectionProjects.has(sectionMoveId) && moveWorkspaceToSection && (
+        <MoveSectionForm
+          key={sectionMoveId}
+          current={sectionOf.get(sectionMoveId) ?? ""}
+          sections={nativeSections}
+          move={(target) => moveWorkspaceToSection(sectionMoveId, target)}
+          dismiss={() => setSectionMoveId(undefined)}
+          defaultLabel={t("section.workspaces")}
+          failedLabel={t("section.projectMoveFailed")}
+          t={t}
+        />
+      )}
+      {sectionMoveError && (
+        <Toast text={t("section.projectMoveFailed")} onDone={() => setSectionMoveError(false)} />
+      )}
     </div>
   );
 }
@@ -1228,6 +1302,7 @@ function nativeSectionRowKeys(
 function NativeSections({
   sections,
   groupRows,
+  projectSectionDrop,
   setSectionExpanded,
   ...rowProps
 }: Omit<
@@ -1237,14 +1312,15 @@ function NativeSections({
   sections: ReturnType<typeof nativeSectionLayout>;
   /** Rendered Workspace groups of each expanded section, keyed by section layout key. */
   groupRows?: ReadonlyMap<string, ReactNode[]>;
+  projectSectionDrop?: (sectionId: string) => SectionHeadingProps["projectDrop"];
   setSectionExpanded: SessionTreeProps["setSectionExpanded"];
 }) {
-  return sections.map(({ key, name, rows, expanded }) => (
+  return sections.map(({ id, key, name, rows, expanded }) => (
     <PinnedSection
       key={key}
       {...rowProps}
       rows={rows}
-      customSection={{ key, name }}
+      customSection={{ key, name, projectDrop: projectSectionDrop?.(id) }}
       expanded={expanded}
       onToggle={() => setSectionExpanded(key, !expanded)}
     >
@@ -1634,6 +1710,7 @@ function WorkspaceBrowserContent({
   renameWorkspace,
   deleteWorkspace,
   insertWorkspaceBefore,
+  moveWorkspaceToSection,
   unarchiveSession,
   createWorkspace,
   searchSessions,
@@ -2611,6 +2688,7 @@ function WorkspaceBrowserContent({
               startSession={startSession}
               open={guardedOpen}
               insertWorkspaceBefore={insertWorkspaceBefore}
+              moveWorkspaceToSection={moveWorkspaceToSection}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
               hostScopeFiltered={hostScopeFiltered}

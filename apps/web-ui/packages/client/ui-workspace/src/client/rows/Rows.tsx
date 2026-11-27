@@ -2,8 +2,8 @@
  * Workspace browser tree row components (figma Cell set 14:3080): pure presentational —
  * all data and callbacks arrive via props. Folder color/shape follows expansion;
  * hover swaps for time and action buttons are CSS-only. Titles stay still; dwelling
- * on a row reveals its full title in the existing hover card. Workspace row
- * menus are visual-only except Rename/Delete. A Session row's "..." menu and
+ * on a row reveals its full title in the existing hover card. Workspace rows share one
+ * action menu between right-click and the ellipsis button. A Session row's "..." menu and
  * its hover buttons are the `sidebar.workspaces.session.menu.item` and
  * `sidebar.workspaces.session.row.action` lists, rendered through the
  * browser's `renderSlot` with the menu's open state as the occurrence's hook
@@ -204,7 +204,7 @@ export function ProjectRowItem({
   onToggle: () => void;
   onCreate: () => void;
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
-  actions?: { rename: () => void; delete: () => void } | undefined;
+  actions?: { rename: () => void; moveToSection?: () => void; delete: () => void } | undefined;
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined;
   /** Whether to show remote host accent rail and tag when viewing multiple hosts. */
@@ -234,6 +234,9 @@ export function ProjectRowItem({
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
   const workspaceMenuItems = [
     { id: "rename", label: t("rename"), icon: <IconEditOutlineRegular /> },
+    ...(actions?.moveToSection
+      ? [{ id: "move", label: t("menu.moveToSection"), icon: <IconFolderCloseRegular /> }]
+      : []),
     { id: "delete", label: t("delete.workspace"), icon: <IconTrashOutlineRegular />, danger: true },
   ];
   const ownRow = (
@@ -318,12 +321,9 @@ export function ProjectRowItem({
             items={workspaceMenuItems}
             onSelect={(id) => {
               setMenuOpen(false);
-              // Unknown ids leave before the dispatch: a future menu row must
-              // not inherit the destructive branch as an else fallback.
-              /* v8 ignore next -- Menu can emit only the rename and delete rows supplied above. */
-              if (id !== "rename" && id !== "delete") return;
               if (id === "rename") actions.rename();
-              else actions.delete();
+              if (id === "move") actions.moveToSection?.();
+              if (id === "delete") actions.delete();
             }}
             portal
             autoFocus

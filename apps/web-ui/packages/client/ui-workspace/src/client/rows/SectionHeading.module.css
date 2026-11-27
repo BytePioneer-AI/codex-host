@@ -22,6 +22,11 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+.heading[data-project-drop-active] {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+
 .heading[data-row-key]:focus-visible,
 .action:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));

@@ -108,7 +108,7 @@ export async function mount(root, api) {
 
 ### 2.4 Web 宿主注入（`web`）
 
-ESM 模块（`.mjs`），导出 `activate(api)` 并可返回清理函数（也可只声明 `web.style` 纯 CSS 扩展）。通过 `api.dom.mount(regionOrEl)`、`api.dom.mark`、`api.assets.url`、`api.storage`、`api.backend.invoke`、`api.settings.registerPage`、`api.panels.register` 与 `api.signal` / `api.track` 集成，停用时自动回收全部节点、标记与订阅。
+ESM 模块（`.mjs`），导出 `activate(api)` 并可返回清理函数（也可只声明 `web.style` 纯 CSS 扩展）。通过 `api.dom.mount(regionOrEl)`（内置区域 `app`、`topbar`、`sidebar`、`conversation`、`composer-dock`）、`api.dom.mark`、`api.session.getActive()` / `api.session.onChange(cb)`（只读主会话上下文：`id`、`title`、`cwd`、`workspaceId`、`isBlank`、`isRemote`、`running`）、`api.assets.url`、`api.storage`、`api.backend.invoke`、`api.settings.registerPage`、`api.panels.register` 与 `api.signal` / `api.track` 集成，停用时自动回收全部节点、标记与订阅。
 
 ### 2.5 单实例 Node 后端（`backend`）
 

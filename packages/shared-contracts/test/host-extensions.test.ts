@@ -7,6 +7,7 @@ import {
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES,
   HOST_EXTENSIONS_RPC,
+  WEB_EXTENSION_REGIONS,
   hostExtensionAssetUrl,
   hostExtensionCapabilities,
   hostExtensionCatalogEntrySchema,
@@ -221,4 +222,11 @@ it("validates install sources, asset refs, settings revisions, and backend JSON"
   ).toBe(true);
   expect(HOST_EXTENSION_PAGE_API_VERSION).toBe(1);
   expect(Object.values(HOST_EXTENSION_PAGE_CSS_VARIABLES)).toHaveLength(8);
+  expect(WEB_EXTENSION_REGIONS).toEqual([
+    "app",
+    "topbar",
+    "sidebar",
+    "conversation",
+    "composer-dock",
+  ]);
 });

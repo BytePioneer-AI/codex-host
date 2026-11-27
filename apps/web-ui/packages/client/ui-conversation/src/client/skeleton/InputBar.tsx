@@ -972,7 +972,7 @@ export const InputBar = memo(function InputBar({
           </div>
         </div>
       </div>
-      <div className={css.dock} data-composer-dock>
+      <div className={css.dock} data-composer-dock data-cx-region="composer-dock">
         {variant === "composer" && input !== undefined && sessionId !== undefined
           ? renderSlot("conversation.composer.dock", {})
           : null}

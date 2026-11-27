@@ -130,6 +130,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 ### Web 注入（`web`）
 
 - ESM 模块（导出 `activate(api)`）与可选样式表，运行在 Web/PWA 宿主（`apps/web-ui/packages/client/ui-codexhost/src/client/native-extensions/`）。
+- 宿主提供区域挂载 `api.dom.mount`（稳定区域 `app`、`topbar`、`sidebar`、`conversation`、`composer-dock`，或任意 `HTMLElement`）、属性标记 `api.dom.mark` / `unmark`、只读主会话上下文 `api.session.getActive()` / `api.session.onChange(cb)`、静态资源 `api.assets.url`、共享设置 `api.storage`、后端调用 `api.backend.invoke`、自定义设置页/面板贡献 `api.settings.registerPage` / `api.panels.register` 与生命周期回收 `api.signal` / `api.track`。
 - 浏览器宿主通过 `codexhost/extensions/snapshot` 获取当前已启用快照，并订阅 `GET /api/ch/v1/events` 的 `extensions-changed` 事件驱动对账（单标签页引用计数复用，且在支持 Web Locks + `BroadcastChannel` 的同源多标签页间共享 1 条事件流，避免耗尽 HTTP/1.1 连接池），仅激活含 `manifest.web` 的条目；同代次仅设置修订变化时原地通知 `storage.onChange` 而不重建 DOM。
 - 传统 DSH Web 插件的独立管理/恢复入口（`WebUiExtensions` / `/extensions`）与之隔离并保持独立可用。
 

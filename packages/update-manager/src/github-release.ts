@@ -10,6 +10,7 @@ import { requireSemanticVersion } from "./status.js";
 
 export const CODEXHOST_LATEST_RELEASE_URL =
   "https://api.github.com/repos/BytePioneer-AI/codex-host/releases/latest";
+const LATEST_RELEASE_PAGE = "https://github.com/BytePioneer-AI/codex-host/releases/latest";
 
 const SHA256_DIGEST_PATTERN = /^sha256:([0-9a-f]{64})$/u;
 const RELEASE_NOTES_URL_PATTERN =
@@ -114,6 +115,40 @@ export async function fetchLatestGitHubRelease(
   if (!response.ok)
     throw new Error(`GitHub latest Release request failed with HTTP ${response.status}`);
   return parseLatestGitHubRelease(await response.json());
+}
+
+/**
+ * @brief 在 GitHub Release API 不可用时，只从官方 latest 网页重定向读取正式版标签
+ *
+ * 不跟随重定向或读取 HTML。仓库的静默预览版也会发布到 npm latest，
+ * 因此 npm 注册表只能验证可安装性，不能在这里充当正式发布渠道
+ *
+ * @param options 请求实现与调用者取消信号
+ * @returns 同一仓库的正式版本和发布页，或在无法验证时返回 null。不提供安装器资产
+ */
+export async function fetchLatestGitHubReleasePage(
+  options: GitHubReleaseFetchOptions = {},
+): Promise<CodexhostLatestRelease | null> {
+  if (options.signal?.aborted) return null;
+  const timeout = AbortSignal.timeout(5_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  try {
+    const response = await (options.fetch ?? fetch)(LATEST_RELEASE_PAGE, {
+      redirect: "manual",
+      signal,
+    });
+    const location = response.headers.get("location");
+    void response.body?.cancel().catch(() => undefined);
+    if (response.status !== 302 || !location) return null;
+    const releaseNotesUrl = new URL(location, LATEST_RELEASE_PAGE).href;
+    const tag = RELEASE_NOTES_URL_PATTERN.exec(releaseNotesUrl)?.[1];
+    if (!tag) return null;
+    const version = requireSemanticVersion(tag.slice(1));
+    if (version.split("+", 1)[0]?.includes("-")) return null;
+    return { version, releaseNotes: null, releaseNotesUrl, assets: [] };
+  } catch {
+    return null;
+  }
 }
 
 function requestGitHubRelease(url: string, options: GitHubReleaseFetchOptions): Promise<Response> {

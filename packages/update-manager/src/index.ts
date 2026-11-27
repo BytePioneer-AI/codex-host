@@ -19,6 +19,7 @@ export {
   expectedInstallerAssetName,
   fetchGitHubReleaseAnnouncement,
   fetchLatestGitHubRelease,
+  fetchLatestGitHubReleasePage,
   parseLatestGitHubRelease,
   selectInstallerReleaseArtifact,
   type CodexhostLatestRelease,
@@ -30,7 +31,6 @@ export {
 export { parseReleaseAnnouncementMarkdown } from "./release-announcement.js";
 export {
   createNpmReleaseAvailability,
-  fetchLatestNpmRelease,
   prefetchNpmRelease,
   type NpmCommandRunner,
   type NpmReleaseAvailability,

@@ -14,7 +14,7 @@ import {
   discoverRecentCompletedUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  fetchLatestNpmRelease,
+  fetchLatestGitHubReleasePage,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
   readRuntimeMetadata,
@@ -93,11 +93,7 @@ export function createHostUpdateCoordinator(
       });
       return authenticated ?? fetchLatestGitHubRelease({ signal: requestSignal });
     });
-  /**
-   * The stable version the npm registry advertises, when GitHub Release version
-   * discovery is unavailable (e.g. anonymous API rate limiting). Only npm
-   * installations can proceed without the Release; native ones still need it.
-   */
+  // npm can install a verified version without GitHub artifact metadata.
   const npmFallbackRelease = async (
     context: InstalledUpdateContext,
     error: unknown,
@@ -105,8 +101,7 @@ export function createHostUpdateCoordinator(
   ): Promise<CodexhostLatestRelease> => {
     if (signal?.aborted) throw error;
     if (context.installation.kind !== "npm") throw error;
-    const npm = context.installation.options;
-    const fallback = await fetchLatestNpmRelease(npm.nodePath, npm.npmCliPath);
+    const fallback = await fetchLatestGitHubReleasePage(signal ? { signal } : undefined);
     if (!fallback) throw error;
     return fallback;
   };

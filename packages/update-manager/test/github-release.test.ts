@@ -5,6 +5,7 @@ import {
   compareSemanticVersions,
   expectedInstallerAssetName,
   fetchLatestGitHubRelease,
+  fetchLatestGitHubReleasePage,
   fetchLatestGitHubReleaseWithGitHubCli,
   parseLatestGitHubRelease,
   selectInstallerReleaseArtifact,
@@ -34,6 +35,40 @@ function release(overrides: Record<string, unknown> = {}) {
 }
 
 describe("GitHub Release update discovery", () => {
+  it("reads the same repository's latest Release tag without following the redirect", async () => {
+    const releaseNotesUrl = release().html_url;
+    const fetch = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: new URL(releaseNotesUrl).pathname },
+        }),
+    );
+    await expect(fetchLatestGitHubReleasePage({ fetch })).resolves.toEqual({
+      version: "1.2.3",
+      releaseNotes: null,
+      releaseNotesUrl,
+      assets: [],
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://github.com/BytePioneer-AI/codex-host/releases/latest",
+      expect.objectContaining({ redirect: "manual" }),
+    );
+  });
+
+  it.each([
+    [200, null],
+    [429, null],
+    [302, "https://example.invalid/BytePioneer-AI/codex-host/releases/tag/v1.2.3"],
+    [302, "https://github.com/another/codex-host/releases/tag/v1.2.3"],
+    [302, "/BytePioneer-AI/codex-host/releases/tag/v1.3.0-rc.1"],
+  ])("rejects unverified latest Release data (%s, %s)", async (status, location) => {
+    const fetch = vi.fn(
+      async () => new Response(null, { status, ...(location ? { headers: { location } } : {}) }),
+    );
+    await expect(fetchLatestGitHubReleasePage({ fetch })).resolves.toBeNull();
+  });
+
   it("parses the public latest response and selects one exact target asset", () => {
     const parsed = parseLatestGitHubRelease(release());
     expect(parsed.version).toBe("1.2.3");

@@ -19,7 +19,7 @@ import {
   createNpmReleaseAvailability,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
-  fetchLatestNpmRelease,
+  fetchLatestGitHubReleasePage,
   recoverUpdateOperationLock,
   selectInstallerReleaseArtifact,
   readRuntimeMetadata,
@@ -138,20 +138,14 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   let candidate: CodexhostLatestRelease | null = null;
   let handedOff = false;
 
-  /**
-   * The stable version the npm registry advertises, when GitHub Release version
-   * discovery is unavailable (e.g. anonymous API rate limiting). Only npm
-   * installations can proceed without the Release; native ones still need it.
-   */
+  // npm can install a verified version without GitHub artifact metadata.
   const npmFallbackRelease = async (
     metadata: DistributionMetadata,
     error: unknown,
+    signal?: AbortSignal,
   ): Promise<CodexhostLatestRelease> => {
-    if (!metadata || installationKind(metadata) !== "npm") throw error;
-    const fallback = await fetchLatestNpmRelease(
-      absoluteEnvironmentPath(environment, "CODEXHOST_NPM_NODE_PATH"),
-      absoluteEnvironmentPath(environment, "CODEXHOST_NPM_CLI_PATH"),
-    );
+    if (signal?.aborted || metadata.distribution !== "npm") throw error;
+    const fallback = await fetchLatestGitHubReleasePage(signal ? { signal } : undefined);
     if (!fallback) throw error;
     return fallback;
   };
@@ -283,7 +277,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         await cleanupTerminalUpdateState(stateDirectory());
         status = await latestStatus();
         const release = await fetchLatest(signal).catch((error) =>
-          npmFallbackRelease(metadata, error),
+          npmFallbackRelease(metadata, error, signal),
         );
         candidate = release;
         const updateAvailable = compareSemanticVersions(metadata.version, release.version) < 0;

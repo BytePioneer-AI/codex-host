@@ -15,12 +15,15 @@ import {
 
 import { createHostUpdateCoordinator } from "../src/update-coordinator.js";
 
-const discovery = vi.hoisted(() => ({ cli: vi.fn(), http: vi.fn() }));
+const discovery = vi.hoisted(() => ({
+  cli: vi.fn(),
+  http: vi.fn(),
+  page: vi.fn(async (): Promise<CodexhostLatestRelease | null> => null),
+}));
 // The user's npm and its registry are external: every npm release is installable by default.
 const npmRegistry = vi.hoisted(() => ({
   installable: vi.fn(async (): Promise<boolean> => true),
   prefetch: vi.fn(async (): Promise<void> => {}),
-  latest: vi.fn(async (): Promise<CodexhostLatestRelease | null> => null),
 }));
 vi.mock("@codexhost/update-manager", async (importOriginal) => {
   const original = await importOriginal<typeof UpdateManager>();
@@ -29,7 +32,7 @@ vi.mock("@codexhost/update-manager", async (importOriginal) => {
     fetchLatestGitHubReleaseWithGitHubCli: discovery.cli,
     fetchLatestGitHubRelease: discovery.http,
     createNpmReleaseAvailability: () => ({ installable: npmRegistry.installable }),
-    fetchLatestNpmRelease: npmRegistry.latest,
+    fetchLatestGitHubReleasePage: discovery.page,
     createBackgroundUpdateManager: (
       dependencies: UpdateManager.BackgroundUpdateManagerDependencies = {},
     ) =>
@@ -230,16 +233,17 @@ describe("Host update coordinator", () => {
     });
   });
 
-  it("falls back to the npm registry when GitHub Release discovery is rate-limited", async () => {
+  it("uses the GitHub latest page and checks the exact npm version is installable", async () => {
     const fixture = await npmFixture();
     discovery.cli.mockResolvedValue(null);
     discovery.http.mockRejectedValue(
       new Error("GitHub latest Release request failed with HTTP 403"),
     );
-    npmRegistry.latest.mockResolvedValueOnce({
+    const releaseNotesUrl = "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.3.0";
+    discovery.page.mockResolvedValueOnce({
       version: "1.3.0",
       releaseNotes: null,
-      releaseNotesUrl: "",
+      releaseNotesUrl,
       assets: [],
     });
     const coordinator = createHostUpdateCoordinator({
@@ -254,19 +258,15 @@ describe("Host update coordinator", () => {
       updateAvailable: true,
       installationAvailable: true,
       releaseNotes: null,
-      releaseNotesUrl: "",
+      releaseNotesUrl,
       error: null,
     });
-    expect(npmRegistry.latest).toHaveBeenCalledWith(
-      fixture.environment.CODEXHOST_NPM_NODE_PATH,
-      fixture.environment.CODEXHOST_NPM_CLI_PATH,
-    );
     expect(npmRegistry.installable).toHaveBeenCalledWith(
       expect.objectContaining({ version: "1.3.0" }),
     );
   });
 
-  it("does not fall back to the npm registry for native installations", async () => {
+  it("still requires API asset metadata for native installations", async () => {
     const fixture = await macFixture();
     discovery.cli.mockResolvedValue(null);
     discovery.http.mockRejectedValue(
@@ -283,7 +283,7 @@ describe("Host update coordinator", () => {
       installationAvailable: false,
       error: "GitHub latest Release request failed with HTTP 403",
     });
-    expect(npmRegistry.latest).not.toHaveBeenCalled();
+    expect(discovery.page).not.toHaveBeenCalled();
   });
 
   it("does not fall back after caller cancellation", async () => {

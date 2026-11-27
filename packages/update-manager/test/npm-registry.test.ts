@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   createNpmReleaseAvailability,
-  fetchLatestNpmRelease,
   npmReleasePackages,
   prefetchNpmRelease,
   type NpmCommandResult,
@@ -117,45 +116,5 @@ describe("npm release availability", () => {
       { completed: 1, total: 2 },
       { completed: 2, total: 2 },
     ]);
-  });
-});
-
-describe("fetchLatestNpmRelease", () => {
-  const fallbackNodePath = "/prefix/bin/node";
-  const fallbackNpmCliPath = "/prefix/lib/node_modules/npm/bin/npm-cli.js";
-
-  it("reads the stable version from the registry dist-tags", async () => {
-    const asked: readonly string[][] = [];
-    const version = await fetchLatestNpmRelease(
-      fallbackNodePath,
-      fallbackNpmCliPath,
-      async (_target, arguments_) => {
-        asked.push([...arguments_]);
-        return { code: 0, stdout: "1.3.0\n", stderr: "" };
-      },
-    );
-    expect(version).toEqual({
-      version: "1.3.0",
-      releaseNotes: null,
-      releaseNotesUrl: "",
-      assets: [],
-    });
-    expect(asked).toEqual([["view", "@codexhost/cli", "dist-tags.latest"]]);
-  });
-
-  it("returns null when the registry cannot be asked", async () => {
-    await expect(
-      fetchLatestNpmRelease(fallbackNodePath, fallbackNpmCliPath, async () => offline),
-    ).resolves.toBeNull();
-  });
-
-  it("returns null when the registry advertises something unusable", async () => {
-    await expect(
-      fetchLatestNpmRelease(fallbackNodePath, fallbackNpmCliPath, async () => ({
-        code: 0,
-        stdout: "",
-        stderr: "",
-      })),
-    ).resolves.toBeNull();
   });
 });

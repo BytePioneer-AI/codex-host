@@ -14,14 +14,16 @@ import { createConsoleUpdates, type ConsoleUpdateTarget } from "../src/updates.j
 const npmRegistry = vi.hoisted(() => ({
   installable: vi.fn(async (): Promise<boolean> => true),
   prefetch: vi.fn(async (): Promise<void> => {}),
-  latest: vi.fn(async (): Promise<UpdateManager.CodexhostLatestRelease | null> => null),
 }));
+const releasePage = vi.hoisted(() =>
+  vi.fn(async (): Promise<UpdateManager.CodexhostLatestRelease | null> => null),
+);
 vi.mock("@codexhost/update-manager", async (importOriginal) => {
   const original = await importOriginal<typeof UpdateManager>();
   return {
     ...original,
     createNpmReleaseAvailability: () => ({ installable: npmRegistry.installable }),
-    fetchLatestNpmRelease: npmRegistry.latest,
+    fetchLatestGitHubReleasePage: releasePage,
     createBackgroundUpdateManager: (
       dependencies: UpdateManager.BackgroundUpdateManagerDependencies = {},
     ) =>
@@ -121,12 +123,11 @@ describe("console updates", () => {
     });
   });
 
-  it("falls back to the npm registry when GitHub Release discovery fails", async () => {
+  it("uses the GitHub latest Release page when the API is limited", async () => {
     const { target, environment } = await npmLayout();
-    npmRegistry.latest.mockResolvedValueOnce({
+    releasePage.mockResolvedValueOnce({
       ...release,
       releaseNotes: null,
-      releaseNotesUrl: "",
     });
     const updates = createConsoleUpdates({
       onHandedOff: vi.fn(),
@@ -143,13 +144,33 @@ describe("console updates", () => {
       updateAvailable: true,
       installationAvailable: true,
       releaseNotes: null,
-      releaseNotesUrl: "",
+      releaseNotesUrl: release.releaseNotesUrl,
       error: null,
     });
-    expect(npmRegistry.latest).toHaveBeenCalledWith(
-      environment.CODEXHOST_NPM_NODE_PATH,
-      environment.CODEXHOST_NPM_CLI_PATH,
-    );
+  });
+
+  it("keeps the installed stable version current during a GitHub API outage", async () => {
+    const { target, environment } = await npmLayout();
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => {
+        throw new Error("GitHub latest Release request failed with HTTP 403");
+      },
+    });
+    releasePage.mockResolvedValueOnce({
+      version: "1.0.0",
+      releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.0.0",
+      releaseNotes: null,
+      assets: [],
+    });
+    await expect(updates.check(target)).resolves.toMatchObject({
+      latestVersion: "1.0.0",
+      updateAvailable: false,
+      installationAvailable: false,
+      error: null,
+    });
   });
 
   it.each(["failed", "succeeded"])(

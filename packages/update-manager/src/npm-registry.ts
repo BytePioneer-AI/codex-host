@@ -1,9 +1,6 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 
-import type { CodexhostLatestRelease } from "./github-release.js";
-import { requireSemanticVersion } from "./status.js";
-
 const CLI_PACKAGE = "@codexhost/cli";
 const VIEW_TIMEOUT_MS = 30_000;
 const PREFETCH_TIMEOUT_MS = 10 * 60_000;
@@ -121,36 +118,6 @@ export async function prefetchNpmRelease(
     if (result.code !== 0)
       throw new Error(`npm could not download the update: ${firstErrorLine(result)}`);
     await onProgress?.({ completed: index + 1, total: specs.length });
-  }
-}
-
-/**
- * The stable version this npm registry advertises, for npm installations whose GitHub
- * Release version discovery failed (e.g. anonymous API rate limiting). Null when the
- * registry cannot be asked or advertises nothing usable. Release notes and verified
- * assets stay GitHub-only: npm installations never download from them.
- */
-export async function fetchLatestNpmRelease(
-  nodePath: string,
-  npmCliPath: string,
-  run: NpmCommandRunner = runNpmCommand,
-): Promise<CodexhostLatestRelease | null> {
-  const result = await run(
-    { nodePath, npmCliPath, packageRoot: "", version: "" },
-    ["view", CLI_PACKAGE, "dist-tags.latest"],
-    VIEW_TIMEOUT_MS,
-  );
-  if (result.code !== 0) return null;
-  try {
-    const version = requireSemanticVersion(result.stdout.trim());
-    return Object.freeze({
-      version,
-      releaseNotes: null,
-      releaseNotesUrl: "",
-      assets: Object.freeze([]),
-    });
-  } catch {
-    return null;
   }
 }
 

@@ -86,6 +86,7 @@ import { pinOrderSource } from "../pin-order.ts";
 import { threadTreeOrderSource, workspaceTreeMembers } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
+import { ProjectDefaultHarnessDialog } from "./ProjectDefaultHarnessDialog.tsx";
 import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
@@ -431,6 +432,11 @@ type SessionTreeProps = Pick<
     onLeaveArchivedOnly: () => void;
     /** Open the browser-owned rename dialog for a real Workspace group. */
     onRenameRequest: (workspaceId: WorkspaceId, currentTitle: string) => void;
+    onDefaultHarnessRequest: (
+      workspaceId: WorkspaceId,
+      title: string,
+      returnFocusTo: HTMLElement | null,
+    ) => void;
     /** Open the browser-owned delete-confirmation dialog for a real Workspace group. */
     onDeleteRequest: (workspaceId: WorkspaceId, currentTitle: string) => void;
     /** Open the rename dialog for a Session. */
@@ -496,6 +502,7 @@ function SessionTree({
   animationResetKey,
   usePanelInfo,
   onRenameRequest,
+  onDefaultHarnessRequest,
   onDeleteRequest,
   onSessionRenameRequest,
   renderSlot,
@@ -925,6 +932,10 @@ function SessionTree({
                       /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
                       if (group.workspaceId !== undefined)
                         onRenameRequest(group.workspaceId, group.label);
+                    },
+                    defaultHarness: (returnFocusTo) => {
+                      if (group.workspaceId !== undefined)
+                        onDefaultHarnessRequest(group.workspaceId, group.label, returnFocusTo);
                     },
                     delete: () => {
                       /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
@@ -2209,6 +2220,17 @@ function WorkspaceBrowserContent({
     storedTitle: string;
   } | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [defaultHarnessTarget, setDefaultHarnessTarget] = useState<{
+    workspaceId: WorkspaceId;
+    title: string;
+  } | null>(null);
+  const defaultHarnessReturnFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (defaultHarnessTarget !== null) return;
+    const returnFocusTo = defaultHarnessReturnFocusRef.current;
+    defaultHarnessReturnFocusRef.current = null;
+    if (returnFocusTo?.isConnected) returnFocusTo.focus();
+  }, [defaultHarnessTarget]);
   const [renaming, setRenaming] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
   const renameTrimmed = renameDraft.trim();
@@ -2632,6 +2654,10 @@ function WorkspaceBrowserContent({
                 setDeleteTarget({ workspaceId, title });
                 setDeleteError(null);
               }}
+              onDefaultHarnessRequest={(workspaceId, title, returnFocusTo) => {
+                defaultHarnessReturnFocusRef.current = returnFocusTo;
+                setDefaultHarnessTarget({ workspaceId, title });
+              }}
             />
           ))}
       </div>
@@ -2642,6 +2668,15 @@ function WorkspaceBrowserContent({
           refreshSessions={refreshSessions}
           loadMoreSessions={loadMoreSessions}
           t={t}
+        />
+      )}
+
+      {defaultHarnessTarget && (
+        <ProjectDefaultHarnessDialog
+          key={defaultHarnessTarget.workspaceId}
+          {...defaultHarnessTarget}
+          t={t}
+          onClose={() => setDefaultHarnessTarget(null)}
         />
       )}
 

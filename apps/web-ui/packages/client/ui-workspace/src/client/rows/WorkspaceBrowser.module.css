@@ -701,6 +701,35 @@
   color: var(--dsw-alias-label-dimmed);
 }
 
+.defaultHarnessTrigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.defaultHarnessTrigger:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-secondary);
+  outline-offset: 2px;
+}
+
+.defaultHarnessTrigger > :is(svg, img) {
+  flex: none;
+}
+
+.defaultHarnessTrigger > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.defaultHarnessMenu {
+  width: min(332px, calc(100vw - 64px));
+}
+
 .renameError {
   margin-top: 8px;
   font-size: 12px;

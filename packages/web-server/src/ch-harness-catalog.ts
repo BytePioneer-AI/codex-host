@@ -202,11 +202,12 @@ export class ChHarnessCatalog {
     refresh = false,
     harnessId?: string,
     preferences?: Promise<HarnessPreferenceSnapshot | undefined>,
+    projectHarnessId?: string,
   ) {
     if (!refresh) {
       // A notification during a batch may invalidate one of its earlier results.
       await Promise.allSettled(this.refreshing.values());
-      return this.readModels(false, undefined, preferences);
+      return this.readModels(false, undefined, preferences, projectHarnessId);
     }
     const pending = this.refreshing.get(harnessId);
     if (pending) return pending;
@@ -283,6 +284,7 @@ export class ChHarnessCatalog {
     refresh: boolean,
     harnessId?: string,
     preferences?: Promise<HarnessPreferenceSnapshot | undefined>,
+    projectHarnessId?: string,
   ) {
     const shouldRefresh = (id: string) => refresh && (harnessId === undefined || harnessId === id);
     const plugins = await this.list();
@@ -323,9 +325,11 @@ export class ChHarnessCatalog {
         ? [groupOf(id, name, inspection as Inspection & { status: "ready" })]
         : [],
     );
-    const first = values.find(
+    const ready = values.filter(
       (value) => value.inspection.status === "ready" && value.inspection.catalog.models.length,
     );
+    const projectHarness = ready.find((value) => value.id === projectHarnessId);
+    const first = projectHarness ?? ready[0];
     const failures = values.flatMap(({ id, name, inspection }) =>
       inspection.status !== "ready" && inspection.status !== "notInstalled"
         ? [
@@ -365,7 +369,11 @@ export class ChHarnessCatalog {
       await this.displayEntries(),
     );
     return this.preferences && selection
-      ? this.preferences.decorate({ ...catalog, default: selection }, preferences)
+      ? this.preferences.decorate(
+          { ...catalog, default: selection },
+          preferences,
+          projectHarness?.id,
+        )
       : catalog;
   }
   async name(id: string): Promise<string> {

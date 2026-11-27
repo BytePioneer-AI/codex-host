@@ -267,7 +267,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     return attempt;
   }
 
-  private reuseOrCreateBlank(workspace: WorkspaceView): Promise<SessionId> {
+  private async reuseOrCreateBlank(workspace: WorkspaceView): Promise<SessionId> {
     const archived = this.workspaces.list.getSnapshot().archivedSessionIds;
     const sessions = this.sessions.list.getSnapshot();
     for (const id of sessions.ids) {
@@ -280,7 +280,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         archived.includes(id)
       )
         continue;
-      return this.reuseBlank(workspace.workspaceId, id);
+      const reused = await this.tryReuseBlank(workspace.workspaceId, id);
+      if (reused !== undefined) return reused;
     }
     return this.sessions.create({ workspaceId: workspace.workspaceId });
   }
@@ -290,7 +291,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * existing projectless blank keeps its unsent composer draft, which is
    * persisted per Session and unreachable once a fresh blank replaces it.
    */
-  private reuseOrCreateProjectlessBlank(): Promise<SessionId> {
+  private async reuseOrCreateProjectlessBlank(): Promise<SessionId> {
     const workspaces = this.workspaces.list.getSnapshot();
     const sessions = this.sessions.list.getSnapshot();
     const reusable = (id: SessionId): boolean => {
@@ -309,7 +310,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     // An abandoned concurrent creation can leave an earlier-listed blank; the opened one holds the draft.
     const opened = this.openedProjectlessBlank;
     const id = opened !== undefined && reusable(opened) ? opened : sessions.ids.find(reusable);
-    return id === undefined ? this.sessions.create() : this.reuseBlank(undefined, id);
+    return (
+      (id === undefined ? undefined : await this.tryReuseBlank(undefined, id)) ??
+      this.sessions.create()
+    );
   }
 
   /** Open a projectless blank in the main view and remember it for the next New Session. */
@@ -324,20 +328,20 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     if (this.mainReference?.sessionId === sessionId) this.openedProjectlessBlank = sessionId;
   }
 
-  private async reuseBlank(
+  private async tryReuseBlank(
     workspaceId: WorkspaceId | undefined,
     sessionId: SessionId,
-  ): Promise<SessionId> {
+  ): Promise<SessionId | undefined> {
     const scope = workspaceId === undefined ? {} : { workspaceId };
     try {
       return await this.sessions.create({ ...scope, sessionId });
     } catch (error: unknown) {
       // The CH Host's `session/busy` is not in the client's declared error map; compare as text.
       const code: string | undefined = sessionCreateErrorOf(error)?.rpcError.code;
-      // A projectless blank that began submitting reports busy; start a fresh one instead.
+      // A projectless blank that began submitting reports busy.
       if (code !== "session/writer-held" && !(workspaceId === undefined && code === "session/busy"))
         throw error;
-      return this.sessions.create(scope);
+      return undefined;
     }
   }
 
@@ -828,7 +832,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       summary.cwd === workspace.path &&
       !workspaces.archivedSessionIds.includes(summary.id)
     ) {
-      sessionId = await this.reuseBlank(workspace.workspaceId, summary.id);
+      sessionId = await this.tryReuseBlank(workspace.workspaceId, summary.id);
     }
     if (sessionId === undefined && workspaces.canStartProjectless && summary === undefined) {
       sessionId = await this.reuseOrCreateProjectlessBlank();

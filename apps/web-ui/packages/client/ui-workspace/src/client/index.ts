@@ -293,21 +293,6 @@ export function apply(ctx: Context): void {
     }
     return harnesses;
   });
-  const nativeThreadIds = derive(
-    sessions.list,
-    (snapshot) =>
-      new Set(
-        Object.values(snapshot.byId)
-          .filter(
-            (row) =>
-              !row.blank &&
-              row.origin !== "subagent" &&
-              !row.projectionValues?.remoteHost &&
-              Boolean(row.projectionValues?.harnessIdentity?.id),
-          )
-          .map((row) => row.id),
-      ),
-  );
   const threadProjectMove = createSnapshotStore<ThreadProjectMoveRequest | null>(null);
   const projectMoveCoordinator = createProjectMoveCoordinator({
     lock: uiWorkspace.sessionMoves,
@@ -351,10 +336,15 @@ export function apply(ctx: Context): void {
   const threadSectionDialog = (): ThreadSectionMoveInjected => ({
     hooks: { threadSectionMove, sectionWorkspace: workspaces.list },
     dismiss: () => threadSectionMove.set(null),
-    move: (sessionId, sectionId) => {
-      if (!workspaces.moveSessionToSection)
-        return Promise.reject(new Error("Section moves are unavailable"));
-      return workspaces.moveSessionToSection(sessionId, sectionId);
+    move: async (sessionId, sectionId) => {
+      if (!workspaces.moveSessionToSection) throw new Error("Section moves are unavailable");
+      if (!uiWorkspace.sessionMoves.tryAcquire(sessionId))
+        throw new Error("A session placement operation is already in progress.");
+      try {
+        await workspaces.moveSessionToSection(sessionId, sectionId);
+      } finally {
+        uiWorkspace.sessionMoves.release(sessionId);
+      }
     },
   });
   const threadSectionManage = createSnapshotStore<ThreadSectionManageRequest | null>(null);

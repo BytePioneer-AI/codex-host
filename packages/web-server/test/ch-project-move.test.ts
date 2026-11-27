@@ -702,6 +702,55 @@ it("allows a project move after unarchive even when the official Thread is off t
   assert.equal(writes, 1);
 });
 
+it("does not restore an archived Thread from an in-flight catalog and section snapshot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = nativeCodex(new FakeChChannel());
+  const { row, list, move, subscribe, workspaces } = setup(t, host, "native-moving");
+  row.modelProvider = "openai";
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({ sections: [{ id: "research", name: "Research", threads: [row] }] } as T)
+      : request<T>(method, params);
+  assert.ok((await list()).ok);
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const projects = host.projects.bind(host);
+  t.mock.method(host, "projects", async () => {
+    const snapshot = await projects();
+    entered.resolve(undefined);
+    await release.promise;
+    return snapshot;
+  });
+  const pending = list();
+  try {
+    await Promise.race([
+      entered.promise,
+      pending.then(() => assert.fail("Catalog published before the pending project read")),
+    ]);
+    host.archivedIds.add(row.id);
+    host.changed(row.id, "thread/archived");
+    assert.equal(workspaces.isArchived(row.id), true);
+  } finally {
+    release.resolve(undefined);
+  }
+  const result = await pending;
+  assert.ok(result.ok);
+  const value = result.value as {
+    items: Array<{ sessionId: string }>;
+    archivedSessionIds: string[];
+  };
+  assert.ok(!value.items.some(({ sessionId }) => sessionId === row.id));
+  assert.ok(value.archivedSessionIds.includes(row.id));
+  const [baseline] = (await subscribe("workspace/follow", {})) as Array<{
+    value: { threadSections: unknown };
+  }>;
+  assert.deepEqual(baseline?.value.threadSections, [
+    { id: "research", name: "Research", threadIds: [] },
+  ]);
+  assert.equal((await move()).ok, false);
+});
+
 it("keeps a concurrent direct-link Thread without restoring a removed catalog row", async (t) => {
   const host = new FakeChHost();
   const { root, row, call, list, workspaces } = setup(t, host);

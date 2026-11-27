@@ -611,6 +611,10 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     "official-threads": [],
     empty: [],
   });
+  expect((await readNativeWorkspaceSnapshot(environment, [selected])).sectionProjects).toEqual({
+    "official-threads": [],
+    empty: [],
+  });
   writeFileSync(
     file,
     JSON.stringify({ ...sectioned, "electron-owner-atoms:owner": sections("reshaped") }),

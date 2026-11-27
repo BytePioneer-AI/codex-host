@@ -146,6 +146,7 @@ export class ChSessions {
   private boundProjectRevision = -1;
   private refreshingCatalog = false;
   private refreshingArchives = false;
+  private archiveRevision = 0;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
   private refreshingProjectAssignments: Map<string, string> | undefined;
   private readonly archiveOperations = new Map<string, symbol>();
@@ -1509,6 +1510,7 @@ export class ChSessions {
 
   private updateArchive(id: string, archived: boolean): void {
     this.refreshingArchiveChanges?.set(id, archived);
+    this.archiveRevision++;
     const row = this.rows.get(id);
     if (row) this.rows.set(id, { ...row, archived });
     const ids = new Set(this.workspaces.localArchivedSessionIds());
@@ -1730,7 +1732,6 @@ export class ChSessions {
         row.parentThreadId ||
         row.canAcceptDirectInput === false ||
         this.tree.parent(threadId) ||
-        row.archived === true ||
         this.workspaces.isArchived(threadId) ||
         this.workspaces.pinnedSessionIds().includes(threadId)
       )
@@ -1792,15 +1793,20 @@ export class ChSessions {
         if (id.startsWith("draft-"))
           throw new RpcError("session/not-found", "Draft Session is no longer available.");
         await Promise.all([this.tree.refresh(), this.refreshPins()]);
+        const archiveRevision = this.archiveRevision;
         const { thread, harnessId } = await this.readThread(id);
+        if (thread.archived === true && archiveRevision === this.archiveRevision)
+          this.updateArchive(id, true);
         this.rows.set(thread.id, thread);
         this.threads.setHarness(thread.id, harnessId);
         const direct = new Map([[thread.id, thread]]);
         await this.tree.supplement(direct, async (ancestorId) => {
+          const archiveRevision = this.archiveRevision;
           const ancestor = await this.readThread(ancestorId);
           this.rows.set(ancestorId, ancestor.thread);
           this.threads.setHarness(ancestorId, ancestor.harnessId);
-          if (ancestor.thread.archived === true) this.updateArchive(ancestorId, true);
+          if (ancestor.thread.archived === true && archiveRevision === this.archiveRevision)
+            this.updateArchive(ancestorId, true);
           return ancestor.thread;
         });
         // Catalog/organization refreshes reconcile project grouping for these retained rows.
@@ -1840,9 +1846,10 @@ export class ChSessions {
         };
       }
       const pageIds = this.tree.withAncestors(page?.threads.map((row) => row.id) ?? []);
-      const archivedSessionIds = this.workspaces.archivedSessionIds();
-      const archived = new Set(archivedSessionIds);
-      const items = await timing.measure("summaries", async () => [
+      const archiveRevision = this.archiveRevision;
+      let archivedSessionIds = this.workspaces.archivedSessionIds();
+      let archived = new Set(archivedSessionIds);
+      let items = await timing.measure("summaries", async () => [
         ...(await Promise.all(
           [...this.rows.values()]
             .filter((row) => pageIds.has(row.id) && (includeArchived || !archived.has(row.id)))
@@ -1854,6 +1861,11 @@ export class ChSessions {
             .map((d) => this.draftSummary(d, false)),
         )),
       ]);
+      if (archiveRevision !== this.archiveRevision) {
+        archivedSessionIds = this.workspaces.archivedSessionIds();
+        archived = new Set(archivedSessionIds);
+        if (!includeArchived) items = items.filter((row) => !archived.has(row.sessionId));
+      }
       timing.count("resultRows", items.length);
       return {
         items,

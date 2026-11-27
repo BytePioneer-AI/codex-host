@@ -758,7 +758,7 @@ export function SessionNodeItem({
               if (reorderable) drag?.start();
             }
       }
-      onDragEnd={(e) => drag?.end(e.dataTransfer.dropEffect === "copy")}
+      onDragEnd={!draggable ? undefined : (e) => drag?.end(e.dataTransfer.dropEffect === "copy")}
       onDragOver={
         drag === undefined
           ? undefined

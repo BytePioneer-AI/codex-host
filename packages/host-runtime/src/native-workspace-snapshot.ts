@@ -96,10 +96,10 @@ export async function readWorkspaceProjects(
   };
   const legacyAssignedThreads = new Set<string>();
   const sectionProjects = Object.fromEntries(
-    Object.entries(desktopSectionProjects(state)).map(([sectionId, projects]) => [
-      sectionId,
-      projects.flatMap((id) => projectId(id) ?? []),
-    ]),
+    Object.entries(desktopSectionProjects(state)).flatMap(([sectionId, projects]) => {
+      const resolved = projects.flatMap((id) => projectId(id) ?? []);
+      return resolved.length === projects.length ? [[sectionId, resolved]] : [];
+    }),
   );
   const rawPinnedProjects = state["pinned-project-ids"];
   const pinnedProjects = Array.isArray(rawPinnedProjects)

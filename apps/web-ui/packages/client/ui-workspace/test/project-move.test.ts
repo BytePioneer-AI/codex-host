@@ -9,7 +9,6 @@ import {
   createProjectMoveCoordinator,
   resolveMoveProjectDialogState,
 } from "../src/client/session-actions/project-move.ts";
-import { createSectionMoveCoordinator } from "../src/client/rows/section-dnd.ts";
 import { SessionMoveLock } from "../src/client/session-move-lock.ts";
 
 const sid = (value: string): SessionId => value as SessionId;
@@ -165,20 +164,13 @@ describe("createProjectMoveCoordinator", () => {
     const moveA1 = coordinator.move({ sessionId: sid("a"), projectId: "proj-beta" });
     assert.equal(coordinator.isMoving(sid("a")), true);
     assert.equal(coordinator.movingSessionIds.getSnapshot().has(sid("a")), true);
-    const sectionGate = Promise.withResolvers<void>();
-    const section = createSectionMoveCoordinator({
-      lock,
-      execute: () => sectionGate.promise,
-    });
-    assert.deepEqual(await section.move({ sessionId: sid("a"), sectionId: null }), {
-      status: "skipped-in-flight",
-    });
-    const sectionMove = section.move({ sessionId: sid("c"), sectionId: "custom" });
+    assert.equal(lock.tryAcquire(sid("a")), false);
+    assert.equal(lock.tryAcquire(sid("c")), true);
     assert.deepEqual(await coordinator.move({ sessionId: sid("c"), projectId: "proj-beta" }), {
       status: "skipped-in-flight",
     });
-    sectionGate.resolve();
-    assert.deepEqual(await sectionMove, { status: "committed" });
+    lock.release(sid("c"));
+    assert.equal(lock.isMoving(sid("c")), false);
 
     const moveA2 = await coordinator.move({ sessionId: sid("a"), projectId: "proj-gamma" });
     assert.deepEqual(moveA2, { status: "skipped-in-flight" });

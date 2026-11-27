@@ -61,7 +61,11 @@ import type {
   SessionListState,
   SessionSearchResultItem,
 } from "@deepseek-ai/dsh-api-session-controller/client";
-import type { WorkspaceId, WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
+import type {
+  WorkspaceId,
+  WorkspaceSnapshot,
+  WorkspaceView,
+} from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-controller/types";
 import { workspaceDisplayTitle } from "@deepseek-ai/dsh-api-workspace-controller/default-workspace";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -98,6 +102,7 @@ import { threadTreeOrderSource, workspaceTreeMembers } from "../thread-tree-orde
 import { ActivityFilterIcon, ActivityViewList } from "./ActivityViewList.tsx";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
+import { useProjectDrag } from "./use-project-drag.ts";
 import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
@@ -164,11 +169,61 @@ function sanitizeSearchQuery(value: string): string {
   if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
   return withoutNul.slice(0, end);
 }
+const FINE_POINTER_MEDIA_QUERY = "(hover: hover) and (pointer: fine)";
 
+function isFinePointerDevice(): boolean {
+  return (
+    typeof window !== "undefined" && window.matchMedia?.(FINE_POINTER_MEDIA_QUERY).matches === true
+  );
+}
+
+function useFinePointer(): boolean {
+  const [fine, setFine] = useState<boolean>(isFinePointerDevice);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(FINE_POINTER_MEDIA_QUERY);
+    setFine(media.matches);
+    const onChange = (event: MediaQueryListEvent): void => {
+      setFine(event.matches);
+    };
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", onChange);
+      return () => {
+        media.removeEventListener("change", onChange);
+      };
+    }
+  }, []);
+  return fine;
+}
+
+function useCancelRowDrag(active: boolean, onCancel: () => void): void {
+  const cancelRef = useRef(onCancel);
+  useLayoutEffect(() => {
+    cancelRef.current = onCancel;
+  }, [onCancel]);
+  useEffect(() => {
+    if (!active) return;
+    const cancel = () => cancelRef.current();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") cancel();
+    };
+    const onVisibility = () => {
+      if (document.hidden) cancel();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", cancel);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("dragend", cancel);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", cancel);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("dragend", cancel);
+    };
+  }, [active]);
+}
 /**
- * Accept the native drag at document level while a row drag is active: row
- * hover still owns the insertion marker, and releasing outside the list must
- * not be rendered as a rejected drop before dragend commits that last marker.
+ * Native acceptance for workspace and local list sorting, which can use the last marker.
  */
 function useNativeDragAcceptance(active: boolean): void {
   useEffect(() => {
@@ -372,6 +427,9 @@ function workspaceGroupHalf(e: {
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
   | "useSessionStatus"
+  | "getProjectDragSnapshot"
+  | "isSessionMoving"
+  | "moveSessionToProject"
   | "startSession"
   | "open"
   | "insertWorkspaceBefore"
@@ -422,6 +480,8 @@ type SessionTreeProps = Pick<
     /** Registry-global pin and archive sets plus the archived-visibility choice. */
     rowState: SessionRowState;
     nativeSections: readonly WorkspaceThreadSection[];
+    workspaceSnapshot: WorkspaceSnapshot;
+    finePointer: boolean;
     manageThreadSection?: (request: ThreadSectionManageRequest) => void;
     /** Switch the archived filter back to the default hide-archived view. */
     onLeaveArchivedOnly: () => void;
@@ -486,6 +546,11 @@ function SessionTree({
   ungroupedSessionIds,
   rowState,
   nativeSections,
+  workspaceSnapshot,
+  getProjectDragSnapshot,
+  isSessionMoving,
+  moveSessionToProject,
+  finePointer,
   manageThreadSection,
   onLeaveArchivedOnly,
   workspaceReady,
@@ -558,8 +623,22 @@ function SessionTree({
     const entry = row ?? tree?.querySelector<HTMLElement>('[data-row-key][tabindex="0"]');
     entry?.focus();
   }, [pinnedWorkspaceIds]);
-  const nativeDragActive = drag !== null || workspaceDrag !== null;
+  const projectDrag = useProjectDrag({
+    enabled: finePointer,
+    workspaces,
+    rendered: { workspace: workspaceSnapshot, sessions: list },
+    getProjectDragSnapshot,
+    isSessionMoving,
+    moveSessionToProject,
+    clearOtherHover: clearLocalHover,
+    endOtherDrag: endLocalDrag,
+  });
+  const nativeDragActive = drag !== null || workspaceDrag !== null || projectDrag.active;
   useNativeDragAcceptance(nativeDragActive);
+  useCancelRowDrag(drag !== null || projectDrag.active, () => {
+    projectDrag.end();
+    endLocalDrag();
+  });
   const currentGroup =
     current === undefined || !workspaceReady
       ? undefined
@@ -903,6 +982,8 @@ function SessionTree({
         : (half: "before" | "after") => {
             commitWorkspaceDrag(workspaceDrag, { id: workspaceId, half });
           };
+    const isProjectDropTarget =
+      projectDrag.over != null && projectDrag.over.workspaceId === workspaceId;
     return (
       // Group section: header, descendant Workspaces, and own Session rows. The
       // inter-group breathing room is the section's own margin
@@ -910,16 +991,17 @@ function SessionTree({
       <div
         key={group.key}
         data-sidebar-group={group.key}
+        data-project-drop-target={isProjectDropTarget ? "true" : undefined}
         style={{ "--dsh-workspace-indent": `${depth * 12}px` } as CSSProperties}
         className={clsx(
           css.groupSection,
           workspaceMarker === "before" && css.workspaceDropBefore,
           workspaceMarker === "after" && css.workspaceDropAfter,
+          isProjectDropTarget && css.projectDropTarget,
         )}
         onDragOver={
-          workspaceDrag === null
-            ? undefined
-            : (e) => {
+          workspaceDrag !== null
+            ? (e) => {
                 e.preventDefault();
                 if (hoverWorkspace === undefined && parents.get(group.key) !== undefined) return;
                 e.stopPropagation();
@@ -932,11 +1014,11 @@ function SessionTree({
                   hoverWorkspace(workspaceGroupHalf(e));
                 }
               }
+            : undefined
         }
         onDrop={
-          workspaceDrag === null
-            ? undefined
-            : (e) => {
+          workspaceDrag !== null
+            ? (e) => {
                 e.preventDefault();
                 if (dropWorkspace === undefined && parents.get(group.key) !== undefined) return;
                 e.stopPropagation();
@@ -947,6 +1029,7 @@ function SessionTree({
                   dropWorkspace(workspaceGroupHalf(e));
                 }
               }
+            : undefined
         }
       >
         {workspaceId === undefined ? (
@@ -990,6 +1073,7 @@ function SessionTree({
                 startSession(group.workspaceId);
               }
             }}
+            projectDrop={!group.remote ? projectDrag.target(workspaceId) : undefined}
             drag={workspaceDragProps}
             pin={
               setWorkspacePinned
@@ -1027,47 +1111,69 @@ function SessionTree({
           >
             <ThreadTreeRows roots={visible.rows}>
               {(node) => {
-                // Session drag never leaves its browser-local account, and pinned
-                // rows reorder only within their leading pinned block.
                 const sameGroupDrag = drag !== null && drag.accountKey === group.key;
                 const compatibleTarget = sameGroupDrag && drag.pinned === node.pinned;
                 const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
                   node.blank ? "after" : half;
-                const dragProps = {
-                  start: () => {
-                    sessionDropCommitted.current = false;
-                    setDrag({
-                      accountKey: group.key,
-                      sessionId: node.id,
-                      pinned: node.pinned,
-                      over: null,
-                    });
-                  },
-                  active: compatibleTarget,
-                  marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
-                  hover: (half: "before" | "after") => {
-                    /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
-                    setDrag((d) =>
-                      d === null
-                        ? d
-                        : {
-                            ...d,
-                            over: { id: node.id, half: normalizeHalf(half) },
-                          },
-                    );
-                  },
-                  drop: (half: "before" | "after") => {
-                    /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
-                    if (drag === null) return;
-                    commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) });
-                  },
-                  end: (copied?: boolean) => {
-                    if (!copied && drag?.over !== null && drag?.over !== undefined)
-                      commitSessionDrag(drag, drag.over);
-                    else setDrag(null);
-                    sessionDropCommitted.current = false;
-                  },
-                };
+                const canLocalReorder =
+                  workspaceId !== undefined && !group.remote && (node.tree?.depth ?? 0) === 0;
+                const projectRow =
+                  !group.remote &&
+                  !node.remote &&
+                  !linkedRows.has(node.id) &&
+                  !node.blank &&
+                  !node.archived &&
+                  !node.pinned &&
+                  (node.tree?.depth ?? 0) === 0;
+                const projectEnabled =
+                  projectRow && finePointer && moveSessionToProject !== undefined;
+                const canStart =
+                  canLocalReorder ||
+                  (projectEnabled && projectDrag.canStart(node.id, workspaceId ?? null));
+                const dragProps = canStart
+                  ? {
+                      start: (element: HTMLElement) => {
+                        if (canLocalReorder) {
+                          sessionDropCommitted.current = false;
+                          setDrag({
+                            accountKey: group.key,
+                            sessionId: node.id,
+                            pinned: node.pinned,
+                            over: null,
+                          });
+                        }
+                        if (projectEnabled)
+                          projectDrag.start(node.id, workspaceId ?? null, element);
+                      },
+                      active: compatibleTarget,
+                      marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
+                      hover: (half: "before" | "after") => {
+                        projectDrag.clearHover();
+                        /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
+                        setDrag((d) =>
+                          d === null
+                            ? d
+                            : {
+                                ...d,
+                                over: { id: node.id, half: normalizeHalf(half) },
+                              },
+                        );
+                      },
+                      drop: (half: "before" | "after") => {
+                        /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
+                        projectDrag.end();
+                        if (drag === null) return;
+                        commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) });
+                      },
+                      end: (copied?: boolean) => {
+                        projectDrag.end();
+                        if (!copied && drag?.over !== null && drag?.over !== undefined)
+                          commitSessionDrag(drag, drag.over);
+                        else setDrag(null);
+                        sessionDropCommitted.current = false;
+                      },
+                    }
+                  : undefined;
                 return (
                   <SessionNodeItem
                     key={node.id}
@@ -1088,10 +1194,11 @@ function SessionTree({
                           }
                         : undefined
                     }
-                    drag={
-                      workspaceId === undefined || group.remote || (node.tree?.depth ?? 0) > 0
-                        ? undefined
-                        : dragProps
+                    drag={dragProps}
+                    projectDrop={
+                      projectRow && workspaceId !== undefined
+                        ? projectDrag.target(workspaceId, node.id)
+                        : undefined
                     }
                     t={t}
                   />
@@ -1208,7 +1315,29 @@ function SessionTree({
   const recentRoot = rootGroups.find((group) => group.key === UNGROUPED_KEY);
   if (recentRoot !== undefined) groupRows.push(renderGroup(recentRoot, 0));
   return (
-    <div ref={treeBody} className={clsx(css.treeBody, css.wide)}>
+    <div
+      ref={treeBody}
+      className={clsx(css.treeBody, css.wide)}
+      onDragOver={
+        projectDrag.active
+          ? () => {
+              projectDrag.clearHover();
+            }
+          : undefined
+      }
+      onDragLeave={
+        projectDrag.active
+          ? (event) => {
+              if (
+                !(event.relatedTarget instanceof Node) ||
+                !event.currentTarget.contains(event.relatedTarget)
+              ) {
+                projectDrag.clearHover();
+              }
+            }
+          : undefined
+      }
+    >
       {workspaceDropAtListStart && <span className={css.listTopDropIndicator} aria-hidden="true" />}
       <AnimatedRows
         className={clsx(css.list, workspaceDropAtListStart && css.listTopDropActive)}
@@ -1770,6 +1899,8 @@ function WorkspaceBrowserContent({
   createWorkspace,
   requestManageThreadSection,
   isSessionMoving,
+  moveSessionToProject,
+  getProjectDragSnapshot,
   searchSessions,
   searchResultLimit,
   useDirectoryFlow,
@@ -1796,8 +1927,10 @@ function WorkspaceBrowserContent({
   const statuses = useSessionStatus((s) => s);
   // Ordering remains live while the rail or search replaces the list body.
   const list = useSessions((state) => state);
-  const storedWorkspaces = useWorkspaces((state) => state.items);
-  const canStartProjectless = useWorkspaces((state) => state.canStartProjectless === true);
+  const workspaceSnapshot = useWorkspaces((state) => state);
+  const finePointer = useFinePointer();
+  const storedWorkspaces = workspaceSnapshot.items;
+  const canStartProjectless = workspaceSnapshot.canStartProjectless === true;
   // The resolved names, not `t`, are the memo dependencies: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t("workspace.defaultName");
@@ -1812,17 +1945,18 @@ function WorkspaceBrowserContent({
       })),
     [storedWorkspaces, defaultWorkspaceName, remoteOtherSessionsLabel],
   );
-  const workspacePhase = useWorkspaces((state) => state.phase);
-  const workspaceStreamState = useWorkspaces((state) => state.state);
-  const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
-  const pinnedSessionIds = useWorkspaces((state) => state.pinnedSessionIds);
+  const {
+    phase: workspacePhase,
+    state: workspaceStreamState,
+    archivedSessionIds,
+    pinnedSessionIds,
+    threadSections = NO_THREAD_SECTIONS,
+  } = workspaceSnapshot;
   const pinnedWorkspaceIds = useWorkspaces(
     (state) => state.pinnedWorkspaceIds ?? NO_PINNED_WORKSPACE_IDS,
   );
-  const threadSections = useWorkspaces((state) => state.threadSections ?? NO_THREAD_SECTIONS);
-  const canManageThreadSections = useWorkspaces(
-    (state) => state.state === "idle" && state.threadSectionsV1 === true,
-  );
+  const canManageThreadSections =
+    workspaceStreamState === "idle" && workspaceSnapshot.threadSectionsV1 === true;
   const manageThreadSection = canManageThreadSections ? requestManageThreadSection : undefined;
   // Live occupancy of this surface's directory-flow hole (the same source the
   // flow reads): a composition without a picking affordance can add nothing.
@@ -2878,6 +3012,11 @@ function WorkspaceBrowserContent({
               setWorkspacePinned={setWorkspacePinned}
               rowState={rowState}
               nativeSections={nativeSections}
+              workspaceSnapshot={workspaceSnapshot}
+              getProjectDragSnapshot={getProjectDragSnapshot}
+              isSessionMoving={isSessionMoving}
+              moveSessionToProject={moveSessionToProject}
+              finePointer={finePointer}
               manageThreadSection={manageThreadSection}
               onLeaveArchivedOnly={leaveArchivedOnly}
               startSession={startSession}

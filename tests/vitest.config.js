@@ -28,6 +28,7 @@ const include = [
   "apps/web-ui/packages/client/ui-workspace/test/recent-visits.test.ts",
   "apps/web-ui/packages/client/ui-workspace/test/project-move.test.ts",
   "apps/web-ui/packages/client/web/test/*.test.ts",
+  "apps/web-ui/packages/client/ui-workspace/test/project-dnd.test.ts",
   "apps/web-ui/packages/client/hmr/tests/*.spec.ts",
   "packages/repository-automation/test/**/*.test.mjs",
   "tests/release/**/*.test.mjs",

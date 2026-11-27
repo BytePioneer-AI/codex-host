@@ -48,6 +48,8 @@ describe("move-to-project menu and dialog", () => {
     assert.equal(state({ busy: true }).canSubmit, false);
     assert.equal(state({ selectedTarget: alpha.id }).canSubmit, false);
     assert.equal(state({}, { localProjects: [alpha] }).canSubmit, false);
+    assert.equal(state({}, { localProjects: [alpha] }).eligible, true);
+    assert.equal(state({}, { localProjects: [alpha] }).rowEligible, true);
   });
 
   it("can clear the only project but cannot clear an already projectless or unverified Thread", () => {
@@ -63,6 +65,7 @@ describe("move-to-project menu and dialog", () => {
 
   it("requires an explicit projectless assignment or a single unambiguous owner", () => {
     assert.equal(state({}, { localProjects: [beta] }).eligible, false);
+    assert.equal(state({}, { localProjects: [beta] }).rowEligible, false);
     assert.equal(
       state({}, { localProjects: [beta], projectlessSessionIds: [sessionId] }).canSubmit,
       true,

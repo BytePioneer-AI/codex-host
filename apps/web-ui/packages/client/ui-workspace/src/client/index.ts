@@ -582,6 +582,23 @@ export function apply(ctx: Context): void {
       workspaces.deleteThreadSection
         ? (request) => threadSectionManage.set(request)
         : undefined,
+    getProjectDragSnapshot: () => ({
+      workspace: workspaces.list.getSnapshot(),
+      sessions: sessions.list.getSnapshot(),
+    }),
+    moveSessionToProject: workspaces.moveSessionToProject
+      ? async (payload) => {
+          const outcome = await projectMoveCoordinator.move(payload);
+          if (outcome.status === "unknown") notify({ kind: "projectMoveUnknown" });
+          if (outcome.status === "failed")
+            notify({
+              kind: "projectMoveFailed",
+              message:
+                outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+            });
+          return outcome;
+        }
+      : undefined,
     requestSearch: shortcutControls.search,
     requestAddWorkspace: shortcutControls.add,
     closeAddWorkspace: shortcutControls.closeAdd,

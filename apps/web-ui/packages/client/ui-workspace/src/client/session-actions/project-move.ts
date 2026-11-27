@@ -39,6 +39,8 @@ export interface ProjectMoveCoordinator {
 }
 
 export interface MoveProjectDialogState {
+  /** The row and its ownership are confirmed, independently of available destinations. */
+  readonly rowEligible: boolean;
   readonly eligible: boolean;
   readonly availableProjects: readonly WorkspaceLocalProject[];
   readonly currentProjectId: string;
@@ -115,7 +117,7 @@ export function resolveMoveProjectDialogState(input: {
   const source = resolveSessionProjectId(sessionId, projects, workspace.projectlessSessionIds);
   const currentProjectId = source ?? "";
   const reference = summary?.projectionValues?.threadReference;
-  const eligible =
+  const rowEligible =
     workspace.phase === "ready" &&
     workspace.state === "idle" &&
     summary?.id === sessionId &&
@@ -130,8 +132,8 @@ export function resolveMoveProjectDialogState(input: {
     (reference.threadId === undefined || reference.threadId === sessionId) &&
     !workspace.pinnedSessionIds.includes(sessionId) &&
     !workspace.archivedSessionIds.includes(sessionId) &&
-    source !== undefined &&
-    (source !== null || availableProjects.length > 0);
+    source !== undefined;
+  const eligible = rowEligible && (source === null || availableProjects.length > 0);
   const effectiveTarget = input.selectedTarget ?? currentProjectId;
   const targetDeleted =
     input.selectedTarget !== null &&
@@ -144,6 +146,7 @@ export function resolveMoveProjectDialogState(input: {
     !targetDeleted &&
     input.selectedTarget !== currentProjectId;
   return {
+    rowEligible,
     eligible,
     availableProjects,
     currentProjectId,

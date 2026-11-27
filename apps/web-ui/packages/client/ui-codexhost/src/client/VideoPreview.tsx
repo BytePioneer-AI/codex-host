@@ -1,5 +1,5 @@
 /** Workspace video playback through the authenticated Web gateway. */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
@@ -96,7 +96,9 @@ function VideoPlayer({
   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
   const player = useRef<HTMLVideoElement>(null);
   const settled = useRef(request);
-  settled.current = request;
+  useLayoutEffect(() => {
+    settled.current = request;
+  }, [request]);
   useEffect(() => {
     const controller = new AbortController();
     void source(resourceAddress, request.revision, controller.signal)

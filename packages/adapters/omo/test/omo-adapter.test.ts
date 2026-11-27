@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -85,6 +86,11 @@ fs.writeFileSync(
 fs.writeFileSync(path.join(stateDir, "argv.json"), JSON.stringify(argv));
 
 const inspecting = scenario === "inspect" || scenario.startsWith("inspect-");
+// macOS engines report their process cwd symlink-resolved (TMPDIR lives behind
+// /private/var); this knob mirrors that report shape on every platform.
+const reportedCwd = process.env.FAKE_OMO_REPORT_RESOLVED_CWD
+  ? fs.realpathSync(cwd)
+  : cwd;
 const state = {
   sessionId: inspecting
     ? null
@@ -93,7 +99,7 @@ const state = {
         ? (process.env.FAKE_OMO_FORK_STARTUP_ID ?? "session-fork-startup-" + process.pid)
         : (process.env.FAKE_OMO_STATE_ID ?? "session-alpha")),
   sessionFile: inspecting ? null : reportedFile,
-  cwd,
+  cwd: reportedCwd,
   model: {
     provider: "synthetic-provider",
     id: "synthetic-model",
@@ -1371,6 +1377,42 @@ describe("OmO Adapter open", () => {
     await session.close();
   });
 
+  it("binds a derived Session to a cwd reached through a symlink alias", async () => {
+    const real = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(real, "session-source", [
+      "first question",
+      "second question",
+      "third question",
+    ]);
+    const aliasParent = mkdtempSync(path.join(os.tmpdir(), "omo-adapter-alias-"));
+    const alias = path.join(aliasParent, "alias");
+    symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir");
+    temporaryRoots.push(aliasParent);
+    const fixture = sessionFixture(real, { FAKE_OMO_REPORT_RESOLVED_CWD: "1" });
+    const result = await fixture.adapter.open({
+      kind: "fork",
+      sourceRef: derivationRef(real, sourceFile, "session-source"),
+      checkpoint: {
+        harnessId: "omo",
+        nativeSessionId: "session-source",
+        checkpointId: "u2",
+        formatVersion: 1,
+      },
+      cwd: alias,
+    });
+    if (!result.ok) {
+      throw new Error("expected a forked Session through the alias: " + result.error.message);
+    }
+    const session = result.value;
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error("expected a forked snapshot");
+    expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn:u1",
+      "turn:u2",
+    ]);
+    await session.close();
+  });
+
   it("rejects an unknown Checkpoint and removes the startup copy", async () => {
     const cwd = temporaryDirectory();
     const sourceFile = syntheticDerivationSource(cwd, "session-source", ["first question"]);
@@ -1675,7 +1717,7 @@ describe("OmO Adapter open", () => {
       scenario: "inspect-silent",
       commandTimeoutMs: 30_000,
       startupTimeoutMs: 30_000,
-      closeTimeoutMs: 500,
+      closeTimeoutMs: 2_000,
     });
     const pending = fixture.adapter.inspect({ cwd: temporaryDirectory() });
     const child = fixture.inspectChildren[0];

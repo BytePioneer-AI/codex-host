@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import path from "node:path";
 
@@ -634,7 +634,22 @@ function sameNativePath(left: string, right: string, cwd: string): boolean {
 }
 
 function sameAbsolutePath(left: string, right: string): boolean {
-  return sameNativePath(path.resolve(left), path.resolve(right), process.cwd());
+  return sameNativePath(canonicalPath(left), canonicalPath(right), process.cwd());
+}
+
+/**
+ * The engine reports its own process cwd, which the OS returns symlink-resolved
+ * (macOS TMPDIR lives behind /private/var), while the Host may hold an
+ * unresolved alias of the same directory. Resolve symlinks when the path
+ * exists so aliases of one directory compare equal; fall back to lexical
+ * resolution for paths that are not on disk yet.
+ */
+function canonicalPath(target: string): string {
+  try {
+    return realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
 }
 
 function omoStateCwd(state: OmoRpcSessionState): string | null {

@@ -5581,3 +5581,284 @@ it("re-inspects remote peer external Threads when configuration confirms via sna
   await remote.read(sessionId, true);
   assert.deepEqual(firstView.log.projections.permissions, { currentValue: "default" });
 });
+
+it("forwards and syncs remote Peer pins bidirectionally, isolates Desktop remote hosts, and cleans up on archive or peer removal", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "remote-peer-pins-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const peerHostId = "remote-peer:peer-pins-hub";
+  const desktopHostId = "remote-ssh:desktop-box";
+  const epoch = randomUUID();
+  let peerOnline = true;
+  let peerPresent = true;
+  let peerPinsUnsupported = false;
+  let peerPinned = ["t-1"];
+  const peerArchived = new Set<string>();
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+
+  const peerThreads = new Map<string, ChThread>([
+    [
+      "t-1",
+      {
+        id: "t-1",
+        cwd: "/remote/repo",
+        name: "Peer Thread 1",
+        modelProvider: "codexhost",
+        createdAt: 100,
+        updatedAt: 200,
+        status: { type: "idle" },
+        turns: [],
+      },
+    ],
+    [
+      "t-2",
+      {
+        id: "t-2",
+        cwd: "/remote/repo",
+        name: "Peer Thread 2",
+        modelProvider: "openai",
+        createdAt: 110,
+        updatedAt: 210,
+        status: { type: "idle" },
+        turns: [],
+      },
+    ],
+  ]);
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        const row = defined(peerThreads.get(String(input.threadId)));
+        return {
+          cursor: { epoch, sequence: 1 },
+          thread: { ...row, turns: [] },
+          turnsPage: { data: [], nextCursor: null },
+          configuration: {},
+          queue: { items: [], pausedReason: null },
+          interactions: [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      const params = (input.params ?? {}) as Record<string, unknown>;
+      if (method === "codexhost/thread/catalog/read") {
+        const visible = [...peerThreads.values()].filter((row) => !peerArchived.has(row.id));
+        return {
+          threads: visible.map((row) => ({ ...row, turns: [] })),
+          ownership: visible.map((row) =>
+            row.modelProvider === "codexhost"
+              ? { threadId: row.id, owner: "external", harnessId: "claude-code" }
+              : { threadId: row.id, owner: "codex" },
+          ),
+          officialCursor: { live: null },
+          archivedThreadIds: [...peerArchived],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/thread/pins/list") {
+        if (peerPinsUnsupported) {
+          throw new RpcError("remote/request-failed", "Method not found", { hostCode: -32601 });
+        }
+        return { threadIds: [...peerPinned] } as T;
+      }
+      if (method === "codexhost/thread/pins/set") {
+        if (peerPinsUnsupported) {
+          throw new RpcError("remote/request-failed", "Method not found", { hostCode: -32601 });
+        }
+        const threadId = String(params.threadId);
+        const pinned = Boolean(params.pinned);
+        peerPinned = pinned
+          ? [...new Set([...peerPinned, threadId])]
+          : peerPinned.filter((id) => id !== threadId);
+        return { threadIds: [...peerPinned] } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") return { plugins: [] } as T;
+      throw new Error(`Unexpected peer rpc: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => listeners.delete(listener);
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-box",
+      epoch,
+      projects: [{ id: "p1", name: "Repo", path: "/remote/repo", threadIds: ["t-1", "t-2"] }],
+    }),
+  };
+
+  const workspaces = new Workspaces(new DataDir(dir), dir, true);
+  workspaces.setReferencePins(["local-1"]);
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+
+  const peerProvider: RemotePeerProvider = {
+    source: () => undefined,
+    client: (h) =>
+      h === peerHostId && peerPresent
+        ? ({ state: peerOnline ? "connected" : "disconnected" } as never)
+        : undefined,
+  };
+  const source = new PeerThreadSource({
+    hostId: peerHostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(peerHostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(peerHostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(peerHostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(peerHostId, e, full),
+  });
+  peerProvider.source = (h) => (h === peerHostId && peerPresent ? source : undefined);
+
+  const remote = new RemoteSessions(
+    new EventHub("remote-peer-pins"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          ...(peerPresent
+            ? [
+                {
+                  hostId: peerHostId,
+                  online: peerOnline,
+                  epoch,
+                  displayName: "Peer Box",
+                  projects: [
+                    { id: "p1", name: "Repo", path: "/remote/repo", threadIds: ["t-1", "t-2"] },
+                  ],
+                },
+              ]
+            : []),
+          {
+            hostId: desktopHostId,
+            online: true,
+            epoch: "desktop-epoch",
+            displayName: "Desktop SSH",
+            projects: [{ id: "d1", name: "SSH Repo", path: "/ssh/repo", threadIds: ["d-1"] }],
+          },
+        ];
+      }
+      if (op.kind === "list" && op.hostId === desktopHostId) {
+        return {
+          data: [
+            {
+              id: "d-1",
+              cwd: "/ssh/repo",
+              name: "Desktop Remote Thread",
+              modelProvider: "openai",
+              createdAt: 100,
+              updatedAt: 200,
+              status: { type: "idle" },
+            },
+          ],
+          nextCursor: null,
+          epoch: "desktop-epoch",
+        };
+      }
+      if (op.kind === "archive" && op.hostId === peerHostId) {
+        if (op.archived) {
+          peerArchived.add(op.threadId);
+          peerPinned = peerPinned.filter((id) => id !== op.threadId);
+        } else {
+          peerArchived.delete(op.threadId);
+        }
+        return { accepted: true };
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  remote.install(rpc, streams);
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const peerSid1 = remoteSessionId(peerHostId, "t-1");
+  const peerSid2 = remoteSessionId(peerHostId, "t-2");
+  const desktopSid = remoteSessionId(desktopHostId, "d-1");
+
+  // 1. Initial refresh aggregates Peer's pinned threads alongside Hub's local pins.
+  await remote.refresh();
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1", peerSid1]);
+
+  // 2. Pinning a Peer thread forwards to Peer Host and returns merged local + remote pins.
+  const pinReply = await rpc.dispatch("workspace/pinSession", {
+    args: { request: { sessionId: peerSid2 } },
+  });
+  assert.deepEqual(pinReply, {
+    ok: true,
+    value: { pinnedSessionIds: ["local-1", peerSid1, peerSid2] },
+  });
+  assert.deepEqual(peerPinned, ["t-1", "t-2"]);
+
+  // 3. Unpinning a Peer thread forwards and updates Hub projection.
+  const unpinReply = await rpc.dispatch("workspace/unpinSession", {
+    args: { request: { sessionId: peerSid1 } },
+  });
+  assert.deepEqual(unpinReply, {
+    ok: true,
+    value: { pinnedSessionIds: ["local-1", peerSid2] },
+  });
+  assert.deepEqual(peerPinned, ["t-2"]);
+
+  // 4. Remote codexhost/thread/pins/changed notification syncs peer-side pin changes to Hub.
+  peerPinned = ["t-1", "t-2"];
+  for (const listener of listeners) {
+    listener({
+      type: "changed",
+      cursor: { epoch, sequence: 5 },
+      method: "codexhost/thread/pins/changed",
+      threadId: "t-1",
+    });
+  }
+  const deadline = Date.now() + 2000;
+  while (!workspaces.pinnedSessionIds().includes(peerSid1)) {
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for remote pins/changed sync");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1", peerSid1, peerSid2]);
+
+  // 5. Archiving a pinned Peer thread drops it from pinnedSessionIds without leaving an orphan.
+  const archiveReply = await rpc.dispatch("workspace/archiveSession", {
+    args: { request: { sessionId: peerSid1 } },
+  });
+  assert.equal(archiveReply.ok, true);
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1", peerSid2]);
+
+  // 6. Codex Desktop non-Peer remote sessions still reject pin with remote/unsupported.
+  const desktopPin = await rpc.dispatch("workspace/pinSession", {
+    args: { request: { sessionId: desktopSid } },
+  });
+  assert.equal(desktopPin.ok, false);
+  if (!desktopPin.ok) assert.equal(desktopPin.error.code, "remote/unsupported");
+
+  // 7. Legacy peer returning -32601 on pins/set returns remote/unsupported.
+  peerPinsUnsupported = true;
+  const legacyPin = await rpc.dispatch("workspace/unpinSession", {
+    args: { request: { sessionId: peerSid2 } },
+  });
+  assert.equal(legacyPin.ok, false);
+  if (!legacyPin.ok) assert.equal(legacyPin.error.code, "remote/unsupported");
+  peerPinsUnsupported = false;
+
+  // 8. Offline Peer rejects pin with remote/offline.
+  peerOnline = false;
+  for (const listener of listeners) listener({ type: "connection", online: false });
+  const offlinePin = await rpc.dispatch("workspace/unpinSession", {
+    args: { request: { sessionId: peerSid2 } },
+  });
+  assert.equal(offlinePin.ok, false);
+  if (!offlinePin.ok) assert.equal(offlinePin.error.code, "remote/offline");
+
+  // 9. Removing the Peer clears its remote pins while preserving local Hub pins.
+  peerPresent = false;
+  await remote.refresh();
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1"]);
+});

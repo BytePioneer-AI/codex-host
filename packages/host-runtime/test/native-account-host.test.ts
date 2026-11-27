@@ -18,6 +18,7 @@ vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
 const prepared = new Set<PreparedLocalCodex>();
 const temporaryDirectories = new Set<string>();
 const desktopConnectionVariables = [
+  "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
   "CODEX_APP_TOOLS_PIPE_PATH",
   "BROWSER_USE_ACCESS_EXECUTOR_ID",
   "BROWSER_USE_ACCESS_PIPE_PATH",
@@ -488,7 +489,7 @@ describe("local Codex read-only identity startup", () => {
     );
   });
 
-  it("keeps the Remote Control invocation while Desktop tool connections attach and detach", async () => {
+  it("keeps the Remote Control invocation while Desktop context attaches and detaches", async () => {
     nativeFixture();
     const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-tools-"));
     temporaryDirectories.add(directory);
@@ -503,34 +504,38 @@ describe("local Codex read-only identity startup", () => {
     prepared.add(local);
     const scope = local.officialRuntimeScope;
     await scope.start();
-    const attach = async (pipe: string) => {
+    const attach = async (pipe: string, originator: string) => {
       const attachment = new AbortController();
       await configureStartup(
         local,
         {
           stockCodexPath: "/synthetic/desktop-codex",
           arguments: ["app-server"],
-          environment: { BROWSER_USE_ACCESS_PIPE_PATH: pipe },
+          environment: {
+            BROWSER_USE_ACCESS_PIPE_PATH: pipe,
+            CODEX_INTERNAL_ORIGINATOR_OVERRIDE: originator,
+          },
         },
         attachment.signal,
       );
       return attachment;
     };
-    const verify = (pipe?: string) => {
+    const verify = (pipe?: string, originator?: string) => {
       const options = vi.mocked(createOwnedLoopbackBackend).mock.lastCall?.[0];
       expect(options?.stockCodexPath).toBe("/synthetic/remote-codex");
       expect(options?.arguments).toEqual(["app-server", "--analytics-default-enabled"]);
       expect(options?.environment.BROWSER_USE_ACCESS_PIPE_PATH).toBe(pipe);
+      expect(options?.environment.CODEX_INTERNAL_ORIGINATOR_OVERRIDE).toBe(originator);
     };
-    const first = await attach("first");
-    const second = await attach("second");
+    const first = await attach("first", "first-native-desktop");
+    const second = await attach("second", "second-native-desktop");
     nativeFixture();
     await scope.start();
-    verify("second");
+    verify("second", "second-native-desktop");
     second.abort();
     nativeFixture();
     await scope.refreshBeforeRequest();
-    verify("first");
+    verify("first", "first-native-desktop");
     first.abort();
     nativeFixture();
     await scope.refreshBeforeRequest();
@@ -687,7 +692,7 @@ describe("local Codex read-only identity startup", () => {
     );
   });
 
-  it("refreshes native requests with the remaining Desktop's tool access after disconnect", async () => {
+  it("refreshes native requests with the remaining Desktop's context after disconnect", async () => {
     const initial = nativeFixture();
     const local = await startLocal(true);
     const first = new AbortController();
@@ -697,7 +702,10 @@ describe("local Codex read-only identity startup", () => {
       local,
       {
         ...configuration,
-        environment: { BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/first" },
+        environment: {
+          BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/first",
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "first-native-desktop",
+        },
       },
       first.signal,
     );
@@ -708,6 +716,7 @@ describe("local Codex read-only identity startup", () => {
         environment: {
           BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/second",
           CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/second-app-tools",
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "second-native-desktop",
         },
       },
       second.signal,
@@ -726,6 +735,7 @@ describe("local Codex read-only identity startup", () => {
       expect.objectContaining({
         environment: expect.objectContaining({
           BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/second",
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "second-native-desktop",
         }),
       }),
     );
@@ -743,6 +753,7 @@ describe("local Codex read-only identity startup", () => {
       expect.objectContaining({
         environment: expect.objectContaining({
           BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/second",
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "second-native-desktop",
         }),
       }),
     );
@@ -763,6 +774,7 @@ describe("local Codex read-only identity startup", () => {
         environment: {
           CODEX_HOME: local.officialRuntimeScope.permanentHome,
           BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/first",
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "first-native-desktop",
         },
       }),
     );

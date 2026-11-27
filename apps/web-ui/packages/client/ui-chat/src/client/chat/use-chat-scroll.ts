@@ -33,6 +33,10 @@ interface ChatScrollState extends ChatReadingState {
   readonly revealResponseAnnotation: (annotation: DraftResponseAnnotation) => void;
   readonly loadEarlier: ChatNavigation["loadEarlier"];
   readonly returnToBottom: () => void;
+  /** Re-align to the tail floor when a layout transition clamps `scrollTop` during tail-follow. */
+  readonly reconcileTail: () => void;
+  /** Shift scroll attribution baseline after programmatic virtualization scroll compensation. */
+  readonly adjustBaseline: (delta: number) => void;
 }
 
 /**
@@ -209,6 +213,15 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     navigation.cancel();
     reading.followTail();
   }, [navigation, reading]);
+  const reconcileTail = useCallback(() => {
+    if (reading.followingTail && !reading.pending) reading.followTail();
+  }, [reading]);
+  const adjustBaseline = useCallback(
+    (delta: number) => {
+      viewport.shiftObservation(delta);
+    },
+    [viewport],
+  );
   const revealResponseAnnotation = useCallback(
     (annotation: DraftResponseAnnotation): void => {
       navigation.cancel();
@@ -229,5 +242,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     revealResponseAnnotation,
     loadEarlier: navigation.loadEarlier,
     returnToBottom,
+    reconcileTail,
+    adjustBaseline,
   };
 }

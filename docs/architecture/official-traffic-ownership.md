@@ -25,6 +25,10 @@ Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树�
 
 Windows 共享 Host 同时提供 Remote Control 监听时，原生进程沿用首次确认的可执行文件与启动参数。每个本地 Desktop 连接单独提供当前工具端点。断开最近的 Desktop 后，下一次空闲请求使用上一个仍在线的 Desktop 的端点。Remote Control 观察者可以在此过程中继续使用原有 Thread。
 
+Desktop 自带的 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` 也属于这份连接上下文，按原值传给官方进程。原生 Codex 用它生成 HTTP 的 `originator` 和 User-Agent 来源前缀；共享 Host 的管理连接不能因先初始化而取代 Desktop 的来源。不替换 `clientInfo`，不写死 User-Agent，也不根据供应商选择身份。User-Agent 的其他附加信息仍由官方进程管理。
+
+来源变量与工具端点一起按在线 Desktop 更新：空闲后端在变化后重建，活动任务继续使用其原进程，连接断开后使用仍在线的 Desktop 上下文；没有在线 Desktop 时清除失效值。变量缺失时保留 Codex 的原生默认行为，不继承共享服务中的旧 Desktop 来源，也不持久化或补造原生身份。
+
 ## 原生 Codex Fork 的模型继承
 
 Desktop 可能在 `thread/fork` 中省略 Model，原生 app-server 因此使用全局默认配置，而不是来源 Thread 的配置。共享原生通道对 Desktop 与 Web 一致补齐省略的 Model、Provider、Thinking 和 Fast：来源只取当前原生进程通过 `thread/start`、`thread/resume`、`thread/fork` 响应或 `thread/settings/updated` 确认的设置，不读取 Host 的最后一次草稿选择，也不复制权限、指令或其他配置。

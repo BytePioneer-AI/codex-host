@@ -43,13 +43,15 @@
   - 仅当 Peer 已连接且 `manifest.capabilities.attachments === 1` 时开启 Peer 会话与草稿的 `attachmentInput`、`imageLimits` 与 `remoteHost.filePreview`。
   - 仅当 Peer 已连接且 `manifest.capabilities.workspaceFiles === 1`（Office 转换另需 `officePreview === 1`）时放行远端工作区文件预览与下载，并在 `remoteHost` 上分别投影 `workspaceFiles` 与 `officePreview`（前端文件预览面板与文件侧栏在发请求前即按该能力门控，远端会话同时禁用 `@` 文件补全）；旧版 Peer、未提交草稿、离线/禁用 Peer 以及 Codex Desktop 远程会话均返回明确提示，绝不回落到 Hub 本机路径，也不会为读文件创建远端 Thread。
 - **远端路径与渲染隔离**：
-  - 浏览器图片预览走 `GET | HEAD /api/remote-peer/file?sessionId=...&path=...`（强制 `sandbox; default-src 'none'` 与 `nosniff`），上传流经 `/api/session/uploadFileBinary` 直接流式转发到远端，远端路径永不进入本机 `/api/file` 或本机文件系统读取。
+  - 浏览器图片预览走 `GET | HEAD /api/remote-peer/file?sessionId=...&path=...`，远端路径不进入本机 `/api/file` 或文件系统。Hub 和 Peer 均对通过校验的图片响应设置 `sandbox; default-src 'none'`、`nosniff` 和 `private, max-age=300, must-revalidate`，并通过 `ETag` / `If-None-Match` 支持 `304`；错误响应不缓存。Hub 对长度已知且头部通过校验的大图流式转发；无法提前安全校验时保留有大小上限的缓冲读取。
+  - `/api/session/uploadFileBinary` 直接向 Peer 流式转发上传，保留已知合法的 `Content-Length`。单次 Peer 请求超时返回 `remote/timeout`；历史读取失败可单独重试，Peer 在线状态由事件流维护。
   - Hub 拦截远程会话的 `workspaceFiles/*`、`officeToPdf/render`（独立 65s 长超时、JSON 8 MiB 响应上限、上游 `rpcId` 一致性校验、单 Peer / 全局并发限流、流空闲超时与 `AbortSignal` 取消透传）及 `/api/workspace-file/download`、`/api/workspace-file/download-ticket`（签发期 `HEAD` 校验同样绑定浏览器取消信号，ticket 仅绑定 `{ sessionId, path }`、不含 Peer Token，并在实际下载时重验 Peer 状态）；WebSocket `workspaceFiles/changes` 对远程会话返回 `workspace-file/watch-unsupported`，由前端自动降级为静态 `stat` / 手动刷新。
   - 前端 Office 预览对远程会话跳过 Hub 本机 `officeToPdf/generation` 与跨次打开持久化缓存（仅保留同路径并发去重并彻底隔离本机 `local` 缓存），避免 Peer 重启或字体变更后命中旧 PDF；远程会话隐藏「在主机默认应用中打开」「打开所在文件夹」等本机打开入口，且服务端 `session/openWorkspacePath` 强制要求并校验已注册的真实本机会话，拒绝缺失、未知或远程 `sessionId`。
 
 ### Hub 管理 RPC（`codexhost/remote-peers/*`）与安全边界
 
 - **本地配置持久化**：保存在当前 `web-server` 数据目录（`--data` / `CODEXHOST_WEB_DATA`）下的 `remote-peers-v1.json`（POSIX 权限 `0600`）；读取时做 Schema 校验，文件损坏时记录告警并回退为空列表，不阻塞服务启动。Access Token 永远不会通过任何 list/summary RPC 返回给前端。
+- **重复 Peer**：`add` 和 `update` 不会覆盖其他记录。规范化 `origin` 或已知 `nodeId` 与另一条 Peer 记录相同时，返回 `remote/duplicate-peer`，不修改已保存的配置。
 - **权限分级**：
   - `add`、`update`、`remove`、`test`、`syncMesh` 涉及修改 Peer 拓扑、触发服务端出站探测或推送互配凭据，仅允许本机已认证会话（`ctx.auth.local === true`）调用。
   - `list`、`reconnect`、`listDirs`、`createDir`、`createWorkspace`、`renameWorkspace`、`deleteWorkspace` 对所有已认证会话（含移动端与远程 Web）开放。

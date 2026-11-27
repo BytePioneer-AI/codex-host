@@ -571,7 +571,8 @@
 }
 
 .row[data-phone-toolbar] .tools > *,
-.row[data-phone-toolbar] [data-slot="conversation.input.left"] > * {
+.row[data-phone-toolbar] [data-slot="conversation.input.left"] > *,
+.row[data-phone-toolbar] [data-slot="conversation.input.right"] > * {
   flex-shrink: 0;
 }
 
@@ -579,15 +580,22 @@
   outline-offset: -2px;
 }
 
-.row[data-phone-toolbar] .modes,
-.row[data-phone-toolbar] .standardControls {
+.row[data-phone-toolbar] .modes {
   flex: none;
   gap: 4px;
   width: max-content;
 }
 
 .row[data-phone-toolbar] .standardControls {
+  flex: 0 1 auto;
+  gap: 4px;
+  min-width: 0;
   margin-left: 0;
+}
+
+.row[data-phone-toolbar][data-toolbar-measuring] .standardControls {
+  flex: none;
+  width: max-content;
 }
 
 .row[data-phone-toolbar] .addSeat,
@@ -745,6 +753,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   height: 28px;
   max-width: min(220px, 45cqw);
   padding: 0 8px;
@@ -781,10 +790,12 @@
 }
 
 :global([data-phone]) .pendingModel {
-  max-width: none;
+  max-width: 100%;
 }
 
 :global([data-phone]) .pendingModelLabel {
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 120px;
 }
 

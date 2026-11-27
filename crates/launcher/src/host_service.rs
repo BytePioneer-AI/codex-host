@@ -276,6 +276,11 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         .env("CODEXHOST_UPDATE_SERVICE", "1")
         // Host-side fetch (for example voice transcription) follows the system proxy.
         .envs(codexhost_platform::proxy_environment());
+    if let Some(shell) =
+        crate::installation_layout::InstalledResources::from_current_executable()?.desktop_shell
+    {
+        command.env("CODEXHOST_DESKTOP_SHELL_PATH", shell);
+    }
     configure_background_command(&mut command);
     let mut child = spawn_supervised(&mut command)?;
     let result = (|| -> Result<(), Box<dyn Error>> {

@@ -14,6 +14,40 @@ pub(crate) fn embedded(path: &str) -> Url {
     Url::parse(&format!("{APP_ORIGIN}{path}")).expect("bundled page URL")
 }
 
+pub(crate) fn valid_host_route(route: &str) -> bool {
+    route.len() <= 2048
+        && (route == "/" || route.starts_with("/?") || route.starts_with("/#"))
+        && !route
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace() || value == '\\')
+        && Url::parse("http://127.0.0.1/")
+            .and_then(|base| base.join(route))
+            .is_ok_and(|target| {
+                target.host_str() == Some("127.0.0.1")
+                    && target.path() == "/"
+                    && !target
+                        .query_pairs()
+                        .any(|(name, _)| name.eq_ignore_ascii_case("token"))
+            })
+}
+
+pub(crate) fn apply_host_route(url: &mut Url, route: &str) {
+    if !valid_host_route(route) {
+        return;
+    }
+    if let Ok(target) = url.join(route) {
+        let token = url
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .map(|(_, value)| value.into_owned());
+        url.set_query(target.query());
+        if let Some(token) = token {
+            url.query_pairs_mut().append_pair("token", &token);
+        }
+        url.set_fragment(target.fragment());
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) enum Navigation {
     Embedded,
@@ -115,6 +149,22 @@ mod tests {
             assert_eq!(classify(&url, Some(&web)), expected, "{}", url.path());
         }
         assert_eq!(classify(&web, None), Navigation::Browser);
+    }
+
+    #[test]
+    fn accepts_only_root_routes_and_preserves_the_web_token() {
+        assert!(valid_host_route("/"));
+        assert!(valid_host_route("/?session=thread-1"));
+        assert!(valid_host_route("/#connect-devices"));
+        assert!(!valid_host_route("/settings"));
+        assert!(!valid_host_route("/?token=leak"));
+        assert!(!valid_host_route("/?TOKEN=leak"));
+        let mut url = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        apply_host_route(&mut url, "/?session=thread-1");
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:4400/?session=thread-1&token=secret"
+        );
     }
 
     #[test]

@@ -345,7 +345,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
     this.opening.set({ state: "idle" });
     this.retryOpen = undefined;
-    if (typeof target !== "string" || this.sessions.list.getSnapshot().byId[target] !== undefined) {
+    if (
+      typeof target !== "string" ||
+      this.sessions.list.getSnapshot().byId[target] !== undefined ||
+      this.sessions.syncSummary?.(target) === true
+    ) {
       this.replaceMain(target, navigation, "reveal");
       return;
     }

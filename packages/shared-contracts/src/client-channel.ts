@@ -147,7 +147,14 @@ export const clientProjectlessWorkspaceSchema = z
   .strict();
 
 export const clientWorkspaceSnapshotSchema = z.object({
-  projects: z.array(z.object({ id: z.string(), name: z.string(), rootPaths: z.array(z.string()) })),
+  projects: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      rootPaths: z.array(z.string()),
+      createdAt: z.number().int().optional(),
+    }),
+  ),
   nativeProjects: z.literal(true).optional(),
   assignments: z.record(z.string(), z.string()),
   projectless: z.array(z.string()),

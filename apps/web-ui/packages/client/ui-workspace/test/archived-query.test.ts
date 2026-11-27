@@ -1,8 +1,16 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
+import type {
+  IWorkspaces,
+  WorkspaceSnapshot,
+} from "@deepseek-ai/dsh-api-workspace-controller/client";
+import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionManager } from "../../../api/session-controller/src/client/sessions/manager.ts";
+import { ClientSessions } from "../../../api/session-controller/src/client/sessions/service.ts";
 import type { SessionRemotes } from "../../../api/session-controller/src/client/sessions/remotes.ts";
+import { UiWorkspaceService } from "../src/client/navigation.ts";
 import { pinOrderSource } from "../src/client/pin-order.ts";
 import { createWorkspaceViewStore, FLAT_SESSION_ORDER_KEY } from "../src/client/stores.ts";
 import {
@@ -11,6 +19,12 @@ import {
   UNGROUPED_KEY,
   visibleSessionIds,
 } from "../src/client/tree.ts";
+
+// The browser export is a loader bundle. Load the same Gateway source in Node.
+vi.mock(
+  "@deepseek-ai/dsh-api-gateway/client",
+  () => import("../../../api/gateway/src/client/index.ts"),
+);
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -194,3 +208,118 @@ it("filters background archived upserts by each browser's choice without removin
   expect(manager.getListSnapshot().items[0]?.running).toBe(true);
   await manager.dispose();
 });
+
+it.each([
+  ["local draft", SessionId("draft-local-1"), SessionId("canonical-local-1")],
+  [
+    "remote draft",
+    SessionId("web-remote:draft-remote-1"),
+    SessionId("web-remote:peer-1:canonical-remote-1"),
+  ],
+] as const)(
+  "switches synchronously on same-frame session-bound for %s before rAF and api-session/removed",
+  async (_label, draftId, canonicalId) => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+
+    const removedListeners = new Set<(id: SessionId) => void>();
+    let navController = new AbortController();
+    const listRpc = vi.fn(async () => ({ ok: true as const, value: { items: [] } }));
+    const followStream = vi.fn(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise<IteratorResult<never>>(() => {}),
+        return: async () => ({ done: true as const, value: undefined }),
+      }),
+    }));
+
+    const ctx = new Context();
+    ctx.provide(
+      "remote" as never,
+      {
+        $on: (event: string, listener: (id: SessionId) => void) => {
+          if (event !== "api-session/removed") return () => {};
+          removedListeners.add(listener);
+          return () => removedListeners.delete(listener);
+        },
+      } as never,
+    );
+    ctx.provide(
+      "layout" as never,
+      {
+        beginNavigation: () => {
+          navController.abort();
+          navController = new AbortController();
+          return navController.signal;
+        },
+        selectPanel: () => {
+          navController.abort();
+        },
+      } as never,
+    );
+
+    const sessions = new ClientSessions(ctx, {
+      session: {
+        list: listRpc,
+        create: async () => ({ ok: true as const, value: { sessionId: draftId } }),
+        follow: followStream,
+      },
+      subagents: {},
+    } as unknown as SessionRemotes);
+
+    const workspacesStore = createSnapshotStore<WorkspaceSnapshot>({
+      items: [],
+      state: "idle",
+      phase: "ready",
+      error: null,
+      canStartProjectless: true,
+      pinnedSessionIds: [],
+      archivedSessionIds: [],
+    });
+    const navigation = new UiWorkspaceService(
+      ctx,
+      {} as never,
+      { list: workspacesStore } as unknown as IWorkspaces,
+      sessions,
+      { pinSessionOrder: () => {} },
+      () => {},
+    );
+
+    try {
+      await sessions.create({ sessionId: draftId });
+      navigation.openSession(draftId);
+      expect(sessions.list.getSnapshot().byId[draftId]?.retainedBy.mainView).toBe(1);
+
+      // Same-frame server sequence: api-session/added -> codexhost/session-bound -> api-session/removed.
+      sessions.handleSessionAdded({
+        sessionId: canonicalId,
+        agentAvailable: true,
+        blank: false,
+        running: true,
+        updatedAt: 2,
+      });
+      navigation.openSession(canonicalId);
+      sessions.handleSessionRemoved(draftId);
+      for (const listener of removedListeners) listener(draftId);
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(navigation.opening.getSnapshot()).toEqual({ state: "idle" });
+      expect(listRpc).not.toHaveBeenCalled();
+      expect(sessions.list.getSnapshot().byId[canonicalId]?.retainedBy.mainView).toBe(1);
+      expect(storage.get("dsh.sessions.current")).toBe(JSON.stringify({ sessionId: canonicalId }));
+      expect(frames.length).toBeGreaterThan(0);
+    } finally {
+      await ctx.fiber.dispose();
+    }
+  },
+);

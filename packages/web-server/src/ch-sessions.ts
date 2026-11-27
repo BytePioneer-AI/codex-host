@@ -12,6 +12,7 @@ import {
   WEB_HANDOFF_PROJECTION,
   clientThreadSectionsSchema,
   clientThreadSectionMoveSchema,
+  desktopProjectPathKey,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
@@ -32,7 +33,7 @@ import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
-import { nativeProjectByCwd, projectGroupRoot } from "./ch-project-groups.ts";
+import { nativeProjectRootOwners, projectGroupRoot } from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
@@ -66,7 +67,7 @@ import {
 import type { Workspaces } from "./workspaces.ts";
 import { defaultProjections } from "./session-log.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
-import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output.ts";
+import { toolOutputRecords, toolOutputSink } from "./tool-output.ts";
 import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
@@ -474,21 +475,25 @@ export class ChSessions {
       const groups = new Map<string, string | undefined>();
       if (projects.nativeProjects) {
         const known = new Set(projects.projects.map((project) => project.id));
+        const roots = nativeProjectRootOwners(projects.projects);
+        const projectless = new Set(projects.projectless);
         for (const row of this.rows.values()) {
           // A stale or foreign project ID must not hide the Thread; fall back like Desktop does.
           const explicit = [row.projectId, projects.assignments[row.id]].find(
             (id): id is string => typeof id === "string" && known.has(id),
           );
-          // Desktop lists a Thread without a project under the project whose root holds its cwd.
           const byCwd =
-            explicit === undefined && row.cwd && row.workspaceKind !== "projectless"
-              ? nativeProjectByCwd(projects, row.id, row.cwd)
+            explicit === undefined &&
+            row.cwd &&
+            row.workspaceKind !== "projectless" &&
+            !projectless.has(row.id)
+              ? roots.get(desktopProjectPathKey(row.cwd))?.projectId
               : undefined;
           groups.set(row.id, explicit ?? byCwd);
         }
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
-        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments);
+        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
         return;
       }
       if (this.workspaces.usesNativeProjects) return;
@@ -1796,7 +1801,7 @@ export class ChSessions {
       const ref = parsed.data;
       await this.owner(ref.sessionId);
       const view = await this.view(ref.sessionId, true);
-      return readToolOutput(view.log, ref);
+      return this.threads.trackPageRead(view.thread.id, view, () => view.readToolOutput(ref));
     });
     rpc.register("session/attachment", async (args) => {
       const { sessionId, attachmentId } = requestOf<{ sessionId: string; attachmentId: string }>(
@@ -1957,7 +1962,7 @@ export class ChSessions {
         ? (await this.draftSummary(draft)).projections
         : (await this.view(sessionId, true)).log.projectionBaseline();
     });
-    rpc.register("session/page", async (args, context) => {
+    rpc.register("session/page", async (args) => {
       const req = requestOf<{
         address: { sessionId: string };
         throughSeq: number;
@@ -1970,15 +1975,13 @@ export class ChSessions {
       const page = await this.threads.trackPageRead(view.thread.id, view, () =>
         view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages),
       );
-      return context.relay
-        ? {
-            ...page,
-            records: toolOutputRecords(
-              view.log,
-              page.records as Array<{ type: "event"; event: WireEvent }>,
-            ),
-          }
-        : page;
+      return {
+        ...page,
+        records: toolOutputRecords(
+          view.log,
+          page.records as Array<{ type: "event"; event: WireEvent }>,
+        ),
+      };
     });
     rpc.register("session/workspacePathApplications", () => ({ applications: [] }));
     rpc.register("session/openWorkspacePath", async (args, context) => {
@@ -2164,7 +2167,8 @@ export class ChSessions {
     this.idleViewTimer = setInterval(() => {
       this.threads.discardIdleViews(
         Date.now(),
-        (id) => this.rows.get(id)?.status.type === "active",
+        (id) =>
+          this.rows.get(id)?.status.type === "active" || Boolean(this.interactions?.hasPending(id)),
       );
     }, 60_000);
     this.idleViewTimer.unref();

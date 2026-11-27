@@ -18,6 +18,7 @@ import {
   REMOTE_PEER_COLORS,
   resolveRemotePeerColor,
   type RemotePeerColor,
+  type RemotePeerPairingReport,
   type RemotePeerState,
   type RemotePeerSummary,
 } from "@codexhost/shared-contracts";
@@ -29,7 +30,7 @@ import {
   REMOTE_PEERS_UPDATED_EVENT,
   type RemotePeersUpdatedDetail,
 } from "./remote-peers-events.ts";
-import { UnlockIcon } from "./RemoteHostIcon.tsx";
+import { BidirectionalIcon, UnlockIcon } from "./RemoteHostIcon.tsx";
 import {
   AddPeerModal,
   EditPeerModal,
@@ -38,6 +39,8 @@ import {
   errorMessageOf as messageOf,
   type RemotePeersTranslate as Translate,
 } from "./RemotePeerModals.tsx";
+import { PairingReportBanner, SyncMeshModal } from "./RemotePeerPairing.tsx";
+import { RemotePeersTopology, topologyEdgeKey } from "./RemotePeersTopology.tsx";
 import css from "./RemotePeersPanel.module.css";
 
 type ListView =
@@ -113,23 +116,64 @@ function formatOriginDisplay(origin: string): string {
   }
 }
 
-export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
+export function RemotePeersPanel({
+  t,
+  onOpenShareTab,
+}: {
+  t: Translate;
+  onOpenShareTab?: () => void;
+}): ReactNode {
   const [view, setView] = useState<ListView>(() =>
     cachedPeers !== undefined ? { kind: "ready", peers: cachedPeers } : { kind: "loading" },
   );
   const [refreshing, setRefreshing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [syncMeshOpen, setSyncMeshOpen] = useState(false);
   const [openMenuPeerId, setOpenMenuPeerId] = useState<string | null>(null);
 
   const [reconnectingIds, setReconnectingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [pairingIds, setPairingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [togglingIds, setTogglingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [editingPeer, setEditingPeer] = useState<RemotePeerSummary | null>(null);
   const [removingPeer, setRemovingPeer] = useState<RemotePeerSummary | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pairingReport, setPairingReport] = useState<RemotePeerPairingReport | null>(null);
+  const [recentEdgeKeys, setRecentEdgeKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const [recentPeerIds, setRecentPeerIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selfEventSource] = useState(() => Symbol("remote-peers-panel"));
   const loadSeqRef = useRef(0);
+  const recentEdgeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const recentPeerTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const openShareTab = onOpenShareTab ?? (() => undefined);
+
+  const highlightPairingChanges = useCallback((report: RemotePeerPairingReport): void => {
+    const edges = new Set<string>();
+    const peerIds = new Set<string>();
+    for (const step of report.results) {
+      if (step.status !== "added" && step.status !== "updated") continue;
+      edges.add(topologyEdgeKey(step.targetPeerId, step.introducedHost));
+      peerIds.add(step.targetPeerId);
+    }
+    if (edges.size > 0) {
+      clearTimeout(recentEdgeTimerRef.current);
+      setRecentEdgeKeys(edges);
+      recentEdgeTimerRef.current = setTimeout(() => setRecentEdgeKeys(new Set()), 3_500);
+    }
+    if (peerIds.size > 0) {
+      clearTimeout(recentPeerTimerRef.current);
+      setRecentPeerIds(peerIds);
+      recentPeerTimerRef.current = setTimeout(() => setRecentPeerIds(new Set()), 1_500);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(recentEdgeTimerRef.current);
+      clearTimeout(recentPeerTimerRef.current);
+    };
+  }, []);
 
   const loadPeers = useCallback(
     async (mode: LoadMode = "initial", force = false): Promise<void> => {
@@ -303,6 +347,32 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
     }
   };
 
+  const handlePairBack = async (peer: RemotePeerSummary): Promise<void> => {
+    setActionError(null);
+    setPairingIds((prev) => new Set(prev).add(peer.peerId));
+    try {
+      const report = await remotePeersApi.syncMesh({
+        peerIds: [peer.peerId],
+        includeSelf: true,
+        includeMesh: false,
+      });
+      if (report.results.length > 0) {
+        setPairingReport(report);
+        highlightPairingChanges(report);
+      }
+      await loadPeers("background", true);
+      dispatchRemotePeersUpdated({ source: selfEventSource });
+    } catch (cause) {
+      setActionError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
+    } finally {
+      setPairingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(peer.peerId);
+        return next;
+      });
+    }
+  };
+
   const handleConfirmRemove = async (): Promise<void> => {
     if (removingPeer === null) return;
     const removedPeerId = removingPeer.peerId;
@@ -324,6 +394,8 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       setRemoveBusy(false);
     }
   };
+
+  const hasEnabledPeers = view.kind === "ready" && view.peers.some((peer) => peer.enabled);
 
   return (
     <div className={css.panel} data-remote-peers-panel>
@@ -350,6 +422,16 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
               )}
             </button>
           </Tooltip>
+          {hasEnabledPeers && (
+            <Button
+              variant="outline"
+              size="sm"
+              icon={<BidirectionalIcon size={14} />}
+              onClick={() => setSyncMeshOpen(true)}
+            >
+              {t("remotePeers.syncMesh.button")}
+            </Button>
+          )}
           <Button
             variant="primary"
             size="sm"
@@ -365,6 +447,14 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
         <p className={css.error} role="alert">
           {actionError}
         </p>
+      )}
+
+      {pairingReport !== null && (
+        <PairingReportBanner
+          report={pairingReport}
+          onDismiss={() => setPairingReport(null)}
+          t={t}
+        />
       )}
 
       {view.kind === "loading" ? (
@@ -399,8 +489,11 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
         <section className={css.surface} aria-label={t("remotePeers.listTitle")}>
           {view.peers.map((peer) => {
             const reconnecting = reconnectingIds.has(peer.peerId);
+            const pairingBack = pairingIds.has(peer.peerId);
             const toggling = togglingIds.has(peer.peerId);
             const connected = peer.enabled && peer.state === "connected";
+            const canQuickPairBack =
+              connected && peer.supportsPeerPairing !== false && peer.pairedBack !== true;
             const menuOpen = openMenuPeerId === peer.peerId;
             const toggleLabel = t(
               peer.enabled ? "remotePeers.action.disable" : "remotePeers.action.enable",
@@ -429,6 +522,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                 className={css.peerRow}
                 data-peer-id={peer.peerId}
                 data-peer-state={peer.state}
+                data-recent={recentPeerIds.has(peer.peerId) || undefined}
               >
                 <div className={css.peerMain}>
                   <div className={css.peerIdentity}>
@@ -445,6 +539,18 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                       <span className={css.transportWord}>
                         {t(TRANSPORT_LABEL[peer.transportKind])}
                       </span>
+                      {connected && peer.pairedBack === true && (
+                        <Tooltip
+                          label={t("remotePeers.pairedBack.tooltip")}
+                          side="top"
+                          delayMs={250}
+                        >
+                          <span className={css.pairedBadge} data-paired-back="true">
+                            <BidirectionalIcon size={11} />
+                            <span>{t("remotePeers.pairedBack.badge")}</span>
+                          </span>
+                        </Tooltip>
+                      )}
                       {!connected && (
                         <span className={css.stateText} data-state={peer.state}>
                           {t(STATE_LABEL[peer.state])}
@@ -517,6 +623,30 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                       >
                         {t("remotePeers.action.addWorkspace")}
                       </MenuItemButton>
+                      {canQuickPairBack && (
+                        <MenuItemButton
+                          icon={
+                            pairingBack ? (
+                              <span className={css.spinner}>
+                                <IconLoadingOutlineRegular size={14} />
+                              </span>
+                            ) : (
+                              <BidirectionalIcon size={14} />
+                            )
+                          }
+                          disabled={pairingBack || toggling}
+                          onSelect={() => {
+                            setOpenMenuPeerId(null);
+                            void handlePairBack(peer);
+                          }}
+                        >
+                          {t(
+                            pairingBack
+                              ? "remotePeers.action.pairingBack"
+                              : "remotePeers.action.pairBack",
+                          )}
+                        </MenuItemButton>
+                      )}
                       <MenuItemButton
                         icon={
                           reconnecting ? (
@@ -584,6 +714,10 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
         </section>
       )}
 
+      {view.kind === "ready" && hasEnabledPeers && (
+        <RemotePeersTopology peers={view.peers} recentEdgeKeys={recentEdgeKeys} t={t} />
+      )}
+
       {addOpen && (
         <AddPeerModal
           suggestedColor={
@@ -593,9 +727,31 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                 ) ?? REMOTE_PEER_COLORS[0])
               : REMOTE_PEER_COLORS[0]
           }
+          existingPeers={view.kind === "ready" ? view.peers : []}
           t={t}
           onClose={() => setAddOpen(false)}
-          onAdded={() => loadPeers("background", true)}
+          onOpenShareTab={openShareTab}
+          onAdded={async (pairing) => {
+            if (pairing !== undefined && pairing.results.length > 0) {
+              setPairingReport(pairing);
+              highlightPairingChanges(pairing);
+            }
+            await loadPeers("background", true);
+          }}
+        />
+      )}
+
+      {syncMeshOpen && view.kind === "ready" && (
+        <SyncMeshModal
+          peers={view.peers}
+          t={t}
+          onClose={() => setSyncMeshOpen(false)}
+          onOpenShareTab={openShareTab}
+          onSynced={async (report) => {
+            highlightPairingChanges(report);
+            await loadPeers("background", true);
+            dispatchRemotePeersUpdated({ source: selfEventSource });
+          }}
         />
       )}
 

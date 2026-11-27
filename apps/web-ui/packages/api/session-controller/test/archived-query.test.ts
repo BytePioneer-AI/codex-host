@@ -1,10 +1,24 @@
 import { expect, it, vi } from "vitest";
-import { SessionId } from "@deepseek-ai/dsh-session/types";
+import { Context } from "@deepseek-ai/cordis";
+import type { WebToolOutputReference } from "@codexhost/shared-contracts";
+import { SessionId, SessionLogOffset } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type { RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
+import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionListRequest, SessionListValue, SessionSummary } from "../src/types.ts";
 import { SessionManager } from "../src/client/sessions/manager.ts";
+import { ProjectionValueStore } from "../src/client/sessions/projection-store.ts";
+import {
+  MAX_RECENT_SESSION_VIEW_BYTES,
+  MAX_RECENT_SESSION_VIEWS,
+  RecentSessionViews,
+  type SessionViewData,
+} from "../src/client/sessions/recent-views.ts";
+import { ClientSessions } from "../src/client/sessions/service.ts";
 import type { SessionRemotes } from "../src/client/sessions/remotes.ts";
+import { Session } from "../src/client/sessions/session.ts";
+import { estimateUnknownBytes } from "../src/client/memory-budget.ts";
+import { MAX_TOOL_OUTPUT_CACHE_BYTES, ToolOutputCache } from "../src/client/tool-output.ts";
 import { TYPERT_REMOTE } from "../generated/remote.js";
 
 // The browser export is a loader bundle. Load the same Gateway source in Node.
@@ -454,5 +468,328 @@ it("notifies on summaryOnly clearance, projection-only removal, subagent status 
   } finally {
     unsubscribe();
     await manager.dispose();
+  }
+});
+
+function makeView(payloadChars: number, toolOutputChars = 0): SessionViewData {
+  const entry = {
+    type: "event" as const,
+    event: {
+      type: "user/message",
+      seq: 1,
+      time: 1,
+      data: {
+        id: "m1",
+        content: [{ type: "text", text: "x".repeat(payloadChars) }],
+        source: { kind: "user" },
+      },
+    },
+  };
+  const toolOutputs =
+    toolOutputChars > 0 ? new Map([["call-1", "o".repeat(toolOutputChars)]]) : undefined;
+  return {
+    // Share record references with entries just like Session.captureView().
+    journal: {
+      epoch: "ep-1",
+      cursor: 1,
+      records: [entry as unknown as NonNullable<SessionViewData["journal"]>["records"][number]],
+      hasMore: false,
+    },
+    ...(toolOutputs === undefined ? {} : { toolOutputs }),
+    entries: [entry as unknown as SessionViewData["entries"][number]],
+    baseSeq: SessionLogOffset(1),
+    hasMore: false,
+    projections: Object.freeze({ title: "Cached" }),
+    lastSyncedAt: 1,
+  };
+}
+
+it("evicts oldest RecentSessionViews under byte budget before 8 entries and rejects oversized single views", () => {
+  expect(MAX_RECENT_SESSION_VIEWS).toBe(8);
+  expect(MAX_RECENT_SESSION_VIEW_BYTES).toBe(24 * 1024 * 1024);
+
+  // Each ~2_000-char payload estimates to ~4 KiB + small structural overhead (< 5 KiB).
+  const cache = new RecentSessionViews({ maxEntries: 8, maxBytes: 12_000 });
+  const s1 = SessionId("recent-1");
+  const s2 = SessionId("recent-2");
+  const s3 = SessionId("recent-3");
+  const huge = SessionId("recent-huge");
+
+  expect(cache.remember(s1, makeView(2_000))).toEqual([]);
+  expect(cache.remember(s2, makeView(2_000))).toEqual([]);
+  expect(cache.size).toBe(2);
+  expect(cache.totalBytes).toBeGreaterThan(8_000);
+  expect(cache.totalBytes).toBeLessThanOrEqual(12_000);
+
+  // Third entry pushes total past 12_000 bytes with only 3 entries (< 8), evicting oldest (s1).
+  expect(cache.remember(s3, makeView(2_000))).toEqual([s1]);
+  expect(cache.size).toBe(2);
+  expect(cache.totalBytes).toBeLessThanOrEqual(12_000);
+
+  // A single view exceeding maxBytes is rejected without disturbing existing cached views.
+  expect(cache.remember(huge, makeView(7_000))).toEqual([huge]);
+  expect(cache.size).toBe(2);
+  expect(cache.take(huge)).toBeUndefined();
+  expect(cache.take(s1)).toBeUndefined();
+  expect(cache.take(s2)).toBeDefined();
+  expect(cache.take(s3)).toBeDefined();
+  expect(cache.totalBytes).toBe(0);
+
+  // Tool output strings contribute to view byte estimation and trigger multi-eviction when needed.
+  const s4 = SessionId("recent-4");
+  const s5 = SessionId("recent-5");
+  const s6 = SessionId("recent-6");
+  expect(cache.remember(s4, makeView(1_000))).toEqual([]);
+  expect(cache.remember(s5, makeView(1_000))).toEqual([]);
+  expect(cache.remember(s6, makeView(100, 4_500))).toEqual([s4, s5]);
+  expect(cache.size).toBe(1);
+  expect(cache.take(s6)).toBeDefined();
+});
+
+it("refreshes LRU order on ToolOutputCache hits and evicts oldest entries above the byte budget", async () => {
+  expect(MAX_TOOL_OUTPUT_CACHE_BYTES).toBe(8 * 1024 * 1024);
+
+  const remote = vi.fn<SessionRemotes["session"]["toolOutput"]>();
+  const ref = (callId: string): WebToolOutputReference => ({
+    sessionId: ordinary,
+    epoch: "ep-1",
+    turn: 1,
+    seq: 1,
+    callId,
+    part: "output",
+    version: "v1",
+  });
+
+  // Key JSON is ~80 chars (~160 bytes + 64 overhead); a 200-char payload adds 400 bytes (~624 B each).
+  const cache = new ToolOutputCache(remote, undefined, { maxBytes: 1_400 });
+  remote
+    .mockResolvedValueOnce({ ok: true, value: { text: "a".repeat(200) } })
+    .mockResolvedValueOnce({ ok: true, value: { text: "b".repeat(200) } })
+    .mockResolvedValueOnce({ ok: true, value: { text: "c".repeat(200) } })
+    .mockResolvedValueOnce({ ok: true, value: { text: "b-reloaded" } })
+    .mockResolvedValueOnce({ ok: true, value: { text: "z".repeat(1_000) } });
+
+  expect(await cache.read(ref("call-a"))).toBe("a".repeat(200));
+  expect(await cache.read(ref("call-b"))).toBe("b".repeat(200));
+  expect(cache.values.size).toBe(2);
+
+  // Hit on call-a refreshes its recency so call-b becomes oldest.
+  expect(await cache.read(ref("call-a"))).toBe("a".repeat(200));
+  expect(remote).toHaveBeenCalledTimes(2);
+
+  // Loading call-c exceeds 1_400 bytes and evicts call-b while keeping call-a and call-c.
+  expect(await cache.read(ref("call-c"))).toBe("c".repeat(200));
+  expect(cache.values.size).toBe(2);
+  expect(cache.estimatedBytes).toBeLessThanOrEqual(1_400);
+
+  // call-a stays cached (no new remote read), while call-b must be re-fetched.
+  expect(await cache.read(ref("call-a"))).toBe("a".repeat(200));
+  expect(remote).toHaveBeenCalledTimes(3);
+  expect(await cache.read(ref("call-b"))).toBe("b-reloaded");
+  expect(remote).toHaveBeenCalledTimes(4);
+
+  // Oversized single tool output resolves for immediate display without evicting existing entries.
+  const beforeSize = cache.values.size;
+  expect(await cache.read(ref("call-huge"))).toBe("z".repeat(1_000));
+  expect(cache.values.size).toBe(beforeSize);
+  expect(cache.estimatedBytes).toBeLessThanOrEqual(1_400);
+});
+
+it("tracks live Session estimatedBytes incrementally across events, tool outputs, and projections", async () => {
+  const toolOutput = vi
+    .fn<SessionRemotes["session"]["toolOutput"]>()
+    .mockResolvedValue({ ok: true, value: { text: "t".repeat(1_000) } });
+  const projections = new ProjectionValueStore();
+  const session = new Session(ordinary, { session: { toolOutput } } as unknown as SessionRemotes, {
+    projections,
+  });
+  try {
+    const baseline = session.estimatedBytes();
+    const view = makeView(1_500);
+    session.eventSource.replace(view.entries, false);
+    const afterEvents = session.estimatedBytes();
+    expect(afterEvents - baseline).toBeGreaterThanOrEqual(3_000);
+
+    await session.readToolOutput({
+      sessionId: ordinary,
+      epoch: "ep-1",
+      turn: 1,
+      seq: 1,
+      callId: "call-1",
+      part: "output",
+      version: "v1",
+    });
+    const afterTool = session.estimatedBytes();
+    expect(afterTool - afterEvents).toBeGreaterThanOrEqual(2_000);
+
+    projections.apply("title", "p".repeat(500), 1 as never);
+    expect(session.estimatedBytes() - afterTool).toBeGreaterThanOrEqual(1_000);
+  } finally {
+    await session.dispose();
+  }
+});
+
+it("publishes buffered and fetched summaries before requestAnimationFrame fires on loadSummary and syncSummary", async () => {
+  const buffered = SessionId("buffered-canonical");
+  const fetched = SessionId("fetched-direct");
+  const unknown = SessionId("unknown-session");
+  const frames: FrameRequestCallback[] = [];
+  const originalRaf = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    frames.push(callback);
+    return frames.length;
+  }) as typeof globalThis.requestAnimationFrame;
+
+  const list = vi.fn<(request: SessionListRequest) => Promise<RemoteResult<SessionListValue>>>(
+    async (request) => (request.sessionId === fetched ? ok([row(fetched)]) : ok([])),
+  );
+  const ctx = new Context();
+  const sessions = new ClientSessions(ctx, { session: { list } } as unknown as SessionRemotes);
+
+  try {
+    // 1. Live api-session/added stays rAF-coalesced, yet loadSummary publishes it before rAF.
+    sessions.handleSessionAdded(row(buffered));
+    expect(sessions.list.getSnapshot().byId[buffered]).toBeUndefined();
+    expect(frames).toHaveLength(1);
+
+    await sessions.loadSummary(buffered);
+    expect(list).not.toHaveBeenCalled();
+    expect(sessions.list.getSnapshot().byId[buffered]?.id).toBe(buffered);
+
+    // 2. Direct RPC loadSummary also publishes the fetched row before rAF fires.
+    await sessions.loadSummary(fetched);
+    expect(list).toHaveBeenCalledWith({ sessionId: fetched });
+    expect(sessions.list.getSnapshot().byId[fetched]?.id).toBe(fetched);
+
+    // 3. syncSummary flushes only when the requested id is already buffered.
+    const nextBuffered = SessionId("buffered-sync-only");
+    sessions.handleSessionAdded(row(nextBuffered));
+    expect(sessions.list.getSnapshot().byId[nextBuffered]).toBeUndefined();
+    expect(sessions.syncSummary?.(unknown)).toBe(false);
+    expect(sessions.list.getSnapshot().byId[nextBuffered]).toBeUndefined();
+    expect(sessions.syncSummary?.(nextBuffered)).toBe(true);
+    expect(sessions.list.getSnapshot().byId[nextBuffered]?.id).toBe(nextBuffered);
+  } finally {
+    globalThis.requestAnimationFrame = originalRaf;
+    await ctx.fiber.dispose();
+  }
+});
+
+it("clones toolOutputs in captureView, clears cachedJournal after successful open while keeping it on failure, and avoids caching depth-truncated frozen sub-objects", async () => {
+  // 1. Depth-truncated frozen sub-object must not pollute immutableObjectBytes cache.
+  const deepPayload = Object.freeze({ text: "z".repeat(1_000) });
+  let wrapped: Record<string, unknown> = { leaf: deepPayload };
+  for (let i = 0; i < 12; i += 1) {
+    wrapped = { next: wrapped };
+  }
+  // Visit deepPayload past MAX_WALK_DEPTH first.
+  estimateUnknownBytes(wrapped);
+  // Direct top-level estimate must still report full string bytes (~2000+), not truncated 64 bytes.
+  expect(estimateUnknownBytes(deepPayload)).toBeGreaterThanOrEqual(2_000);
+
+  // 2. captureView clones toolOutputs so subsequent live reads do not mutate captured snapshots.
+  const toolOutput = vi
+    .fn<SessionRemotes["session"]["toolOutput"]>()
+    .mockResolvedValueOnce({ ok: true, value: { text: "first" } })
+    .mockResolvedValueOnce({ ok: true, value: { text: "second" } });
+  const view = makeView(200);
+  const makeStream = <Frame>(open: (signal: AbortSignal) => AsyncIterable<Frame>) => {
+    const controller = new AbortController();
+    return {
+      async *[Symbol.asyncIterator]() {
+        for await (const value of open(controller.signal)) {
+          yield { value, generation: 1, accept: () => {} };
+        }
+      },
+      dispose: vi.fn(async () => {
+        controller.abort();
+      }),
+    };
+  };
+  const session = new Session(
+    ordinary,
+    {
+      $stream: ({ open }: { open: (signal: AbortSignal) => AsyncIterable<unknown> }) =>
+        makeStream(open),
+      session: {
+        toolOutput,
+        follow: async function* () {
+          throw new RemoteError("test/offline", "offline", {});
+        },
+      },
+    } as unknown as SessionRemotes,
+    { cachedView: view },
+  );
+  try {
+    await session.readToolOutput({
+      sessionId: ordinary,
+      epoch: "ep-1",
+      turn: 1,
+      seq: 1,
+      callId: "call-1",
+      part: "output",
+      version: "v1",
+    });
+    const captured = session.captureView();
+    expect(captured?.toolOutputs?.size).toBe(1);
+
+    await session.readToolOutput({
+      sessionId: ordinary,
+      epoch: "ep-1",
+      turn: 1,
+      seq: 2,
+      callId: "call-2",
+      part: "output",
+      version: "v1",
+    });
+    expect(captured?.toolOutputs?.size).toBe(1);
+
+    // 3. Failed open preserves cachedJournal for retry; successful open releases cachedJournal.
+    await session.open();
+    expect(session.getSnapshot().openState).toBe("error");
+    expect(session.captureView()?.journal).toBeDefined();
+  } finally {
+    await session.dispose();
+  }
+
+  let releaseStream!: () => void;
+  const keepOpen = new Promise<void>((resolve) => {
+    releaseStream = resolve;
+  });
+  const okSession = new Session(
+    ordinary,
+    {
+      $stream: ({ open }: { open: (signal: AbortSignal) => AsyncIterable<unknown> }) =>
+        makeStream(open),
+      session: {
+        follow: async function* (_req: unknown, signal: AbortSignal) {
+          yield {
+            type: "snapshot",
+            epoch: "ep-1",
+            cursor: 1,
+            resumedAfter: 1,
+            records: [],
+            hasMore: false,
+            assistantStream: { revision: 0, blocks: [] },
+          };
+          await Promise.race([
+            keepOpen,
+            new Promise<void>((resolve) => {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            }),
+          ]);
+        },
+      },
+    } as unknown as SessionRemotes,
+    { cachedView: view },
+  );
+  try {
+    await okSession.open();
+    expect(okSession.getSnapshot().openState).toBe("open");
+    // cachedJournal is cleared after open succeeds (events stream now owns live capture).
+    expect((okSession as unknown as { cachedJournal: unknown }).cachedJournal).toBeUndefined();
+  } finally {
+    releaseStream();
+    await okSession.dispose();
   }
 });

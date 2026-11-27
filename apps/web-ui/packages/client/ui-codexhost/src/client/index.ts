@@ -671,6 +671,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(
     () =>
       ctx.remote.$on("codexhost/session-bound", (draftId, threadId) => {
+        ctx.sessions.handoffSubmissions(draftId as SessionId, threadId as SessionId);
         if (
           (ctx.sessions.list.getSnapshot().byId[draftId as SessionId]?.retainedBy.mainView ?? 0) > 0
         )

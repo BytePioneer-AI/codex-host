@@ -1933,6 +1933,40 @@
   white-space: pre-wrap;
 }
 
+.settings-update-notes details {
+  min-width: 0;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  background: var(--settings-surface);
+}
+
+.settings-update-notes summary {
+  padding: 9px 12px;
+  color: var(--settings-text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-update-notes summary:hover {
+  background: var(--settings-hover);
+  border-radius: 7px;
+}
+
+.settings-update-notes details[open] > summary {
+  border-bottom: 1px solid var(--settings-divider);
+  border-radius: 7px 7px 0 0;
+}
+
+.settings-update-notes-details-body {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding: 12px;
+}
+
 /* Manual update sits directly under the status panel, not behind a disclosure:
    automatic updates can fail for machine-local reasons and this is the way out. */
 .settings-update-controls {

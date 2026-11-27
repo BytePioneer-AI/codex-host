@@ -25,6 +25,7 @@ import { guardIosComposerPageScroll } from "./ios-composer-scroll.ts";
 import { mountClient } from "./mount.ts";
 import { getStaticModules } from "./seed.ts";
 import { installWindowDragRecall } from "./window-drag/recall.ts";
+import { installWindowVisibilityGate } from "./window-visibility.ts";
 import "./base.css";
 
 /** Module transport hook replaced by jsdom tests. */
@@ -45,6 +46,7 @@ export class AppWebEntry {
   private readonly pwaInstall: PwaInstall | undefined;
   private ctx: Context | undefined;
   private stopDragRecall: (() => void) | undefined;
+  private stopWindowVisibilityGate: (() => void) | undefined;
   private nativeExtensions: WebNativeExtensionHostHandle | undefined;
   private disposed = false;
   private modules!: ClientModuleSystem;
@@ -69,6 +71,10 @@ export class AppWebEntry {
     }
     preventIosFocusZoom();
     guardIosComposerPageScroll();
+    this.stopWindowVisibilityGate = installWindowVisibilityGate({
+      document: container.ownerDocument,
+      window: browser ?? undefined,
+    });
     this.page = new BootPage(container);
   }
 
@@ -168,6 +174,8 @@ export class AppWebEntry {
     this.pwaInstall?.dispose();
     this.stopDragRecall?.();
     this.stopDragRecall = undefined;
+    this.stopWindowVisibilityGate?.();
+    this.stopWindowVisibilityGate = undefined;
     const ctx = this.ctx;
     this.ctx = undefined;
     if (ctx !== undefined) await ctx.fiber.dispose();

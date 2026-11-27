@@ -139,6 +139,7 @@ function parseHarnessResult<T>(value: unknown): HarnessResult<T> {
       code: parsed.code,
       message: parsed.message,
       retryable: parsed.retryable,
+      ...(parsed.resetsAt ? { resetsAt: parsed.resetsAt } : {}),
       ...(parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {}),
       ...(parsed.stage ? { stage: parsed.stage } : {}),
       ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
@@ -739,6 +740,26 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   #closed = false;
   #credits: AccountCreditsSnapshot | null = null;
   #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
+
+  async readSnapshot(
+    input: Parameters<NonNullable<HarnessAdapter["readSnapshot"]>>[0],
+  ): Promise<HarnessResult<HostThreadSnapshot>> {
+    try {
+      return parseHarnessResult<HostThreadSnapshot>(
+        await this.#request(
+          "adapter.readSnapshot",
+          {
+            nativeRef: input.nativeRef,
+            cwd: input.cwd,
+            environment: input.environment,
+          },
+          true,
+        ),
+      );
+    } catch (error) {
+      return { ok: false, error: this.#error(error) };
+    }
+  }
 
   readonly subagents = {
     readSnapshot: async (

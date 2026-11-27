@@ -53,7 +53,7 @@ export interface ChPinChange {
 }
 
 export interface ChProjectSnapshot {
-  projects: Array<{ id: string; name: string; rootPaths: string[] }>;
+  projects: ClientWorkspaceSnapshot["projects"];
   nativeProjects?: true | undefined;
   assignments: Record<string, string>;
   projectless: string[];

@@ -3,10 +3,12 @@ mod launcher;
 mod navigation;
 mod readiness;
 mod tray;
+mod visibility;
 mod zoom;
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
@@ -17,6 +19,7 @@ use instance::{Activation, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
 use readiness::{ShellReady, WebEvent, WebReady};
+use visibility::{WindowVisibility, WindowVisibilityState, compute_window_hidden};
 use zoom::{ZoomController, ZoomState, percent_to_scale};
 
 const MAIN: &str = "main";
@@ -77,6 +80,7 @@ struct Shell {
     view: Mutex<View>,
     ensure_web: Sender<()>,
     locale: String,
+    visibility: Mutex<WindowVisibility>,
     zoom: Arc<Mutex<ZoomController>>,
     zoom_op: tauri::async_runtime::Mutex<()>,
     zoom_persist: Arc<Mutex<Option<u16>>>,
@@ -190,6 +194,101 @@ fn apply_macos_dock_icon() {
     }
 }
 
+const WINDOW_HIDE_RECONCILE_DELAYS: [Duration; 2] =
+    [Duration::from_millis(150), Duration::from_millis(450)];
+
+fn apply_window_hidden_state(app: &AppHandle, state: WindowVisibilityState) {
+    if let Some(window) = app.get_webview_window(MAIN) {
+        let _ = window.eval(visibility::sync_script(state));
+    }
+}
+
+fn sync_window_hidden(app: &AppHandle, hidden: bool) {
+    let next = {
+        let shell = app.state::<Shell>();
+        let mut visibility = shell.visibility.lock().unwrap();
+        visibility.update(hidden)
+    };
+    if let Some(state) = next {
+        apply_window_hidden_state(app, state);
+    }
+}
+
+fn sync_window_hidden_explicit(app: &AppHandle, hidden: bool) {
+    let next = {
+        let shell = app.state::<Shell>();
+        let mut visibility = shell.visibility.lock().unwrap();
+        visibility.set_explicit(hidden)
+    };
+    if let Some(state) = next {
+        apply_window_hidden_state(app, state);
+    }
+}
+
+fn reconcile_window_hidden(app: &AppHandle, generation: u64) {
+    let Some(window) = app.get_webview_window(MAIN) else {
+        return;
+    };
+    let visible = window.is_visible().unwrap_or(true);
+    let minimized = window.is_minimized().unwrap_or(false);
+    let hidden = compute_window_hidden(visible, minimized);
+    let next = {
+        let shell = app.state::<Shell>();
+        let mut visibility = shell.visibility.lock().unwrap();
+        visibility.apply_reconciled(generation, hidden)
+    };
+    if let Some(state) = next {
+        let _ = window.eval(visibility::sync_script(state));
+    }
+}
+
+fn schedule_window_hidden_refresh(app: &AppHandle) {
+    let (generation, already_hidden) = {
+        let shell = app.state::<Shell>();
+        let mut visibility = shell.visibility.lock().unwrap();
+        (visibility.begin_reconcile(), visibility.state().hidden)
+    };
+    let next_tick_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        reconcile_window_hidden(&next_tick_app, generation);
+    });
+    if already_hidden {
+        return;
+    }
+    let delayed_app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        for delay in WINDOW_HIDE_RECONCILE_DELAYS {
+            std::thread::sleep(delay);
+            let keep_going = delayed_app.try_state::<Shell>().is_some_and(|shell| {
+                if shell.launcher.is_stopping() {
+                    return false;
+                }
+                let visibility = shell.visibility.lock().unwrap();
+                !visibility.state().hidden && visibility.is_reconcile_current(generation)
+            });
+            if !keep_going {
+                return;
+            }
+            let tick_app = delayed_app.clone();
+            if delayed_app
+                .run_on_main_thread(move || reconcile_window_hidden(&tick_app, generation))
+                .is_err()
+            {
+                return;
+            }
+        }
+    }));
+}
+
+fn refresh_window_hidden(window: &tauri::Window) {
+    let visible = window.is_visible().unwrap_or(true);
+    let minimized = window.is_minimized().unwrap_or(false);
+    sync_window_hidden(
+        window.app_handle(),
+        compute_window_hidden(visible, minimized),
+    );
+}
+
 fn set_visible(app: &AppHandle, visible: bool) {
     let Some(window) = app.get_webview_window(MAIN) else {
         return;
@@ -203,8 +302,10 @@ fn set_visible(app: &AppHandle, visible: bool) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        sync_window_hidden_explicit(app, false);
     } else {
         let _ = window.hide();
+        sync_window_hidden_explicit(app, true);
         #[cfg(target_os = "macos")]
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     }
@@ -396,7 +497,9 @@ fn window_start_dragging(window: tauri::WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn window_minimize(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.minimize().map_err(|error| error.to_string())
+    window.minimize().map_err(|error| error.to_string())?;
+    schedule_window_hidden_refresh(window.app_handle());
+    Ok(())
 }
 
 #[tauri::command]
@@ -421,6 +524,20 @@ fn window_chrome_state(window: tauri::WebviewWindow) -> WindowChromeState {
         maximized: window.is_maximized().unwrap_or(false),
         fullscreen: window.is_fullscreen().unwrap_or(false),
     }
+}
+
+#[tauri::command]
+fn window_visibility_get(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+) -> WindowVisibilityState {
+    let hidden = compute_window_hidden(
+        window.is_visible().unwrap_or(true),
+        window.is_minimized().unwrap_or(false),
+    );
+    let mut visibility = shell.visibility.lock().unwrap();
+    let _ = visibility.update(hidden);
+    visibility.state()
 }
 
 #[tauri::command]
@@ -534,6 +651,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }),
             ensure_web,
             locale: locale.clone(),
+            visibility: Mutex::new(WindowVisibility::new(true)),
             zoom,
             zoom_op: tauri::async_runtime::Mutex::new(()),
             zoom_persist,
@@ -550,16 +668,53 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window_toggle_maximize,
             window_close,
             window_chrome_state,
+            window_visibility_get,
             window_zoom_get,
             window_zoom_step,
             window_zoom_set
         ])
         .on_window_event(|window, event| {
-            if window.label() == MAIN
-                && let WindowEvent::CloseRequested { api, .. } = event
-            {
-                api.prevent_close();
-                set_visible(window.app_handle(), false);
+            if window.label() != MAIN {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    set_visible(window.app_handle(), false);
+                }
+                // Reconcile actual OS visibility/minimized state on resize or focus
+                // changes. Unfocused visible windows (e.g. on a secondary display)
+                // report visible=true and minimized=false, so they stay unpaused.
+                WindowEvent::Resized(_) => {
+                    refresh_window_hidden(window);
+                }
+                WindowEvent::Focused(true) => {
+                    let visible = window.is_visible().unwrap_or(true);
+                    let minimized = window.is_minimized().unwrap_or(false);
+                    let hidden = compute_window_hidden(visible, minimized);
+                    sync_window_hidden_explicit(window.app_handle(), hidden);
+                    if hidden {
+                        let app = window.app_handle().clone();
+                        let generation = {
+                            let shell = app.state::<Shell>();
+                            let mut visibility = shell.visibility.lock().unwrap();
+                            visibility.begin_reconcile()
+                        };
+                        let tick_app = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            reconcile_window_hidden(&tick_app, generation);
+                        });
+                    }
+                }
+                WindowEvent::Focused(false) => {
+                    // Defer reading OS state until the event loop settles: during
+                    // minimize transitions (both `window_minimize` and native macOS
+                    // miniaturize), `Focused(false)` can arrive before `is_minimized()`
+                    // flips to true. Secondary-display unfocus keeps visible=true and
+                    // minimized=false across every check, so it never pauses.
+                    schedule_window_hidden_refresh(window.app_handle());
+                }
+                _ => (),
             }
         })
         .setup(move |app| {

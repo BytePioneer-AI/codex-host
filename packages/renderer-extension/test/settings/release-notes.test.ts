@@ -105,4 +105,38 @@ describe("Release notes Markdown", () => {
     expect(visibleText(root)).toContain("the release");
     expect(visibleText(root)).not.toContain("> ");
   });
+
+  it("renders collapsible details blocks with summary and inner Markdown", () => {
+    const root = render(
+      [
+        "## 📋 完整更新清单",
+        "<details>",
+        "<summary>展开查看全部新功能与修复</summary>",
+        "",
+        "### 🚀 新功能",
+        "- Composer：新增 `codexhost` 快捷键",
+        "",
+        "### 🐛 修复",
+        "- Windows：修复重启异常",
+        "</details>",
+      ].join("\n"),
+    );
+
+    expect(root.children.map((child) => (child as FakeElement).tagName)).toEqual(["h2", "details"]);
+    const details = root.children[1] as FakeElement;
+    expect(details.attributes.has("open")).toBe(false);
+    const summary = details.children[0] as FakeElement;
+    expect(summary.tagName).toBe("summary");
+    expect(visibleText(summary)).toBe("展开查看全部新功能与修复");
+    const body = details.children[1] as FakeElement;
+    expect(body.className).toBe("settings-update-notes-details-body");
+    expect(body.children.map((child) => (child as FakeElement).tagName)).toEqual([
+      "h3",
+      "ul",
+      "h3",
+      "ul",
+    ]);
+    expect(visibleText(body)).toContain("codexhost");
+    expect(visibleText(body)).not.toContain("<details>");
+  });
 });

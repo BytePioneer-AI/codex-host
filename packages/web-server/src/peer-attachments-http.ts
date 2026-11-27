@@ -13,7 +13,8 @@ import { inspectImage, WEB_IMAGE_LIMITS, type WebImages } from "./web-images.ts"
 export type PeerAttachmentsRoute = "uploads" | "prompt" | "file";
 
 export interface PeerAttachmentsDeps {
-  sessions: Pick<ChSessions, "uploadFile" | "localWorkspaceRoot">;
+  sessions: Pick<ChSessions, "uploadFile" | "localWorkspaceRoot"> &
+    Partial<Pick<ChSessions, "ensureLocalWorkspaceRoot">>;
   files: Pick<WebFiles, "upload" | "bind" | "reference">;
   images: Pick<WebImages, "idForPath">;
   rpc: Pick<RpcRegistry, "dispatch">;
@@ -191,10 +192,16 @@ export async function readVerifiedAttachmentFile(
   let realRoot: string | undefined;
   let pinnedRootStat: Awaited<ReturnType<typeof lstat>> | undefined;
   let inWorkspace = false;
+  let candidateInWorkspace = false;
   if (workspaceRoot) {
+    const resolvedRoot = resolve(workspaceRoot);
+    candidateInWorkspace = isPathWithinRoot(candidate, resolvedRoot, fsOps.platform);
     try {
       realRoot = await fsOps.realpath(workspaceRoot);
       const rootStat = await fsOps.lstat(realRoot);
+      if (!candidateInWorkspace) {
+        candidateInWorkspace = isPathWithinRoot(candidate, realRoot, fsOps.platform);
+      }
       if (
         !rootStat.isSymbolicLink() &&
         rootStat.isDirectory() &&
@@ -210,8 +217,9 @@ export async function readVerifiedAttachmentFile(
       inWorkspace = false;
     }
   }
-  const inWebStorage = isWebStoragePath(realTarget, deps);
-  if (!inWorkspace && !inWebStorage) return "missing";
+  // Reject symlinks placed under the workspace that resolve outside the workspace root.
+  if (candidateInWorkspace && !inWorkspace) return "missing";
+  const inWebStorage = !inWorkspace && isWebStoragePath(realTarget, deps);
 
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -222,8 +230,15 @@ export async function readVerifiedAttachmentFile(
       ) {
         return "missing";
       }
-    } else if (!(await verifyWebStorageComponents(realTarget, deps, fsOps))) {
-      return "missing";
+    } else if (inWebStorage) {
+      if (!(await verifyWebStorageComponents(realTarget, deps, fsOps))) {
+        return "missing";
+      }
+    } else {
+      // Allow regular files outside the workspace by absolute path (matching local /api/file
+      // and Peer workspace file preview), while refusing direct symlinks and non-regular files.
+      const candidateStat = await fsOps.lstat(candidate);
+      if (candidateStat.isSymbolicLink() || !candidateStat.isFile()) return "missing";
     }
 
     const preStat = await fsOps.lstat(realTarget);
@@ -234,7 +249,7 @@ export async function readVerifiedAttachmentFile(
     if (!openedStat.isFile()) return "missing";
     if (!sameFileIdentity(openedStat, preStat)) return "missing";
 
-    // Re-verify real path ownership against the pinned root while holding the open file descriptor.
+    // Re-verify real path ownership while holding the open file descriptor.
     if (fsOps.platform === "linux") {
       const fdReal = await fsOps.realpath(`/proc/self/fd/${handle.fd}`);
       let fdAllowed = false;
@@ -246,8 +261,15 @@ export async function readVerifiedAttachmentFile(
           sameFileIdentity(currentRootStat, pinnedRootStat) &&
           isPathWithinRoot(fdReal, realRoot, fsOps.platform) &&
           (await hasNoSymlinkComponentsFromRoot(fdReal, fsOps));
-      } else {
+      } else if (inWebStorage) {
         fdAllowed = await verifyWebStorageComponents(fdReal, deps, fsOps);
+      } else {
+        const postCandidateStat = await fsOps.lstat(candidate);
+        fdAllowed =
+          fdReal === realTarget &&
+          !postCandidateStat.isSymbolicLink() &&
+          postCandidateStat.isFile() &&
+          sameFileIdentity(postCandidateStat, openedStat);
       }
       if (!fdAllowed) return "missing";
       const fdPathStat = await fsOps.stat(fdReal);
@@ -266,9 +288,16 @@ export async function readVerifiedAttachmentFile(
           sameFileIdentity(currentRootStat, pinnedRootStat) &&
           isPathWithinRoot(postReal, realRoot, fsOps.platform) &&
           (await hasNoSymlinkComponentsFromRoot(postReal, fsOps));
-      } else if (!inWorkspace) {
+      } else if (inWebStorage) {
         postAllowed =
           postReal === realTarget && (await verifyWebStorageComponents(postReal, deps, fsOps));
+      } else {
+        const postCandidateStat = await fsOps.lstat(candidate);
+        postAllowed =
+          postReal === realTarget &&
+          !postCandidateStat.isSymbolicLink() &&
+          postCandidateStat.isFile() &&
+          sameFileIdentity(postCandidateStat, openedStat);
       }
       if (!postAllowed) return "missing";
       const postStat = await fsOps.stat(postReal);
@@ -466,7 +495,9 @@ async function handleFile(
     sendPlain(response, 400, "missing parameters", isHead);
     return;
   }
-  const workspaceRoot = deps.sessions.localWorkspaceRoot(threadId);
+  const workspaceRoot = deps.sessions.ensureLocalWorkspaceRoot
+    ? await deps.sessions.ensureLocalWorkspaceRoot(threadId)
+    : deps.sessions.localWorkspaceRoot(threadId);
   if (workspaceRoot === undefined) {
     sendPlain(response, 404, "image unavailable", isHead);
     return;
@@ -476,7 +507,8 @@ async function handleFile(
   if (
     normalizedRaw.startsWith("\\\\") ||
     normalizedRaw.startsWith("//") ||
-    /[\u0000-\u001f\u007f]/u.test(normalizedRaw)
+    /[\u0000-\u001f\u007f]/u.test(normalizedRaw) ||
+    normalizedRaw.split(/[\\/]/u).includes("..")
   ) {
     sendPlain(response, 404, "image unavailable", isHead);
     return;

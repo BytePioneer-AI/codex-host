@@ -1,4 +1,5 @@
 /** In-memory projection of the CH protocol onto the existing Web UI wire format. */
+import { createHash } from "node:crypto";
 import {
   REASONING_TRANSCRIPT_COMMAND,
   WEB_ACTIVE_TURN_PROJECTION,
@@ -7,14 +8,22 @@ import {
   type ClientThreadImportSource,
   type ClientThreadSnapshot,
   type WebFileDiff,
+  type WebToolOutputReference,
   type WebTurnFileSummary,
 } from "@codexhost/shared-contracts";
+import { externalImportHistoryItems } from "./ch-external-import-history.ts";
 import { conversationItems } from "./ch-file-operations.ts";
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { summarizeTurnDiffs } from "./ch-turn-changes.ts";
 import { RpcError } from "./transport.ts";
 import { localImagePath } from "./native-user-input.ts";
+import {
+  TOOL_OUTPUT_PREVIEW,
+  compactLogToolOutputs,
+  previewToolText,
+  resolveToolOutput,
+} from "./tool-output.ts";
 import {
   TurnProjector,
   diffTexts,
@@ -134,6 +143,7 @@ function itemOf(
   reasoningPreviewIds: ReadonlySet<string>,
   projectImage: (path: string, projectionKey: string) => unknown,
   projectionKey: string,
+  projectText: (text: string) => string,
 ): HostItem | undefined {
   const itemId = item.id;
   switch (item.type) {
@@ -142,7 +152,7 @@ function itemOf(
         type: "agentMessage",
         itemId,
         // Web resolves Markdown paths itself; Desktop media escaping is not its wire format.
-        text: String(item.codexhostNativeText ?? item.text ?? ""),
+        text: projectText(String(item.codexhostNativeText ?? item.text ?? "")),
       };
     case "reasoning":
       return {
@@ -253,13 +263,83 @@ function outcome(turn: ChTurn): TurnOutcomeShape {
 }
 
 interface TurnView {
-  projector: TurnProjector;
+  readonly turn: number;
+  projector: TurnProjector | undefined;
   items: Map<string, HostItem>;
+  itemFingerprints: Map<string, string>;
   userMessages: Map<string, string>;
   started: Set<string>;
   completed: Set<string>;
   imageViewPaths: Map<string, string | undefined>;
+  imageViewAttachments: Map<string, unknown>;
   done: boolean;
+}
+
+function itemFingerprint(item: HostItem): string {
+  return createHash("sha256").update(JSON.stringify(item)).digest("hex");
+}
+
+function compactItemToolOutput(item: ChItem): ChItem {
+  switch (item.type) {
+    case "commandExecution": {
+      if (
+        typeof item.aggregatedOutput === "string" &&
+        item.aggregatedOutput.length > TOOL_OUTPUT_PREVIEW
+      )
+        return { ...item, aggregatedOutput: previewToolText(item.aggregatedOutput) };
+      return item;
+    }
+    case "mcpToolCall": {
+      let next: ChItem | undefined;
+      if (
+        isRecord(item.error) &&
+        typeof item.error.message === "string" &&
+        item.error.message.length > TOOL_OUTPUT_PREVIEW
+      ) {
+        next = { ...item, error: { ...item.error, message: previewToolText(item.error.message) } };
+      }
+      if (isRecord(item.result)) {
+        const resultText = mcpResultText(item);
+        const rawLength = JSON.stringify(item.result).length;
+        if (resultText.length > TOOL_OUTPUT_PREVIEW || rawLength > TOOL_OUTPUT_PREVIEW) {
+          next = {
+            ...(next ?? item),
+            result: { content: [{ type: "text", text: previewToolText(resultText) }] },
+          };
+        }
+      }
+      return next ?? item;
+    }
+    case "dynamicToolCall": {
+      if (item.result === undefined && item.contentItems === undefined) return item;
+      const serialized = JSON.stringify(item.result ?? item.contentItems ?? {});
+      if (serialized.length <= TOOL_OUTPUT_PREVIEW) return item;
+      const next: ChItem = { ...item, result: previewToolText(serialized) };
+      delete next.contentItems;
+      return next;
+    }
+    default:
+      return item;
+  }
+}
+
+function compactTurnToolOutputs(turn: ChTurn): ChTurn {
+  let changed = false;
+  const items = turn.items.map((item) => {
+    const compacted = compactItemToolOutput(item);
+    if (compacted !== item) changed = true;
+    return compacted;
+  });
+  return changed ? { ...turn, items } : turn;
+}
+
+export interface ChThreadViewOptions {
+  /** Compact settled tool output text across memory layers once a Turn finishes. */
+  compactToolOutputs?: boolean;
+  /** Re-read one native Turn on demand when `session/toolOutput` hits a compacted entry. */
+  loadTurn?: (turnId: string) => Promise<ChTurn | undefined>;
+  /** Rewrite projected text fields (for example translating peer thread links). */
+  projectText?: ((text: string) => string) | undefined;
 }
 
 /** The journal is a disposable rendering buffer; every authoritative value remains in CH. */
@@ -267,6 +347,9 @@ export class ChThreadView {
   readonly log: SessionLog;
   private turns = new Map<string, TurnView>();
   private readonly liveOutput = new Map<string, string>();
+  private readonly compactToolOutputs: boolean;
+  private readonly loadTurn: ((turnId: string) => Promise<ChTurn | undefined>) | undefined;
+  private readonly projectText: (text: string) => string;
   private retired = false;
   retire(): void {
     this.retired = true;
@@ -285,7 +368,11 @@ export class ChThreadView {
     protected readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
     private readonly projectImage: (path: string, projectionKey: string) => unknown = () =>
       undefined,
+    options?: ChThreadViewOptions,
   ) {
+    this.compactToolOutputs = options?.compactToolOutputs === true;
+    this.loadTurn = options?.loadTurn;
+    this.projectText = options?.projectText ?? ((text) => text);
     const published = new Map<string, string>();
     this.log = new SessionLog(
       {
@@ -314,6 +401,57 @@ export class ChThreadView {
     );
   }
 
+  private turnIdForRenderTurn(renderTurn: number): string | undefined {
+    for (const [id, view] of this.turns) if (view.done && view.turn === renderTurn) return id;
+    return undefined;
+  }
+
+  private projectTurnToolOutput(turn: ChTurn, callId: string, part: number): string | undefined {
+    const temp = new ChThreadView(
+      { ...this.thread, turns: [] },
+      this.harnessId,
+      () => {},
+      0,
+      0,
+      () => false,
+    );
+    temp.update({ ...this.thread, turns: [turn] });
+    for (const event of temp.log.events) {
+      if (event.type !== "tool/result") continue;
+      const data = event.data as {
+        message?: {
+          source?: { callId?: unknown };
+          content?: Array<{ type?: string; text?: unknown }>;
+        };
+      };
+      if (String(data.message?.source?.callId) !== callId) continue;
+      const block = data.message?.content?.[part];
+      return block?.type === "text" && typeof block.text === "string" ? block.text : undefined;
+    }
+    return undefined;
+  }
+
+  /** Resolve full tool output for a verified reference, reloading the Turn from Host when compacted. */
+  async readToolOutput(ref: WebToolOutputReference): Promise<{ text: string }> {
+    this.ensureCurrent();
+    const loadTurn = this.loadTurn;
+    return resolveToolOutput(
+      this.log,
+      ref,
+      loadTurn
+        ? async (target) => {
+            this.ensureCurrent();
+            const turnId = this.turnIdForRenderTurn(target.turn);
+            if (!turnId) return undefined;
+            const fresh = await loadTurn(turnId);
+            this.ensureCurrent();
+            if (!fresh || fresh.id !== turnId) return undefined;
+            return this.projectTurnToolOutput(fresh, target.callId, target.part);
+          }
+        : undefined,
+    );
+  }
+
   /** Resolve a Web turn/end coordinate to its canonical CH Turn, including prepended pages. */
   forkTurnId(atSeq?: number): string | undefined {
     this.ensureCurrent();
@@ -323,8 +461,7 @@ export class ChThreadView {
         : this.log.events.find((event) => event.seq === atSeq && event.type === "turn/end");
     if (!end) return undefined;
     const turn = (end.data as { turn: number }).turn;
-    for (const [id, view] of this.turns) if (view.done && view.projector.turn === turn) return id;
-    return undefined;
+    return this.turnIdForRenderTurn(turn);
   }
 
   /** Exact user/message coordinate of the settled native tail, never a Web Turn number. */
@@ -345,7 +482,7 @@ export class ChThreadView {
     let currentTurn: number | undefined;
     for (const event of this.log.events) {
       if (event.type === "turn/start") currentTurn = (event.data as { turn: number }).turn;
-      if (currentTurn === view.projector.turn && event.type === "user/message")
+      if (currentTurn === view.turn && event.type === "user/message")
         return { seq: event.seq, turnId: turn.id, input: messages[0].content };
     }
   }
@@ -367,25 +504,32 @@ export class ChThreadView {
       () => false,
       this.projectInput,
       this.projectImage,
+      { projectText: this.projectText },
     );
     page.update({ ...this.thread, turns });
     this.log.prepend(page.log.events);
     for (const [id, view] of page.turns) this.turns.set(id, view);
     this.turnStart = start;
-    this.thread.turns = [...turns, ...this.thread.turns];
+    const storedTurns = this.compactToolOutputs
+      ? turns.map((turn) => compactTurnToolOutputs(turn))
+      : turns;
+    this.thread.turns = [...storedTurns, ...this.thread.turns];
+    if (this.compactToolOutputs) compactLogToolOutputs(this.log);
     this.publishMessageTimes();
     this.publishFileChanges();
   }
 
   update(thread: ChThread, activeTurnId?: string | null): void {
     this.ensureCurrent();
+    const existingTurns = new Map(this.thread.turns.map((turn) => [turn.id, turn]));
     const projectionsByTurn = new Map<string, ReadonlyMap<string, HostItem | undefined>>();
     // The journal is append-only. Same-Turn input can append in place; input
     // replacement or insertion before displayed output needs a fresh history view.
     for (const turn of thread.turns) {
       const view = this.turns.get(turn.id);
       if (!view) continue;
-      const items = conversationItems(turn);
+      if (view.done && turn === existingTurns.get(turn.id)) continue;
+      const items = this.displayItems(turn);
       const ids = new Set(items.map((item) => item.id));
       const users = items.filter((item) => item.type === "userMessage");
       const published = [...view.started];
@@ -426,7 +570,7 @@ export class ChThreadView {
               const projected = projections.get(item.id);
               return (
                 projected &&
-                (JSON.stringify(projected) !== JSON.stringify(view.items.get(item.id)) ||
+                (itemFingerprint(projected) !== view.itemFingerprints.get(item.id) ||
                   (typeof item.status === "string" &&
                     ["completed", "failed", "declined", "interrupted"].includes(item.status) &&
                     !view.completed.has(item.id)))
@@ -448,6 +592,12 @@ export class ChThreadView {
       this.projectTurns(thread, projectionsByTurn);
     } finally {
       this.log.clock = undefined;
+    }
+    if (this.compactToolOutputs) {
+      this.thread.turns = this.thread.turns.map((turn) =>
+        this.turns.get(turn.id)?.done ? compactTurnToolOutputs(turn) : turn,
+      );
+      compactLogToolOutputs(this.log);
     }
     this.log.setProjection(
       WEB_ACTIVE_TURN_PROJECTION,
@@ -473,13 +623,20 @@ export class ChThreadView {
       reasoningPreviewIds,
       (path, projectionKey) => {
         if (item.type === "imageView" && view.imageViewPaths.has(item.id)) {
+          if (view.imageViewAttachments.has(item.id)) return view.imageViewAttachments.get(item.id);
           const previous = view.items.get(item.id);
           return previous?.type === "imageView" ? previous.attachment : undefined;
         }
         return this.projectImage(path, projectionKey);
       },
       imageViewProjectionKey(turnId, item.id),
+      this.projectText,
     );
+  }
+
+  private displayItems(turn: ChTurn): ChItem[] {
+    const items = conversationItems(turn);
+    return this.harnessId === "codex" ? externalImportHistoryItems(turn, items) : items;
   }
 
   private publishMessageTimes(): void {
@@ -494,7 +651,7 @@ export class ChThreadView {
           const end = nativeTime(turn.completedAt);
           return [
             [
-              view.projector.turn,
+              view.turn,
               {
                 start: start ?? null,
                 end: end !== undefined && (start === undefined || end >= start) ? end : null,
@@ -509,9 +666,7 @@ export class ChThreadView {
   /** Resolve only this view's displayed Turn coordinate; never a different Session's Turn. */
   turnDiffs(turn: number, path?: string): WebFileDiff[] {
     this.ensureCurrent();
-    const native = this.thread.turns.find(
-      (item) => this.turns.get(item.id)?.projector.turn === turn,
-    );
+    const native = this.thread.turns.find((item) => this.turns.get(item.id)?.turn === turn);
     if (!native) throw new RpcError("session/diff-not-found", "This Turn is not loaded.");
     const diffs = this.fileDiffs(native);
     return path === undefined ? diffs : diffs.filter((diff) => diff.path === path);
@@ -532,12 +687,7 @@ export class ChThreadView {
         this.thread.turns.flatMap((turn) => {
           const view = this.turns.get(turn.id);
           if (!view) return [];
-          return [
-            [
-              view.projector.turn,
-              summarizeTurnDiffs(this.fileDiffs(turn), previous?.[view.projector.turn]),
-            ],
-          ];
+          return [[view.turn, summarizeTurnDiffs(this.fileDiffs(turn), previous?.[view.turn])]];
         }),
       ),
     );
@@ -549,7 +699,7 @@ export class ChThreadView {
   ): void {
     let previousEnd = thread.createdAt * 1000;
     for (const turn of thread.turns) {
-      const items = conversationItems(turn);
+      const items = this.displayItems(turn);
       let view = this.turns.get(turn.id);
       const complete = finished(turn.status);
       const start = nativeTime(turn.startedAt) ?? (complete ? previousEnd : Date.now());
@@ -579,25 +729,29 @@ export class ChThreadView {
           );
         } else projector.beginAutonomous([]);
         view = {
+          turn: projector.turn,
           projector,
           items: new Map(),
+          itemFingerprints: new Map(),
           userMessages: new Map(opening ? [[opening.id, userMessageIdentity(opening)]] : []),
           started: new Set(opening ? [opening.id] : []),
           completed: new Set(),
           imageViewPaths: new Map(),
+          imageViewAttachments: new Map(),
           done: false,
         };
         this.turns.set(turn.id, view);
       }
       if (!complete) this.log.clock = undefined;
       if (view.done) continue;
+      const projector = view.projector!;
       const reasoningPreviewIds = new Set(
         items.filter((item) => item.type === "reasoning").map((item) => item.id),
       );
       for (const item of items) {
         if (item.type === "userMessage") {
           if (!view.userMessages.has(item.id)) {
-            view.projector.steer(
+            projector.steer(
               this.projectInput(Array.isArray(item.content) ? item.content : []),
               typeof item.clientId === "string" ? item.clientId : undefined,
             );
@@ -629,9 +783,9 @@ export class ChThreadView {
           // DSH diff cards read the first tool/call arguments. Start only once a
           // path exists so an empty CH fileChange does not freeze file_path: "".
           if (projected.type === "fileChange" && !hasFileChangePath(projected)) continue;
-          view.projector.itemStarted(projected);
+          projector.itemStarted(projected);
           if (projected.type === "commandExecution" && projected.output)
-            view.projector.itemUpdated(item.id, { type: "output.append", text: projected.output });
+            projector.itemUpdated(item.id, { type: "output.append", text: projected.output });
           view.started.add(item.id);
         } else if (
           (projected.type === "agentMessage" || projected.type === "reasoning") &&
@@ -640,7 +794,7 @@ export class ChThreadView {
           projected.text.startsWith(old.text)
         ) {
           const text = projected.text.slice(old.text.length);
-          if (text) view.projector.itemUpdated(item.id, { type: "text.append", text });
+          if (text) projector.itemUpdated(item.id, { type: "text.append", text });
         } else if (
           (projected.type === "agentMessage" || projected.type === "reasoning") &&
           old !== undefined &&
@@ -658,9 +812,9 @@ export class ChThreadView {
           const output = projected.output ?? "";
           if (output.startsWith(old.output ?? "")) {
             const text = output.slice((old.output ?? "").length);
-            if (text) view.projector.itemUpdated(item.id, { type: "output.append", text });
+            if (text) projector.itemUpdated(item.id, { type: "output.append", text });
           } else
-            view.projector.itemUpdated(item.id, {
+            projector.itemUpdated(item.id, {
               type: "output.replace",
               output: { content: [{ type: "text", text: output }] },
             });
@@ -669,7 +823,7 @@ export class ChThreadView {
           old?.type === "fileChange" &&
           JSON.stringify(old.changes) !== JSON.stringify(projected.changes)
         ) {
-          view.projector.itemUpdated(item.id, {
+          projector.itemUpdated(item.id, {
             type: "fileChanges.replace",
             changes: projected.changes,
           });
@@ -704,10 +858,10 @@ export class ChThreadView {
           projected.type === "fileChange" && turn.codexhostFileOperations === undefined;
         if (itemOutcome && (!legacySummary || complete)) {
           if (!view.started.has(item.id)) {
-            view.projector.itemStarted(projected);
+            projector.itemStarted(projected);
             view.started.add(item.id);
           }
-          view.projector.itemCompleted(projected, itemOutcome);
+          projector.itemCompleted(projected, itemOutcome);
           view.completed.add(item.id);
         }
       }
@@ -715,13 +869,19 @@ export class ChThreadView {
         this.log.clock = () => end;
         for (const item of view.items.values())
           if (!view.completed.has(item.itemId))
-            view.projector.itemCompleted(item, { status: "succeeded" });
-        // Protocol Core already resolves native and inferred phases for Desktop and Web.
+            projector.itemCompleted(item, { status: "succeeded" });
+        // Use the phase supplied by the Host or recovered for converted history.
         const answer = items.findLast(
           (item) => item.type === "agentMessage" && item.phase === "final_answer",
         );
-        view.projector.finish(outcome(turn), answer?.id ?? null);
+        projector.finish(outcome(turn), answer?.id ?? null);
         view.done = true;
+        for (const [itemId, item] of view.items) {
+          view.itemFingerprints.set(itemId, itemFingerprint(item));
+          if (item.type === "imageView") view.imageViewAttachments.set(itemId, item.attachment);
+        }
+        view.items.clear();
+        view.projector = undefined;
       }
     }
   }

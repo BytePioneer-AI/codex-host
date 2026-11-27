@@ -1,8 +1,18 @@
 import * as c from "@codexhost/shared-contracts";
 import type { HostClientUpdate } from "@codexhost/desktop-control";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isIP, type LookupFunction } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PeerChTransport } from "./peer-ch-host-client.ts";
-import { classifyPeerTransport, type PeerRecord } from "./peer-host-store.ts";
+import {
+  classifyPeerTransport,
+  parsePeerUrl,
+  PeerHostPolicyError,
+  resolveAndValidatePeerHost,
+  type PeerDnsLookup,
+  type PeerRecord,
+} from "./peer-host-store.ts";
 import { RpcError } from "./transport.ts";
 
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
@@ -111,9 +121,194 @@ export async function peerFetch(
   }
 }
 
+const MAX_PROBE_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+function parsePeerErrorPayload(payload: unknown): { message: string; code?: number } | undefined {
+  if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
+  const err = payload.error;
+  if (typeof err === "string") return { message: err };
+  if (err && typeof err === "object" && "message" in err && typeof err.message === "string") {
+    const code = "code" in err && typeof err.code === "number" ? err.code : undefined;
+    return {
+      message: err.message,
+      ...(code === undefined ? {} : { code }),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Perform a pinned-IP GET request for peer probing: resolves DNS once, validates every returned
+ * address against the SSRF/loopback policy, connects strictly to the verified IP(s) while
+ * preserving the original `Host` header and HTTPS TLS SNI, and refuses all HTTP redirects.
+ */
+async function pinnedPeerGetJson(
+  record: PeerRecord,
+  path: PeerFetchPath,
+  options: {
+    allowLoopback?: boolean;
+    dnsLookup?: PeerDnsLookup | undefined;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } = {},
+): Promise<unknown> {
+  if (!record.enabled) throw new RpcError("remote/offline", "Remote peer is disabled");
+  const url = parsePeerUrl(record.origin + path, {
+    allowLoopback: options.allowLoopback === true,
+  });
+  const verified = await resolveAndValidatePeerHost(url, {
+    allowLoopback: options.allowLoopback === true,
+    dnsLookup: options.dnsLookup,
+  });
+
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? 8_000);
+  const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
+  const bareHostname =
+    url.hostname.startsWith("[") && url.hostname.endsWith("]")
+      ? url.hostname.slice(1, -1)
+      : url.hostname;
+
+  const pinnedLookup: LookupFunction = (_hostname, lookupOptions, callback) => {
+    const opts = typeof lookupOptions === "object" && lookupOptions !== null ? lookupOptions : {};
+    if (opts.all) {
+      callback(
+        null,
+        verified.map((entry) => ({ address: entry.address, family: entry.family })),
+      );
+      return;
+    }
+    const family = typeof lookupOptions === "number" ? lookupOptions : opts.family;
+    const match =
+      family === 4 || family === 6
+        ? verified.find((entry) => entry.family === family)
+        : verified[0];
+    if (!match) {
+      callback(
+        Object.assign(new Error("No verified address matches requested IP family"), {
+          code: "ENOTFOUND",
+        }),
+        "",
+        4,
+      );
+      return;
+    }
+    callback(null, match.address, match.family);
+  };
+
+  return await new Promise<unknown>((resolve, reject) => {
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const succeed = (value: unknown) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const requestOptions = {
+      protocol: url.protocol,
+      hostname: bareHostname,
+      ...(url.port ? { port: Number(url.port) } : {}),
+      path: `${url.pathname}${url.search}`,
+      method: "GET",
+      headers: {
+        host: url.host,
+        authorization: "Bearer " + record.token,
+        "content-type": "application/json",
+      },
+      agent: false,
+      lookup: pinnedLookup,
+      signal,
+    };
+    const req =
+      url.protocol === "https:"
+        ? httpsRequest({
+            ...requestOptions,
+            ...(isIP(bareHostname) === 0 ? { servername: bareHostname } : {}),
+          })
+        : httpRequest(requestOptions);
+
+    req.on("error", () => {
+      fail(new RpcError("remote/offline", "Remote peer is unreachable"));
+    });
+
+    req.on("response", (res) => {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400) {
+        res.resume();
+        req.destroy();
+        fail(new RpcError("remote/offline", "Remote peer is unreachable"));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      res.on("data", (chunk: Buffer | string) => {
+        const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        totalBytes += buf.length;
+        if (totalBytes > MAX_PROBE_RESPONSE_BYTES) {
+          res.destroy();
+          fail(new RpcError("remote/read-failed", "Remote peer response is too large"));
+          return;
+        }
+        chunks.push(buf);
+      });
+      res.on("error", () => {
+        fail(new RpcError("remote/offline", "Remote peer is unreachable"));
+      });
+      res.on("aborted", () => {
+        fail(new RpcError("remote/offline", "Remote peer is unreachable"));
+      });
+      res.on("end", () => {
+        const rawText = Buffer.concat(chunks, totalBytes).toString("utf8");
+        let payload: unknown;
+        let parsedJson = false;
+        try {
+          payload = JSON.parse(rawText);
+          parsedJson = true;
+        } catch {
+          payload = undefined;
+        }
+        if (status >= 200 && status < 300) {
+          if (!parsedJson) {
+            fail(new RpcError("remote/read-failed", "Remote peer returned invalid JSON"));
+            return;
+          }
+          succeed(payload);
+          return;
+        }
+        const failure = parsePeerErrorPayload(payload);
+        if (status === 401 || (status === 403 && !failure?.message)) {
+          fail(
+            new RpcError("remote/auth-error", "Remote peer rejected the access token", {
+              httpStatus: status,
+            }),
+          );
+          return;
+        }
+        fail(
+          new RpcError(
+            "remote/request-failed",
+            failure?.message ?? `Remote peer returned HTTP ${status}`,
+            {
+              httpStatus: status,
+              ...(failure?.code === undefined ? {} : { hostCode: failure.code }),
+            },
+          ),
+        );
+      });
+    });
+
+    req.end();
+  });
+}
+
 const INITIAL_CONNECTION_WAIT_MS = 2_000;
 const MAX_TRACKED_SNAPSHOT_THREADS = 64;
 const MAX_TRACKED_KNOWN_TURNS = 16;
+const SELF_PAIR_ERROR = "Cannot pair this server with itself";
 
 export class PeerHostClient {
   private life = new AbortController();
@@ -126,19 +321,35 @@ export class PeerHostClient {
   private streamOnline = false;
   private readonly listeners = new Set<(update: HostClientUpdate) => void>();
   private readonly streamIdleTimeoutMs: number;
+  private readonly rejectNodeId: string | undefined;
+  private readonly allowLoopback: boolean;
+  private readonly dnsLookup: PeerDnsLookup | undefined;
   private readonly fullKnownTurns = new Map<string, Map<string, string>>();
   private readonly truncatedKnownTurns = new Map<string, Map<string, string>>();
   private knownTurnsEpoch: string | undefined;
-  readonly hostId: string;
+  get hostId(): string {
+    return c.remotePeerHostId(this.record.peerId);
+  }
+  get closed(): boolean {
+    return this.life.signal.aborted;
+  }
 
   constructor(
     public record: PeerRecord,
     private changed: (hostId?: string) => void,
-    options: { streamIdleTimeoutMs?: number; initialManifest?: c.RemotePeerManifest } = {},
+    options: {
+      streamIdleTimeoutMs?: number;
+      initialManifest?: c.RemotePeerManifest;
+      rejectNodeId?: string;
+      allowLoopback?: boolean;
+      dnsLookup?: PeerDnsLookup;
+    } = {},
   ) {
-    this.hostId = c.remotePeerHostId(record.peerId);
     this.state = record.enabled ? "connecting" : "disabled";
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    this.rejectNodeId = options.rejectNodeId;
+    this.allowLoopback = options.allowLoopback === true;
+    this.dnsLookup = options.dnsLookup;
     if (options.initialManifest !== undefined) {
       this.manifest = options.initialManifest;
     }
@@ -202,7 +413,12 @@ export class PeerHostClient {
   summary(): c.RemotePeerSummary {
     const { peerId, name, color, origin, enabled, createdAt, updatedAt } = this.record;
     const { encrypted, transportKind } = classifyPeerTransport(origin);
-    const { version, platform, hostname, homeDir, projects } = this.manifest ?? {};
+    const { version, platform, hostname, homeDir, projects, nodeId, peerNodes, capabilities } =
+      this.manifest ?? {};
+    const pairedBack =
+      this.rejectNodeId !== undefined && peerNodes !== undefined
+        ? Object.values(peerNodes).includes(this.rejectNodeId)
+        : undefined;
     return {
       peerId,
       name,
@@ -212,7 +428,10 @@ export class PeerHostClient {
       createdAt,
       updatedAt,
       hostId: this.hostId,
+      ...(nodeId !== undefined ? { nodeId } : {}),
       state: this.state,
+      ...(this.manifest ? { supportsPeerPairing: capabilities?.peerPairing === 1 } : {}),
+      ...(pairedBack === undefined ? {} : { pairedBack }),
       encrypted,
       transportKind,
       version,
@@ -303,13 +522,31 @@ export class PeerHostClient {
   async probe() {
     const start = Date.now();
     try {
-      this.manifest = c.remotePeerManifestSchema.parse(
-        await (await this.fetch("/api/peer/v1/manifest")).json(),
+      const manifest = c.remotePeerManifestSchema.parse(
+        await pinnedPeerGetJson(this.record, "/api/peer/v1/manifest", {
+          allowLoopback: this.allowLoopback,
+          dnsLookup: this.dnsLookup,
+          signal: this.life.signal,
+        }),
       );
+      if (this.rejectNodeId !== undefined && manifest.nodeId === this.rejectNodeId) {
+        throw Error(SELF_PAIR_ERROR);
+      }
+      this.manifest = manifest;
       this.latencyMs = Date.now() - start;
       delete this.lastError;
       this.state = "connected";
     } catch (e) {
+      if (
+        e instanceof PeerHostPolicyError ||
+        (e instanceof Error && e.message === SELF_PAIR_ERROR)
+      ) {
+        delete this.manifest;
+        this.state = "offline";
+        this.lastError = e.message;
+        this.setStreamOffline();
+        throw e;
+      }
       this.state =
         e instanceof RpcError && e.code === "remote/auth-error" ? "auth-error" : "offline";
       const message =
@@ -419,12 +656,35 @@ export class PeerHostClient {
 
   close() {
     this.life.abort();
+    this.record = { ...this.record, token: "" };
     this.initialProbe.resolve(undefined);
     this.setStreamOffline();
     this.listeners.clear();
     this.fullKnownTurns.clear();
     this.truncatedKnownTurns.clear();
     this.knownTurnsEpoch = undefined;
+  }
+
+  async introduce(params: c.RemotePeerIntroduceParams): Promise<c.RemotePeerIntroduceResult> {
+    if (!this.record.enabled || this.state !== "connected") {
+      throw new RpcError("remote/offline", "Remote peer is not connected");
+    }
+    if (this.manifest?.capabilities?.peerPairing !== 1) {
+      throw new RpcError("remote/unsupported", "Remote peer does not support pairing");
+    }
+    const response = await peerFetch(this.record, "/api/peer/v1/peers", {
+      method: "POST",
+      body: params,
+      timeoutMs: 15_000,
+      signal: this.life.signal,
+    });
+    const result = c.remotePeerIntroduceResultSchema.safeParse(
+      await response.json().catch(() => undefined),
+    );
+    if (!result.success) {
+      throw new RpcError("remote/read-failed", "Remote peer returned an invalid pairing result");
+    }
+    return result.data;
   }
 
   async listDirs(path?: string) {

@@ -1,7 +1,8 @@
 /** Native Harness identity picker beside the independent model/effort control. */
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   harnessIconSources,
+  IconCheckOutlineRegular,
   IconDataOutlineRegular,
   RemotePluginIcon,
   IconWarningOutlineRegular,
@@ -11,10 +12,10 @@ import {
   Toast,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
+import { buildHarnessMenuLayout, type HarnessMenuEntry } from "./harness-menu.ts";
 import type { HarnessHandoffStatus, ModelSelectInjected } from "./slots.ts";
 import css from "./HarnessSelect.module.css";
 
-const HANDOFF_ITEM_PREFIX = "handoff:";
 const noopSubscribe = () => () => {};
 const noopHostId = () => undefined;
 const noopHandoffStatus = (): HarnessHandoffStatus => "unsupported";
@@ -78,6 +79,7 @@ export function HarnessSelect({
   select,
   iconHost,
   handoff,
+  openConnections,
   locked,
   t,
 }: ModelSelectInjected & { locked: boolean } & PropsLocale<"model">) {
@@ -95,120 +97,41 @@ export function HarnessSelect({
   );
   const deferRemoteIcon = iconHost?.isRemoteSession === true && iconHostId === undefined;
   const [open, setOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; seq: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const currentId = state.current?.provider;
   const currentName =
     state.harnesses.find((group) => group.id === currentId)?.name ??
     state.failures.find((failure) => failure.id === currentId)?.name ??
+    state.notInstalled.find((missing) => missing.id === currentId)?.name ??
     currentId;
   const busy = state.pending !== null;
   const boundHarnessId = state.boundHarnessId;
   const boundHandoffEnabled = boundHarnessId !== null && handoffStatus !== "unsupported";
 
-  const ranks = state.harnessOrder ?? [];
-  const compareOrder = (leftId: string, rightId: string): number => {
-    const left = ranks.indexOf(leftId);
-    const right = ranks.indexOf(rightId);
-    return (left < 0 ? Infinity : left) - (right < 0 ? Infinity : right);
-  };
-  const renderIcon = (id: string) => (
-    <HarnessIcon key={id} id={id} hostId={iconHostId} deferRemote={deferRemoteIcon} />
+  const layout = useMemo(
+    () =>
+      buildHarnessMenuLayout({
+        harnesses: state.harnesses,
+        failures: state.failures,
+        notInstalled: iconHost?.isRemoteSession === true ? [] : state.notInstalled,
+        harnessOrder: state.harnessOrder,
+        moreHarnesses: iconHost?.isRemoteSession === true ? [] : state.moreHarnesses,
+        boundHarnessId,
+        boundHandoffEnabled,
+      }),
+    [
+      boundHandoffEnabled,
+      boundHarnessId,
+      iconHost?.isRemoteSession,
+      state.failures,
+      state.harnessOrder,
+      state.harnesses,
+      state.moreHarnesses,
+      state.notInstalled,
+    ],
   );
-  const failureEntry = (failure: (typeof state.failures)[number]): MenuEntry => ({
-    id: failure.id,
-    label: (
-      <span title={failure.message}>
-        {failure.name} · {t("harness.unavailable")}
-      </span>
-    ),
-    icon: renderIcon(failure.id),
-    disabled: true,
-  });
-
-  const items: MenuEntry[] = [];
-  if (boundHandoffEnabled) {
-    const sortedHarnesses = state.harnesses.toSorted((a, b) => compareOrder(a.id, b.id));
-    const sortedFailures = state.failures.toSorted((a, b) => compareOrder(a.id, b.id));
-    const boundGroup = sortedHarnesses.find((group) => group.id === boundHarnessId);
-    const boundFailure = sortedFailures.find((failure) => failure.id === boundHarnessId);
-    if (boundGroup !== undefined) {
-      items.push({
-        id: boundGroup.id,
-        label: (
-          <span data-current={boundGroup.id === currentId ? "" : undefined}>{boundGroup.name}</span>
-        ),
-        icon: renderIcon(boundGroup.id),
-        disabled: locked || busy,
-      });
-    } else if (boundFailure !== undefined) {
-      items.push(failureEntry(boundFailure));
-    }
-
-    const otherHarnesses = sortedHarnesses.filter((group) => group.id !== boundHarnessId);
-    const otherFailures = sortedFailures.filter((failure) => failure.id !== boundHarnessId);
-    const handoffRows: MenuEntry[] =
-      otherHarnesses.length > 0
-        ? otherHarnesses.map((group) => ({
-            id: `${HANDOFF_ITEM_PREFIX}${group.id}`,
-            label: (
-              <span className={css.handoffLabel}>
-                <span className={css.harnessName}>{group.name}</span>
-                <HandoffSwapIcon className={css.handoffIcon} />
-              </span>
-            ),
-            icon: renderIcon(group.id),
-            disabled: locked || busy || group.models.length === 0 || handoffStatus !== "ready",
-          }))
-        : boundGroup !== undefined
-          ? [
-              {
-                id: `${HANDOFF_ITEM_PREFIX}${boundGroup.id}`,
-                label: (
-                  <span className={css.handoffLabel}>
-                    <span className={css.harnessName}>
-                      {t("harness.handoffSame", { name: boundGroup.name })}
-                    </span>
-                    <HandoffSwapIcon className={css.handoffIcon} />
-                  </span>
-                ),
-                icon: renderIcon(boundGroup.id),
-                disabled:
-                  locked || busy || boundGroup.models.length === 0 || handoffStatus !== "ready",
-              },
-            ]
-          : [];
-
-    if (handoffRows.length > 0 || otherFailures.length > 0) {
-      if (items.length > 0) {
-        items.push({ type: "separator", id: "handoff-separator" });
-      }
-      if (handoffRows.length > 0) {
-        items.push({
-          type: "label",
-          id: "handoff-section",
-          text: t("harness.handoffSection"),
-        });
-      }
-      items.push(...handoffRows, ...otherFailures.map(failureEntry));
-    }
-  } else {
-    items.push(
-      ...[
-        ...state.harnesses.map((group) => ({
-          id: group.id,
-          label: <span data-current={group.id === currentId ? "" : undefined}>{group.name}</span>,
-          icon: renderIcon(group.id),
-          disabled:
-            locked ||
-            busy ||
-            group.models.length === 0 ||
-            (boundHarnessId !== null && group.id !== boundHarnessId),
-        })),
-        ...state.failures.map(failureEntry),
-      ].toSorted((a, b) => compareOrder(a.id, b.id)),
-    );
-  }
 
   const footer: MenuEntry[] = [];
   if (boundHarnessId !== null) {
@@ -229,20 +152,17 @@ export function HarnessSelect({
   if (state.error !== null) footer.push({ type: "label", id: "error", text: state.error });
   if (state.harnesses.length === 0 && state.status !== "loading")
     footer.push({ type: "label", id: "empty", text: t("harness.empty") });
-  const close = () => setOpen(false);
+
+  const close = () => {
+    setOpen(false);
+    setMoreOpen(false);
+  };
   const report = (text: string) =>
     setToast((previous) => ({ text, seq: (previous?.seq ?? 0) + 1 }));
 
   if (!available) return null;
 
-  const choose = async (id: string): Promise<void> => {
-    if (id.startsWith(HANDOFF_ITEM_PREFIX)) {
-      if (locked || busy || handoffStatus !== "ready" || handoff === undefined) return;
-      const targetHarnessId = id.slice(HANDOFF_ITEM_PREFIX.length);
-      close();
-      handoff.open(targetHarnessId);
-      return;
-    }
+  const chooseDraft = async (id: string): Promise<void> => {
     if (locked || busy || (boundHarnessId !== null && id !== boundHarnessId)) return;
     if (id === currentId) {
       close();
@@ -275,6 +195,123 @@ export function HarnessSelect({
     }
   };
 
+  const triggerHandoff = (targetHarnessId: string): void => {
+    if (locked || busy || handoffStatus !== "ready" || handoff === undefined) return;
+    close();
+    handoff.open(targetHarnessId);
+  };
+
+  const handleInstall = (entry: Extract<HarnessMenuEntry, { kind: "notInstalled" }>): void => {
+    close();
+    if (entry.installUrl !== undefined) {
+      window.open(entry.installUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    openConnections?.(entry.id);
+  };
+
+  const handleErrorDetails = (agentId: string): void => {
+    close();
+    openConnections?.(agentId);
+  };
+
+  const renderEntryRow = (
+    entry: HarnessMenuEntry,
+    mode: "current" | "draft" | "handoff",
+    labelOverride?: string,
+  ) => {
+    const isCurrent = mode === "current" || (mode === "draft" && entry.id === currentId);
+    const rowDisabled =
+      locked ||
+      busy ||
+      (entry.kind !== "ready" && !isCurrent) ||
+      (entry.kind === "ready" && !entry.hasModels && !isCurrent) ||
+      (mode === "draft" && boundHarnessId !== null && entry.id !== boundHarnessId) ||
+      (mode === "handoff" && handoffStatus !== "ready");
+    const showSwap = mode === "handoff" && entry.kind === "ready" && entry.hasModels;
+    const showInstall =
+      entry.kind === "notInstalled" &&
+      (entry.installUrl !== undefined || openConnections !== undefined);
+    const showError = entry.kind === "error" && openConnections !== undefined;
+    const title = entry.kind === "error" ? entry.message : undefined;
+    const displayLabel = labelOverride ?? entry.name;
+
+    return (
+      <div key={`${mode}:${entry.id}`} className={css.row}>
+        <button
+          type="button"
+          role="menuitem"
+          className={css.rowButton}
+          data-current={isCurrent ? "" : undefined}
+          disabled={rowDisabled}
+          title={title}
+          onClick={() => {
+            if (mode === "handoff") {
+              triggerHandoff(entry.id);
+              return;
+            }
+            if (isCurrent) {
+              close();
+              return;
+            }
+            void chooseDraft(entry.id);
+          }}
+        >
+          <span className={css.rowIcon}>
+            <HarnessIcon
+              id={entry.id}
+              hostId={iconHostId}
+              deferRemote={deferRemoteIcon}
+              size={20}
+            />
+          </span>
+          <span className={css.harnessName}>{displayLabel}</span>
+        </button>
+        <span className={css.actionSlot}>
+          {isCurrent ? (
+            <IconCheckOutlineRegular className={css.checkIcon} />
+          ) : showSwap ? (
+            <HandoffSwapIcon className={css.handoffIcon} />
+          ) : showInstall ? (
+            <button
+              type="button"
+              className={`${css.rowActionButton} ${css.installButton}`}
+              aria-label={t("harness.installAria", { name: entry.name })}
+              title={t("harness.installAria", { name: entry.name })}
+              onClick={(event) => {
+                event.stopPropagation();
+                handleInstall(entry);
+              }}
+            >
+              +
+            </button>
+          ) : showError ? (
+            <button
+              type="button"
+              className={`${css.rowActionButton} ${css.errorButton}`}
+              aria-label={t("harness.errorAria", { name: entry.name })}
+              title={t("harness.errorAria", { name: entry.name })}
+              onClick={(event) => {
+                event.stopPropagation();
+                handleErrorDetails(entry.id);
+              }}
+            >
+              !
+            </button>
+          ) : null}
+        </span>
+      </div>
+    );
+  };
+
+  const rowMode: "draft" | "handoff" = boundHandoffEnabled ? "handoff" : "draft";
+  const hasSecondaryContent =
+    layout.showSameHarnessHandoff || layout.main.length > 0 || layout.more.length > 0;
+  const hasHandoffTarget =
+    layout.showSameHarnessHandoff ||
+    layout.main.some((entry) => entry.kind === "ready" && entry.hasModels) ||
+    layout.more.some((entry) => entry.kind === "ready" && entry.hasModels);
+
   return (
     <>
       <Menu
@@ -284,11 +321,6 @@ export function HarnessSelect({
         align="end"
         autoFocus
         listClassName={css.menu}
-        selectedId={currentId}
-        items={items}
-        onSelect={(id) => {
-          void choose(id);
-        }}
         onClose={close}
         footer={footer}
         anchor={
@@ -307,8 +339,11 @@ export function HarnessSelect({
             aria-busy={busy}
             disabled={locked || busy}
             onClick={() => {
-              setOpen(!open);
-              if (!open) load();
+              if (open) close();
+              else {
+                setOpen(true);
+                load();
+              }
             }}
           >
             {busy ? (
@@ -326,7 +361,79 @@ export function HarnessSelect({
             )}
           </button>
         }
-      />
+      >
+        {boundHandoffEnabled && layout.boundEntry !== undefined && (
+          <div className={css.group}>{renderEntryRow(layout.boundEntry, "current")}</div>
+        )}
+        {boundHandoffEnabled && hasSecondaryContent && (
+          <>
+            {layout.boundEntry !== undefined && <div className={css.separator} role="separator" />}
+            {hasHandoffTarget && (
+              <div className={css.sectionLabel} role="presentation">
+                {t("harness.handoffSection")}
+              </div>
+            )}
+          </>
+        )}
+        {(layout.showSameHarnessHandoff || layout.main.length > 0) && (
+          <div className={css.group}>
+            {layout.showSameHarnessHandoff &&
+              layout.boundEntry !== undefined &&
+              renderEntryRow(
+                layout.boundEntry,
+                "handoff",
+                t("harness.handoffSame", { name: layout.boundEntry.name }),
+              )}
+            {layout.main.map((entry) => renderEntryRow(entry, rowMode))}
+          </div>
+        )}
+        {layout.more.length > 0 && (
+          <>
+            <button
+              type="button"
+              className={css.moreToggle}
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((prev) => !prev)}
+            >
+              <span className={css.moreArrow} aria-hidden="true">
+                {moreOpen ? "▾" : "▸"}
+              </span>
+              <span>{t("harness.moreAgents", { count: layout.more.length })}</span>
+            </button>
+            {moreOpen && (
+              <div className={css.morePanel}>
+                <div className={css.group}>
+                  {layout.more.map((entry) => renderEntryRow(entry, rowMode))}
+                </div>
+                {openConnections !== undefined && (
+                  <button
+                    type="button"
+                    className={css.manageLink}
+                    onClick={() => {
+                      close();
+                      openConnections();
+                    }}
+                  >
+                    {t("harness.manage")} →
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+        {layout.showHideUnusedCta && openConnections !== undefined && (
+          <button
+            type="button"
+            className={css.hideUnusedCta}
+            onClick={() => {
+              close();
+              openConnections();
+            }}
+          >
+            ⚙ {t("harness.hideUnusedCta")} →
+          </button>
+        )}
+      </Menu>
       {toast !== null && (
         <Toast
           key={toast.seq}

@@ -380,21 +380,124 @@ const warmupTimer = setTimeout(() => {
 }, 0);
 (warmupTimer as { unref?: () => void }).unref?.();
 
+/** Character limit above which syntax tokenization falls back to plain monospace text. */
+export const MAX_HIGHLIGHT_CHARS = 60_000;
+/** Line limit above which syntax tokenization falls back to plain monospace text. */
+export const MAX_HIGHLIGHT_LINES = 1_500;
+/** Maximum cached entries kept by {@link highlightToHtml}. */
+export const HIGHLIGHT_HTML_CACHE_MAX_ENTRIES = 240;
+/** Approximate UTF-16 byte budget for HTML strings cached by {@link highlightToHtml}. */
+export const HIGHLIGHT_HTML_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+
+/** Return true when `code` exceeds the safe tokenization character or line budget. */
+function exceedsHighlightBudget(code: string): boolean {
+  if (code.length > MAX_HIGHLIGHT_CHARS) return true;
+  // Ignore a single trailing newline terminator so `a\nb\n` counts as 2 lines, matching trimmed code.
+  const limit = code.endsWith("\n") ? code.length - 1 : code.length;
+  let lines = 1;
+  for (
+    let index = code.indexOf("\n");
+    index !== -1 && index < limit;
+    index = code.indexOf("\n", index + 1)
+  ) {
+    lines += 1;
+    if (lines > MAX_HIGHLIGHT_LINES) return true;
+  }
+  return false;
+}
+
+/**
+ * Bounded LRU cache for highlighted HTML outputs, constrained by both entry
+ * count and estimated UTF-16 byte size (`(key.length + html.length) * 2`).
+ */
+export class HighlightHtmlCache {
+  private readonly entries = new Map<string, { readonly html: string; readonly bytes: number }>();
+  private totalBytes = 0;
+
+  constructor(
+    private readonly maxEntries = HIGHLIGHT_HTML_CACHE_MAX_ENTRIES,
+    private readonly maxBytes = HIGHLIGHT_HTML_CACHE_MAX_BYTES,
+  ) {}
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  get bytes(): number {
+    return this.totalBytes;
+  }
+
+  get(key: string): string | undefined {
+    const entry = this.entries.get(key);
+    if (entry === undefined) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.html;
+  }
+
+  set(key: string, html: string): void {
+    const bytes = (key.length + html.length) * 2;
+    if (bytes > this.maxBytes || this.maxEntries <= 0) return;
+    const existing = this.entries.get(key);
+    if (existing !== undefined) {
+      this.totalBytes -= existing.bytes;
+      this.entries.delete(key);
+    }
+    this.entries.set(key, { html, bytes });
+    this.totalBytes += bytes;
+    while (this.entries.size > this.maxEntries || this.totalBytes > this.maxBytes) {
+      const oldest = this.entries.entries().next();
+      /* v8 ignore next -- loop condition guarantees at least one entry exists. */
+      if (oldest.done) break;
+      const [oldestKey, oldestEntry] = oldest.value;
+      this.entries.delete(oldestKey);
+      this.totalBytes -= oldestEntry.bytes;
+    }
+  }
+
+  clear(): void {
+    this.entries.clear();
+    this.totalBytes = 0;
+  }
+}
+
+const htmlCache = new HighlightHtmlCache();
+
+/** Clear the module-wide {@link highlightToHtml} LRU cache (primarily for tests). */
+export function resetHighlightHtmlCache(): void {
+  htmlCache.clear();
+}
+
+/** Report current entry count and estimated byte size of the {@link highlightToHtml} cache. */
+export function getHighlightHtmlCacheStats(): {
+  readonly entries: number;
+  readonly bytes: number;
+} {
+  return { entries: htmlCache.size, bytes: htmlCache.bytes };
+}
+
 /**
  * Highlight `code` into shiki's HTML (a single `<pre class="shiki">` tree)
- * when `lang` maps to a registered grammar; `undefined` means the caller
- * renders its plain fallback. A lazy grammar not yet loaded returns `undefined`
- * for this call and loads in the background; subscribe with
- * {@link onGrammarLoaded} to re-highlight once it registers.
+ * when `lang` maps to a registered grammar and `code` stays within the
+ * highlight budget; `undefined` means the caller renders its plain fallback.
+ * A lazy grammar not yet loaded returns `undefined` for this call and loads
+ * in the background; subscribe with {@link subscribeGrammarLoaded} to
+ * re-highlight once it registers.
  * @param code - the source text.
  * @param lang - the language hint (a markdown fence info string or a fixed caller id).
- * @returns the highlighted HTML, or `undefined` for unknown or not-yet-loaded languages.
+ * @returns the highlighted HTML, or `undefined` for oversized, unknown, or not-yet-loaded languages.
  */
 export function highlightToHtml(code: string, lang: string | undefined): string | undefined {
+  if (exceedsHighlightBudget(code)) return undefined;
   const resolved = grammarForHint(lang);
   if (resolved === undefined) return undefined;
   if (!ensureGrammar(resolved)) return undefined;
-  return highlighter().codeToHtml(code, { lang: resolved, theme: "css-variables" });
+  const cacheKey = `${resolved}\0${code}`;
+  const cached = htmlCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const html = highlighter().codeToHtml(code, { lang: resolved, theme: "css-variables" });
+  htmlCache.set(cacheKey, html);
+  return html;
 }
 
 /**
@@ -521,6 +624,10 @@ export class StreamingHighlightSession {
     this.lastCode = code;
     this.lastLang = lang;
     this.lastResult = undefined;
+    if (exceedsHighlightBudget(code)) {
+      this.reset(undefined);
+      return undefined;
+    }
     const resolved = grammarForHint(lang);
     if (resolved === undefined || !ensureGrammar(resolved)) {
       this.reset(undefined);
@@ -598,6 +705,7 @@ export function highlightLines(
   code: string,
   lang: string | undefined,
 ): HighlightSpan[][] | undefined {
+  if (exceedsHighlightBudget(code)) return undefined;
   const resolved = grammarForHint(lang);
   if (resolved === undefined) return undefined;
   if (!ensureGrammar(resolved)) return undefined;

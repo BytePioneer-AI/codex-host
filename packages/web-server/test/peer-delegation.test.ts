@@ -1228,3 +1228,358 @@ it("runs end-to-end dual-node loopback delegation (host list, start+worktree+ide
     (err: unknown) => (err as { code?: string })?.code === "FORBIDDEN",
   );
 });
+
+it("translates thread:// links across mutually paired A <-> B delegation start/send and resolves them directly on B", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-delegation-mutual-links-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const dataA = join(root, "node-a-data");
+  const dataB = join(root, "node-b-data");
+  const repoA = join(root, "repo-a");
+  const repoB = join(root, "repo-b");
+  mkdirSync(repoA, { recursive: true });
+  mkdirSync(repoB, { recursive: true });
+  const tokenA = "mutual-token-a";
+  const tokenB = "mutual-token-b";
+  const nodeIdA = "node-a-stable";
+  const nodeIdB = "node-b-stable";
+
+  const makeRegistry = (
+    prefix: string,
+    defaultCwd: string,
+    remotePeer: ReturnType<typeof createRemotePeerDelegationClient>,
+  ) => {
+    const threads = new Map<string, { cwd: string; messages: string[] }>();
+    let seq = 1;
+    const registry = new DelegationControlRegistry({
+      remotePeer,
+      remoteWaitPollIntervalsMs: [20, 30],
+    });
+    registry.register(
+      {
+        listHarnesses: async () => ({ harnesses: ["codex"] }),
+        inspect: async (input) => ({
+          harnessId: input.harnessId,
+          inspection: {
+            status: "ready",
+            catalog: { models: [], thinkingOptions: [] },
+            capabilities: {
+              configuration: {
+                selectModel: false,
+                selectThinkingOption: false,
+                selectPermissionMode: false,
+                permissionModeScope: "live",
+              },
+              history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+            },
+          },
+        }),
+        canHandleStart: () => true,
+        ownsThread: (id) => threads.has(id),
+        start: async (input) => {
+          const threadId = `${prefix}-thread-${seq++}`;
+          threads.set(threadId, { cwd: input.cwd ?? defaultCwd, messages: [input.task] });
+          return {
+            delegationId: `del-${threadId}`,
+            threadId,
+            turnId: `turn-${threadId}-1`,
+            harnessId: input.harnessId,
+            deepLink: `codex://threads/${threadId}`,
+            status: "completed",
+            cwd: input.cwd ?? defaultCwd,
+            next: {
+              read: `codexhost thread read ${threadId}`,
+              wait: `codexhost thread wait ${threadId}`,
+            },
+          };
+        },
+        send: async (input) => {
+          const rec = threads.get(input.threadId);
+          assert.ok(rec, `expected ${input.threadId} on ${prefix}`);
+          rec.messages.push(input.message);
+          return {
+            threadId: input.threadId,
+            turnId: `turn-${rec.messages.length}`,
+            harnessId: "codex",
+            status: "running",
+            next: { read: "read", wait: "wait" },
+          };
+        },
+        cancel: async (input) => ({
+          threadId: input.threadId,
+          turnId: "turn-cancel",
+          harnessId: "codex",
+          cancelled: true,
+        }),
+        read: async (input) => {
+          const rec = threads.get(input.threadId);
+          assert.ok(rec, `expected ${input.threadId} on ${prefix}`);
+          return {
+            threadId: input.threadId,
+            harnessId: "codex",
+            cwd: rec.cwd,
+            status: "completed",
+            turn: { turnId: "turn-1", status: "completed" },
+            progress: [],
+            result: { availability: "available", text: rec.messages.join(" || ") },
+          };
+        },
+        wait: async () => {
+          throw new Error("unused");
+        },
+        answer: async () => {
+          throw new Error("unused");
+        },
+        list: async () => ({ threads: [], nextCursor: null }),
+      },
+      { harnessCatalog: true },
+    );
+    return { registry, threads };
+  };
+
+  const envA: NodeJS.ProcessEnv = { ...process.env, CODEXHOST_DATA_DIR: dataA };
+  const envB: NodeJS.ProcessEnv = { ...process.env, CODEXHOST_DATA_DIR: dataB };
+  const nodeAState = makeRegistry("a", repoA, createRemotePeerDelegationClient(envA));
+  const nodeBState = makeRegistry("b", repoB, createRemotePeerDelegationClient(envB));
+
+  // Pre-seed one thread on A and one thread on B.
+  nodeAState.threads.set("thread-on-a", { cwd: repoA, messages: ["seed-from-a"] });
+  nodeBState.threads.set("thread-on-b", { cwd: repoB, messages: ["seed-from-b"] });
+
+  const eventsA = new ClientChannelEvents();
+  const eventsB = new ClientChannelEvents();
+  const channelA = await startClientChannelServer({
+    directory: join(dataA, "client-hosts"),
+    environment: envA,
+    peerDelegation: (params) => nodeAState.registry.handlePeerDelegationChannelRequest(params),
+    target: {
+      clientEvents: eventsA,
+      handleClientRequest: async () => ({ error: { code: -32601, message: "Unsupported" } }),
+      clientSnapshot: async () => {
+        throw new Error("unused");
+      },
+      respondClient: async () => ({ resolved: true }),
+    },
+  });
+  const channelB = await startClientChannelServer({
+    directory: join(dataB, "client-hosts"),
+    environment: envB,
+    peerDelegation: (params) => nodeBState.registry.handlePeerDelegationChannelRequest(params),
+    target: {
+      clientEvents: eventsB,
+      handleClientRequest: async () => ({ error: { code: -32601, message: "Unsupported" } }),
+      clientSnapshot: async () => {
+        throw new Error("unused");
+      },
+      respondClient: async () => ({ resolved: true }),
+    },
+  });
+  const chHostA = await createChHostClient({ directory: join(dataA, "client-hosts") });
+  const chHostB = await createChHostClient({ directory: join(dataB, "client-hosts") });
+
+  const wsA = new Workspaces(new DataDir(join(dataA, "web")), repoA, true);
+  wsA.create(repoA);
+  const rpcWsA = new RpcRegistry();
+  wsA.register(rpcWsA, new StreamRegistry());
+
+  const wsB = new Workspaces(new DataDir(join(dataB, "web")), repoB, true);
+  wsB.create(repoB);
+  const rpcWsB = new RpcRegistry();
+  wsB.register(rpcWsB, new StreamRegistry());
+
+  const managerA = new PeerHostManager(
+    new PeerHostStore(new DataDir(join(dataA, "web"))),
+    async () => [],
+    new EventHub(dataA),
+    { allowLoopback: true, localNodeId: nodeIdA },
+  );
+  const managerB = new PeerHostManager(
+    new PeerHostStore(new DataDir(join(dataB, "web"))),
+    async () => [],
+    new EventHub(dataB),
+    { allowLoopback: true, localNodeId: nodeIdB },
+  );
+
+  const startWebPeer = async (
+    token: string,
+    ws: Workspaces,
+    rpcWs: RpcRegistry,
+    events: ClientChannelEvents,
+    repo: string,
+    chHost: typeof chHostA,
+    manager: PeerHostManager,
+  ) => {
+    const server = createServer((req, res) => {
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res.writeHead(401).end();
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/api/ch/v1/events") {
+        res.writeHead(200);
+        res.write(
+          `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch: events.epoch, sequence: 1 }, reset: true })}\n`,
+        );
+        return;
+      }
+      if (url.pathname === "/api/peer/v1/delegation") {
+        void servePeerDelegation(req, res, { enabled: true, chHost, credential: token });
+        return;
+      }
+      if (url.pathname.startsWith("/api/peer/v1/")) {
+        void peerEndpoint(req.method ?? "GET", url, {}, ws, rpcWs, events.epoch, "0.26.1", [repo], {
+          delegation: true,
+          nodeId: manager.selfNodeId(),
+          peerNodes: manager.peerNodes(),
+        }).then((value) => {
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    return {
+      server,
+      origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    };
+  };
+
+  const webA = await startWebPeer(tokenA, wsA, rpcWsA, eventsA, repoA, chHostA, managerA);
+  const webB = await startWebPeer(tokenB, wsB, rpcWsB, eventsB, repoB, chHostB, managerB);
+
+  const rpcA = new RpcRegistry();
+  const rpcB = new RpcRegistry();
+  managerA.register(rpcA);
+  managerB.register(rpcB);
+
+  // Mutually pair A -> B and B -> A, then re-probe A -> B so A learns B's peerNodes.
+  const addedBOnA = await rpcA.dispatch(
+    REMOTE_PEERS_METHODS.add,
+    { args: { connectionUrl: `${webB.origin}/#token=${tokenB}`, name: "Peer B" } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(addedBOnA.ok, true);
+  const hostIdBOnA = (addedBOnA.value as { peer: { hostId: string } }).peer.hostId;
+
+  const addedAOnB = await rpcB.dispatch(
+    REMOTE_PEERS_METHODS.add,
+    { args: { connectionUrl: `${webA.origin}/#token=${tokenA}`, name: "Peer A" } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(addedAOnB.ok, true);
+  const hostIdAOnB = (addedAOnB.value as { peer: { hostId: string } }).peer.hostId;
+
+  await managerA.client(hostIdBOnA)?.probe();
+
+  const bridgeA = await startPeerDelegationBridge({ peerManager: managerA, dataDirectory: dataA });
+  const bridgeB = await startPeerDelegationBridge({ peerManager: managerB, dataDirectory: dataB });
+  const controlA = await startDelegationControlServer({
+    token: "ctrl-a",
+    api: nodeAState.registry,
+    watchApi: nodeAState.registry,
+  });
+  const controlB = await startDelegationControlServer({
+    token: "ctrl-b",
+    api: nodeBState.registry,
+    watchApi: nodeBState.registry,
+  });
+
+  t.after(async () => {
+    nodeAState.registry.close();
+    nodeBState.registry.close();
+    await controlA.close();
+    await controlB.close();
+    await bridgeA.close();
+    await bridgeB.close();
+    managerA.close();
+    managerB.close();
+    chHostA.close();
+    chHostB.close();
+    await channelA.close();
+    await channelB.close();
+    webA.server.closeAllConnections();
+    webA.server.close();
+    webB.server.closeAllConnections();
+    webB.server.close();
+  });
+
+  const cliEnvA: NodeJS.ProcessEnv = {
+    ...envA,
+    CODEXHOST_RUNTIME_ENDPOINT: controlA.endpoint,
+    CODEXHOST_RUNTIME_TOKEN: "ctrl-a",
+    CODEXHOST_THREAD_ID: "a-caller",
+  };
+  const cliEnvB: NodeJS.ProcessEnv = {
+    ...envB,
+    CODEXHOST_RUNTIME_ENDPOINT: controlB.endpoint,
+    CODEXHOST_RUNTIME_TOKEN: "ctrl-b",
+    CODEXHOST_THREAD_ID: "b-local-caller",
+  };
+
+  // host list exposes peer nodeId without leaking secrets.
+  const hostListA = await runCliJson(["host", "list"], cliEnvA);
+  assert.equal(hostListA.code, 0, hostListA.stderr);
+  const parsedHostsA = JSON.parse(hostListA.stdout) as PeerDelegationHostsResult;
+  assert.equal(parsedHostsA.hosts[0]?.nodeId, nodeIdB);
+
+  // Delegate start from A -> B carrying both A-local and B-remote links.
+  const linkAFromA = "thread://thread-on-a?hostId=local";
+  const linkBFromA = `thread://thread-on-b?hostId=${encodeURIComponent(hostIdBOnA)}`;
+  const expectedAOnB = `thread://thread-on-a?hostId=${encodeURIComponent(hostIdAOnB)}`;
+  const expectedBOnB = "thread://thread-on-b?hostId=local";
+
+  const started = await runCliJson(
+    [
+      "delegate",
+      "start",
+      "--host",
+      hostIdBOnA,
+      "--harness",
+      "codex",
+      "--cwd",
+      repoB,
+      "--task",
+      `Inspect [@A](${linkAFromA}) and ${linkBFromA}`,
+    ],
+    cliEnvA,
+  );
+  assert.equal(started.code, 0, started.stderr);
+  const startedThreadId = (JSON.parse(started.stdout) as { threadId: string }).threadId;
+  assert.equal(
+    nodeBState.threads.get(startedThreadId)?.messages[0],
+    `Inspect [@A](${expectedAOnB}) and ${expectedBOnB}`,
+  );
+
+  // Delegate send from A -> B also translates both links.
+  const targetBLink = `thread://${startedThreadId}?hostId=${encodeURIComponent(hostIdBOnA)}`;
+  const sent = await runCliJson(
+    ["thread", "send", targetBLink, "--message", `Follow-up ${linkAFromA} and ${linkBFromA}`],
+    cliEnvA,
+  );
+  assert.equal(sent.code, 0, sent.stderr);
+  assert.equal(
+    nodeBState.threads.get(startedThreadId)?.messages[1],
+    `Follow-up ${expectedAOnB} and ${expectedBOnB}`,
+  );
+
+  // Using the exact translated links on B succeeds directly via B's delegation CLI!
+  const readBLocal = await runCliJson(["thread", "read", expectedBOnB], cliEnvB);
+  assert.equal(readBLocal.code, 0, readBLocal.stderr);
+  assert.equal(JSON.parse(readBLocal.stdout).result.text, "seed-from-b");
+
+  const readAFromB = await runCliJson(["thread", "read", expectedAOnB], cliEnvB);
+  assert.equal(readAFromB.code, 0, readAFromB.stderr);
+  assert.equal(JSON.parse(readAFromB.stdout).result.text, "seed-from-a");
+
+  const sendAFromB = await runCliJson(
+    ["thread", "send", expectedAOnB, "--message", "hello back from B"],
+    cliEnvB,
+  );
+  assert.equal(sendAFromB.code, 0, sendAFromB.stderr);
+  assert.deepEqual(nodeAState.threads.get("thread-on-a")?.messages, [
+    "seed-from-a",
+    "hello back from B",
+  ]);
+});

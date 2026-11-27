@@ -166,8 +166,14 @@ export type {
 export { CodeBlock } from "./markdown/CodeBlock.tsx";
 export type { CodeBlockProps } from "./markdown/CodeBlock.tsx";
 export { JsonBlock } from "./markdown/JsonBlock.tsx";
-export { MarkdownDelegateProvider, useMarkdownDelegate } from "./markdown/MarkdownDelegate.tsx";
+export {
+  CodeBlockFoldMemoryProvider,
+  MarkdownDelegateProvider,
+  useCodeBlockFoldMemory,
+  useMarkdownDelegate,
+} from "./markdown/MarkdownDelegate.tsx";
 export type {
+  CodeBlockFoldMemory,
   MarkdownDelegate,
   MarkdownDelegateProviderProps,
   MarkdownExternalLinkHandler,

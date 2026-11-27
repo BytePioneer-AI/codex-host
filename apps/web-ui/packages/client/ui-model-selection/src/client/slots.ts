@@ -44,4 +44,6 @@ export interface ModelSelectInjected {
   };
   /** Cross-Harness context handoff launcher for bound local sessions. */
   handoff?: HarnessHandoffControl;
+  /** Open the Connections settings page (optionally focusing a specific Harness row). */
+  openConnections?: (focusAgentId?: string) => void;
 }

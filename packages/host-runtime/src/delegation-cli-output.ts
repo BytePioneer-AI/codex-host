@@ -89,6 +89,9 @@ function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown
     ]),
     ...(catalog.defaultModel ? { defaultModel: formatDelegationModel(catalog.defaultModel) } : {}),
     thinkingOptions: catalog.thinkingOptions,
+    ...(catalog.thinkingOptionsScope === "activeModel"
+      ? { thinkingOptionsScope: catalog.thinkingOptionsScope }
+      : {}),
     ...(catalog.defaultThinkingOptionId
       ? { defaultThinkingOptionId: catalog.defaultThinkingOptionId }
       : {}),

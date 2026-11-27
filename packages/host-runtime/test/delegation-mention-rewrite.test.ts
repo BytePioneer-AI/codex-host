@@ -61,4 +61,43 @@ describe("delegation mention rewrite", () => {
     expect(text).not.toContain("`codexhost delegate");
     expect(rewriteDelegationMentionText("plain")).toBe("plain");
   });
+
+  it("rewrites remote host+Harness, host-only, and mixed local/remote mentions distinctly", () => {
+    const remoteSpecific =
+      "[@Mac Studio · Claude Code](subagent://codexhost-remote/remote-peer%3Apeer-studio/claude-code)";
+    const remoteHostOnly = "[@Home Mini](subagent://codexhost-remote/remote-peer%3Apeer-home)";
+
+    const specificRewritten = rewriteDelegationMentionInput(
+      [{ type: "text", text: `${remoteSpecific} run tests` }],
+      skill,
+    );
+    const specificBody = (specificRewritten?.[0] as { text: string }).text;
+    expect(specificBody).toContain("@Mac Studio · Claude Code run tests");
+    expect(specificBody).toContain("remote Host `remote-peer:peer-studio`, Harness `claude-code`");
+    expect(specificBody).toContain(
+      "delegate start --host <hostId> --harness <id> --cwd <remote-path>",
+    );
+    expect(specificBody).toContain("project list --host <hostId>");
+    expect(specificBody).not.toContain("harness list --host <hostId>");
+    expect(specificBody).not.toContain("subagent://");
+
+    const hostOnlyBody = rewriteDelegationMentionText(`${remoteHostOnly} check disk space`);
+    expect(hostOnlyBody).toContain("@Home Mini check disk space");
+    expect(hostOnlyBody).toContain("remote Host `remote-peer:peer-home`, Harness unspecified");
+    expect(hostOnlyBody).toContain("harness list --host <hostId>");
+    expect(hostOnlyBody).toContain(
+      "delegate start --host <hostId> --harness <id> --cwd <remote-path>",
+    );
+
+    const mixedRewritten = rewriteDelegationMentionInput(
+      [{ type: "text", text: `${link} and ${remoteSpecific}` }],
+      skill,
+    );
+    const mixedBody = (mixedRewritten?.[0] as { text: string }).text;
+    expect(mixedBody).toContain("@Claude Code (Harness `claude-code`)");
+    expect(mixedBody).toContain(
+      "@Mac Studio · Claude Code (remote Host `remote-peer:peer-studio`, Harness `claude-code`)",
+    );
+    expect(mixedBody).toContain("For local targets, run `delegate start --harness <id>`.");
+  });
 });

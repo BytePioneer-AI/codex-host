@@ -41,6 +41,7 @@ import { DraftEditor } from "../input/editor/DraftEditor.tsx";
 import { registerComposerKeymap } from "../input/editor/keymap.ts";
 import {
   blurActiveAnnotationEditor,
+  blurDraftEditor,
   focusDraftEditor,
   installDraftFilePicker,
   installDraftKeymap,
@@ -538,10 +539,9 @@ export const InputBar = memo(function InputBar({
     return installDraftKeymap(editor, keyboard, gate);
   }, [editor, keyboard, pendingCreation, pendingDraft]);
 
-  // Button presses steal focus from the editor; suppress at mousedown so
-  // typing continues seamlessly. Lexical's focus() carries preventScroll and
-  // restores the previous selection, so no reveal is needed: the caret has
-  // not moved, and the next keystroke gets the browser's native one.
+  // Keep focus in the draft on desktop toolbar presses so typing continues
+  // seamlessly. On touch devices keepDraftFocus is a no-op so toolbar taps
+  // neither hold residual focus nor raise the on-screen keyboard.
   const keepFocus = (e: MouseEvent<HTMLButtonElement>): void => {
     keepDraftFocus(e, editor);
   };
@@ -599,9 +599,16 @@ export const InputBar = memo(function InputBar({
         plainMessageDraft
       ? t(primarySubmitMode === "steer" ? "input.send.steer" : "input.send.queue")
       : t("input.send");
+  const dismissTouchDraftFocus = (): void => {
+    if (!shouldAutoFocusTextInput()) blurDraftEditor(editor);
+  };
+  const onStop = (): void => {
+    dismissTouchDraftFocus();
+    stop?.();
+  };
   const onPrimary = (): void => {
     if (primaryStops) {
-      stop?.();
+      onStop();
       return;
     }
     if (uploadsFailed) {
@@ -609,11 +616,17 @@ export const InputBar = memo(function InputBar({
       return;
     }
     if (primaryAction !== undefined) {
-      if (!primaryDisabled) primaryAction.run();
+      if (!primaryDisabled) {
+        dismissTouchDraftFocus();
+        primaryAction.run();
+      }
       return;
     }
     if (keyboard === undefined) return; // absent machine: the button is disabled
-    if (!empty && !disabled && !machineBusy) keyboard.submit(primarySubmitMode, "click");
+    if (!empty && !disabled && !machineBusy) {
+      dismissTouchDraftFocus();
+      keyboard.submit(primarySubmitMode, "click");
+    }
   };
 
   // Claim ghost hint: rendered by CSS as generated content after the last
@@ -915,7 +928,7 @@ export const InputBar = memo(function InputBar({
                         aria-label={t("input.stop")}
                         disabled={stop === undefined}
                         onMouseDown={keepFocus}
-                        onClick={stop}
+                        onClick={onStop}
                       >
                         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
                           <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { harnessOutputSchema } from "../src/validation.js";
+import { harnessErrorSchema, harnessOutputSchema } from "../src/validation.js";
 
 describe("background output validation", () => {
   const item = { type: "agentMessage", itemId: "item-1", text: "hello" };
@@ -136,4 +136,30 @@ it("validates request timing independently of billable usage", () => {
   ]) {
     expect(accepts(fields), JSON.stringify(fields)).toBe(false);
   }
+});
+
+it("validates rate-limit and quota-exhausted HarnessError payloads", () => {
+  expect(
+    harnessErrorSchema.safeParse({
+      code: "rateLimited",
+      message: "Claude Code rate limit reached",
+      retryable: true,
+    }).success,
+  ).toBe(true);
+  expect(
+    harnessErrorSchema.safeParse({
+      code: "quotaExhausted",
+      message: "Claude Code usage limit reached",
+      retryable: true,
+      resetsAt: "2026-08-26T16:10:00.000Z",
+    }).success,
+  ).toBe(true);
+  expect(
+    harnessErrorSchema.safeParse({
+      code: "quotaExhausted",
+      message: "bad timestamp",
+      retryable: true,
+      resetsAt: "not-a-timestamp",
+    }).success,
+  ).toBe(false);
 });

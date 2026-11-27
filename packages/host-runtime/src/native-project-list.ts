@@ -8,6 +8,7 @@ const pageSchema = z.object({
     z.object({
       id: z.string().min(1),
       name: z.string(),
+      createdAt: z.number().int().optional(),
       roots: z.array(z.object({ path: z.string().min(1) })),
     }),
   ),
@@ -32,6 +33,7 @@ export async function listNativeProjects(
       projects.push({
         id: project.id,
         name: project.name,
+        ...(project.createdAt !== undefined ? { createdAt: project.createdAt } : {}),
         rootPaths: project.roots.map((r) => r.path),
       });
     cursor = page.nextCursor;

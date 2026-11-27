@@ -202,6 +202,15 @@ Tauri 기반 경량 CodexHost 네이티브 앱으로 공식 Codex Desktop 없이
 </tr>
 </table>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-ch-desktop-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-ch-desktop-en-light.png" />
+    <img src="../imgs/readme-ch-desktop-en-light.png" alt="경량 CodexHost 독립 데스크톱 앱 실제 화면: 공식 Codex 클라이언트와 동일한 로컬 Host를 공유해 세션과 위임 트리를 실시간 동기화" width="100%" />
+  </picture>
+  <sub>경량 CodexHost 독립 클라이언트 — 상단의 공식 Codex 클라이언트와 동일한 로컬 Host를 공유해 완전히 같은 세션, 위임 트리, 진행 상태를 실시간 동기화합니다.</sub>
+</p>
+
 ```mermaid
 flowchart TB
   subgraph Clients["멀티 클라이언트 · 실시간 세션 동기화"]

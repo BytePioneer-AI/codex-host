@@ -204,6 +204,15 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
 </tr>
 </table>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-ch-desktop-zh-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-ch-desktop-zh-light.png" />
+    <img src="../imgs/readme-ch-desktop-zh-light.png" alt="轻量 CodexHost 独立桌面端实景：与官方 Codex 客户端共用同一本地 Host，实时同步完全一致的会话、委派树与 # 多 Agent 委派" width="100%" />
+  </picture>
+  <sub>轻量 CodexHost 独立客户端（与上方官方 Codex 客户端共用同一本地 Host，实时同步完全一致的会话、委派树与进行中状态）</sub>
+</p>
+
 ```mermaid
 flowchart TB
   subgraph Clients["多端入口 · 会话实时同步"]

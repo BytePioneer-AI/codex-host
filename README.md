@@ -204,6 +204,15 @@ Full responsive Web UI paired with the native Android APK and iOS PWA to inspect
 </tr>
 </table>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-ch-desktop-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-ch-desktop-en-light.png" />
+    <img src="docs/imgs/readme-ch-desktop-en-light.png" alt="Lightweight CodexHost standalone desktop app sharing the same local Host with official Codex Desktop, syncing the exact same sessions, delegation trees, and inline # agent chips" width="100%" />
+  </picture>
+  <sub>Lightweight CodexHost standalone desktop app — shares one local Host with the Codex Desktop view above, syncing the exact same sessions, delegation trees, and live status in real time.</sub>
+</p>
+
 ```mermaid
 flowchart TB
   subgraph Clients["Clients · Real-Time Session Sync"]

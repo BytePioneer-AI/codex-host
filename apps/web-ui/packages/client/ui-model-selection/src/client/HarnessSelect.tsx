@@ -138,8 +138,18 @@ export function HarnessSelect({
     if (boundHandoffEnabled) {
       footer.push({
         type: "label",
-        id: handoffStatus === "pending" ? "bound-pending" : "bound-handoff",
-        text: handoffStatus === "pending" ? t("harness.handoffWaitTurn") : t("harness.handoffHint"),
+        id:
+          handoffStatus === "ready"
+            ? "bound-handoff"
+            : handoffStatus === "pending"
+              ? "bound-pending"
+              : "bound-unavailable",
+        text:
+          handoffStatus === "ready"
+            ? t("harness.handoffHint")
+            : handoffStatus === "pending"
+              ? t("harness.handoffWaitTurn")
+              : t("harness.handoffNoContext"),
       });
     } else if (iconHost?.isRemoteSession === true) {
       footer.push({ type: "label", id: "bound-remote", text: t("harness.boundRemote") });

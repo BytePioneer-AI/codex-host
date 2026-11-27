@@ -373,6 +373,12 @@ fn native_subcommand_help_succeeds_without_starting_services() {
                 stdout.starts_with(&format!("usage: {synopsis}")),
                 "{stdout}"
             );
+            if arguments == ["launch-prefs"] {
+                assert!(
+                    stdout.contains("[--remember-default true|false]"),
+                    "{stdout}"
+                );
+            }
             assert!(!wrote_data, "{arguments:?} {flag} wrote startup data");
         }
     }

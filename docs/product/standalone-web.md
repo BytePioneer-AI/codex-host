@@ -56,7 +56,7 @@ iOS/iPadOS 主屏幕模式通过 `display-mode: standalone` 与 `-webkit-touch-c
 
 macOS 与 Windows 使用相同的选择页与路由合同。未记忆且桌面壳可用时，普通启动显示选择页；用户不勾选“记住此选择，下次直接打开”时仅打开本次所选客户端，勾选后普通启动直接进入保存的单一入口。未安装官方 Codex Desktop 且壳可用时，未记忆启动仍显示选择页；已记忆官方入口但客户端已卸载且桌面壳可用时也返回选择页。无桌面壳时，未记忆入口按官方安装情况进入官方 Desktop，或在未安装官方时自动记忆原生入口并回落本机 Web；已记忆原生入口继续按原生/Web 回退，已记忆官方入口但客户端已卸载时仅回落 Web，不改写保存的记忆状态。默认入口不提供同时启动多个客户端的模式，用户仍可分别打开自有窗口与官方 Desktop，两者共用同一 Host。
 
-选择页和系统托盘都可以修改记忆状态；托盘提供自有桌面窗口、官方 Codex Desktop 与每次询问三项，并显示当前有效状态。显式 `codexhost app --onboarding` 始终打开选择页，`codexhost app`、托盘“打开 CodexHost 窗口”及 macOS Reopen 始终打开自有窗口，不被官方默认入口改写。已记忆自有窗口且现有壳停留在选择页时，普通重开会使该壳进入主窗口并恢复可见。
+选择页和系统托盘都可以修改记忆状态；托盘提供自有桌面窗口、官方 Codex Desktop 与每次询问三项，并显示当前有效状态。显式 `codexhost app --onboarding` 始终打开选择页；`codexhost app`、托盘菜单“打开 CodexHost 窗口”与普通原生默认启动的 `Activation::Show` 可从选择页进入主窗口，不被官方默认入口改写。macOS Dock Reopen 与托盘图标左键仅被动恢复窗口：选择页保持原页面和复选框状态，不启动 Web 或重载；Loading/Web 仅恢复可见，Dormant 可进入主窗口。
 
 ## 桌面壳缩放
 

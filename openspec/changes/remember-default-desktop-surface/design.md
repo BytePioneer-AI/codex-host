@@ -36,9 +36,9 @@
 ### 3. 双端桌面壳交互
 
 - `chooseSurface(surface, rememberDefault)` 通过同一 Tauri IPC 调用 `launch-prefs set`，成功保存后立即打开所选客户端；托盘在写入后同步，即使随后启动客户端失败也不回滚已确认的配置。
-- `getState()` 向选择页返回 `rememberDefault`，首次及旧配置为 `false`，显式重开选择页时反映当前已保存偏好。
-- 托盘提供“CodexHost 窗口”“官方 Codex Desktop”“每次询问”三个选项，以勾选文本表示有效状态；官方默认项在未安装时禁用。异步同步采用单调代次，晚到旧结果不得覆盖新选择；后台同步失败不弹阻塞对话框。
-- `codexhost app`、`codexhost app --onboarding`、托盘“打开 CodexHost 窗口”均为显式原生窗口行为，不读取默认入口改写目标。普通原生默认重开沿用现有 `Activation::Show`，从选择页进入主窗口；官方默认由 Launcher 直接启动，不额外启动或隐藏原生壳。
+- `getState()` 向选择页返回当前是否存在有效记忆入口，首次、旧配置、官方入口已记忆但未安装时均为 `false`，不通过读取状态改写偏好。
+- 托盘提供“CodexHost 窗口”“官方 Codex Desktop”“每次询问”三个选项，以勾选文本表示有效状态；官方默认项在未安装时禁用。异步同步采用单调代次，晚到旧结果不得覆盖新选择；首次失败最多首试加 250ms、1000ms 两次退避，成功后停止重试。窗口和激活入口以 O(1) 单飞检查按需补同步，未读到偏好前保持灰置，不引入轮询。
+- `codexhost app`、`codexhost app --onboarding`、托盘菜单“打开 CodexHost 窗口”及 `Activation::Show` 均为显式行为，可从 Onboarding 或 Dormant 进入主窗口。macOS Dock Reopen 与托盘图标左键属于被动恢复：Onboarding 仅恢复同一页面可见，不启动 Web、不导航或重载；Dormant 可进入主窗口；Loading/Web 仅恢复可见。官方默认由 Launcher 直接启动，不额外启动或隐藏原生壳。
 - 不照搬历史 Windows 专用 `open_existing_main`，也不引入 `both`、双客户端同时启动或第二套本地配置。
 
 ## Risks / Trade-offs

@@ -7,7 +7,7 @@
 
 ## 2. 桌面壳桥接与托盘
 
-- [x] 2.1 选择页 IPC 传递记忆值，`getState` 返回已保存状态；双端托盘提供三个选项、选中状态与过期异步读取丢弃。Windows 真实 Tauri 隔离验证已覆盖复选框、托盘三态和 Onboarding 左键进入 loading；Cargo 测试编译成功，但测试 EXE 仍以 `STATUS_ENTRYPOINT_NOT_FOUND` 退出且未进入断言，macOS 也未验证，这些环境限制保留记录。
+- [x] 2.1 选择页 IPC 传递记忆值，`getState` 返回已保存状态；双端托盘提供三个选项、选中状态与过期异步读取丢弃。Windows 真实 Tauri 隔离验证已覆盖复选框、托盘三态、Onboarding 左键仅恢复引导页并保留复选框，以及显式 `Activation::Show` 进入 loading；Cargo 测试编译成功，但测试 EXE 仍以 `STATUS_ENTRYPOINT_NOT_FOUND` 退出且未进入断言，macOS 也未验证，这些环境限制保留记录。
 - [x] 2.2 保持显式原生入口语义，普通原生默认重开可离开选择页，不引入 Windows 专用路由或 `both`。
 
 ## 3. 选择页与文档

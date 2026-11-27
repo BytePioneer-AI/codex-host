@@ -76,6 +76,27 @@ impl Page {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowOpenMode {
+    Passive,
+    Explicit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowOpenPlan {
+    Reveal,
+    BeginWeb,
+}
+
+fn plan_window_open(page: &Page, mode: WindowOpenMode) -> WindowOpenPlan {
+    match (mode, page) {
+        (_, Page::Dormant) | (WindowOpenMode::Explicit, Page::Onboarding) => {
+            WindowOpenPlan::BeginWeb
+        }
+        _ => WindowOpenPlan::Reveal,
+    }
+}
+
 struct View {
     page: Page,
     last_login: Option<Url>,
@@ -322,13 +343,14 @@ pub(crate) fn set_visible(app: &AppHandle, visible: bool) {
     }
 }
 
-pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
+fn open_window(app: &AppHandle, mode: WindowOpenMode, route: Option<&str>) {
+    tray::ensure_synced(app);
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
         return;
     }
     let mut view = shell.view.lock().unwrap();
-    let begin = matches!(view.page, Page::Dormant | Page::Onboarding);
+    let plan = plan_window_open(&view.page, mode);
     let mut target = None;
     if let Some(route) = route {
         if matches!(view.page, Page::Web) {
@@ -343,7 +365,7 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
         }
     }
     drop(view);
-    if begin {
+    if plan == WindowOpenPlan::BeginWeb {
         begin_web(app, true);
     } else if let Some(url) = target {
         navigate(app, url);
@@ -351,7 +373,16 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
     set_visible(app, true);
 }
 
+pub(crate) fn reopen_window(app: &AppHandle) {
+    open_window(app, WindowOpenMode::Passive, None);
+}
+
+pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
+    open_window(app, WindowOpenMode::Explicit, route);
+}
+
 pub(crate) fn show_onboarding(app: &AppHandle) {
+    tray::ensure_synced(app);
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
         return;
@@ -383,7 +414,12 @@ async fn get_state(shell: State<'_, Shell>) -> Result<PageState, String> {
         let (installed, remember) =
             launcher_action(shell.launcher.clone(), Launcher::launch_preferences)
                 .await
-                .map(|prefs| (prefs.codex_desktop_installed, prefs.remember_default))
+                .map(|prefs| {
+                    (
+                        prefs.codex_desktop_installed,
+                        prefs.remembered_surface().is_some(),
+                    )
+                })
                 .unwrap_or_default();
         let data_dir = shell.launcher.data_dir.clone();
         let web =
@@ -1069,7 +1105,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => show_main(app, None),
+        RunEvent::Reopen { .. } => reopen_window(app),
         _ => (),
     });
     Ok(())
@@ -1080,7 +1116,10 @@ mod tests {
     use tauri::webview::{PermissionKind, PermissionResponse};
     use url::Url;
 
-    use super::{Page, Status, authorize_web_command, permission_response};
+    use super::{
+        Page, Status, WindowOpenMode, WindowOpenPlan, authorize_web_command, permission_response,
+        plan_window_open,
+    };
 
     #[test]
     fn onboarding_and_dormant_ignore_background_web_events() {
@@ -1090,6 +1129,32 @@ mod tests {
         assert!(Page::Loading(Status::Reconnecting, None).accepts_web_events());
         assert!(Page::Loading(Status::Error, Some("err".into())).accepts_web_events());
         assert!(Page::Web.accepts_web_events());
+    }
+
+    #[test]
+    fn window_open_plans_cover_passive_and_explicit_page_states() {
+        let pages = [
+            Page::Onboarding,
+            Page::Dormant,
+            Page::Loading(Status::Starting, None),
+            Page::Loading(Status::Reconnecting, None),
+            Page::Loading(Status::Error, Some("err".into())),
+            Page::Web,
+        ];
+        for page in pages {
+            let passive = if matches!(page, Page::Dormant) {
+                WindowOpenPlan::BeginWeb
+            } else {
+                WindowOpenPlan::Reveal
+            };
+            let explicit = if matches!(page, Page::Dormant | Page::Onboarding) {
+                WindowOpenPlan::BeginWeb
+            } else {
+                WindowOpenPlan::Reveal
+            };
+            assert_eq!(plan_window_open(&page, WindowOpenMode::Passive), passive);
+            assert_eq!(plan_window_open(&page, WindowOpenMode::Explicit), explicit);
+        }
     }
 
     #[test]

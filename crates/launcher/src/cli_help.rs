@@ -39,7 +39,7 @@ pub(crate) fn subcommand_usage(arguments: &[String]) -> Option<&'static str> {
         "launch-prefs" => (
             "codexhost launch-prefs get --json\n  \
              codexhost launch-prefs set --surface <native-shell|codex-desktop>\n    \
-             [--onboarding-completed true|false]",
+             [--onboarding-completed true|false] [--remember-default true|false]",
             None,
         ),
         "desktop-screenshot" => ("codexhost desktop-screenshot", None),

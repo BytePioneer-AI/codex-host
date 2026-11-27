@@ -43,6 +43,7 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
+import { registerVideoPreview } from "./VideoPreview.tsx";
 import { DocumentDownload, DocumentDownloadAction } from "./DocumentDownload.tsx";
 import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
@@ -152,6 +153,7 @@ const HOST_SETTINGS_PAGES = [
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
+  registerVideoPreview(ctx);
   ctx.slots.inject("sidebar.right.tab.document.actions", () =>
     ctx.slots.register(
       {

@@ -118,9 +118,7 @@ pub fn configure_detached_service_command(
     use windows::Win32::System::Console::{
         GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
-    use windows::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
-    };
+    use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
     // Null child stdio alone is insufficient: CreateProcess can also inherit the
     // caller's original stdio handles, keeping Node execFile capture pipes open
     // for the entire service lifetime. This native launch caller relinquishes
@@ -135,7 +133,10 @@ pub fn configure_detached_service_command(
         }
     }
     command.creation_flags(
-        (process_creation_flags_for_detached_service() | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS).0,
+        (process_creation_flags_for_detached_service()
+            | CREATE_NEW_PROCESS_GROUP
+            | DETACHED_PROCESS)
+            .0,
     );
     Ok(())
 }
@@ -152,15 +153,16 @@ pub fn configure_detached_service_command(
 /// in the caller's job instead of failing to start.
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
-fn process_creation_flags_for_detached_service() -> windows::Win32::System::Threading::PROCESS_CREATION_FLAGS {
+fn process_creation_flags_for_detached_service()
+-> windows::Win32::System::Threading::PROCESS_CREATION_FLAGS {
     use std::mem::size_of;
 
     use windows::Win32::System::JobObjects::{
-        IsProcessInJob, QueryInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JobObjectExtendedLimitInformation,
+        IsProcessInJob, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject,
     };
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, CREATE_BREAKAWAY_FROM_JOB, PROCESS_CREATION_FLAGS,
+        CREATE_BREAKAWAY_FROM_JOB, GetCurrentProcess, PROCESS_CREATION_FLAGS,
     };
 
     unsafe {

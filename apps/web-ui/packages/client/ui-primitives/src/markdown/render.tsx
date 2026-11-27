@@ -24,6 +24,7 @@ import type * as Md from "mdast";
 import type {} from "mdast-util-math";
 import { normalizeUri } from "micromark-util-sanitize-uri";
 import type { CodeToolbarLabels } from "../CodeToolbar.tsx";
+import type { CodexFileCitationNode } from "./annotation-directives.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
 import { parseFileLink } from "./file-link.ts";
 import { linkContextMenuProps } from "./link-context-menu.ts";
@@ -207,6 +208,11 @@ export interface MarkdownRenderContext {
    * code into the annotation's inline label; absent leaves the token as code.
    */
   readonly responseAnnotations?: MarkdownResponseAnnotations | undefined;
+  /**
+   * Harness file citations: turns `:codex-file-citation{path="..."}` into an
+   * opener for the cited path; absent leaves the marker as its raw text.
+   */
+  readonly fileCitations?: MarkdownFileMentions | undefined;
   /** Local-path image vocabulary; absent wherever no rewriting owner exists. */
   readonly pathImages: MarkdownPathImages | undefined;
   /** Inside an anchor's children: interactive mentions must not nest there. */
@@ -475,6 +481,31 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
           />
         </span>
       );
+    }
+    case "codexFileCitation": {
+      // Desktop opens a cited file through the owner's vocabulary, exactly like
+      // an inline-code file mention; inside an anchor the marker stays text.
+      const citation =
+        context.inLink === true ? undefined : context.fileCitations?.resolve(node.path);
+      if (citation !== undefined) {
+        return (
+          <code key={key}>
+            <button
+              type="button"
+              className={css.fileMention}
+              title={citation.title}
+              aria-label={citation.label}
+              onClick={citation.open}
+            >
+              <LinkIconMedium kind={classifyLinkPath(node.path)} className={css.linkIcon} />
+              {node.path}
+            </button>
+          </code>
+        );
+      }
+      // Without an opener vocabulary the marker keeps its raw spelling, so no
+      // citation information is lost (matching the file-mention fallback).
+      return <Fragment key={key}>{fileCitationMarker(node)}</Fragment>;
     }
     case "html":
       // No HTML parser enters the pipeline: raw HTML stays literal text.
@@ -810,6 +841,16 @@ function MarkdownFileLink({
  * The complete inline-code value when it is exactly an absolute HTTP(S) URL
  * (no surrounding whitespace); anything else stays inert code.
  */
+/** Rebuild the raw marker of an unresolvable file citation, preserving the data. */
+function fileCitationMarker(node: CodexFileCitationNode): string {
+  const path = node.path.replaceAll('"', '\\"');
+  const attributes =
+    node.purpose === undefined
+      ? `path="${path}"`
+      : `path="${path}" purpose="${node.purpose.replaceAll('"', '\\"')}"`;
+  return `:codex-file-citation{${attributes}}`;
+}
+
 function inlineCodeHttpUrl(value: string): string | undefined {
   if (value.trim() !== value) return undefined;
   try {

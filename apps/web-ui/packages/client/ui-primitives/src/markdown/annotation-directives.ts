@@ -8,6 +8,7 @@ import { codes } from "micromark-util-symbol";
 declare module "micromark-util-types" {
   interface TokenTypeMap {
     codexAnnotation: "codexAnnotation";
+    codexFileCitation: "codexFileCitation";
   }
 }
 
@@ -19,24 +20,49 @@ export interface CodexAnnotationNode {
   position?: Text["position"];
 }
 
+/**
+ * Harness file citation, in the shape the renderer consumes: Codex replies
+ * cite files they read or produced as `:codex-file-citation{path="..."}`,
+ * and the renderer opens the cited path through the owner's file vocabulary.
+ */
+export interface CodexFileCitationNode {
+  type: "codexFileCitation";
+  /** Cited file path exactly as the attribute carried it (decoded once). */
+  path: string;
+  /** Optional citation purpose (`source`, `workspace`, …); absent when unattributed. */
+  purpose?: string | undefined;
+  position?: Text["position"];
+}
+
 declare module "mdast" {
   interface PhrasingContentMap {
     codexAnnotation: CodexAnnotationNode;
+    codexFileCitation: CodexFileCitationNode;
   }
   interface RootContentMap {
     codexAnnotation: CodexAnnotationNode;
+    codexFileCitation: CodexFileCitationNode;
   }
 }
 
-const DIRECTIVE = ":codex-annotation";
+const ANNOTATION_DIRECTIVE = ":codex-annotation";
+const FILE_CITATION_DIRECTIVE = ":codex-file-citation";
 const SPACE = /[ \t\v\f\ufeff]/;
 const NUMBER =
   /^-?(?:0[xX][\da-fA-F](?:_?[\da-fA-F])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|(?:\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:[eE][+-]?\d(?:_?\d)*)?)n?/;
 
-type DirectiveToken = Token & { index: string };
+type DirectiveToken = Token & {
+  kind: "annotation" | "file-citation";
+  index: string;
+  path: string;
+  purpose: string | undefined;
+};
 interface Directive {
   end: number;
+  kind: "annotation" | "file-citation";
   index: string;
+  path: string;
+  purpose: string | undefined;
 }
 
 /** Decode references without treating ordinary backslashes as Markdown escapes. */
@@ -49,11 +75,15 @@ function attributeText(value: string): string {
  * `=` returns to names; inside quotes it is data. Numeric bare values are
  * stringified by its lexer before the renderer checks the canonical index.
  */
-function readAttributes(raw: string): string | undefined {
+function readAttributes(
+  raw: string,
+): { index: string; path: string; purpose: string | undefined } | undefined {
   const namePattern = /[^\s\x00"'>/=\x00-\x1f\x7f-\x9f]+/y;
   const barePattern = /[^"\s'`=<>\x00]+/y;
   let at = 0;
   let index = "";
+  let path = "";
+  let purpose: string | undefined;
   while (at < raw.length) {
     if (SPACE.test(raw[at]!)) {
       at++;
@@ -64,6 +94,8 @@ function readAttributes(raw: string): string | undefined {
     if (name === undefined) return undefined;
     at += name.length;
     if (name === "index") index = "";
+    if (name === "path") path = "";
+    if (name === "purpose") purpose = "";
     while (at < raw.length && SPACE.test(raw[at]!)) at++;
     if (raw[at] !== "=") continue;
     at++;
@@ -98,8 +130,10 @@ function readAttributes(raw: string): string | undefined {
       }
     }
     if (name === "index") index = value;
+    if (name === "path") path = value;
+    if (name === "purpose") purpose = value;
   }
-  return index;
+  return { index, path, purpose };
 }
 
 /** Consume contiguous label/attribute fragments before reading the final index. */
@@ -108,15 +142,22 @@ function readDirective(
   start: number,
   lastClosingBrace: number,
 ): Directive | undefined {
-  if (!source.startsWith(DIRECTIVE, start)) return undefined;
-  const nameEnd = start + DIRECTIVE.length;
+  // Longest match first: the file-citation name extends the annotation name's
+  // `codex-` prefix, so the annotation name alone would swallow it.
+  const matchedName =
+    source.startsWith(FILE_CITATION_DIRECTIVE, start) &&
+    !/[\w-]/.test(source[start + FILE_CITATION_DIRECTIVE.length] ?? "")
+      ? FILE_CITATION_DIRECTIVE
+      : ANNOTATION_DIRECTIVE;
+  if (!source.startsWith(matchedName, start)) return undefined;
+  const nameEnd = start + matchedName.length;
   if (/[\w-]/.test(source[nameEnd] ?? "")) return undefined;
 
   let end = nameEnd;
   let attributesStart = -1;
   let attributesEnd = -1;
   let initialLabels = 0;
-  let name = DIRECTIVE.slice(1);
+  let name = matchedName.slice(1);
   while (end < source.length) {
     if (source[end] === "[") {
       let close = end + 1;
@@ -165,16 +206,35 @@ function readDirective(
   // The native attribute lexer reads one span, including intervening `}{` or
   // labels. In particular, `{index="1"}{index="2"}` does not reassign `index`,
   // whereas `{index="1"}{ index="2"}` does.
-  const index =
-    attributesStart < 0 ? "" : readAttributes(source.slice(attributesStart + 1, attributesEnd));
-  return index === undefined ? undefined : { end, index: name === DIRECTIVE.slice(1) ? index : "" };
+  const attributes =
+    attributesStart < 0
+      ? { index: "", path: "", purpose: undefined }
+      : readAttributes(source.slice(attributesStart + 1, attributesEnd));
+  if (attributes === undefined) return undefined;
+  if (name !== matchedName.slice(1))
+    return { end, kind: kindOf(matchedName), index: "", path: "", purpose: undefined };
+  return { end, kind: kindOf(matchedName), ...attributes };
 }
 
-function enterCodexAnnotation(this: CompileContext, token: Token): void {
-  this.enter({ type: "codexAnnotation", index: (token as DirectiveToken).index }, token);
+/** Which renderer node a matched directive name produces. */
+function kindOf(directive: string): "annotation" | "file-citation" {
+  return directive === FILE_CITATION_DIRECTIVE ? "file-citation" : "annotation";
 }
 
-function exitCodexAnnotation(this: CompileContext, token: Token): void {
+function enterDirective(this: CompileContext, token: Token): void {
+  const directive = token as DirectiveToken;
+  const node =
+    directive.kind === "file-citation"
+      ? ({
+          type: "codexFileCitation",
+          path: directive.path,
+          ...(directive.purpose === undefined ? {} : { purpose: directive.purpose }),
+        } as CodexFileCitationNode)
+      : ({ type: "codexAnnotation", index: directive.index } as CodexAnnotationNode);
+  this.enter(node, token);
+}
+
+function exitDirective(this: CompileContext, token: Token): void {
   this.exit(token);
 }
 
@@ -193,17 +253,27 @@ export function annotationDirectiveSyntax(source: string): Extension {
       const context = this;
       const directive = readDirective(source, context.now().offset, lastClosingBrace);
       if (directive === undefined) return nok;
-      const { end, index } = directive;
+      const end = directive.end;
+      const kind = directive.kind;
+      const index = directive.index;
+      const path = directive.path;
+      const purpose = directive.purpose;
       return start;
 
       function start(code: number | null): State | undefined {
-        (effects.enter("codexAnnotation") as DirectiveToken).index = index;
+        const token = effects.enter(
+          kind === "file-citation" ? "codexFileCitation" : "codexAnnotation",
+        ) as DirectiveToken;
+        token.kind = kind;
+        token.index = index;
+        token.path = path;
+        token.purpose = purpose;
         return consume(code);
       }
 
       function consume(code: number | null): State | undefined {
         if (context.now().offset === end) {
-          effects.exit("codexAnnotation");
+          effects.exit(kind === "file-citation" ? "codexFileCitation" : "codexAnnotation");
           return ok(code);
         }
         effects.consume(code);
@@ -217,7 +287,13 @@ export function annotationDirectiveSyntax(source: string): Extension {
 /** Convert each recognized reference to the node consumed by the renderer. */
 export function annotationDirectiveMdast(): MdastExtension {
   return {
-    enter: { codexAnnotation: enterCodexAnnotation },
-    exit: { codexAnnotation: exitCodexAnnotation },
+    enter: {
+      codexAnnotation: enterDirective,
+      codexFileCitation: enterDirective,
+    },
+    exit: {
+      codexAnnotation: exitDirective,
+      codexFileCitation: exitDirective,
+    },
   };
 }

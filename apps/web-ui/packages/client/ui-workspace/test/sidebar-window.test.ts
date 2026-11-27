@@ -44,18 +44,19 @@ it("retains pinned, provisional and active conversations outside the ordinary qu
   );
   assert.equal(result.hiddenCount, 31);
 });
-it("fills Recents with sessions that are not already shown in a Project", () => {
+it("fills Recents after excluding assigned sessions, including active and hidden project rows", () => {
   const source = rows();
-  const project = sidebarWindow(source.slice(0, 4), 2);
-  const shownProjectIds = new Set(project.rows.map((row) => row.id));
+  source[0]!.running = true;
+  const projectSessionIds = new Set(source.slice(0, 4).map((row) => row.id));
 
-  assert.deepEqual(sidebarWindow(source, 3, "0", "1", shownProjectIds), {
-    rows: source.slice(2, 5),
-    hiddenCount: 35,
+  assert.deepEqual(sidebarWindow(source, 3, "0", "1", projectSessionIds), {
+    rows: source.slice(4, 7),
+    hiddenCount: 33,
   });
-  assert.deepEqual(sidebarWindow(source, 3, "0", "1", new Set()), {
-    rows: source.slice(0, 3),
-    hiddenCount: 37,
+  projectSessionIds.delete("1");
+  assert.deepEqual(sidebarWindow(source, 3, undefined, undefined, projectSessionIds), {
+    rows: [source[1], source[4], source[5]],
+    hiddenCount: 34,
   });
 });
 

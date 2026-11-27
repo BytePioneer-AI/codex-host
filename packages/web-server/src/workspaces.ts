@@ -639,6 +639,8 @@ export class Workspaces {
 
   /** Unmodified official snapshot and the projection delivered to Web clients. */
   private officialThreadSections: ThreadSectionView[] | undefined;
+  /** Projects registered when each section's member list was last read successfully. */
+  private projectSectionCoverage = new Map<string, ReadonlySet<string>>();
   private referenceThreadSections: ThreadSectionView[] = [];
 
   hasThreadSection(id: string): boolean {
@@ -676,11 +678,17 @@ export class Workspaces {
     const saved = this.state.projectSectionOverrides;
     const registered =
       this.nativeWorkspaces && new Set(this.nativeWorkspaces.map((item) => item.workspaceId));
+    const coverage = new Map<string, ReadonlySet<string>>();
     if (registered) {
       const located = new Set(next.flatMap((section) => section.workspaceIds ?? []));
       for (const section of next) {
         // An absent renderer row is unknown; an observed empty row confirms that the projects left.
-        if (Object.hasOwn(sectionProjects, section.id)) continue;
+        if (Object.hasOwn(sectionProjects, section.id)) {
+          coverage.set(section.id, registered);
+          continue;
+        }
+        const lastRead = this.projectSectionCoverage.get(section.id);
+        if (lastRead) coverage.set(section.id, lastRead);
         const previous =
           this.officialThreadSections?.find((item) => item.id === section.id)?.workspaceIds ?? [];
         const anchors = Object.entries(saved ?? {}).flatMap(([id, placement]) =>
@@ -708,6 +716,7 @@ export class Workspaces {
       if (Object.keys(valid).length !== Object.keys(saved).length) this.saveProjectSections(valid);
     }
     this.officialThreadSections = next;
+    this.projectSectionCoverage = coverage;
     this.publishProjectSections();
   }
 
@@ -754,10 +763,24 @@ export class Workspaces {
     )
       throw new RpcError("workspace/section-invalid", "Unknown local project or sidebar section.");
     const official = this.projectSection(this.officialThreadSections, workspaceId);
+    if (
+      official === null &&
+      !this.state.projectSectionOverrides?.[workspaceId] &&
+      this.officialThreadSections.some(
+        (section) => !this.projectSectionCoverage.get(section.id)?.has(workspaceId),
+      )
+    )
+      throw new RpcError(
+        "workspace/section-invalid",
+        "The project's current sidebar section is unknown. Refresh the sidebar and try again.",
+      );
     if (this.projectSection(this.referenceThreadSections, workspaceId) !== sectionId) {
-      const overrides = { ...this.state.projectSectionOverrides };
       // Reinsert at the tail so a second move appends after earlier arrivals in its destination.
-      delete overrides[workspaceId];
+      const overrides = Object.fromEntries(
+        Object.entries(this.state.projectSectionOverrides ?? {}).filter(
+          ([id]) => id !== workspaceId,
+        ),
+      );
       if (sectionId !== official) overrides[workspaceId] = { official, target: sectionId };
       this.saveProjectSections(overrides);
       this.publishProjectSections();

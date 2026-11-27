@@ -86,7 +86,10 @@ it("keeps a local project move across refresh and reconnect until its official m
   restarted.refresh({ c: ["one", "two"] });
   assert.deepEqual(next.at(-1)?.[2]?.workspaceIds, [one, two]);
   await restarted.move({ workspaceId: one, sectionId: "b" });
-  restarted.refresh({ c: ["one", "two"] }, [sections[0]!, sections[2]!]);
+  restarted.refresh(
+    { c: ["one", "two"] },
+    sections.filter(({ id }) => id !== "b"),
+  );
   assert.deepEqual(next.at(-1)?.[1]?.workspaceIds, [one, two]);
   restarted.refresh({ c: ["one", "two"] });
   assert.deepEqual(next.at(-1)?.[2]?.workspaceIds, [one, two]);
@@ -96,7 +99,7 @@ it("rejects missing destinations and non-native workspaces, and never publishes 
   const root = mkdtempSync(join(tmpdir(), "project-section-errors-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const { refresh, follow, move, workspaces } = setup(root);
-  refresh({ a: ["one"] });
+  refresh({ a: ["one"], b: [], c: [] });
   const frames = await follow();
   for (const request of [
     { workspaceId: one },
@@ -144,4 +147,29 @@ it("keeps the last confirmed project section through partial Desktop reads", asy
   await restarted.move({ workspaceId: two, sectionId: "c" });
   restarted.refresh({ b: ["one"] }, sections.slice(1));
   assert.equal(ownerOf(two), undefined);
+});
+
+it("rejects a first move until the project's official source is known", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "project-section-unknown-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { refresh, follow, move } = setup(root);
+  refresh({ b: [], c: [] });
+  const frames = await follow();
+  for (const sectionId of ["b", null]) {
+    const result = await move({ workspaceId: one, sectionId });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.error.message, /refresh/i);
+  }
+  assert.equal(frames.length, 1);
+  refresh({ a: ["one"], b: [], c: [] });
+  assert.deepEqual(frames.at(-1)?.[0]?.workspaceIds, [one]);
+  assert.equal((await move({ workspaceId: one, sectionId: "b" })).ok, true);
+  refresh({ b: [], c: [] });
+  assert.equal((await move({ workspaceId: two, sectionId: "b" })).ok, true);
+  assert.deepEqual(frames.at(-1)?.[1]?.workspaceIds, [one, two]);
+  const restarted = setup(root);
+  restarted.refresh({ b: [], c: [] });
+  assert.equal((await restarted.move({ workspaceId: two, sectionId: "c" })).ok, true);
+  restarted.refresh({ a: ["one"], b: [], c: [] });
+  assert.deepEqual((await restarted.follow())[0]?.[2]?.workspaceIds, [two]);
 });

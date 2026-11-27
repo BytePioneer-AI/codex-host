@@ -265,15 +265,54 @@ flowchart TB
 > Ask `#grok` to audit concurrency and edge-case risks in this module.  
 > Ask `#antigravity` to build the frontend view and update the docs.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-hash-menu-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-hash-menu-en-light.png" />
+    <img src="docs/imgs/readme-feat-hash-menu-en-light.png" alt="Type # in the composer to summon all locally detected coding agents (Codex, Antigravity CLI, Claude Code, DeepSeek Harness, Grok, OpenCode, Pi) for parallel delegation" width="100%" />
+  </picture>
+  <sub>Type <code>#</code> to summon every locally available agent (Codex, Antigravity CLI, Claude Code, DeepSeek Harness, Grok, OpenCode, Pi, and more) and delegate parallel child sessions right from the composer.</sub>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-handoff-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-handoff-en-light.png" />
+    <img src="docs/imgs/readme-feat-handoff-en-light.png" alt="One-click Cross-Agent Context Handoff modal transferring full conversation context from Codex to Grok 4.6" width="100%" />
+  </picture>
+  <sub><b>Cross-Agent Context Handoff</b> — pick a target agent and model on any turn to continue with full conversation context intact.</sub>
+</p>
+
+---
+
+## Native Workbench: Diff Review, Plugins & Usage
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-diff-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-diff-en-light.png" />
+    <img src="docs/imgs/readme-feat-diff-en-light.png" alt="Native Git Diff review side-by-side with multi-agent conversation, showing unstaged changes (+604 -12), syntax-highlighted hunks, and changed files tree" width="100%" />
+  </picture>
+  <sub><b>Native Git Diff Review</b> — inspect unstaged changes (<code>+604 -12</code>), changed files tree, and line-by-line hunks right next to active multi-agent sessions, with one-click stage or revert.</sub>
+</p>
+
 <table>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>Parallel Agent Sessions</strong><br /><sub>Independent native threads side by side</sub></p>
-      <img src="docs/product/images/multi-agent-parallel-sessions.png" alt="Multiple delegated agent sessions running in parallel in the sidebar" />
+      <p><strong>Cross-Client Plugin Marketplace (18+ Plugins)</strong><br /><sub>Install themes, MCP Sync Hub, Sidebar Thread Tree, and Context Insights across both Codex Desktop and CH Web</sub></p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-plugins-en-dark.png" />
+        <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-plugins-en-light.png" />
+        <img src="docs/imgs/readme-feat-plugins-en-light.png" alt="CodexHost Plugin Center Marketplace with 18+ extensions for Codex Desktop and CH Web" />
+      </picture>
     </td>
     <td width="50%" valign="top">
-      <p><strong>Automatic Completion Flowback</strong><br /><sub>Originating thread is notified as soon as delegated work finishes</sub></p>
-      <img src="docs/product/images/multi-agent-completion-notice.png" alt="Completion notification delivered back to the originating session" />
+      <p><strong>Unified Multi-Agent Usage & Cost</strong><br /><sub>Track spend, tokens, cache hit rate, and trends across Codex, Grok, Claude Code, and OpenCode — exportable to CSV</sub></p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-usage-en-dark.png" />
+        <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-usage-en-light.png" />
+        <img src="docs/imgs/readme-feat-usage-en-light.png" alt="Unified multi-agent usage dashboard showing spend, total tokens, cache hit rate, and per-harness breakdown" />
+      </picture>
     </td>
   </tr>
 </table>
@@ -304,6 +343,15 @@ flowchart LR
 - **[Multi-Machine Interconnection & Cross-Node Collaboration](docs/product/multi-remote-peers.md)**: Link Macs, Linux servers, and Windows workstations into one unified sidebar—sessions on different machines can invoke each other so multiple nodes collaborate to finish one task together.
 - **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever compliance requires it.
 - **Local-First Privacy**: Your code, threads, and agent credentials stay on your own machines and connect directly to official providers—never proxied through third-party servers.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-mobile-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-mobile-en-light.png" />
+    <img src="docs/imgs/readme-feat-mobile-en-light.png" alt="CodexHost Mobile UI (Android APK & iOS PWA) syncing workspace delegation trees, live multi-agent replies, and one-tap cross-agent handoff" width="100%" />
+  </picture>
+  <sub><b>Mobile Companion (Android APK / iOS PWA)</b> — browse workspaces &amp; delegation trees, review multi-agent updates, and trigger cross-agent handoffs right from your phone.</sub>
+</p>
 
 <details>
 <summary><b>Advanced: SSH Remote & Windows Remote Control</b></summary>

@@ -259,15 +259,54 @@ flowchart TB
   A3 --> MERGE
 ```
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-hash-menu-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-hash-menu-en-light.png" />
+    <img src="../imgs/readme-feat-hash-menu-en-light.png" alt="입력창에서 #을 입력해 로컬에 설치된 모든 코딩 Agent(Codex, Antigravity CLI, Claude Code, DeepSeek Harness, Grok, OpenCode, Pi)를 즉시 불러와 병렬 위임" width="100%" />
+  </picture>
+  <sub>입력창에서 <code>#</code>을 누르면 로컬에서 감지된 모든 Agent(Codex, Antigravity CLI, Claude Code, DeepSeek Harness, Grok, OpenCode, Pi 등)가 즉시 표시되어 병렬 하위 세션을 위임할 수 있습니다.</sub>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-handoff-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-handoff-en-light.png" />
+    <img src="../imgs/readme-feat-handoff-en-light.png" alt="원클릭 크로스 Agent 컨텍스트 무손실 인계 모달: Codex에서 Grok 4.6으로 대화 맥락을 그대로 인계" width="100%" />
+  </picture>
+  <sub><b>크로스 Agent 무손실 인계 (Handoff)</b> — 대화 도중 원하는 시점에서 대상 Agent와 모델을 선택해 전체 맥락을 그대로 이어서 작업합니다.</sub>
+</p>
+
+---
+
+## 네이티브 워크벤치: Diff 리뷰 · 플러그인 · 사용량 인사이트
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-diff-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-diff-en-light.png" />
+    <img src="../imgs/readme-feat-diff-en-light.png" alt="멀티 Agent 대화와 나란히 보는 네이티브 Git Diff 리뷰: 미스테이징 변경사항(+604 -12), 구문 강조 Diff, 변경 파일 트리" width="100%" />
+  </picture>
+  <sub><b>네이티브 Git Diff 리뷰</b> — 멀티 Agent 결과를 확인하면서 미스테이징 변경사항(<code>+604 -12</code>), 변경 파일 트리, 행 단위 Diff를 한 화면에서 검토하고 즉시 스테이징하거나 되돌립니다.</sub>
+</p>
+
 <table>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>병렬 Agent 세션</strong><br /><sub>서로 간섭 없는 독립 네이티브 세션</sub></p>
-      <img src="../product/images/multi-agent-parallel-sessions.png" alt="사이드바에서 병렬로 실행 중인 여러 Agent 위임 세션" />
+      <p><strong>크로스 클라이언트 플러그인 마켓 (18+ 플러그인)</strong><br /><sub>테마, MCP 통합 센터, 사이드바 위임 트리, 컨텍스트 인사이트 등을 Codex Desktop과 CH Web에 동시 설치</sub></p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-plugins-en-dark.png" />
+        <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-plugins-en-light.png" />
+        <img src="../imgs/readme-feat-plugins-en-light.png" alt="CodexHost 플러그인 마켓플레이스: Codex Desktop과 CH Web을 지원하는 18개 이상의 확장 플러그인" />
+      </picture>
     </td>
     <td width="50%" valign="top">
-      <p><strong>완료 시 자동 보고</strong><br /><sub>위임 작업이 끝나면 원래 세션에 즉시 알림</sub></p>
-      <img src="../product/images/multi-agent-completion-notice.png" alt="위임 작업 완료 후 원래 세션에 표시되는 알림" />
+      <p><strong>멀티 Agent 통합 사용량 및 비용</strong><br /><sub>Codex, Grok, Claude Code, OpenCode의 비용·토큰·캐시 적중률과 일별 추이를 한눈에 집계하고 CSV로 내보내기</sub></p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-usage-en-dark.png" />
+        <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-usage-en-light.png" />
+        <img src="../imgs/readme-feat-usage-en-light.png" alt="멀티 Agent 통합 사용량 대시보드: 비용, 총 토큰, 캐시 적중률, Harness별 추이" />
+      </picture>
     </td>
   </tr>
 </table>
@@ -298,6 +337,15 @@ flowchart LR
 - **[다중 머신 연동 및 노드 협업](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 하나의 사이드바에 연결해 서로 다른 머신의 세션이 호출하고 협업하며 하나의 작업을 함께 완료합니다.
 - **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 LAN, Tailscale 또는 암호화 Relay로 접속하며, 사내 규정 준수를 위한 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.
 - **로컬 우선 프라이버시**: 코드, 대화 기록, 자격 증명은 모두 내 컴퓨터에 머물며 공식 서비스에 직접 연결됩니다.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mobile-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mobile-en-light.png" />
+    <img src="../imgs/readme-feat-mobile-en-light.png" alt="CodexHost 모바일(Android APK / iOS PWA) 3분할 실기 화면: 워크스페이스 위임 트리, 실시간 멀티 Agent 대화, 원탭 크로스 Agent 인계" width="100%" />
+  </picture>
+  <sub><b>모바일 실시간 제어 (Android APK / iOS PWA)</b> — 자리를 비워도 휴대폰에서 워크스페이스 위임 트리, 멀티 Agent 보고, 원탭 크로스 Agent 인계를 그대로 이어갑니다.</sub>
+</p>
 
 <details>
 <summary><b>고급: SSH 원격 및 Windows Remote Control 연결</b></summary>

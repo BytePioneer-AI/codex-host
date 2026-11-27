@@ -265,15 +265,54 @@ flowchart TB
 > 让 `#grok` 排查这个模块的并发与边界隐患。  
 > 让 `#antigravity` 补齐前端页面与使用文档。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-hash-menu-zh-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-hash-menu-zh-light.png" />
+    <img src="../imgs/readme-feat-hash-menu-zh-light.png" alt="在输入框输入 # 一键唤起本机全部可用编程 Agent（Codex、Antigravity CLI、Claude Code、DeepSeek Harness、Grok、OpenCode、Pi）并发委派任务" width="100%" />
+  </picture>
+  <sub>输入框键入 <code>#</code> 即刻唤起本机全部可用 Agent（Codex、Antigravity CLI、Claude Code、DeepSeek Harness、Grok、OpenCode、Pi 等），直接在当前会话并行派发子任务。</sub>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-handoff-zh-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-handoff-zh-light.png" />
+    <img src="../imgs/readme-feat-handoff-zh-light.png" alt="跨 Agent 上下文无损交接弹窗：从当前 Codex 会话一键将完整上下文交接至 Grok 4.6 继续执行" width="100%" />
+  </picture>
+  <sub><b>跨 Agent 无损交接（Handoff）</b> — 任意轮次一键整理当前上下文，自由切换目标 Agent 与模型无缝接力。</sub>
+</p>
+
+---
+
+## 原生工作台：Diff 审查、插件市场与用量洞察
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-diff-zh-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-diff-zh-light.png" />
+    <img src="../imgs/readme-feat-diff-zh-light.png" alt="原生 Git Diff 审查工作台：左侧多 Agent 委派树与对话结论，右侧未暂存变更（+604 -12）、语法高亮 Diff 与改动文件树同屏对照" width="100%" />
+  </picture>
+  <sub><b>原生 Git Diff 审查</b> — 边看多 Agent 结论边审代码，未暂存改动（<code>+604 -12</code>）、变更文件树与逐行红绿对比同屏呈现，支持一键暂存与还原。</sub>
+</p>
+
 <table>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>多个 Agent 并行</strong><br /><sub>各自独立原生会话，互不打扰</sub></p>
-      <img src="../product/images/multi-agent-parallel-sessions.png" alt="多个 Agent 的委派会话在侧边栏中并行运行" />
+      <p><strong>跨客户端插件市场（18+ 插件）</strong><br /><sub>主题外观、MCP 统一中心、侧栏委派树、上下文洞察等一键安装，同时覆盖 Codex Desktop 与 CH Web</sub></p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-plugins-zh-dark.png" />
+        <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-plugins-zh-light.png" />
+        <img src="../imgs/readme-feat-plugins-zh-light.png" alt="CodexHost 插件中心市场：18+ 社区与官方插件，同时支持 Codex Desktop 与 CH Web" />
+      </picture>
     </td>
     <td width="50%" valign="top">
-      <p><strong>做完自动汇报</strong><br /><sub>委派任务完成后自动通知主会话</sub></p>
-      <img src="../product/images/multi-agent-completion-notice.png" alt="委派任务完成后在发起会话中显示的通知" />
+      <p><strong>多 Agent 统一用量与费用</strong><br /><sub>跨 Codex、Grok、Claude Code、OpenCode 统计费用、Token、缓存命中率与日趋势，支持导出 CSV</sub></p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-usage-zh-dark.png" />
+        <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-usage-zh-light.png" />
+        <img src="../imgs/readme-feat-usage-zh-light.png" alt="多 Agent 统一用量统计看板：汇总费用、总 Token、缓存命中率与各 Harness 分布趋势" />
+      </picture>
     </td>
   </tr>
 </table>
@@ -304,6 +343,15 @@ flowchart LR
 - **[多机互联与跨节点协作](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 开发机连成一张协作网络，收进同一侧栏；不同机器上的会话可以互相委派调用，多个节点联手完成同一项任务。
 - **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，支持局域网、Tailscale 与加密中转连接；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。
 - **本地优先与隐私边界**：代码、对话历史与各家 Agent 凭据全部留在你自己的机器上，直连官方模型服务，不经任何第三方代理。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mobile-zh-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mobile-zh-light.png" />
+    <img src="../imgs/readme-feat-mobile-zh-light.png" alt="CodexHost 手机端实景三联屏：工作区委派树侧栏、多 Agent 实时对话与回流、以及一键跨 Agent 上下文交接" width="100%" />
+  </picture>
+  <sub><b>手机端随时掌控（Android APK / iOS PWA）</b> — 离开电脑照样查看工作区委派树、跟进多 Agent 汇报，并一键发起跨 Agent 交接与追问。</sub>
+</p>
 
 <details>
 <summary><b>进阶：SSH 远程与 Windows Remote Control 连接</b></summary>

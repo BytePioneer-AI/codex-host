@@ -1302,6 +1302,7 @@ fn force_stop_external_desktop(
 ) -> Result<(), Box<dyn Error>> {
     let expected = windows_executable_key(&installation.desktop_executable);
     let started = Instant::now();
+    let mut last_termination_error: Option<String> = None;
     loop {
         let process_ids = codexhost_platform::desktop_process_ids_for_installation(installation)?;
         if process_ids.is_empty() {
@@ -1324,11 +1325,18 @@ fn force_stop_external_desktop(
             if let Err(error) = terminate_process_by_id(process_id)
                 && process_exists(process_id)
             {
-                return Err(format!("could not terminate Codex PID {process_id}: {error}").into());
+                // 拒绝访问（os error 5）常见于进程正在退出或权限提升的瞬时状态；
+                // 不立即中止重启流程，记录错误并等待下一轮轮询直到整体超时。
+                last_termination_error = Some(format!(
+                    "could not terminate Codex PID {process_id}: {error}"
+                ));
+                break;
             }
         }
         if started.elapsed() >= timeout {
-            return Err("Codex Desktop did not exit after forced restart".into());
+            return Err(last_termination_error
+                .unwrap_or_else(|| "Codex Desktop did not exit after forced restart".into())
+                .into());
         }
         thread::sleep(Duration::from_millis(50));
     }

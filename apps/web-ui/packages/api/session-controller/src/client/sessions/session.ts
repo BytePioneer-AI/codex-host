@@ -176,7 +176,10 @@ export class Session implements SessionFace {
       };
       /** Durable admission may precede the Inbox projection acknowledging its claim. */
       admitted?: readonly (ImageAttachmentRef | FileAttachmentRef)[];
+      readonly onObserved?:
+        ((attachments: readonly (ImageAttachmentRef | FileAttachmentRef)[]) => void) | undefined;
       readonly onRetire?: ((retirement: PendingSubmissionRetirement) => void) | undefined;
+      observed: boolean;
       retiring: boolean;
     }
   >();
@@ -298,7 +301,9 @@ export class Session implements SessionFace {
     this.submissionSettlements.set(requestId, {
       placement,
       expectedTurnId: input.mode === "steer" ? this.activeTurnForSteering() : null,
+      onObserved: input.onObserved,
       onRetire: input.onRetire,
+      observed: false,
       retiring: false,
     });
     // The blank → engaging edge flips here, ahead of prompt(): the composer
@@ -1139,6 +1144,7 @@ export class Session implements SessionFace {
       return;
     }
     settlement.admitted = attachmentRefsIn(message.content);
+    this.notifySubmissionObserved(settlement, settlement.admitted);
     this.retireAdmittedSubmission(source.rpcId);
   }
 
@@ -1170,6 +1176,19 @@ export class Session implements SessionFace {
       this.retireAdmittedSubmission(requestId);
   }
 
+  private notifySubmissionObserved(
+    settlement: {
+      readonly onObserved?:
+        ((attachments: readonly (ImageAttachmentRef | FileAttachmentRef)[]) => void) | undefined;
+      observed: boolean;
+    },
+    attachments: readonly (ImageAttachmentRef | FileAttachmentRef)[],
+  ): void {
+    if (settlement.observed) return;
+    settlement.observed = true;
+    settlement.onObserved?.(attachments);
+  }
+
   /**
    * Latch one observed settlement and remove the echo an animation frame
    * later. The delay keeps the echo in the snapshot until the frame in which
@@ -1183,6 +1202,7 @@ export class Session implements SessionFace {
     const settlement = this.submissionSettlements.get(requestId);
     if (settlement === undefined || settlement.retiring) return;
     settlement.retiring = true;
+    this.notifySubmissionObserved(settlement, attachments);
     scheduleFrame(() => {
       this.finishSubmission(requestId, { reason: "observed", attachments });
     });

@@ -309,6 +309,9 @@ export class ConversationController extends Service implements IConversation {
         mode,
         text,
         attachments: pendingAttachments,
+        onObserved: (observedAttachments) => {
+          this.aliasObservedAttachments(session.sessionId, attachments, observedAttachments);
+        },
         onRetire: (settlement) => {
           this.settleSubmittedAttachments(session.sessionId, attachments, settlement);
           finishRetirement?.(settlement);
@@ -698,6 +701,36 @@ export class ConversationController extends Service implements IConversation {
     const sessions = this.ctx.get("sessions");
     if (sessions === undefined) throw new Error("conversation: sessions service unavailable");
     return sessions;
+  }
+
+  /**
+   * Bind observed durable image references to their pre-cached uploaded blobs
+   * synchronously before the durable transcript node's first render frame.
+   * Draft entries and echo preview URLs remain live until `onRetire`.
+   */
+  private aliasObservedAttachments(
+    sessionId: SessionId,
+    attachments: readonly ComposerAttachment[],
+    observedAttachments: Extract<
+      PendingSubmissionRetirement,
+      { reason: "observed" }
+    >["attachments"],
+  ): void {
+    const uiConversation = this.ctx.get("uiConversation");
+    if (uiConversation === undefined) return;
+    const uploads = this.fileUploads.getSnapshot();
+    let observedIndex = 0;
+    for (const attachment of attachments) {
+      const ref = observedAttachments[observedIndex++];
+      if (this.draftAttachments.get(attachment.id) === undefined) continue;
+      if (attachment.kind !== "image" || ref === undefined || !("mediaType" in ref)) continue;
+      const upload = uploads[attachment.id];
+      const uploadedAttachmentId =
+        upload?.status === "ready" ? upload.file.attachmentId : undefined;
+      if (uploadedAttachmentId !== undefined) {
+        uiConversation.aliasUploadedImage(sessionId, uploadedAttachmentId, ref);
+      }
+    }
   }
 
   /**

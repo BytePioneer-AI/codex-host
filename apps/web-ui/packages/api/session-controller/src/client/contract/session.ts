@@ -46,6 +46,12 @@ export interface BeginSubmissionInput {
   readonly text: string;
   /** Ordered image previews and durable file metadata matching the upcoming prompt attachments. */
   readonly attachments: readonly PendingSubmissionAttachment[];
+  /**
+   * Synchronous callback fired at most once when the submission is first
+   * observed with its admitted or queued attachment references, before the
+   * echo's next-frame retirement.
+   */
+  readonly onObserved?: (attachments: readonly (ImageAttachmentRef | FileAttachmentRef)[]) => void;
   /** Settlement callback fired exactly once when the echo retires. */
   readonly onRetire?: (retirement: PendingSubmissionRetirement) => void;
 }

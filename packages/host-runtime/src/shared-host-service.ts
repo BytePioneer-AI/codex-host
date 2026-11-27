@@ -16,6 +16,7 @@ import { startClientChannelServer } from "./client-channel-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
 import { SharedThreadOwner } from "./shared-thread-owner.js";
 import { sharedHostDesktop } from "./shared-host-desktop.js";
+import { createSharedOfficialSessionHandler } from "./shared-official-proxy.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
@@ -122,10 +123,11 @@ export async function runSharedHostService(
           hostRuntimePath: environment.CODEXHOST_HOST_RUNTIME_PATH ?? "",
         });
         const hostEnvironment = remote?.environment ?? delegationEnvironment;
+        const stockCodexPath = values["stock-codex"] ?? "";
         // The same native scope/account control serves every Desktop connection.
         // Web-only use does not start stock Codex or depend on it being installed.
         const official = await prepareLocalCodex({
-          stockCodexPath: values["stock-codex"] ?? "",
+          stockCodexPath,
           arguments: remote?.officialArguments ?? ["app-server"],
           environment: hostEnvironment,
           diagnosticOutput: process.stderr,
@@ -150,7 +152,7 @@ export async function runSharedHostService(
           hostEnvironment,
         );
         const host = new AppServerHost({
-          stockCodexPath: values["stock-codex"] ?? "",
+          stockCodexPath,
           arguments: [],
           environment: hostEnvironment,
           desktopInput: owner.input,
@@ -187,7 +189,7 @@ export async function runSharedHostService(
         const desktopOptions = {
           environment: hostEnvironment,
           runtimeUrl,
-          stockCodex: values["stock-codex"] ?? "",
+          stockCodex: stockCodexPath,
           official,
           owner,
           hostExtensions: host.hostExtensions,
@@ -226,6 +228,10 @@ export async function runSharedHostService(
               if (stopping) throw new Error("Shared Host is stopping");
               return sharedHostDesktop(desktopOptions, streams, request);
             },
+            officialSession: createSharedOfficialSessionHandler(official, () => stopping, {
+              stockCodexPath,
+              environment: hostEnvironment,
+            }),
             target: {
               clientEvents: host.clientEvents,
               handleClientRequest: (method, params) => host.handleClientRequest(method, params),

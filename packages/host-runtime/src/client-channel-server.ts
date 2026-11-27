@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer, STATUS_CODES, type IncomingMessage } from "node:http";
 import { mkdir, writeFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -20,6 +20,10 @@ import { ClientChannelRequestError } from "./client-channel-error.js";
 import { WebSocketServer } from "ws";
 import { attachRemoteAppServerSession } from "./remote-app-server-session.js";
 import type { RemoteAppServerSessionStreams, RemoteAppServerSession } from "./remote-app-server.js";
+import {
+  SHARED_OFFICIAL_PATH,
+  type SharedOfficialUpgradeHandler,
+} from "./shared-official-proxy.js";
 
 export interface ClientChannelTarget {
   readonly clientEvents: ClientChannelEvents;
@@ -57,6 +61,7 @@ export async function startClientChannelServer(options: {
     streams: RemoteAppServerSessionStreams,
     request: IncomingMessage,
   ) => RemoteAppServerSession;
+  officialSession?: SharedOfficialUpgradeHandler;
 }) {
   const token = randomBytes(32).toString("hex");
   const authorized = (request: IncomingMessage): boolean => {
@@ -150,31 +155,71 @@ export async function startClientChannelServer(options: {
   const desktopSessions = new Set<ReturnType<typeof attachRemoteAppServerSession>>();
   let closing: Promise<void> | undefined;
   server.on("upgrade", (request, socket, head) => {
-    const session =
-      request.url === "/v1/external"
-        ? options.externalSession
-        : request.url === "/v1/desktop"
-          ? options.desktopSession
-          : undefined;
-    if (closing || !session || !authorized(request)) {
-      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    const reject = (status: number) => {
+      if (!socket.destroyed)
+        socket.end(`HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\nConnection: close\r\n\r\n`);
+    };
+    if (closing || !authorized(request)) {
+      reject(401);
       return;
     }
-    desktop.handleUpgrade(request, socket, head, (connection) => {
+    const official = request.url === SHARED_OFFICIAL_PATH ? options.officialSession : undefined;
+    const upgrade = (
+      createSession: (streams: RemoteAppServerSessionStreams) => RemoteAppServerSession,
+      abort?: () => void,
+    ) => {
+      let attached = false;
       try {
-        const binding = attachRemoteAppServerSession({
-          socket: connection,
-          framing: "ndjson",
-          diagnosticOutput: process.stderr,
-          createSession: (streams) => session(streams, request),
+        desktop.handleUpgrade(request, socket, head, (connection) => {
+          try {
+            const binding = attachRemoteAppServerSession({
+              socket: connection,
+              framing: official ? "messages" : "ndjson",
+              diagnosticOutput: process.stderr,
+              createSession,
+            });
+            attached = true;
+            desktopSessions.add(binding);
+            void binding.running.finally(() => desktopSessions.delete(binding));
+          } catch {
+            connection.on("error", () => undefined);
+            if (official) connection.close(1011, "Official proxy attachment failed");
+            else connection.close(1008, "Invalid Desktop runtime context");
+          }
         });
-        desktopSessions.add(binding);
-        void binding.running.finally(() => desktopSessions.delete(binding));
-      } catch {
-        connection.on("error", () => undefined);
-        connection.close(1008, "Invalid Desktop runtime context");
+      } finally {
+        if (!attached) abort?.();
       }
-    });
+    };
+    if (!official) {
+      const session =
+        request.url === "/v1/external"
+          ? options.externalSession
+          : request.url === "/v1/desktop"
+            ? options.desktopSession
+            : undefined;
+      if (session) upgrade((streams) => session(streams, request));
+      else reject(401);
+      return;
+    }
+    const attachment = new AbortController();
+    const onClose = () => attachment.abort();
+    socket.once("close", onClose);
+    socket.on("error", () => undefined);
+    void official
+      .prepare(request, attachment.signal)
+      .finally(() => socket.off("close", onClose))
+      .then((prepared) => {
+        if (closing || attachment.signal.aborted || socket.destroyed) {
+          if (prepared.ok) prepared.abort();
+          reject(503);
+        } else if (prepared.ok) {
+          upgrade(prepared.attach, prepared.abort);
+        } else {
+          reject(prepared.status);
+        }
+      })
+      .catch(() => reject(503));
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

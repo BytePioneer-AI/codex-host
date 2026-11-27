@@ -23,6 +23,7 @@ import {
   codexRuntimeFilesChanged,
   type CodexRuntimeFile,
 } from "./codex-runtime/backend-files.js";
+import { officialLoopbackListenerArguments } from "./remote-app-server.js";
 
 interface NativeStartup {
   stockCodexPath: string;
@@ -34,12 +35,39 @@ export interface PreparedLocalCodex {
   officialRuntimeScope: OfficialRuntimeScope;
   accountControl: CodexAccountControl;
   /** Record Desktop's invocation and scope runtime context to its live attachment. */
-  configureStartup(input: NativeStartup, attachment: AbortSignal): Promise<void>;
+  configureStartup(
+    input: NativeStartup,
+    attachment: AbortSignal,
+    options?: { requireApplied?: boolean },
+  ): Promise<void>;
   close(): Promise<void>;
+}
+
+export class OfficialStartupConflictError extends Error {
+  constructor() {
+    super("Shared Host already has an attached client with different Codex startup settings");
+  }
 }
 
 function desktopContextChanged(current: NativeStartup, next: NativeStartup): boolean {
   return DESKTOP_CONTEXT_ENV.some((key) => current.environment[key] !== next.environment[key]);
+}
+
+function startupArgumentsKey(args: readonly string[]): string {
+  try {
+    return JSON.stringify(officialLoopbackListenerArguments(args));
+  } catch {
+    // Keep invalid invocations distinct so backend startup can report the error.
+    return JSON.stringify(args);
+  }
+}
+
+function startupChanged(current: NativeStartup, next: NativeStartup): boolean {
+  return (
+    current.stockCodexPath !== next.stockCodexPath ||
+    startupArgumentsKey(current.arguments) !== startupArgumentsKey(next.arguments) ||
+    desktopContextChanged(current, next)
+  );
 }
 
 function withDesktopContext(startup: NativeStartup, desktop: NodeJS.ProcessEnv): NativeStartup {
@@ -51,7 +79,7 @@ function withDesktopContext(startup: NativeStartup, desktop: NodeJS.ProcessEnv):
   return { ...startup, environment };
 }
 
-async function canonicalCodexHome(home: string): Promise<string> {
+export async function canonicalCodexHome(home: string): Promise<string> {
   const absolute = path.resolve(home);
   try {
     return await realpath(absolute);
@@ -113,7 +141,12 @@ export async function prepareLocalCodex(input: {
   startup.stockCodexPath =
     (await resolveOfficialCodexExecutable(startup.stockCodexPath, input.environment)) ?? "";
   const desktopStartups = new Map<AbortSignal, NativeStartup>();
-  const nextStartup = () => [...desktopStartups.values()].at(-1) ?? startup;
+  const nextStartup = () => {
+    const attached = [...desktopStartups.values()].at(-1);
+    if (!attached) return startup;
+    // An older attachment can outlive a failed first launch and recovery.
+    return input.remoteControl ? withDesktopContext(startup, attached.environment) : attached;
+  };
   let startupQueue = Promise.resolve();
   let running: NativeStartup | undefined;
   let startupConfigured = false;
@@ -125,16 +158,11 @@ export async function prepareLocalCodex(input: {
     recovery: {},
     shouldReplaceIdleBackend: () =>
       running !== undefined &&
-      ((input.deferStart && desktopContextChanged(running, nextStartup())) ||
+      ((input.deferStart && startupChanged(running, nextStartup())) ||
         codexRuntimeFilesChanged(backendFiles)),
     createBackend: () => {
       try {
-        const next = nextStartup();
-        // An older attachment can outlive a failed first launch and its subsequent recovery.
-        const configuration =
-          input.remoteControl && next !== startup
-            ? withDesktopContext(startup, next.environment)
-            : next;
+        const configuration = nextStartup();
         if (!configuration.stockCodexPath) throw new Error("Official Codex is unavailable");
         backendFiles = captureCodexRuntimeFiles(configuration.stockCodexPath);
         running = configuration;
@@ -191,7 +219,11 @@ export async function prepareLocalCodex(input: {
   const remoteInvocationFixed = () =>
     input.remoteControl && (startupConfigured || scope.owner.hasStartedSuccessfully);
 
-  async function applyStartup(configuration: NativeStartup, attachment: AbortSignal) {
+  async function applyStartup(
+    configuration: NativeStartup,
+    attachment: AbortSignal,
+    requireApplied?: boolean,
+  ) {
     if (!input.deferStart || scope.closed || attachment.aborted) return;
     let next = startup;
     if (!remoteInvocationFixed()) {
@@ -210,7 +242,7 @@ export async function prepareLocalCodex(input: {
       next = withDesktopContext(next, configuration.environment);
       startupConfigured = true;
     }
-    if (startupFile) {
+    if (!requireApplied && startupFile) {
       try {
         await mkdir(path.dirname(startupFile), { recursive: true });
         await writeFile(
@@ -228,13 +260,23 @@ export async function prepareLocalCodex(input: {
       }
     }
     if (scope.closed || attachment.aborted) return;
-    const current = scope.owner.running && running ? running : nextStartup();
+    const owner = scope.owner;
+    const current = owner.running && running ? running : nextStartup();
     const changed =
-      current.stockCodexPath !== next.stockCodexPath ||
-      JSON.stringify(current.arguments) !== JSON.stringify(next.arguments) ||
-      desktopContextChanged(current, next) ||
-      (scope.owner.running && codexRuntimeFilesChanged(backendFiles));
-    startup = { ...next, environment: withoutDesktopContext(next.environment) };
+      startupChanged(current, next) || (owner.running && codexRuntimeFilesChanged(backendFiles));
+    const active = owner.hasActiveWork;
+    // The running generation owns the files it started with.
+    if (owner.running && (!changed || active)) assertCodexRuntimeFilesPresent(backendFiles);
+    if (requireApplied) {
+      for (const [peer, configured] of desktopStartups) {
+        if (peer !== attachment && startupChanged(configured, next))
+          throw new OfficialStartupConflictError();
+      }
+      if (changed && active) throw new Error("Official Codex startup is waiting for active work");
+    }
+    // SSH settings belong to the connected peer. Desktop settings are also remembered for Web.
+    if (!requireApplied)
+      startup = { ...next, environment: withoutDesktopContext(next.environment) };
     if (desktopStartups.has(attachment)) desktopStartups.delete(attachment);
     else {
       attachment.addEventListener("abort", () => desktopStartups.delete(attachment), {
@@ -242,22 +284,22 @@ export async function prepareLocalCodex(input: {
       });
     }
     desktopStartups.set(attachment, next);
-    // The running generation owns the files it started with.
-    if (scope.owner.running && (!changed || scope.owner.hasActiveWork))
-      assertCodexRuntimeFilesPresent(backendFiles);
-    if (changed && scope.owner.generation > 0 && scope.owner.hasActiveWork) {
+    if (!changed || owner.generation === 0) return;
+    if (active) {
       input.diagnosticOutput.write(
         "codexhost: Desktop startup differs; preserving active official Codex work\n",
       );
       return;
     }
-    if (changed && scope.owner.generation > 0) await scope.stop();
+    await scope.stop();
   }
   return {
     officialRuntimeScope: scope,
     accountControl: accounts,
-    configureStartup: (configuration, attachment) => {
-      const configured = startupQueue.then(() => applyStartup(configuration, attachment));
+    configureStartup: (configuration, attachment, options) => {
+      const configured = startupQueue.then(() =>
+        applyStartup(configuration, attachment, options?.requireApplied),
+      );
       startupQueue = configured.catch(() => undefined);
       return configured;
     },

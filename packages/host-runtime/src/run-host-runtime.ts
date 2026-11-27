@@ -82,6 +82,7 @@ import {
   sharedHostLauncherPath,
   sharedHostDataDirectory,
 } from "./local-shared-host.js";
+import { createSharedOfficialBackend } from "./shared-official-proxy.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -129,6 +130,20 @@ export function resolveHostRuntimePaths(input: {
   };
 }
 
+function remoteSharedHostLaunch(
+  runtime: string,
+  environment: NodeJS.ProcessEnv,
+  stockCodex: string,
+) {
+  return {
+    launcher: sharedHostLauncherPath(runtime, environment),
+    runtime,
+    stockCodex,
+    dataDirectory: sharedHostDataDirectory(environment),
+    ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
+  };
+}
+
 /** New SSH external Threads always require the independent owner, including source launches. */
 export function createRemoteSharedExternalBridge(
   runtime: string | undefined,
@@ -138,13 +153,9 @@ export function createRemoteSharedExternalBridge(
   return new SharedThreadBridge({
     connect: async () => {
       if (!runtime) throw new Error("Shared external Host runtime path is unavailable");
-      return connectLocalSharedExternalHost({
-        launcher: sharedHostLauncherPath(runtime, environment),
-        runtime,
-        stockCodex,
-        dataDirectory: sharedHostDataDirectory(environment),
-        ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
-      });
+      return connectLocalSharedExternalHost(
+        remoteSharedHostLaunch(runtime, environment, stockCodex),
+      );
     },
     delegateCreates: true,
     diagnose: (error) => process.stderr.write(`codexhost shared external Host: ${String(error)}\n`),
@@ -549,22 +560,37 @@ export async function runHostRuntime(input: {
     createHost: async (delegationEnvironment, _onDelegationApi, registry) => {
       const socketPath = remoteAppServerSocketPath(delegationEnvironment, listenUrl);
       const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
+      const permanentHome = path.resolve(
+        delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
+      );
+      const createLocalOfficialBackend = () =>
+        createOwnedUnixBackend({
+          stockCodexPath,
+          arguments: officialPlan.listenerArguments,
+          socketPath: officialPlan.socketPath,
+          environment: officialEnvironment(delegationEnvironment),
+          diagnosticOutput: process.stderr,
+        });
       const officialRuntimeScope = new OfficialRuntimeScope({
-        permanentHome: path.resolve(
-          delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
-        ),
+        permanentHome,
         diagnosticOutput: process.stderr,
         // The listener outlives Desktop connections and Shim reuses it on
         // reconnect, so a failed official generation must be replaced here.
         recovery: {},
         createBackend: () =>
-          createOwnedUnixBackend({
-            stockCodexPath,
-            arguments: officialPlan.listenerArguments,
-            socketPath: officialPlan.socketPath,
-            environment: officialEnvironment(delegationEnvironment),
-            diagnosticOutput: process.stderr,
-          }),
+          maintenanceRuntimePath
+            ? createSharedOfficialBackend({
+                launch: remoteSharedHostLaunch(
+                  maintenanceRuntimePath,
+                  delegationEnvironment,
+                  stockCodexPath,
+                ),
+                codexHome: permanentHome,
+                startupArguments: officialPlan.listenerArguments,
+                fallback: createLocalOfficialBackend,
+                diagnosticOutput: process.stderr,
+              })
+            : createLocalOfficialBackend(),
       });
       const accountControl = new SingleNativeCodexAccount(() => ({
         version: 2,

@@ -58,6 +58,14 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   }
   if (request.method === 'session/prompt') {
     const text = request.params.prompt[0].text;
+    if (text === 'subagent-tail') {
+      update({sessionUpdate:'tool_call',toolCallId:'child',title:'invoke_subagent',rawInput:{Role:'Researcher',TypeName:'research',Prompt:'Check results'},status:'in_progress'});
+      update({sessionUpdate:'tool_call_update',toolCallId:'child',status:'completed'});
+      return process.stdout.write([
+        {id:request.id,result:{stopReason:'end_turn'}},
+        {method:'session/update',params:{sessionId,update:{sessionUpdate:'tool_call_update',toolCallId:'child',rawOutput:null,content:[{type:'content',content:{type:'text',text:'Created subagent: {"conversationId":"00000000-0000-4000-8000-000000000002"}'}}]}}},
+      ].map(value => JSON.stringify({jsonrpc:'2.0',...value})+'\\n').join(''));
+    }
     if (text === 'terminal-tail') {
       update({sessionUpdate:'tool_call',toolCallId:'old',name:'run_command',kind:'execute',rawInput:{command:'pwd'},status:'in_progress'});
       return process.stdout.write([
@@ -176,6 +184,30 @@ describe("real ACP background owner lifecycle", () => {
         }),
       }),
     );
+  });
+
+  it("publishes a child identity when ACP output trails the tool terminal and prompt response", async () => {
+    const fixture = await openReal();
+    await startAndWait(fixture.session, fixture.outputs, "t1", "subagent-tail");
+    const projected = events(fixture.outputs);
+    const child = {
+      nativeSubagentId: "00000000-0000-4000-8000-000000000002",
+      description: "Researcher",
+      role: "Researcher",
+    };
+    expect(projected).toContainEqual(
+      expect.objectContaining({
+        type: "item.updated",
+        update: { type: "subagents.replace", subagents: [expect.objectContaining(child)] },
+      }),
+    );
+    expect(projected.filter(({ type }) => type === "item.completed")).toMatchObject([
+      {
+        snapshot: {
+          item: { type: "subagentDelegation", prompt: "Check results", subagents: [child] },
+        },
+      },
+    ]);
   });
 
   it("routes known old tool updates and interactions during a successor prompt", async () => {

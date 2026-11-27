@@ -43,6 +43,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function workspaceRoots(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((root): root is string => typeof root === "string" && root.trim().length > 0)
+    : [];
+}
+
 function optionalText(
   params: Record<string, unknown>,
   name: string,
@@ -74,15 +80,16 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
   if (lastTurnText && beforeTurnText) {
     throw new Error("thread/fork cannot combine lastTurnId and beforeTurnId");
   }
-  const runtimeWorkspaceRoots = params.runtimeWorkspaceRoots;
+  const rawWorkspaceRoots = params.runtimeWorkspaceRoots;
   if (
-    runtimeWorkspaceRoots !== undefined &&
-    runtimeWorkspaceRoots !== null &&
-    (!Array.isArray(runtimeWorkspaceRoots) ||
-      runtimeWorkspaceRoots.some((root) => typeof root !== "string" || root.length === 0))
+    rawWorkspaceRoots !== undefined &&
+    rawWorkspaceRoots !== null &&
+    (!Array.isArray(rawWorkspaceRoots) ||
+      rawWorkspaceRoots.some((root) => typeof root !== "string" || root.trim().length === 0))
   ) {
     throw new Error("thread/fork params.runtimeWorkspaceRoots must be text paths or null");
   }
+  const runtimeWorkspaceRoots = workspaceRoots(rawWorkspaceRoots);
   const path = optionalText(params, "path", { allowEmpty: true });
   const ephemeral = optionalBoolean(params, "ephemeral");
   const attachToSource = optionalBoolean(params, "attachToSource");
@@ -100,9 +107,7 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
     excludeTurns: optionalBoolean(params, "excludeTurns") ?? false,
     ...(ephemeral !== undefined ? { ephemeral } : {}),
     ...(attachToSource ? { attachToSource } : {}),
-    ...(Array.isArray(runtimeWorkspaceRoots)
-      ? { runtimeWorkspaceRoots: runtimeWorkspaceRoots as string[] }
-      : {}),
+    ...(runtimeWorkspaceRoots.length ? { runtimeWorkspaceRoots } : {}),
     ...optionalField(params, "approvalPolicy"),
     ...optionalField(params, "sandbox"),
     ...optionalField(params, "serviceTier"),
@@ -201,19 +206,24 @@ export function threadForkResult(
   input: {
     model: string;
     cwd: string;
-    runtimeWorkspaceRoots?: string[];
+    runtimeWorkspaceRoots?: unknown;
     approvalPolicy?: string;
     sandbox: JsonObject;
     serviceTier?: string;
   },
 ): JsonObject {
+  const roots = workspaceRoots(input.runtimeWorkspaceRoots);
+  const cwd = input.cwd.trim();
   return {
     thread,
     model: input.model,
     modelProvider: "codexhost",
     serviceTier: input.serviceTier ?? null,
     cwd: input.cwd,
-    runtimeWorkspaceRoots: input.runtimeWorkspaceRoots ?? [],
+    runtimeWorkspaceRoots:
+      roots.length || thread.workspaceKind === "projectless" || !cwd || cwd === "~"
+        ? roots
+        : [input.cwd],
     instructionSources: [],
     approvalPolicy: input.approvalPolicy ?? "never",
     approvalsReviewer: "user",

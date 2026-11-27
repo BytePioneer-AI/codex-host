@@ -1347,6 +1347,7 @@ export class AppServerHost {
         this.#startOfficialDelegation(input, resolveConfiguration),
       listOfficial: (input) => this.#listDelegationThreads(input),
       officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
+      projectExists: (projectId) => this.#projectExists(projectId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
       pendingQuestions: (threadId) => this.#pendingDelegationQuestions(threadId),
@@ -2927,7 +2928,9 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
-  async #readOfficialThreadMetadata(threadId: string): Promise<{ cwd?: string; title?: string }> {
+  async #readOfficialThreadMetadata(
+    threadId: string,
+  ): Promise<{ cwd?: string; title?: string; projectId?: string }> {
     const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
     if (isRecord(response.error)) return {};
     const result = isRecord(response.result) ? response.result : null;
@@ -2935,9 +2938,11 @@ export class AppServerHost {
     if (!thread) return {};
     const title =
       typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
+    const projectId = storedThreadMetadataV1Schema.shape.projectId.safeParse(thread.projectId);
     return {
       ...(typeof thread.cwd === "string" && thread.cwd.trim() ? { cwd: thread.cwd } : {}),
       ...(typeof title === "string" && title.trim() ? { title } : {}),
+      ...(projectId.success && projectId.data ? { projectId: projectId.data } : {}),
     };
   }
 
@@ -3045,7 +3050,12 @@ export class AppServerHost {
   }
 
   async #startOfficialDelegation(
-    input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+    input: DelegationStartInput & {
+      parentThreadId: string;
+      cwd: string;
+      title: string;
+      projectId?: string;
+    },
     resolveConfiguration: (
       model: HarnessModelRef | undefined,
       inspected?: HarnessInspectResult,
@@ -3123,6 +3133,7 @@ export class AppServerHost {
     const nativeSelection = model ? officialCodexModelSelection(model) : undefined;
     const started = await this.#requestOfficial("thread/start", {
       cwd: input.cwd,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
       ...nativeSelection,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
@@ -5582,24 +5593,15 @@ export class AppServerHost {
         this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
         await this.#writer.json(
           rpcEnvelope(request, {
-            result: {
-              thread,
+            result: threadForkResult(thread, {
               model: transportModelId,
-              modelProvider: "codexhost",
               cwd,
               approvalPolicy:
                 typeof params.approvalPolicy === "string" ? params.approvalPolicy : "never",
-              approvalsReviewer: "user",
               sandbox: sandboxResult(params),
-              reasoningEffort: "medium",
               serviceTier: "flex",
-              multiAgentMode: "explicitRequestOnly",
-              activePermissionProfile: null,
-              runtimeWorkspaceRoots: Array.isArray(params.runtimeWorkspaceRoots)
-                ? params.runtimeWorkspaceRoots
-                : [],
-              instructionSources: [],
-            },
+              runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
+            }),
           }),
         );
         // Draft prewarms remain provisional even when the Harness already has
@@ -5794,9 +5796,7 @@ export class AppServerHost {
         result: threadForkResult(result.responseThread, {
           model: result.derived.transportModelId,
           cwd: result.derived.cwd,
-          ...(fork.runtimeWorkspaceRoots
-            ? { runtimeWorkspaceRoots: fork.runtimeWorkspaceRoots }
-            : {}),
+          runtimeWorkspaceRoots: fork.runtimeWorkspaceRoots,
           ...(fork.approvalPolicy ? { approvalPolicy: fork.approvalPolicy } : {}),
           sandbox: sandboxResult(params),
           ...(fork.serviceTier ? { serviceTier: fork.serviceTier } : {}),
@@ -6155,9 +6155,7 @@ export class AppServerHost {
     const result = threadForkResult(responseThread, {
       model: thread.transportModelId,
       cwd: thread.cwd,
-      runtimeWorkspaceRoots: Array.isArray(params.runtimeWorkspaceRoots)
-        ? params.runtimeWorkspaceRoots.filter((value): value is string => typeof value === "string")
-        : [],
+      runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       approvalPolicy: typeof params.approvalPolicy === "string" ? params.approvalPolicy : "never",
       sandbox: sandboxResult(params),
       ...(typeof params.serviceTier === "string" ? { serviceTier: params.serviceTier } : {}),

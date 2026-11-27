@@ -268,19 +268,33 @@ describe("AppServerHost HarnessAdapter projection", () => {
       if (!session) throw new Error("Missing fixture Session");
       const child = {
         subagentId: "call-child",
-        nativeSubagentId: "native-child",
         description: "Summary child",
         role: "explorer",
         background: false,
         status: "running" as const,
       };
       const itemId = session.startSubagentDelegation(child);
+      const nativeChild = { ...child, nativeSubagentId: "native-child" };
+      session.replaceSubagents(itemId, [nativeChild]);
       const started = await fixture.collector.waitFor(
         (message) =>
           method(message, "thread/started") &&
           (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === parentId,
       );
+      expect(started).toMatchObject({
+        params: { thread: { agentNickname: "Summary child", agentRole: "explorer" } },
+      });
       const childId = (messageParams(started).thread as JsonObject).id;
+      const replacement = await fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/started") &&
+          (messageParams(message).item as JsonObject | undefined)?.id === itemId &&
+          ((messageParams(message).item as JsonObject).receiverThreadIds as string[])[0] ===
+            childId,
+      );
+      expect(fixture.collector.messages.indexOf(started)).toBeLessThan(
+        fixture.collector.messages.indexOf(replacement),
+      );
       const list = async (id: number, sourceParams: JsonObject) => {
         writeRequest(fixture.desktopInput, {
           id,
@@ -314,10 +328,20 @@ describe("AppServerHost HarnessAdapter projection", () => {
           ],
         },
       });
-      session.replaceSubagents(itemId, [{ ...child, status: "completed" }]);
+      session.replaceSubagents(itemId, [{ ...nativeChild, status: "completed" }]);
       session.completeItem(itemId, { status: "succeeded" });
       session.succeedTurn();
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      expect(
+        fixture.collector.messages.slice(fixture.collector.messages.indexOf(replacement) + 1),
+      ).toContainEqual(
+        expect.objectContaining({
+          method: "item/completed",
+          params: expect.objectContaining({
+            item: expect.objectContaining({ id: itemId, receiverThreadIds: [childId] }),
+          }),
+        }),
+      );
       expect(await list(91, { parentThreadId: parentId })).toMatchObject({
         result: {
           data: [

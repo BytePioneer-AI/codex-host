@@ -33,7 +33,9 @@ async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
   officialThreadCwd: (
     threadId: string,
-  ) => Promise<string | undefined | { cwd?: string; title?: string }> = async () => undefined,
+  ) => Promise<
+    string | undefined | { cwd?: string; title?: string; projectId?: string }
+  > = async () => undefined,
   environment: NodeJS.ProcessEnv = {},
   externalThreadBusy: (thread: ExternalThread) => boolean = (thread) => thread.running,
 ) {
@@ -97,6 +99,7 @@ async function fixture(
       const metadata = await officialThreadCwd(threadId);
       return typeof metadata === "string" ? { cwd: metadata } : (metadata ?? {});
     },
+    projectExists: async (projectId) => projectId === "project-a",
     activeOfficialParents: () => [],
     externalThreadBusy,
     pendingQuestions: () => [...pending],
@@ -488,10 +491,12 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  it("resolves delegated cwd from explicit input, external and official parents, then process cwd", async () => {
+  it("resolves delegated cwd and inherits only available parent projects", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
     const officialThreadCwd = vi.fn(async (threadId: string) =>
-      threadId === "official-parent" ? "/official-workspace" : undefined,
+      threadId === "official-parent"
+        ? { cwd: "/official-workspace", projectId: "deleted-project" }
+        : undefined,
     );
     const value = await fixture(adapter, officialThreadCwd);
     try {
@@ -500,24 +505,25 @@ describe("HarnessDelegationCoordinator", () => {
         createRequestId: "stored-parent-request",
         harnessId: harnessIdSchema.parse("pi"),
         cwd: "/parent-workspace",
+        projectId: "project-a",
         title: "parent",
         transportModelId: "codexhost/pi-native",
         ephemeral: false,
         historyMode: "paginated",
       });
 
-      await value.coordinator.start({
+      const inherited = await value.coordinator.start({
         harnessId: "pi",
         task: "inherit external cwd",
         parentThreadId: "stored-parent",
       });
-      await value.coordinator.start({
+      const explicitCwd = await value.coordinator.start({
         harnessId: "pi",
         task: "explicit cwd",
         cwd: "/explicit-workspace",
         parentThreadId: "stored-parent",
       });
-      await value.coordinator.start({
+      const staleProject = await value.coordinator.start({
         harnessId: "pi",
         task: "inherit official cwd",
         parentThreadId: "official-parent",
@@ -534,6 +540,17 @@ describe("HarnessDelegationCoordinator", () => {
         path.resolve("/official-workspace"),
         path.resolve(process.cwd()),
       ]);
+      for (const result of [inherited, explicitCwd]) {
+        await expect(value.repository.find(result.threadId)).resolves.toMatchObject({
+          projectId: "project-a",
+        });
+        expect(value.notifications).toContainEqual(
+          expect.objectContaining({ id: result.threadId, projectId: "project-a" }),
+        );
+      }
+      await expect(value.repository.find(staleProject.threadId)).resolves.not.toHaveProperty(
+        "projectId",
+      );
       expect(officialThreadCwd.mock.calls.map(([threadId]) => threadId)).toEqual([
         "official-parent",
         "missing-parent",

@@ -155,6 +155,9 @@ export async function executeExternalThreadFork(input: {
         transportModelId: source.transportModelId,
         ephemeral: fork.ephemeral ?? source.record.ephemeral,
         historyMode: source.record.historyMode,
+        ...(!changesCwd && !source.record.projectId && source.record.projectlessWorkspace
+          ? { projectlessWorkspace: source.record.projectlessWorkspace }
+          : {}),
         forkSource: {
           hostThreadId: source.id,
           hostTurnId: boundary.hostTurnId,
@@ -298,6 +301,9 @@ async function forkWithoutHistory(input: {
         transportModelId: source.transportModelId,
         ephemeral: fork.ephemeral ?? source.record.ephemeral,
         historyMode: source.record.historyMode,
+        ...(cwd === source.cwd && !source.record.projectId && source.record.projectlessWorkspace
+          ? { projectlessWorkspace: source.record.projectlessWorkspace }
+          : {}),
         ...(fork.attachToSource ? { attachedToThreadId: source.id, inheritedTurnCount: 0 } : {}),
       }),
     );

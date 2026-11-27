@@ -769,7 +769,11 @@ describe("Codex UI projector", () => {
     ]);
     const startedSubagent = startedItem.subagents[0];
     if (!startedSubagent) throw new Error("Test delegation has no Subagent");
-    const runningSubagent = { ...startedSubagent, status: "running" as const };
+    const runningSubagent = {
+      ...startedSubagent,
+      subagentId: "child-host-thread",
+      status: "running" as const,
+    };
     expect(
       value.project({
         type: "item.updated",
@@ -783,8 +787,9 @@ describe("Codex UI projector", () => {
         params: {
           item: {
             type: "collabAgentToolCall",
+            receiverThreadIds: ["child-host-thread"],
             agentsStates: {
-              "claude-agent-1": { status: "running", message: null },
+              "child-host-thread": { status: "running", message: null },
             },
           },
         },
@@ -794,7 +799,7 @@ describe("Codex UI projector", () => {
       ...startedItem,
       subagents: [
         {
-          ...startedSubagent,
+          ...runningSubagent,
           status: "completed",
           resultSummary: "Inspection complete",
         },
@@ -814,7 +819,7 @@ describe("Codex UI projector", () => {
           item: {
             type: "collabAgentToolCall",
             agentsStates: {
-              "claude-agent-1": { status: "completed", message: "Inspection complete" },
+              "child-host-thread": { status: "completed", message: "Inspection complete" },
             },
           },
         },
@@ -834,7 +839,7 @@ describe("Codex UI projector", () => {
             type: "collabAgentToolCall",
             status: "completed",
             agentsStates: {
-              "claude-agent-1": { status: "completed", message: "Inspection complete" },
+              "child-host-thread": { status: "completed", message: "Inspection complete" },
             },
           },
         },

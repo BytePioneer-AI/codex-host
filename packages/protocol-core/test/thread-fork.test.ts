@@ -79,6 +79,22 @@ describe("Codex thread/fork protocol boundary", () => {
         params: { threadId: "thread-1", attachToSource: true, ephemeral: true },
       }),
     ).toThrow("cannot combine attachToSource with ephemeral");
+    for (const runtimeWorkspaceRoots of ["invalid", [""], [" "], [123]]) {
+      expect(() =>
+        decodeThreadForkRequest({
+          id: 4,
+          method: "thread/fork",
+          params: { threadId: "thread-1", runtimeWorkspaceRoots },
+        }),
+      ).toThrow("runtimeWorkspaceRoots must be text paths or null");
+    }
+    expect(
+      decodeThreadForkRequest({
+        id: 5,
+        method: "thread/fork",
+        params: { threadId: "thread-1", runtimeWorkspaceRoots: [] },
+      })?.runtimeWorkspaceRoots,
+    ).toBeUndefined();
   });
 
   it("decodes the current paginated thread/revert boundary", () => {
@@ -215,4 +231,27 @@ describe("Codex thread/fork protocol boundary", () => {
       multiAgentMode: "explicitRequestOnly",
     });
   });
+
+  it.each([
+    { cwd: "/workspace", expected: ["/workspace"] },
+    { cwd: "/workspace", roots: "invalid", expected: ["/workspace"] },
+    { cwd: "/workspace", roots: [null, "", " "], expected: ["/workspace"] },
+    { cwd: "/workspace", roots: [null, "/explicit"], expected: ["/explicit"] },
+    { cwd: "/workspace", projectless: true, roots: [], expected: [] },
+    { cwd: "/workspace", projectless: true, roots: ["/explicit"], expected: ["/explicit"] },
+    { cwd: "~", expected: [] },
+    { cwd: " ", expected: [] },
+  ])(
+    "resolves external workspace roots for $cwd and $roots",
+    ({ cwd, roots, projectless, expected }) => {
+      expect(
+        threadForkResult(projectless ? { workspaceKind: "projectless" } : {}, {
+          cwd,
+          model: "pi-native",
+          sandbox: {},
+          runtimeWorkspaceRoots: roots,
+        }).runtimeWorkspaceRoots,
+      ).toEqual(expected);
+    },
+  );
 });

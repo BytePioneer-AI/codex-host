@@ -106,6 +106,7 @@ import {
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
+import { installRendererSummaryPanelGuard } from "./renderer-summary-panel-guard.js";
 import { readClaudePermissionModePreference } from "./renderer-permission-mode-preference.js";
 import { isPermissionModeControlReady } from "./renderer-permission-mode-picker.js";
 import {
@@ -881,6 +882,7 @@ export function installRendererBindingProbe(
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
+  const summaryPanelGuard = installRendererSummaryPanelGuard(document);
   let scanScheduled = false;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
@@ -4242,6 +4244,7 @@ export function installRendererBindingProbe(
       canOpenAdapterHandoff = nextCanOpenHandoff ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
+      summaryPanelGuard.refresh();
       widgets.refresh();
       treeRelay.reconnect();
       publishConnectionStatus();
@@ -4297,6 +4300,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      summaryPanelGuard.dispose();
       widgets.dispose();
       unbindDesktopExtensions();
       pendingDefaultPreferences.clear();

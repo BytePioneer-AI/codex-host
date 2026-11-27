@@ -565,6 +565,78 @@ describe("tool lifecycle and file changes", () => {
       });
     },
   );
+
+  it.each([
+    {
+      name: "invoke_subagent",
+      rawInput: JSON.stringify(
+        JSON.stringify({
+          Role: '"Asset researcher"',
+          TypeName: "researcher",
+          Prompt: "Inspect assets",
+        }),
+      ),
+      rawOutput: {
+        parentId: "aaaaaaaa-1234-1234-1234-123456789abc",
+        conversationId: "12345678-1234-1234-1234-123456789abc",
+      },
+      expected: {
+        operation: "spawn",
+        prompt: "Inspect assets",
+        subagents: [
+          expect.objectContaining({ description: "Asset researcher", role: "Asset researcher" }),
+        ],
+      },
+    },
+    {
+      name: "send_message",
+      rawInput: { Recipient: "12345678-1234-1234-1234-123456789abc", Message: "Continue" },
+      rawOutput: { conversation_id: "aaaaaaaa-1234-1234-1234-123456789abc" },
+      expected: { operation: "send", prompt: "Continue" },
+    },
+    {
+      name: "invoke_subagent",
+      rawInput: { typeName: "reviewer", prompt: "{}" },
+      rawOutput: { conversation_id: "12345678-1234-1234-1234-123456789abc" },
+      expected: {
+        operation: "spawn",
+        prompt: "{}",
+        subagents: [expect.objectContaining({ description: "reviewer", role: "reviewer" })],
+      },
+    },
+  ])(
+    "decodes native $name ACP arguments and child identity",
+    ({ name, rawInput, rawOutput, expected }) => {
+      const { tools, events } = tracker();
+      for (const update of [
+        {
+          sessionUpdate: "tool_call",
+          toolCallId: "call-1",
+          title: name,
+          rawInput,
+          status: "in_progress",
+        },
+        { sessionUpdate: "tool_call_update", toolCallId: "call-1", rawOutput, status: "completed" },
+      ]) {
+        const event = projectAcpSessionUpdate(update);
+        if (event?.type !== "tool.call" && event?.type !== "tool.update")
+          throw new Error("Expected a tool event");
+        tools.handleToolEvent(event);
+      }
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "item.updated",
+          update: {
+            type: "subagents.replace",
+            subagents: [
+              expect.objectContaining({ nativeSubagentId: "12345678-1234-1234-1234-123456789abc" }),
+            ],
+          },
+        }),
+      );
+      expect(tools.completedSnapshots()[0]).toMatchObject({ item: expected });
+    },
+  );
 });
 
 describe("history replay", () => {

@@ -144,6 +144,41 @@ describe("LF-only JSONL framing", () => {
     expect(frames[1]).toEqual({ type: "turn_start", turnId: "turn-1" });
   });
 
+  it("delivers frames completed before a bad line, coalesced or split", () => {
+    const response = {
+      type: "response",
+      id: "prompt-1",
+      success: true,
+      command: "prompt",
+      data: { disposition: "started" },
+    };
+    const bytes = encoder.encode(`${JSON.stringify(response)}\nthis is not JSON\n`);
+
+    // The same byte stream must produce the same outcome however the OS chunks
+    // it: the completed response first, then the typed framing failure.
+    function feed(coalesced: boolean): { frames: OmoFrame[]; failure: string | undefined } {
+      const framer = new OmoJsonlFramer();
+      const frames: OmoFrame[] = [];
+      const chunks = coalesced ? [bytes] : [...bytes].map((byte) => new Uint8Array([byte]));
+      for (const chunk of chunks) {
+        try {
+          frames.push(...framer.push(chunk));
+        } catch (error) {
+          expect(error).toBeInstanceOf(OmoProtocolError);
+        }
+      }
+      expect(framer.failure).toBeInstanceOf(OmoProtocolError);
+      expect(captureProtocolError(() => framer.push(encoder.encode("{}\n"))).kind).toBe(
+        "framing_failed",
+      );
+      return { frames, failure: framer.failure?.kind };
+    }
+
+    expect(feed(true)).toEqual(feed(false));
+    expect(feed(true).frames).toEqual([response]);
+    expect(feed(true).failure).toBe("invalid_json");
+  });
+
   it("buffers frames split across chunks anywhere, including inside UTF-8 characters", () => {
     const first = { type: "message_update", text: "😺 first" };
     const second = {

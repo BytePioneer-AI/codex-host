@@ -306,6 +306,14 @@ interface PendingCommand {
 // id is forgotten and its answer faults the session as unknown.
 const MAX_EXPIRED_IDS = 64;
 
+/**
+ * Raw stderr retained for diagnostics. Sanitizing happens only when the tail is
+ * published, so a secret split across chunks still matches its pattern; the
+ * raw buffer is bounded here and `sanitizeDiagnosticTail` bounds the published
+ * text again.
+ */
+const STDERR_TAIL_MAX_LENGTH = 8_192;
+
 /** Width sent for compatibility; classic stdio renders no extension components. */
 const OMO_CLIENT_WIDTH = 80;
 
@@ -473,7 +481,7 @@ export class OmoRpcSession {
   readonly #expired = new Set<string>();
   #child: ChildProcessWithoutNullStreams | null = null;
   #state: OmoRpcSessionState | null = null;
-  #stderrTail = "";
+  #stderrRaw = "";
   #failed = false;
   #closed = false;
   #fault: OmoRpcFaultError | null = null;
@@ -498,8 +506,9 @@ export class OmoRpcSession {
     return this.#state;
   }
 
+  /** The diagnostic tail, sanitized from the raw bytes each time it is read. */
   get stderrTail(): string {
-    return this.#stderrTail;
+    return sanitizeDiagnosticTail(this.#stderrRaw);
   }
 
   /** The terminal fault, or null while the transport is usable. */
@@ -572,7 +581,7 @@ export class OmoRpcSession {
       const fault =
         error instanceof OmoRpcFaultError
           ? error
-          : new OmoRpcFaultError("protocolError", message(error), this.#stderrTail);
+          : new OmoRpcFaultError("protocolError", message(error), this.stderrTail);
       this.#fail(fault);
       throw fault;
     }
@@ -597,7 +606,7 @@ export class OmoRpcSession {
     const child = this.#child;
     if (!child || !child.stdin.writable) {
       return Promise.reject(
-        new OmoRpcFaultError("unavailable", "OmO RPC stdin is unavailable", this.#stderrTail),
+        new OmoRpcFaultError("unavailable", "OmO RPC stdin is unavailable", this.stderrTail),
       );
     }
     const timeoutMs = options.timeoutMs ?? this.#options.commandTimeoutMs;
@@ -669,7 +678,7 @@ export class OmoRpcSession {
       }
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
-      this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+      this.#appendStderr(chunk.toString());
     });
     // A child that exits before reading closes the pipe; without a listener the
     // EPIPE becomes an uncaught exception in the shared Host process.
@@ -679,24 +688,53 @@ export class OmoRpcSession {
         new OmoRpcFaultError(
           "processExited",
           `OmO RPC stdin closed: ${error.message}`,
-          this.#stderrTail,
+          this.stderrTail,
           { cause: error },
         ),
       );
     });
     child.on("error", (error) => {
-      this.#fail(spawnFault(error, this.#stderrTail));
+      this.#fail(spawnFault(error, this.stderrTail));
     });
+    // `exit` may arrive before the last stdout data and its `end`: the engine
+    // can answer its final command and terminate in the same breath. Failing
+    // here would gate #push on #failed and lose that answer, so the process-
+    // exited fault waits for stdout to drain, bounded by the close budget.
+    // #fail stays the one idempotent place the fault is published.
     child.once("exit", (code, signal) => {
       if (this.#closed) return;
-      this.#fail(
-        new OmoRpcFaultError(
-          "processExited",
-          `OmO RPC exited (code=${code}, signal=${signal})`,
-          this.#stderrTail,
-        ),
-      );
+      const fail = (): void => {
+        if (this.#failed || this.#closed) return;
+        this.#fail(
+          new OmoRpcFaultError(
+            "processExited",
+            `OmO RPC exited (code=${code}, signal=${signal})`,
+            this.stderrTail,
+          ),
+        );
+      };
+      if (child.stdout.readableEnded) {
+        fail();
+        return;
+      }
+      const timer = setTimeout(() => {
+        child.stdout.off("end", onDrained);
+        fail();
+      }, this.#options.closeTimeoutMs);
+      timer.unref?.();
+      function onDrained(): void {
+        clearTimeout(timer);
+        fail();
+      }
+      child.stdout.once("end", onDrained);
     });
+  }
+
+  #appendStderr(chunk: string): void {
+    this.#stderrRaw += chunk;
+    if (this.#stderrRaw.length > STDERR_TAIL_MAX_LENGTH) {
+      this.#stderrRaw = this.#stderrRaw.slice(-STDERR_TAIL_MAX_LENGTH);
+    }
   }
 
   #push(chunk: Buffer): void {
@@ -713,6 +751,10 @@ export class OmoRpcSession {
       else if (!isStartupChatter(frame)) this.#events.push(frame);
       if (this.#failed) return;
     }
+    // A chunk can complete frames and then fail: they were delivered above, and
+    // the failure ends the stream only after their responses resolved.
+    const failure = this.#framer.failure;
+    if (failure) this.#fail(this.#protocolFault(failure));
   }
 
   #handleResponse(response: OmoResponseFrame): void {
@@ -723,7 +765,7 @@ export class OmoRpcSession {
         new OmoRpcFaultError(
           "protocolError",
           `OmO RPC response id '${response.id}' is not pending`,
-          this.#stderrTail,
+          this.stderrTail,
         ),
       );
       return;
@@ -751,7 +793,7 @@ export class OmoRpcSession {
     return new OmoRpcFaultError(
       "protocolError",
       `OmO RPC protocol failure${detail}`,
-      this.#stderrTail,
+      this.stderrTail,
       errorOptions(error),
     );
   }
@@ -762,7 +804,7 @@ export class OmoRpcSession {
       return new OmoRpcFaultError(
         "unavailable",
         `OmO RPC startup timed out: ${error.message}`,
-        this.#stderrTail,
+        this.stderrTail,
         { cause: error },
       );
     }
@@ -770,14 +812,14 @@ export class OmoRpcSession {
       return new OmoRpcFaultError(
         "protocolError",
         `OmO RPC startup was refused: ${error.message}`,
-        this.#stderrTail,
+        this.stderrTail,
         { cause: error },
       );
     }
     return new OmoRpcFaultError(
       "unavailable",
       `OmO RPC startup failed: ${message(error)}`,
-      this.#stderrTail,
+      this.stderrTail,
       errorOptions(error),
     );
   }

@@ -106,6 +106,17 @@ export class OmoJsonlFramer {
   readonly #chunks: Buffer[] = [];
   #pendingBytes = 0;
   #failed = false;
+  #failure: OmoProtocolError | null = null;
+
+  /**
+   * The failure that made this framer unusable, or null while it is healthy.
+   * A chunk that completes frames and then fails keeps those frames in
+   * {@link push}'s return value; the failure is recorded here so the caller can
+   * deliver them before ending the stream, and the next call throws.
+   */
+  get failure(): OmoProtocolError | null {
+    return this.#failure;
+  }
 
   /** Buffers one chunk and returns every frame completed by it, in order. */
   push(chunk: Uint8Array): OmoFrame[] {
@@ -138,12 +149,18 @@ export class OmoJsonlFramer {
       }
       return frames;
     } catch (error) {
+      const failure =
+        error instanceof OmoProtocolError
+          ? error
+          : new OmoProtocolError("framing_failed", "OmO RPC framing failed", { cause: error });
       this.#failed = true;
+      this.#failure = failure;
       this.#chunks.length = 0;
       this.#pendingBytes = 0;
-      throw error instanceof OmoProtocolError
-        ? error
-        : new OmoProtocolError("framing_failed", "OmO RPC framing failed", { cause: error });
+      // Frames this chunk already completed stay valid and are delivered before
+      // the failure; a chunk that completed none throws so nothing goes silent.
+      if (frames.length === 0) throw failure;
+      return frames;
     }
   }
 

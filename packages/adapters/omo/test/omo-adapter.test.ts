@@ -47,6 +47,14 @@ const FIXTURE_SOURCE = `import fs from "node:fs";
 import path from "node:path";
 
 const scenario = process.env.FAKE_OMO_SCENARIO ?? "inspect";
+// A peer that reports a protocol version this adapter does not speak must be
+// refused before any Session is published.
+const protocolVersion =
+  process.env.FAKE_OMO_PROTOCOL_VERSION === undefined
+    ? scenario === "inspect-incompatible"
+      ? 2
+      : 1
+    : Number(process.env.FAKE_OMO_PROTOCOL_VERSION);
 const cwd = process.cwd();
 const stateDir = path.join(cwd, ".fake-omo");
 fs.mkdirSync(stateDir, { recursive: true });
@@ -219,7 +227,7 @@ function handle(command) {
     }
     case "get_protocol_info":
       respond(command, {
-        protocolVersion: scenario === "inspect-incompatible" ? 2 : 1,
+        protocolVersion,
         serverVersion: "5.1.83",
         capabilities: ["multi_session", "session_model_scope", "effect_ledger"],
         mode: "classic",
@@ -299,6 +307,13 @@ function handle(command) {
       return;
     }
     case "get_tree":
+      // Only a reopened blank Session starts with an explicit --session, so
+      // this refusal isolates the adapter's cleanup path: the startup --fork
+      // copy still answers its history read.
+      if (process.env.FAKE_OMO_REOPEN_GET_TREE_ERROR === "1" && process.env.FAKE_OMO_SESSION) {
+        respondError(command, "internal", "synthetic get_tree refusal");
+        return;
+      }
       respond(command, {
         tree: sessionEntries.length === 0 ? [] : [{ entry: sessionEntries[0], children: [] }],
         leafId: sessionEntries.at(-1)?.id ?? null,
@@ -929,6 +944,21 @@ describe("OmO Adapter open", () => {
     });
   });
 
+  it("rejects a create whose engine reports an incompatible protocol and reaps it", async () => {
+    const cwd = temporaryDirectory();
+    const fixture = sessionFixture(cwd, { FAKE_OMO_PROTOCOL_VERSION: "2" });
+    const result = await fixture.adapter.open({ kind: "create", cwd });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "protocolError", retryable: false },
+    });
+    if (result.ok) throw new Error("expected a refused open");
+    expect(result.error.message).toContain("protocol version 2");
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
   it("applies an explicit Model at create and publishes the confirmed effective state", async () => {
     const cwd = temporaryDirectory();
     const fixture = sessionFixture(cwd);
@@ -1312,6 +1342,32 @@ describe("OmO Adapter open", () => {
     });
     await resumed.value.close();
     expect(readFileSync(sourceFile)).toEqual(before);
+  });
+
+  it("reaps the reopened blank Session when its history read is refused", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", ["only question"]);
+    // The startup --fork copy answers get_tree; the reopened blank Session
+    // refuses it, so only the adapter's own discard of the reopened RPC keeps
+    // that process from leaking until Adapter close.
+    const fixture = sessionFixture(cwd, {
+      FAKE_OMO_FORK_DEFER_EMPTY: "1",
+      FAKE_OMO_REOPEN_GET_TREE_ERROR: "1",
+    });
+    const result = await fixture.adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: derivationRef(cwd, sourceFile, "session-source"),
+      cwd,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", retryable: false },
+    });
+    expect(fixture.sessionChildren).toHaveLength(2);
+    const reopenedPid = fixture.sessionChildren[1]?.pid;
+    expect(reopenedPid).toBeDefined();
+    await expectProcessGone(reopenedPid as number);
+    expect(derivedSessionFiles(cwd)).toEqual([]);
   });
 
   it("forks at a middle Checkpoint and ends exactly at it", async () => {

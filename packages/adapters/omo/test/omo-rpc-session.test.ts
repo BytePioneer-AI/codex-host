@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -174,6 +176,99 @@ function captureError(run: () => unknown): unknown {
     return error;
   }
   throw new Error("expected the call to throw");
+}
+
+interface SyntheticPeer {
+  readonly child: ChildProcessWithoutNullStreams;
+  readonly stdout: PassThrough;
+  readonly stderr: PassThrough;
+  /** Delivers the OS `exit` event; stdout may still hold unread bytes. */
+  exit(code?: number | null): void;
+}
+
+/**
+ * A process boundary whose stream events the test orders exactly. A real OS
+ * pipe decides on its own whether `exit` is observed before the last stdout
+ * bytes; here the responder does, so both orderings are testable and stable.
+ * The peer also exits on stdin EOF like the real engine and the fixture.
+ */
+function syntheticPeer(
+  respond: (command: Record<string, unknown>, peer: SyntheticPeer) => void,
+): SyntheticPeer {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 424_242,
+    stdin,
+    stdout,
+    stderr,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+  });
+  const peer: SyntheticPeer = {
+    child: child as unknown as ChildProcessWithoutNullStreams,
+    stdout,
+    stderr,
+    exit(code = 0) {
+      child.exitCode = code;
+      child.emit("exit", code, null);
+    },
+  };
+  let buffer = "";
+  stdin.setEncoding("utf8");
+  stdin.on("data", (chunk: string) => {
+    buffer += chunk;
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (line.trim().length > 0) respond(JSON.parse(line) as Record<string, unknown>, peer);
+      newline = buffer.indexOf("\n");
+    }
+  });
+  stdin.on("end", () => {
+    if (child.exitCode !== null) return;
+    peer.exit(0);
+  });
+  return peer;
+}
+
+/** Answers the transport startup handshake a synthetic peer must complete. */
+function answerStartup(command: Record<string, unknown>, peer: SyntheticPeer): void {
+  peer.stdout.write(
+    `${JSON.stringify({
+      id: command.id,
+      type: "response",
+      command: command.type,
+      success: true,
+      data: command.type === "get_state" ? { sessionId: "synthetic-peer" } : {},
+    })}\n`,
+  );
+}
+
+/** One response frame line for the synthetic peer. */
+function responseLine(command: Record<string, unknown>, data: unknown): string {
+  return `${JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data })}\n`;
+}
+
+function syntheticSession(
+  respond: (command: Record<string, unknown>, peer: SyntheticPeer) => void,
+  options: { closeTimeoutMs?: number } = {},
+): { rpc: OmoRpcSession; faults: OmoRpcFaultError[] } {
+  const peer = syntheticPeer(respond);
+  const faults: OmoRpcFaultError[] = [];
+  const rpc = new OmoRpcSession(
+    {
+      cwd: temporaryDirectory(),
+      commandTimeoutMs: 5_000,
+      closeTimeoutMs: options.closeTimeoutMs ?? 500,
+      onFault: (fault) => faults.push(fault),
+    },
+    { spawn: () => peer.child },
+  );
+  sessions.push(rpc);
+  return { rpc, faults };
 }
 
 describe("OmO RPC startup", () => {
@@ -380,6 +475,131 @@ describe("OmO RPC fault paths", () => {
     await expect(pending).rejects.toBe(observed);
     await expectIteratorDone(events);
     await expectProcessGone(requirePid(handle.child()));
+  });
+});
+
+describe("OmO RPC stream ordering", () => {
+  it("delivers the final response of a process that exited first", async () => {
+    const { rpc, faults } = syntheticSession((command, peer) => {
+      if (command.type === "answer-then-exit") {
+        // The engine answers and terminates; `exit` reaches the parent before
+        // the answer is read. The response must still resolve the command.
+        peer.exit(0);
+        peer.stdout.write(responseLine(command, { answered: true }));
+        peer.stdout.end();
+        return;
+      }
+      answerStartup(command, peer);
+    });
+    await rpc.start();
+    const events = rpc.events();
+
+    await expect(rpc.send("answer-then-exit")).resolves.toMatchObject({
+      type: "response",
+      success: true,
+      data: { answered: true },
+    });
+    await vi.waitFor(() => expect(faults).toHaveLength(1));
+    expect(faults[0]).toMatchObject({ kind: "processExited" });
+    expect(rpc.fault).toBe(faults[0]);
+    await expectIteratorDone(events);
+    await expect(rpc.send("get_state")).rejects.toBe(faults[0]);
+  });
+
+  it("faults at once when stdout already ended before exit", async () => {
+    const { rpc, faults } = syntheticSession((command, peer) => {
+      if (command.type === "answer-then-end") {
+        peer.stdout.write(responseLine(command, { answered: true }));
+        peer.stdout.once("end", () => peer.exit(0));
+        peer.stdout.end();
+        return;
+      }
+      answerStartup(command, peer);
+    });
+    await rpc.start();
+
+    await expect(rpc.send("answer-then-end")).resolves.toMatchObject({
+      type: "response",
+      success: true,
+      data: { answered: true },
+    });
+    await vi.waitFor(() => expect(faults).toHaveLength(1));
+    expect(faults[0]).toMatchObject({ kind: "processExited" });
+  });
+
+  it("bounds the stdout drain wait when the stream never ends", async () => {
+    const { rpc, faults } = syntheticSession(
+      (command, peer) => {
+        if (command.type === "exit-without-drain") {
+          peer.exit(1);
+          return;
+        }
+        answerStartup(command, peer);
+      },
+      { closeTimeoutMs: 150 },
+    );
+    await rpc.start();
+
+    const observed = await bounded(
+      rpc.send("exit-without-drain").catch((error: unknown) => error),
+      3_000,
+      "the bounded process-exited fault",
+    );
+    expect(observed).toMatchObject({ kind: "processExited" });
+    expect(faults).toEqual([observed]);
+  });
+
+  it("resolves a response that shares its chunk with a bad frame before faulting", async () => {
+    const { rpc, faults } = syntheticSession((command, peer) => {
+      if (command.type === "response-and-garbage") {
+        // One stdout chunk: the valid response line, then a line that is not
+        // JSON. The answer must resolve, then the bad frame must end the stream.
+        peer.stdout.write(`${responseLine(command, { answered: true })}this is not JSON\n`);
+        return;
+      }
+      answerStartup(command, peer);
+    });
+    await rpc.start();
+    const events = rpc.events();
+
+    await expect(rpc.send("response-and-garbage")).resolves.toMatchObject({
+      type: "response",
+      success: true,
+      data: { answered: true },
+    });
+    await vi.waitFor(() => expect(faults).toHaveLength(1));
+    const observed = faults[0] as OmoRpcFaultError;
+    expect(observed.kind).toBe("protocolError");
+    expect(observed.cause).toBeInstanceOf(OmoProtocolError);
+    expect((observed.cause as OmoProtocolError).kind).toBe("invalid_json");
+    await expectIteratorDone(events);
+  });
+
+  it("redacts a bearer token split across stderr chunks at read time", async () => {
+    const { rpc } = syntheticSession((command, peer) => {
+      if (command.type === "stderr-split") {
+        peer.stderr.write("Bearer a");
+        peer.stderr.write("BCDEFGHIJKLMNOP\n");
+        answerStartup(command, peer);
+        return;
+      }
+      if (command.type === "garbage") {
+        peer.stdout.write("this is not JSON\n");
+        return;
+      }
+      answerStartup(command, peer);
+    });
+    await rpc.start();
+
+    await rpc.send("stderr-split");
+    expect(rpc.stderrTail).toContain("Bearer [redacted]");
+    expect(rpc.stderrTail).not.toContain("BCDEFGHIJKLMNOP");
+    expect(rpc.stderrTail).not.toContain("Bearer a");
+    // Fault diagnostics are built from the same published tail, never from a
+    // tail that was sanitized chunk by chunk and stored back.
+    const observed = await rpc.send("garbage").catch((error: unknown) => error);
+    expect(observed).toBeInstanceOf(OmoRpcFaultError);
+    expect((observed as OmoRpcFaultError).diagnostic).not.toContain("BCDEFGHIJKLMNOP");
   });
 });
 

@@ -56,7 +56,7 @@ import {
   type OmoInspectSessionOptions,
 } from "./omo-inspect.js";
 import { OmoModelCatalogProtocolError } from "./omo-model-catalog.js";
-import { OmoProtocolError } from "./omo-protocol.js";
+import { OmoProtocolError, assertCompatible, parseOmoProtocolInfo } from "./omo-protocol.js";
 import { OMO_SESSION_CAPABILITIES, OmoHarnessSession } from "./omo-session.js";
 import {
   OmoRpcClosedError,
@@ -304,6 +304,18 @@ export class OmoAdapter implements HarnessAdapter {
       await rpc.start();
       if (this.#closePromise) {
         return await rejectOpen(invalidState("OmO Adapter is closed"));
+      }
+      // Negotiate the same wire contract the inspect handshake proves before a
+      // Session is published: an engine speaking another protocol cannot host
+      // the Session this Adapter would drive.
+      try {
+        assertCompatible(parseOmoProtocolInfo((await rpc.send("get_protocol_info")).data));
+      } catch (error) {
+        return await rejectOpen(
+          error instanceof OmoProtocolError
+            ? { code: "protocolError", message: error.message, retryable: false }
+            : openError(error),
+        );
       }
       const state = rpc.state;
       if (nativeRef !== undefined && sessionPath !== undefined) {
@@ -986,16 +998,24 @@ async function persistBlankOmoSession(
       retryable: false,
     });
   }
-  const history = await readOmoHistory(reopened, commandOptions);
-  if (resolveOmoLastTurnBoundary(history) !== null) {
-    return rejectReopened({
-      code: "protocolError",
-      message: "OmO resumed the blank derived Session with conversation Turns",
-      retryable: false,
-    });
+  // The reopened process belongs to this derivation until the Session is
+  // handed back: a refused history read or a failed configuration restore must
+  // reap it here, not leak it to the Adapter's live set until close.
+  try {
+    const history = await readOmoHistory(reopened, commandOptions);
+    if (resolveOmoLastTurnBoundary(history) !== null) {
+      return rejectReopened({
+        code: "protocolError",
+        message: "OmO resumed the blank derived Session with conversation Turns",
+        retryable: false,
+      });
+    }
+    const restored = await restoreDerivedConfiguration(reopened, input, startup, commandOptions);
+    if (!restored.ok) return rejectReopened(restored.error);
+  } catch (error) {
+    await options.discardRpc(reopened);
+    return { ok: false, error: openError(error) };
   }
-  const restored = await restoreDerivedConfiguration(reopened, input, startup, commandOptions);
-  if (!restored.ok) return rejectReopened(restored.error);
   return { ok: true, value: { rpc: reopened, state: reopened.state } };
 }
 

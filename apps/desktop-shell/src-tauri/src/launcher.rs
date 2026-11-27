@@ -4,7 +4,7 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,9 @@ const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(250);
 pub(crate) struct Options {
     pub onboarding: bool,
     pub data_dir: PathBuf,
+    /// True when the data directory came from `--data-dir` or an absolute
+    /// `CODEXHOST_DATA_DIR`, rather than being derived from the home directory.
+    pub explicit_data_dir: bool,
 }
 
 impl Options {
@@ -45,6 +48,10 @@ impl Options {
                 }
             }
         }
+        let explicit_data_dir = data_dir.is_some()
+            || data_env
+                .as_deref()
+                .is_some_and(|value| Path::new(value).is_absolute());
         let data_dir = data_dir
             .or_else(|| {
                 data_env
@@ -60,6 +67,7 @@ impl Options {
         Ok(Self {
             onboarding,
             data_dir,
+            explicit_data_dir,
         })
     }
 
@@ -125,18 +133,23 @@ struct LaunchPreferences {
 pub(crate) struct Launcher {
     executable: Option<PathBuf>,
     pub data_dir: PathBuf,
+    /// Whether `data_dir` was explicitly configured; when false the launcher must
+    /// not inject `CODEXHOST_DATA_DIR` so the shim uses the implicit default
+    /// directory, matching a plain `codexhost launch`.
+    explicit_data_dir: bool,
     command_lock: Mutex<()>,
     stopping: AtomicBool,
 }
 
 impl Launcher {
-    pub fn new(shell: &Path, data_dir: PathBuf) -> Self {
+    pub fn new(shell: &Path, data_dir: PathBuf, explicit_data_dir: bool) -> Self {
         Self {
             executable: find_launcher(
                 shell,
                 env::var_os("CODEXHOST_LAUNCHER_EXECUTABLE").map(PathBuf::from),
             ),
             data_dir,
+            explicit_data_dir,
             command_lock: Mutex::new(()),
             stopping: AtomicBool::new(false),
         }
@@ -158,11 +171,11 @@ impl Launcher {
             "CodexHost launcher not found. Reinstall CodexHost or set CODEXHOST_LAUNCHER_EXECUTABLE.",
         )?;
         let mut command = Command::new(executable);
-        command
-            .args(args)
-            .env("CODEXHOST_DATA_DIR", &self.data_dir)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null());
+        command.args(args);
+        if self.explicit_data_dir {
+            command.env("CODEXHOST_DATA_DIR", &self.data_dir);
+        }
+        command.stdin(Stdio::null()).stderr(Stdio::null());
         Ok(command)
     }
 
@@ -393,6 +406,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn injects_data_directory_only_when_explicit() {
+        let root = tempfile::tempdir().unwrap();
+        let launcher = Launcher {
+            executable: Some(root.path().join("codexhost")),
+            data_dir: root.path().to_owned(),
+            explicit_data_dir: false,
+            command_lock: Mutex::new(()),
+            stopping: AtomicBool::new(false),
+        };
+        let command = launcher.command(&["console"]).unwrap();
+        assert!(command
+            .get_envs()
+            .all(|(key, _)| key != std::ffi::OsStr::new("CODEXHOST_DATA_DIR")));
+        let launcher = Launcher {
+            explicit_data_dir: true,
+            ..launcher
+        };
+        let command = launcher.command(&["console"]).unwrap();
+        assert!(command
+            .get_envs()
+            .any(|(key, _)| key == std::ffi::OsStr::new("CODEXHOST_DATA_DIR")));
+    }
+
+    #[test]
     fn parses_startup_options_and_keeps_data_directory_precedence() {
         let root = tempfile::tempdir().unwrap();
         let cli = root.path().join("CLI data");
@@ -417,14 +454,16 @@ mod tests {
             .unwrap(),
             Options {
                 onboarding: true,
-                data_dir: cli
+                data_dir: cli,
+                explicit_data_dir: true,
             }
         );
         assert_eq!(parse(vec![], Some(&env)).unwrap().data_dir, env);
-        assert_eq!(
-            parse(vec![], Some(Path::new("relative"))).unwrap().data_dir,
-            home.join(".codexhost")
-        );
+        let default = parse(vec![], Some(Path::new("relative"))).unwrap();
+        assert_eq!(default.data_dir, home.join(".codexhost"));
+        assert!(!default.explicit_data_dir);
+        assert!(!parse(vec![], None).unwrap().explicit_data_dir);
+        assert!(parse(vec![], Some(&env)).unwrap().explicit_data_dir);
         for args in [
             vec!["--data-dir"],
             vec!["--data-dir", "relative"],
@@ -463,6 +502,7 @@ esac
         let launcher = Launcher {
             executable: Some(executable),
             data_dir: root.path().to_owned(),
+            explicit_data_dir: true,
             command_lock: Mutex::new(()),
             stopping: AtomicBool::new(false),
         };
@@ -534,6 +574,7 @@ exit 1
         let launcher = Launcher {
             executable: Some(executable),
             data_dir: root.path().to_owned(),
+            explicit_data_dir: true,
             command_lock: Mutex::new(()),
             stopping: AtomicBool::new(false),
         };

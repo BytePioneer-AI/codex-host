@@ -12,9 +12,14 @@ import {
 import { DEFAULT_SIDEBAR_BROWSER_QUALITY, SidebarBrowserTab } from "../src/sidebar-browser-tab.ts";
 
 /** Only the Chrome and socket boundaries are substituted; the tab owns all scheduling. */
-async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
+async function openTab(
+  t: TestContext,
+  frames: () => Frame[] = () => [],
+  quality = DEFAULT_SIDEBAR_BROWSER_QUALITY,
+) {
   const starts: Record<string, unknown>[] = [];
   const screenshots: Record<string, unknown>[] = [];
+  const acks: Array<{ at: number; sessionId: number }> = [];
   const sessions: EventEmitter[] = [];
   const context = {
     newCDPSession: async () => {
@@ -23,6 +28,8 @@ async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
           if (command === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
           if (command === "Page.getNavigationHistory") return { entries: [], currentIndex: 0 };
           if (command === "Page.startScreencast") starts.push(params);
+          if (command === "Page.screencastFrameAck")
+            acks.push({ at: performance.now(), sessionId: Number(params.sessionId) });
           if (command === "Page.captureScreenshot") {
             screenshots.push(params);
             return { data: "" };
@@ -47,11 +54,16 @@ async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
     goto: async () => undefined,
     url: () => "https://example.test/",
     title: async () => "Example",
+    mouse: {
+      move: async () => undefined,
+      down: async () => undefined,
+      up: async () => undefined,
+    },
   });
   const tab = new SidebarBrowserTab(
     "test",
     async () => context as unknown as BrowserContext,
-    DEFAULT_SIDEBAR_BROWSER_QUALITY,
+    quality,
   );
   t.after(() => tab.close());
   const attach = async () => {
@@ -75,16 +87,24 @@ async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
   const viewer = await attach();
   viewer.receive({ type: "navigate", url: page.url() });
   await setImmediate();
-  const paint = async (id: number, size = 1, session = 0) => {
+  const paint = async (id: number, size = 1, session = 0, sessionId = 1) => {
     const cdp = sessions[session];
     assert.ok(cdp, `Expected CDP session ${session}`);
     cdp.emit("Page.screencastFrame", {
       data: Buffer.alloc(size, id).toString("base64"),
-      sessionId: 1,
+      sessionId,
     });
     await setImmediate();
   };
-  return { viewer, attach, paint, starts, screenshots, changeContent: () => editableChanged() };
+  return {
+    viewer,
+    attach,
+    paint,
+    starts,
+    screenshots,
+    acks,
+    changeContent: () => editableChanged(),
+  };
 }
 
 function header(frame: Buffer | undefined) {
@@ -251,4 +271,97 @@ it("keeps editable areas valid while streaming during scans", { timeout: 3000 },
   await paint(4);
   assert.equal(latestFrame().width, 900);
   assert.equal(latestFrame().generation, resized.generation);
+});
+
+it("backs off ACKs and skips duplicate frames on static pages, and keeps base pace on changes", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const advance = async (ms: number) => {
+    now += ms;
+    t.mock.timers.tick(ms);
+    await setImmediate();
+  };
+  const { viewer, paint, acks } = await openTab(t, () => [], {
+    ...DEFAULT_SIDEBAR_BROWSER_QUALITY,
+    maxFps: 20, // 50ms base interval
+  });
+  const ackLatest = () => viewer.receive({ type: "ack", sequence: sequence(viewer.frames.at(-1)) });
+  ackLatest();
+
+  // First changed frame ACKs immediately and is delivered.
+  await paint(1, 20 * 1024, 0, 1);
+  await advance(0);
+  assert.deepEqual(pictures(viewer.frames), [undefined, 1]);
+  assert.equal(acks.length, 1);
+  ackLatest();
+
+  // Second changed frame in full mode must wait the full 50ms base interval (never 25ms).
+  await paint(2, 20 * 1024, 0, 2);
+  await advance(49);
+  assert.equal(acks.length, 1);
+  await advance(1);
+  assert.equal(acks.length, 2);
+  assert.deepEqual(pictures(viewer.frames), [undefined, 1, 2]);
+  ackLatest();
+
+  // Consecutive identical small PNG frames are skipped for delivery and back off 100 -> 200 -> 400 -> 500ms.
+  for (const [index, expectedGap] of [100, 200, 400, 500].entries()) {
+    const beforeAcks = acks.length;
+    await paint(2, 20 * 1024, 0, 10 + index);
+    await advance(expectedGap - 1);
+    assert.equal(acks.length, beforeAcks);
+    await advance(1);
+    assert.equal(acks.length, beforeAcks + 1);
+  }
+  assert.deepEqual(pictures(viewer.frames), [undefined, 1, 2]);
+
+  // A new changed frame immediately restores the 50ms base interval and delivers.
+  await paint(3, 20 * 1024, 0, 20);
+  await advance(49);
+  assert.equal(acks.length, 6);
+  await advance(1);
+  assert.equal(acks.length, 7);
+  assert.deepEqual(pictures(viewer.frames), [undefined, 1, 2, 3]);
+});
+
+it("still delivers a newer frame in motion mode after an earlier same-slot arrival was rate-limited", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { viewer, attach, paint } = await openTab(t);
+  const second = await attach();
+  await setImmediate();
+
+  // Drive into motion mode.
+  for (let i = 1; i <= 5; i++) {
+    now += 30;
+    t.mock.timers.tick(30);
+    await paint(i, 1400 * 1024);
+  }
+  const viewers = [viewer, second];
+  const ack = () => {
+    for (const v of viewers) v.receive({ type: "ack", sequence: sequence(v.frames.at(-1)) });
+  };
+  ack();
+
+  // Slot A: frame 6 is delivered; frame 7 arrives in the same slot and is rate-limited.
+  await paint(6, 100, 1, 1);
+  await paint(7, 100, 1, 2);
+  assert.equal(pictures(viewer.frames).at(-1), 6);
+  ack();
+
+  // Next slot: Chrome repeats settled frame 7 — viewers must receive 7 instead of staying stuck on 6.
+  now += 40;
+  t.mock.timers.tick(40);
+  await paint(7, 100, 1, 3);
+  assert.equal(pictures(viewer.frames).at(-1), 7);
+  ack();
+
+  // Subsequent slot: repeating already-delivered frame 7 is skipped.
+  const deliveredBefore = viewer.frames.length;
+  now += 40;
+  t.mock.timers.tick(40);
+  await paint(7, 100, 1, 4);
+  assert.equal(viewer.frames.length, deliveredBefore);
 });

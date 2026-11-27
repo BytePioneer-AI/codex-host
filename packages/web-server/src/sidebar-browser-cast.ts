@@ -46,6 +46,7 @@ export class SidebarBrowserCast {
   private nextAck = -Infinity;
   private lastSlot = -Infinity;
   private lastPicture: string | undefined;
+  private lastDelivered: string | undefined;
   private idleSteps = 0;
 
   constructor(
@@ -103,17 +104,23 @@ export class SidebarBrowserCast {
       this.mode === "full" &&
       this.format === "png" &&
       SidebarBrowserQualitySelection.isMotionCandidate(bytes, pixels);
-    const compare = this.mode === "motion" || largePng;
-    const changed = compare && data !== this.lastPicture;
-    this.lastPicture = compare ? data : undefined;
+    const changed = data !== this.lastPicture;
+    this.lastPicture = data;
     return {
       at,
       bytes,
       pixels,
       changed,
       replacedPending: largePng && changed && hasPending(),
-      compared: compare,
     };
+  }
+
+  needsDelivery(data: string): boolean {
+    return data !== this.lastDelivered;
+  }
+
+  markDelivered(data: string): void {
+    this.lastDelivered = data;
   }
 
   allowPicture(now: number): boolean {
@@ -129,18 +136,18 @@ export class SidebarBrowserCast {
   /** Fresh input or motion ends idle pacing immediately. */
   resetPace(): void {
     this.idleSteps = 0;
+    this.nextAck = Math.min(this.nextAck, this.lastAck + this.interval);
   }
 
   acknowledge(sessionId: number, now: number, current: () => boolean, changed = true): void {
     // Chrome re-captures and re-encodes after every acknowledgement, so a static page would keep
     // the encoder busy at full frame rate. Back off when consecutive frames are identical and
     // resume the base pace as soon as the picture changes again.
-    const idle = this.mode !== "motion" || !changed;
     if (changed) this.idleSteps = 0;
-    else this.idleSteps++;
-    const gap = idle
-      ? Math.min(this.interval * 2 ** (this.idleSteps - 1), IDLE_ACK_MAX_MS)
-      : this.interval;
+    else this.idleSteps = Math.min(this.idleSteps + 1, 16);
+    const gap = changed
+      ? this.interval
+      : Math.min(this.interval * 2 ** this.idleSteps, IDLE_ACK_MAX_MS);
     // Reserve separate ACK times in motion mode to pace Chrome's encodes, not just delivery.
     const due = Math.max(now, this.mode === "motion" ? this.nextAck : this.lastAck + gap);
     this.nextAck = due + gap;

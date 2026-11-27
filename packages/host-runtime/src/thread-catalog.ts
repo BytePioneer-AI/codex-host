@@ -99,7 +99,7 @@ function listQuery(archived: boolean): DecodedThreadListRequest {
     params: {
       archived,
       limit: OFFICIAL_PAGE_SIZE,
-      sortKey: "updated_at",
+      sortKey: "recency_at",
       sortDirection: "desc",
     },
   });
@@ -184,7 +184,7 @@ export async function readThreadCatalog(
       }
       officialCursor[branch] = next;
       return data.map((thread) => ({
-        entry: officialThreadListEntry(thread, "updated_at"),
+        entry: officialThreadListEntry(thread, "recency_at"),
         ownership: { threadId: rowId(thread), owner: "codex" as const },
         archived: query.archived,
       }));

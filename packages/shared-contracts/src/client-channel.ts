@@ -341,6 +341,8 @@ export const clientThreadSnapshotSchema = z.object({
       modelProvider: z.string().min(1),
       createdAt: z.number(),
       updatedAt: z.number(),
+      /** Last conversation activity in Unix seconds, distinct from metadata writes. */
+      recencyAt: z.number().nullable().optional(),
       status: z.object({ type: z.string() }).passthrough(),
       name: z.string().nullable().optional(),
       preview: z.string().optional(),

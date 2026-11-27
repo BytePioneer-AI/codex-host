@@ -63,6 +63,38 @@ function paginatedUsageFixture(inspect: () => unknown) {
   return { identity, sessionId, host, row, calls, remote };
 }
 
+it("uses remote conversation recency for list and opened-session timestamps", async (t) => {
+  const { sessionId, row, remote } = paginatedUsageFixture(() => ({}));
+  t.after(() => remote.close());
+  Object.assign(row, { updatedAt: 2000, recencyAt: 1000 });
+  const rpc = new RpcRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  remote.install(rpc, new StreamRegistry());
+  await remote.refresh();
+  const result = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(result.ok);
+  const summary = (
+    result.value as {
+      items: Array<{
+        sessionId: string;
+        updatedAt: number;
+        projections: { values: Record<string, unknown> };
+      }>;
+    }
+  ).items.find((item) => item.sessionId === sessionId);
+  assert.equal(summary?.updatedAt, 1_000_000);
+  assert.deepEqual(summary?.projections.values.sessionListMetadata, {
+    blank: false,
+    lastPromptAt: 1_000_000,
+  });
+  const view = await remote.read(sessionId);
+  assert.deepEqual(view.log.projections.sessionListMetadata, {
+    blank: true,
+    lastPromptAt: 1_000_000,
+  });
+  assert.equal(view.thread.updatedAt, 2000, "history keeps the native update timestamp");
+});
+
 it("projects matching remote usage and makes repeat reads within the refresh period inexpensive", async (t) => {
   let usage = { cacheHitRatePercent: 97.8, totalCostUsd: 2.45 };
   const { identity, sessionId, row, calls, remote } = paginatedUsageFixture(() => usage);

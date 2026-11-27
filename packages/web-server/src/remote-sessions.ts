@@ -32,6 +32,7 @@ import {
 import { ChInteractions } from "./ch-interactions.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { threadRecencyMs } from "./ch-thread-time.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { isMethodUnavailableError, type PeerThreadSource } from "./peer-thread-source.ts";
@@ -1789,7 +1790,7 @@ export class RemoteSessions {
     return {
       sessionId: id,
       cwd: "",
-      updatedAt: entry.row.updatedAt * 1000,
+      updatedAt: threadRecencyMs(entry.row),
       running: entry.online && entry.row.status.type === "active",
       blank: false,
       agentAvailable: entry.online,
@@ -1820,7 +1821,7 @@ export class RemoteSessions {
           remoteHistoryError: entry.historyError ?? null,
           attachmentInput: { enabled: attachmentsSupported },
           ...(attachmentsSupported ? { imageLimits: WEB_IMAGE_LIMITS } : {}),
-          sessionListMetadata: { blank: false, lastPromptAt: entry.row.updatedAt * 1000 },
+          sessionListMetadata: { blank: false, lastPromptAt: threadRecencyMs(entry.row) },
         },
       },
     };
@@ -2964,7 +2965,7 @@ export class RemoteSessions {
       if (seen.has(id)) continue;
       const snippet = threadListTitle({ ...entry.row, id: entry.identity.threadId });
       if (snippet.toLowerCase().includes(needle)) {
-        remoteMatches.push({ sessionId: id, snippet, updatedAt: entry.row.updatedAt * 1000 });
+        remoteMatches.push({ sessionId: id, snippet, updatedAt: threadRecencyMs(entry.row) });
       }
     }
     for (const draft of this.drafts.values()) {

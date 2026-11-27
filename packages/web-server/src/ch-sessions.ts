@@ -36,6 +36,7 @@ import { nativePermissionView } from "./session-presentation.ts";
 import { nativeProjectRootOwners, projectGroupRoot } from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { threadRecencyMs } from "./ch-thread-time.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
 import { ChHarnessCommands } from "./ch-harness-commands.ts";
@@ -546,7 +547,7 @@ export class ChSessions {
     return JSON.stringify([
       threadListTitle(row),
       row.cwd,
-      row.updatedAt,
+      threadRecencyMs(row),
       row.status.type,
       row.parentThreadId ?? null,
       this.tree.parent(row.id),
@@ -907,12 +908,12 @@ export class ChSessions {
       title: threadListTitle(row),
       codexhostImportSource: row.codexhostImportSource ?? null,
       harnessIdentity: { id: harnessId, name: await this.catalog.name(harnessId) },
-      sessionListMetadata: { blank: false, lastPromptAt: row.updatedAt * 1000 },
+      sessionListMetadata: { blank: false, lastPromptAt: threadRecencyMs(row) },
     };
     return {
       sessionId: row.id,
       cwd: row.cwd,
-      updatedAt: row.updatedAt * 1000,
+      updatedAt: threadRecencyMs(row),
       running: row.status.type === "active",
       blank: false,
       agentAvailable: true,

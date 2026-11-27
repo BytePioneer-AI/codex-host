@@ -636,6 +636,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let boot_id = format!("{}-{boot_nanos}", std::process::id());
     let zoom = Arc::new(Mutex::new(zoom_controller));
     let zoom_persist = Arc::new(Mutex::new(Some(initial_zoom_percent)));
+    #[cfg(target_os = "macos")]
+    let mut drop_staging = {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .prefix("codexhost-drop-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .ok()
+    };
+    #[cfg(target_os = "macos")]
+    let drop_path = drop_staging
+        .as_ref()
+        .and_then(|dir| std::ffi::CString::new(dir.path().as_os_str().as_encoded_bytes()).ok());
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en".into());
     let (ensure_web, requests) = mpsc::channel();
     let onboarding = options.onboarding;
@@ -753,7 +766,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let builder = builder
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true);
-            builder
+            let window = builder
                 .on_permission_request(move |_, kind| {
                     let shell = permission_app.state::<Shell>();
                     let view = shell.view.lock().unwrap();
@@ -783,10 +796,24 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            #[cfg(target_os = "macos")]
+            if let Some(path) = drop_path {
+                let install = window.with_webview(move |webview| {
+                    unsafe extern "C" {
+                        fn codexhost_install_file_drop(
+                            webview: *mut std::ffi::c_void,
+                            directory: *const std::ffi::c_char,
+                        );
+                    }
+                    // Tauri provides the live WKWebView here. The receiver copies the directory path.
+                    unsafe { codexhost_install_file_drop(webview.inner(), path.as_ptr()) };
+                });
+                if install.is_err() {
+                    eprintln!("CodexHost: could not enable macOS file drop staging");
+                }
+            }
             let initial_scale = app.state::<Shell>().zoom.lock().unwrap().scale();
-            if let Some(window) = app.get_webview_window(MAIN)
-                && let Err(error) = window.set_zoom(initial_scale)
-            {
+            if let Err(error) = window.set_zoom(initial_scale) {
                 eprintln!("CodexHost: could not apply initial desktop shell zoom: {error}");
             }
             tray::install(&app_handle, &locale)?;
@@ -824,8 +851,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         })?;
-    app.run(|app, event| match event {
+    app.run(move |app, event| match event {
         RunEvent::Exit => {
+            #[cfg(target_os = "macos")]
+            drop(drop_staging.take());
             if let Some(shell) = app.try_state::<Shell>() {
                 // Flush any queued or in-flight zoom update before exiting (no-op if unchanged).
                 persist_latest_zoom(&shell.zoom, &shell.zoom_persist, &shell.launcher.data_dir);

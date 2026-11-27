@@ -4,7 +4,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-lockup-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-lockup-light.png" />
-    <img src="docs/imgs/readme-lockup-light.png" alt="CodexHost" width="290" />
+    <img src="docs/imgs/readme-lockup-light.png" alt="CodexHost" width="420" />
   </picture>
 </p>
 

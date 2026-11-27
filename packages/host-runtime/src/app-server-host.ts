@@ -2953,9 +2953,10 @@ export class AppServerHost {
     if (!thread) return null;
     const title =
       typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
+    const projectId = typeof thread.projectId === "string" ? thread.projectId.trim() : undefined;
     return {
       ...(typeof thread.cwd === "string" && thread.cwd.trim() ? { cwd: thread.cwd } : {}),
-      ...(typeof thread.projectId === "string" ? { projectId: thread.projectId } : {}),
+      ...(projectId ? { projectId } : {}),
       ...(typeof title === "string" && title.trim() ? { title } : {}),
     };
   }
@@ -3131,6 +3132,7 @@ export class AppServerHost {
         turnId: turnId ?? "pending",
         harnessId: "codex",
         deepLink: `codex://threads/${existing.childHostThreadId}`,
+        cwd: path.resolve(input.cwd),
         status: existing.status,
         next: {
           read: `codexhost thread read ${existing.childHostThreadId}`,
@@ -3142,8 +3144,9 @@ export class AppServerHost {
     const selection = await resolveConfiguration(explicitModel, inspected);
     const { model, thinkingOptionId } = selection;
     const nativeSelection = model ? officialCodexModelSelection(model) : undefined;
+    const cwd = path.resolve(input.cwd);
     const started = await this.#requestOfficial("thread/start", {
-      cwd: input.cwd,
+      cwd,
       ...(parent.projectId ? { projectId: parent.projectId } : {}),
       ...nativeSelection,
       approvalPolicy: "never",
@@ -3208,7 +3211,7 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${threadId}`,
         status: pendingTerminal ?? "running",
-        cwd: thread && typeof thread.cwd === "string" ? thread.cwd : input.cwd,
+        cwd: thread && typeof thread.cwd === "string" ? thread.cwd : cwd,
         ...(model || thinkingOptionId
           ? {
               configuration: {

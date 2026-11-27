@@ -1,16 +1,27 @@
 import path from "node:path";
 import { discoverHostClientChannel } from "@codexhost/desktop-control";
-import { parseJsonFrame, readLfFrames, writeJsonFrame } from "@codexhost/protocol-core";
+import {
+  parseJsonFrame,
+  readLfFrames,
+  writeJsonFrame,
+  type JsonValue,
+} from "@codexhost/protocol-core";
 import {
   OfficialRuntimeClient,
   type OfficialRuntimeScope,
 } from "./codex-runtime/official-runtime-scope.js";
-import type { OwnedOfficialBackend } from "./codex-runtime/official-runtime-owner.js";
+import {
+  RetiredOfficialServerRequestError,
+  type OwnedOfficialBackend,
+} from "./codex-runtime/official-runtime-owner.js";
 import type {
   OfficialAppServerConnection,
   OfficialAppServerExit,
 } from "./official-app-server-connection.js";
-import { createRemoteOfficialAppServerConnection } from "./remote-official-connection.js";
+import {
+  createRemoteOfficialAppServerConnection,
+  PrivateOfficialHandshakeError,
+} from "./remote-official-connection.js";
 import type { RemoteAppServerSession, RemoteAppServerSessionStreams } from "./remote-app-server.js";
 import { object, rpcId } from "./shared-thread-peer.js";
 
@@ -21,45 +32,76 @@ export function nativeRelaySession(
 ): RemoteAppServerSession {
   let client: OfficialRuntimeClient | undefined;
   let detached = false;
+  const disconnected = Promise.withResolvers<undefined>();
   const detach = () => {
+    if (detached) return;
     detached = true;
+    void client?.close();
     streams.input.destroy();
+    disconnected.resolve(undefined);
+  };
+  const write = async (value: JsonValue) => {
+    if (detached) return;
+    if (streams.output.destroyed) {
+      detach();
+      return;
+    }
+    try {
+      await writeJsonFrame(streams.output, value);
+    } catch {
+      detach();
+    }
+  };
+  const forward = async () => {
+    for await (const frame of readLfFrames(streams.input, {
+      maxFrameBytes: 128 * 1024 * 1024,
+    })) {
+      if (detached) break;
+      const value = parseJsonFrame(frame);
+      if (!object(value)) throw new Error("Invalid native frame");
+      if (!client) {
+        if (value.method !== "initialize" || !rpcId(value.id) || !object(value.params))
+          throw new Error("Native initialization required");
+        client = new OfficialRuntimeClient({
+          scope,
+          output: ({ value }) => write(value),
+          onBackendStopped: detach,
+        });
+        await client.initialize();
+        if (detached) break;
+        const reply = await client.initializeProtocol(value.params);
+        await write({ ...reply, id: value.id });
+      } else {
+        try {
+          await client.send(value);
+        } catch (error) {
+          if (detached) break;
+          if (error instanceof RetiredOfficialServerRequestError) {
+            streams.diagnosticOutput.write("codexhost: discarded a retired native server reply\n");
+          } else if (typeof value.method === "string" && rpcId(value.id)) {
+            await write({
+              id: value.id,
+              error: { code: -32001, message: "Official request failed; retry explicitly" },
+            });
+          } else {
+            throw error;
+          }
+        }
+      }
+    }
   };
   return {
     disconnect: detach,
     close: detach,
     async run() {
       try {
-        for await (const frame of readLfFrames(streams.input, {
-          maxFrameBytes: 128 * 1024 * 1024,
-        })) {
-          const value = parseJsonFrame(frame);
-          if (!object(value)) throw new Error("Invalid native frame");
-          if (!client) {
-            if (value.method !== "initialize" || !rpcId(value.id) || !object(value.params))
-              throw new Error("Native initialization required");
-            client = new OfficialRuntimeClient({
-              scope,
-              output: async ({ value }) => {
-                if (!detached) await writeJsonFrame(streams.output, value);
-              },
-              onBackendStopped: detach,
-            });
-            await client.initialize();
-            if (detached) break;
-            const reply = await client.initializeProtocol(value.params);
-            if (!detached) await writeJsonFrame(streams.output, { ...reply, id: value.id });
-          } else {
-            await client.send(value);
-          }
-        }
+        await Promise.race([forward(), disconnected.promise]);
         return 0;
       } catch (error) {
         if (detached) return 0;
         throw error;
       } finally {
-        detached = true;
-        await client?.close();
+        detach();
       }
     },
   };
@@ -82,8 +124,17 @@ export function sharedNativeBackend(dataDirectory: string): OwnedOfficialBackend
     closed: ended.promise,
     connect,
     async start() {
-      descriptor = await discoverHostClientChannel(path.join(dataDirectory, "client-hosts"));
-      monitor = await connect();
+      try {
+        descriptor = await discoverHostClientChannel(path.join(dataDirectory, "client-hosts"));
+        monitor = await connect();
+      } catch (error) {
+        const reason =
+          error instanceof PrivateOfficialHandshakeError
+            ? error.message
+            : "independent Host descriptor unavailable";
+        process.stderr.write(`codexhost: shared native backend start: ${reason}\n`);
+        throw error;
+      }
       monitor.stderr.resume();
       void monitor.closed.then(ended.resolve);
     },

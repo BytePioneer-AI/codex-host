@@ -214,15 +214,10 @@ export async function runSharedHostService(
           channel = await startClientChannelServer({
             environment: env,
             owner: "service",
-            nativeSession: (streams) => {
-              if (stopping) throw new Error("Shared Host is stopping");
-              return nativeRelaySession(official.officialRuntimeScope, streams);
-            },
-            externalSession: (streams) => {
-              if (stopping) throw new Error("Shared Host is stopping");
-              return owner.createSession(streams);
-            },
+            nativeSession: (streams) => nativeRelaySession(official.officialRuntimeScope, streams),
+            externalSession: (streams) => owner.createSession(streams),
             shutdown: {
+              isStopping: () => stopping,
               runningTasks: () =>
                 new Set([
                   ...official.officialRuntimeScope.owner.activeThreadIds,
@@ -230,10 +225,8 @@ export async function runSharedHostService(
                 ]).size,
               stop,
             },
-            desktopSession: (streams, request) => {
-              if (stopping) throw new Error("Shared Host is stopping");
-              return sharedHostDesktop(desktopOptions, streams, request);
-            },
+            desktopSession: (streams, request) =>
+              sharedHostDesktop(desktopOptions, streams, request),
             target: {
               clientEvents: host.clientEvents,
               handleClientRequest: (method, params) => host.handleClientRequest(method, params),

@@ -1495,12 +1495,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture, "parent-thread", "Main review", "project-a");
+    await answerOfficialParentCwd(fixture, "parent-thread", "Main review", " project-a ");
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
       params: {
-        cwd: "/synthetic",
+        cwd: path.resolve("/synthetic"),
         projectId: "project-a",
         approvalPolicy: "never",
         sandbox: "danger-full-access",

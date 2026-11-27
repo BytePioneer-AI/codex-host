@@ -187,8 +187,8 @@ it.each(["shared", "stale SSH copy", "legacy SSH"] as const)(
     }
     const expected =
       placement === "legacy SSH"
-        ? { cwd: "/legacy", projectId: "legacy-project" }
-        : { cwd: "/synthetic", projectId: "project-a" };
+        ? { cwd: path.resolve("/legacy"), projectId: "legacy-project" }
+        : { cwd: path.resolve("/synthetic"), projectId: "project-a" };
     expect(await respond("thread/start", { result: { thread: { id: "child" } } })).toMatchObject(
       expected,
     );

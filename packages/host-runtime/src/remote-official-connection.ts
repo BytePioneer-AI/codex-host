@@ -19,6 +19,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Only locally classified handshake facts are safe to include in private-channel diagnostics. */
+export class PrivateOfficialHandshakeError extends Error {
+  constructor(cause: unknown) {
+    const message = errorMessage(cause);
+    const status = /^Unexpected server response: ([1-5]\d{2})$/u.exec(message)?.[1];
+    const reason = status
+      ? `HTTP ${status}`
+      : message === "Opening handshake has timed out"
+        ? "timeout"
+        : "transport unavailable";
+    super(`Private official connection failed (${reason})`);
+  }
+}
+
 /**
  * Adapts one native app-server WebSocket client to the LF-delimited streams
  * consumed by AppServerHost. Every remote Desktop client gets its own socket,
@@ -186,6 +200,7 @@ export async function createRemoteOfficialAppServerConnection(
       signal: null,
       error: new Error(describeError(error)),
     });
+    if (options.capabilityToken) throw new PrivateOfficialHandshakeError(error);
     throw new Error(`Shared official app-server connection failed: ${describeError(error)}`);
   }
 

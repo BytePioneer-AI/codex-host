@@ -18,6 +18,7 @@ function bytes(data: RawData): Buffer {
 export function attachRemoteAppServerSession(options: {
   socket: WebSocket;
   framing?: "messages" | "ndjson";
+  drainInputOnDisconnect?: boolean;
   diagnosticOutput: Writable;
   createSession(streams: RemoteAppServerSessionStreams): RemoteAppServerSession;
 }): { running: Promise<void>; close(): void } {
@@ -53,7 +54,8 @@ export function attachRemoteAppServerSession(options: {
         close();
       }
     };
-    void inputTail.then(detach, detach);
+    if (options.drainInputOnDisconnect === false) detach();
+    else void inputTail.then(detach, detach);
   };
   socket.on("message", (data, isBinary) => {
     if (isBinary && options.framing !== "ndjson") {

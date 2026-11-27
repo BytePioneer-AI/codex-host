@@ -49,7 +49,7 @@ export async function startClientChannelServer(options: {
   environment: NodeJS.ProcessEnv;
   directory?: string;
   owner?: "service";
-  shutdown?: { runningTasks(): number; stop(): void };
+  shutdown?: { runningTasks(): number; stop(): void; isStopping?(): boolean };
   /** When provided, advertises `capabilities.peerDelegation=1` and routes internal peer delegation exclusively here. */
   peerDelegation?: (params: unknown) => Promise<{ result: JsonValue }>;
   nativeSession?: (streams: RemoteAppServerSessionStreams) => RemoteAppServerSession;
@@ -157,8 +157,16 @@ export async function startClientChannelServer(options: {
   ]);
   server.on("upgrade", (request, socket, head) => {
     const session = routes.get(request.url ?? "");
-    if (closing || !session || !authorized(request)) {
+    if (!authorized(request)) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    if (!session) {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    if (closing || options.shutdown?.isStopping?.()) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       return;
     }
     desktop.handleUpgrade(request, socket, head, (connection) => {
@@ -166,6 +174,7 @@ export async function startClientChannelServer(options: {
         const binding = attachRemoteAppServerSession({
           socket: connection,
           framing: request.url === "/v1/native" ? "messages" : "ndjson",
+          drainInputOnDisconnect: request.url !== "/v1/native",
           diagnosticOutput: process.stderr,
           createSession: (streams) => session(streams, request),
         });

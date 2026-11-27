@@ -29,6 +29,7 @@ import {
   type RemoteSessionOperation,
   type SkillsListResult,
 } from "@codexhost/shared-contracts";
+import { permissionCommand } from "./ch-harness-commands.ts";
 import { ChInteractions } from "./ch-interactions.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
@@ -142,6 +143,10 @@ const PROXY_NOT_FOUND_HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy": "sandbox; default-src 'none'",
 } as const;
+
+function isEditableThread(entry: Entry): boolean {
+  return !entry.archived && !entry.row.parentThreadId && entry.row.canAcceptDirectInput !== false;
+}
 
 function hasContentPartType(content: unknown, type: string): boolean {
   return (
@@ -2750,24 +2755,24 @@ export class RemoteSessions {
       const id = request.sessionId ?? request.address?.sessionId ?? request.agentId ?? args.agentId;
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
       if (method === "fileReferences/list") return next();
-      if (method === "commands/list") return [];
+      const draft = this.drafts.get(id);
+      if (method === "commands/list") {
+        const entry = this.entries.get(draft?.canonicalId ?? id);
+        return entry?.identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) &&
+          isEditableThread(entry)
+          ? [permissionCommand]
+          : [];
+      }
       if (method === "session/openWorkspacePath") {
         throw new RpcError(
           "session/open-unavailable",
           "Remote sessions cannot open files on the Hub host.",
         );
       }
-      if (method === "codexhost/executeThreadCommand") {
-        throw new RpcError(
-          "remote/unsupported",
-          "Direct command execution is unavailable for remote Threads.",
-        );
-      }
       if (method === "session/prompt") {
         const pending = this.pendingFirstTurns.get(id);
         if (pending) return this.firstTurn(pending, request as Record<string, unknown>);
       }
-      const draft = this.drafts.get(id);
       if (draft) {
         draft.lastUsed = Date.now();
         const input = request as Record<string, unknown>;
@@ -2782,6 +2787,13 @@ export class RemoteSessions {
             return this.listDraftSkills(draft);
           case "codexhost/threadCommands":
             return this.inspectDraftCommands(draft);
+          case "codexhost/executeThreadCommand":
+            if (draft.target.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX))
+              throw new RpcError("command/unavailable", "Commands require an existing Thread.");
+            throw new RpcError(
+              "remote/unsupported",
+              "Direct command execution requires a remote Peer.",
+            );
           case "codexhost/turnDiffs": {
             const parsed = webTurnDiffsRequestSchema.safeParse(input);
             if (!parsed.success)
@@ -2927,24 +2939,22 @@ export class RemoteSessions {
     const peerSource = this.requireOnlinePeerSource(draft.target.hostId);
     return peerSource.inspectHarnessCommands("codex", draft.target.cwd);
   }
-  private async inspectThreadCommands(id: string): Promise<HarnessCommandCatalog> {
-    const identity = remoteSessionIdentity(id);
-    if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
-    if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
-      throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
-    }
+  private async peerCommandThread(id: string, hostId: string): Promise<PeerThreadSource> {
+    let source = this.requireOnlinePeerSource(hostId);
     let entry = this.entries.get(id);
     if (!entry) {
-      await this.refresh(identity.hostId);
+      await this.refresh(hostId);
+      source = this.requireOnlinePeerSource(hostId);
       entry = this.entries.get(id);
     }
     if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
     if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
-    const peerSource = this.requireOnlinePeerSource(identity.hostId);
-    if (entry.row.parentThreadId || entry.row.canAcceptDirectInput === false) {
+    const epoch = source.host.manifestEpoch();
+    if (entry.epoch !== undefined && epoch !== undefined && entry.epoch !== epoch)
+      throw new RpcError("remote/connection-changed", "Remote peer changed before dispatch.");
+    if (!isEditableThread(entry))
       throw new RpcError("command/unavailable", "Commands require an editable remote Thread.");
-    }
-    return peerSource.inspectThreadCommands(identity.threadId);
+    return source;
   }
   private async search(
     args: Record<string, unknown>,
@@ -3015,8 +3025,22 @@ export class RemoteSessions {
     if (method === "codexhost/skills/list") {
       return this.listThreadSkills(id);
     }
-    if (method === "codexhost/threadCommands") {
-      return this.inspectThreadCommands(id);
+    if (method === "codexhost/threadCommands" || method === "codexhost/executeThreadCommand") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      const execute = method === "codexhost/executeThreadCommand";
+      if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+        if (execute)
+          throw new RpcError(
+            "remote/unsupported",
+            "Direct command execution requires a remote Peer.",
+          );
+        throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
+      }
+      const source = await this.peerCommandThread(id, identity.hostId);
+      return execute
+        ? source.executeThreadCommand(identity.threadId, request)
+        : source.inspectThreadCommands(identity.threadId);
     }
     if (method === "session/attachment") {
       const identity = remoteSessionIdentity(id);

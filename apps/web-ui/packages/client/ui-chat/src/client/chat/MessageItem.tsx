@@ -32,6 +32,7 @@ import { ThreadWatchNotice } from "./ThreadWatchNotice.tsx";
 import { CompactionItem } from "./CompactionItem.tsx";
 import { ContextInjectionRow } from "./ContextInjectionRow.tsx";
 import { MessageIconActions } from "./MessageIconActions.tsx";
+import { clampMultiClickSelection } from "./response-selection.ts";
 import { useTurnMessageTime } from "./turn-message-time.ts";
 import { SentMessageEditor } from "./SentMessageEditor.tsx";
 import css from "./MessageItem.module.css";
@@ -311,7 +312,12 @@ function UserStyleBubble({
         )}
         {editor ??
           (showBubble && (
-            <div className={notice ? undefined : css.bubble}>
+            <div
+              className={notice ? undefined : css.bubble}
+              onClick={(event) => {
+                if (event.detail >= 2) clampMultiClickSelection(event.currentTarget);
+              }}
+            >
               {notice ? (
                 <ThreadWatchNotice entries={notice} links={links} t={t} />
               ) : (

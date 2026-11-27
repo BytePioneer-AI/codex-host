@@ -130,6 +130,8 @@
   color: var(--dsw-alias-label-secondary);
   font-size: var(--dsh-content-font-size-secondary, 13px);
   line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -142,6 +144,8 @@
   color: var(--dsw-alias-label-tertiary);
   font-size: var(--dsh-content-font-size-secondary, 13px);
   line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .running {
@@ -153,6 +157,8 @@
   color: var(--dsw-alias-label-deep-diving);
   font-size: calc(var(--dsh-content-font-size, 14px) - 2px);
   line-height: calc(22px + var(--dsh-content-font-delta, 0px));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* The last visible row before the status must contain output, not an input.
@@ -241,6 +247,8 @@
   min-height: 28px;
   font-size: 12px;
   color: var(--dsw-alias-label-secondary);
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .older button {
@@ -278,6 +286,8 @@
     calc((100% - var(--dsh-chat-content-width)) / 2)
   );
   pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 :global([data-conversation-scroll]) .toBottomSlot {

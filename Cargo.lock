@@ -375,6 +375,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codexhost-screenshot"
+version = "0.28.2"
+dependencies = [
+ "codexhost-platform",
+ "windows",
+ "winresource",
+ "xcap",
+]
+
+[[package]]
 name = "codexhost-shim"
 version = "0.28.2"
 dependencies = [
@@ -382,6 +392,7 @@ dependencies = [
  "fs2",
  "nix",
  "signal-hook",
+ "winresource",
 ]
 
 [[package]]
@@ -392,6 +403,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "winresource",
 ]
 
 [[package]]

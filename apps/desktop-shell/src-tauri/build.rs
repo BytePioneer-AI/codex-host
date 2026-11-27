@@ -16,24 +16,31 @@ fn main() {
         );
     }
 
-    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&[
-            "choose_surface",
-            "retry",
-            "open_console",
-            "get_state",
-            "ensure_web_access",
-            "open_web_browser",
-            "window_start_dragging",
-            "window_minimize",
-            "window_toggle_maximize",
-            "window_close",
-            "window_chrome_state",
-            "window_visibility_get",
-            "window_zoom_get",
-            "window_zoom_step",
-            "window_zoom_set",
-        ]),
-    ))
+    println!("cargo:rerun-if-changed=windows.manifest");
+
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .windows_attributes(
+                tauri_build::WindowsAttributes::new()
+                    .app_manifest(include_str!("windows.manifest")),
+            )
+            .app_manifest(tauri_build::AppManifest::new().commands(&[
+                "choose_surface",
+                "retry",
+                "open_console",
+                "get_state",
+                "ensure_web_access",
+                "open_web_browser",
+                "window_start_dragging",
+                "window_minimize",
+                "window_toggle_maximize",
+                "window_close",
+                "window_chrome_state",
+                "window_visibility_get",
+                "window_zoom_get",
+                "window_zoom_step",
+                "window_zoom_set",
+            ])),
+    )
     .expect("build Tauri desktop shell");
 }

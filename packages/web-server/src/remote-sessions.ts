@@ -497,6 +497,7 @@ export class RemoteSessions {
     chunks: AsyncIterable<Uint8Array>,
     name?: string,
     imageMediaType?: string,
+    contentLength?: number,
   ): Promise<{ receiptId: string; file: WebFileRef }> {
     if (this.closed) throw new RpcError("remote/offline", "Remote session gateway is closed");
     const draft = this.drafts.get(id);
@@ -511,7 +512,14 @@ export class RemoteSessions {
           );
         }
         const scope = draft.ensureUploadScope();
-        return this.attachments.upload(peer, { scope }, chunks, name, imageMediaType);
+        return this.attachments.upload(
+          peer,
+          { scope },
+          chunks,
+          name,
+          imageMediaType,
+          contentLength,
+        );
       }
       id = draft.canonicalId;
     }
@@ -530,6 +538,7 @@ export class RemoteSessions {
       chunks,
       name,
       imageMediaType,
+      contentLength,
     );
   }
   async servePeerFile(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -2255,8 +2264,8 @@ export class RemoteSessions {
         return history;
       } catch (error) {
         requireCurrent();
-        if (error instanceof RpcError && error.code === "remote/offline") this.offline(current);
-        else if (!this.closed) {
+        // The Peer event stream owns connection state; history uses a separate HTTP request.
+        if (!this.closed) {
           if (error instanceof RpcError && error.code === "remote/connection-changed")
             this.clearPending(id);
           current.historyError = {

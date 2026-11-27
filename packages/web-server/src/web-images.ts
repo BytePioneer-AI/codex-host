@@ -59,7 +59,7 @@ function invalid(reason: string, message: string): never {
 function digest(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
-export function inspectImage(bytes: Buffer, mediaType?: string): PreparedImage {
+export function inspectImageHeader(bytes: Buffer, mediaType?: string) {
   if (!bytes.length) return invalid("INVALID_IMAGE", "Image is empty.");
   if (bytes.length > WEB_IMAGE_LIMITS.maxImageBytes)
     return invalid("IMAGE_TOO_LARGE", "Image exceeds 50 MiB.");
@@ -87,7 +87,12 @@ export function inspectImage(bytes: Buffer, mediaType?: string): PreparedImage {
     return invalid("INVALID_IMAGE", "Image dimensions are invalid.");
   if (width * height > WEB_IMAGE_LIMITS.maxImagePixels)
     return invalid("IMAGE_TOO_MANY_PIXELS", "Image exceeds 64 million pixels.");
-  const leaf = `${digest(bytes)}.${size.type}`;
+  return { mediaType: actual, width, height, extension: size.type };
+}
+
+export function inspectImage(bytes: Buffer, mediaType?: string): PreparedImage {
+  const { mediaType: actual, width, height, extension } = inspectImageHeader(bytes, mediaType);
+  const leaf = `${digest(bytes)}.${extension}`;
   return {
     bytes,
     leaf,

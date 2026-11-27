@@ -391,7 +391,7 @@ it("serves verified images within workspace or Web storage and blocks escapes, n
   );
   assert.equal(relRes.status, 200);
   assert.equal(relRes.headers.get("content-type"), "image/png");
-  assert.equal(relRes.headers.get("cache-control"), "private, no-store");
+  assert.equal(relRes.headers.get("cache-control"), "private, max-age=300, must-revalidate");
   assert.equal(relRes.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual(Buffer.from(await relRes.arrayBuffer()), PNG_BYTES);
 
@@ -403,6 +403,15 @@ it("serves verified images within workspace or Web storage and blocks escapes, n
   assert.equal(headRes.headers.get("content-type"), "image/png");
   assert.equal(headRes.headers.get("content-length"), String(PNG_BYTES.length));
   assert.equal((await headRes.arrayBuffer()).byteLength, 0);
+  const etag = relRes.headers.get("etag");
+  assert.match(etag ?? "", /^"[a-f0-9]{64}\.png"$/u);
+  assert.equal(headRes.headers.get("etag"), etag);
+  const conditionalHead = await fetch(relRes.url, {
+    method: "HEAD",
+    headers: { "if-none-match": `"other", W/${etag}` },
+  });
+  assert.equal(conditionalHead.status, 304);
+  assert.equal(conditionalHead.headers.get("etag"), etag);
 
   // 200 for WebImages, WebFiles, and outside-workspace absolute PNG paths (including projectless known thread)
   for (const [threadId, targetPath] of [
@@ -465,8 +474,11 @@ it("serves verified images within workspace or Web storage and blocks escapes, n
   for (const [threadId, targetPath] of forbiddenCases) {
     const res = await fetch(
       `${srv.origin}/api/peer/v1/file?${new URLSearchParams({ threadId, path: targetPath })}`,
+      { headers: { "if-none-match": "*" } },
     );
     assert.equal(res.status, 404, `expected 404 for ${threadId} -> ${targetPath}`);
+    assert.equal(res.headers.get("cache-control"), "private, no-store");
+    assert.equal(res.headers.get("etag"), null);
     const body = await res.text();
     assert.equal(body.includes(targetPath), false, `response leaked path ${targetPath}`);
     assert.equal(body.includes(outside), false, "response leaked outside root");

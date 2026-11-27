@@ -120,6 +120,7 @@ async function startRealPeerServer(options: MockPeerHarnessOptions) {
   };
 
   const eventResponses = new Set<ServerResponse>();
+  const uploadLengths: Array<string | undefined> = [];
   const server = createServer((req, res) => {
     void (async () => {
       if (req.headers.authorization !== `Bearer ${options.token}`) {
@@ -137,6 +138,7 @@ async function startRealPeerServer(options: MockPeerHarnessOptions) {
               .end(JSON.stringify({ error: "Peer attachments unavailable" }));
             return;
           }
+          if (route === "uploads") uploadLengths.push(req.headers["content-length"]);
           await servePeerAttachments(req, res, route, {
             sessions: peerSessions,
             files,
@@ -344,6 +346,7 @@ async function startRealPeerServer(options: MockPeerHarnessOptions) {
     origin: `http://127.0.0.1:${port}`,
     threads,
     promptHistory,
+    uploadLengths,
     close: async () => {
       for (const res of eventResponses) res.destroy();
       eventResponses.clear();
@@ -577,6 +580,32 @@ it("executes end-to-end Peer attachment upload, prompt, draft retry, preview, le
     false,
   );
 
+  const initialView = await remoteSessions.read(modernSessionId, true);
+  const realFetch = globalThis.fetch;
+  for (const [failure, code] of [
+    [new DOMException("snapshot timed out", "TimeoutError"), "remote/timeout"],
+    [
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error(), { code: "ECONNREFUSED" }),
+      }),
+      "remote/offline",
+    ],
+  ] as const) {
+    const fetchMock = t.mock.method(globalThis, "fetch", (url: string, init: RequestInit) => {
+      if (url === `${modernPeer.origin}/api/ch/v1/snapshot`) return Promise.reject(failure);
+      return realFetch(url, init);
+    });
+    try {
+      await assert.rejects(remoteSessions.read(modernSessionId, true), { code });
+      assert.deepEqual(initialView.log.projections.nativeConnection, { state: "connected" });
+      assert.equal((initialView.log.projections.remoteHistoryError as { code: string }).code, code);
+    } finally {
+      fetchMock.mock.restore();
+    }
+  }
+  const retried = await remoteSessions.read(modernSessionId, true);
+  assert.equal(retried.log.projections.remoteHistoryError, null);
+
   // -------------------------------------------------------------------------
   // 1. Existing Peer thread: upload PNG -> submit -> session/attachment -> /api/remote-peer/file
   // -------------------------------------------------------------------------
@@ -595,6 +624,16 @@ it("executes end-to-end Peer attachment upload, prompt, draft retry, preview, le
   assert.equal(existingUploadRes.status, 200);
   const existingUpload = c.remotePeerUploadResultSchema.parse(await existingUploadRes.json());
   assert.equal(existingUpload.ok, true);
+  assert.equal(modernPeer.uploadLengths.at(-1), String(PNG_BYTES.length));
+
+  const emptyUpload = await fetch(
+    `${hubHttp.origin}/api/session/uploadFileBinary?${new URLSearchParams({ sessionId: modernSessionId })}`,
+    { method: "POST", headers: { "content-type": "application/octet-stream" }, body: "" },
+  );
+  const emptyResult = c.remotePeerUploadResultSchema.parse(await emptyUpload.json());
+  assert.ok(emptyResult.ok);
+  assert.equal(emptyResult.value.file.bytes, 0);
+  assert.equal(modernPeer.uploadLengths.at(-1), "0");
 
   const existingPromptRes = await hubRpc.dispatch("session/prompt", {
     args: {
@@ -647,26 +686,27 @@ it("executes end-to-end Peer attachment upload, prompt, draft retry, preview, le
   assert.equal(attachmentValue.data, PNG);
 
   // Preview workspace image via GET & HEAD /api/remote-peer/file
-  const previewGet = await fetch(
-    `${hubHttp.origin}${c.REMOTE_PEER_FILE_PROXY_PATH}?${new URLSearchParams({
-      sessionId: modernSessionId,
-      path: "sub/screenshot.png",
-    })}`,
-  );
+  const previewUrl = `${hubHttp.origin}${c.REMOTE_PEER_FILE_PROXY_PATH}?${new URLSearchParams({
+    sessionId: modernSessionId,
+    path: "sub/screenshot.png",
+  })}`;
+  const previewGet = await fetch(previewUrl);
   assert.equal(previewGet.status, 200);
   assert.equal(previewGet.headers.get("content-type"), "image/png");
-  assert.equal(previewGet.headers.get("cache-control"), "private, no-store");
+  assert.equal(previewGet.headers.get("cache-control"), "private, max-age=300, must-revalidate");
   assert.equal(previewGet.headers.get("x-content-type-options"), "nosniff");
   assert.equal(previewGet.headers.get("content-security-policy"), "sandbox; default-src 'none'");
   assert.deepEqual(Buffer.from(await previewGet.arrayBuffer()), PNG_BYTES);
+  const etag = defined(previewGet.headers.get("etag") ?? undefined);
+  const revalidated = await fetch(previewUrl, { headers: { "if-none-match": etag } });
+  assert.equal(revalidated.status, 304);
+  assert.equal(revalidated.headers.get("etag"), etag);
+  assert.equal(revalidated.headers.get("cache-control"), previewGet.headers.get("cache-control"));
+  assert.equal(revalidated.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(revalidated.headers.get("content-security-policy"), "sandbox; default-src 'none'");
+  assert.equal((await revalidated.arrayBuffer()).byteLength, 0);
 
-  const previewHead = await fetch(
-    `${hubHttp.origin}${c.REMOTE_PEER_FILE_PROXY_PATH}?${new URLSearchParams({
-      sessionId: modernSessionId,
-      path: "sub/screenshot.png",
-    })}`,
-    { method: "HEAD" },
-  );
+  const previewHead = await fetch(previewUrl, { method: "HEAD" });
   assert.equal(previewHead.status, 200);
   assert.equal(previewHead.headers.get("content-type"), "image/png");
   assert.equal((await previewHead.arrayBuffer()).byteLength, 0);
@@ -737,12 +777,19 @@ it("executes end-to-end Peer attachment upload, prompt, draft retry, preview, le
     {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
-      body: Buffer.from("draft attachment contents"),
-    },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(Buffer.from("draft attachment contents"));
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" },
   );
   assert.equal(draft1UploadRes.status, 200);
   const draft1Upload = c.remotePeerUploadResultSchema.parse(await draft1UploadRes.json());
   assert.equal(draft1Upload.ok, true);
+  assert.equal(modernPeer.uploadLengths.at(-1), undefined);
 
   const boundEvents: Array<[string, string]> = [];
   const originalEmit = hubEvents.emit.bind(hubEvents);
@@ -791,6 +838,10 @@ it("executes end-to-end Peer attachment upload, prompt, draft retry, preview, le
   assert.equal(draft2UploadRes.status, 200);
   const draft2Upload = c.remotePeerUploadResultSchema.parse(await draft2UploadRes.json());
   assert.equal(draft2Upload.ok, true);
+  assert.equal(
+    modernPeer.uploadLengths.at(-1),
+    String(Buffer.byteLength("retry me after first prompt failure")),
+  );
 
   failNextPromptCount = 1;
   const failedFirstPrompt = await hubRpc.dispatch("session/prompt", {

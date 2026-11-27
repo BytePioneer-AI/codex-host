@@ -318,46 +318,6 @@ You can also reuse official Codex Desktop remote channels to control agents on a
 
 ---
 
-## Native Depth & Open Ecosystem
-
-<table>
-<tr>
-
-<td width="33%" valign="top">
-
-### Native Runtime Fidelity
-
-Never dumbed down to a plain chat box.
-
-Preserves **Plan Mode**, **mid-turn Steering**, **background terminals**, **branch/worktree Fork**, **live cost & cache metrics**, and **local account import**.
-
-</td>
-
-<td width="33%" valign="top">
-
-### Unified Extensions & Skills
-
-Install once; runs on Desktop and Web.
-
-Extend panels and widgets via [Host Extensions](docs/architecture/desktop-ui-extensions.md) and share reusable workflows across every agent with the [Unified Skill Library](docs/architecture/skill-library.md).
-
-</td>
-
-<td width="33%" valign="top">
-
-### Schedules & External APIs
-
-Built for both humans and automation.
-
-Run recurring checks via [Schedules](docs/product/harness-schedules.md), or orchestrate every local agent from scripts and bots via [CLI, MCP & HTTP](docs/architecture/external-clients.md) (`codexhost delegate`).
-
-</td>
-
-</tr>
-</table>
-
----
-
 <a id="supported-agents"></a>
 
 ## Supported Agents

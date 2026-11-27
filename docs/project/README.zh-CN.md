@@ -318,46 +318,6 @@ flowchart LR
 
 ---
 
-## 原生深度与开放生态
-
-<table>
-<tr>
-
-<td width="33%" valign="top">
-
-### 原生运行时能力
-
-不把 Agent 降级成纯聊天框。
-
-完整保留 **Plan Mode**、**运行中插话（Steer）**、**后台终端**、**任意消息 Fork**、**实时费用/缓存命中率** 与 **本机账号一键复用**。
-
-</td>
-
-<td width="33%" valign="top">
-
-### 双端扩展与 Skill 库
-
-装一次，桌面与 Web 同步生效。
-
-通过 [Host 扩展体系](../architecture/desktop-ui-extensions.md) 定制面板与挂件，用 [统一 Skill 库](../architecture/skill-library.md) 让所有 Agent 共享同一套工作规范。
-
-</td>
-
-<td width="33%" valign="top">
-
-### 定时任务与开放编排
-
-不止人能用，脚本与外部程序也能调。
-
-用 [Schedules](../product/harness-schedules.md) 定时自动巡检；通过 [CLI / MCP / HTTP](../architecture/external-clients.md)（`codexhost delegate`）从终端或 Bot 调度本机全部 Agent。
-
-</td>
-
-</tr>
-</table>
-
----
-
 <a id="支持的-agent"></a>
 
 ## 支持的 Agent

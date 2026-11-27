@@ -311,40 +311,6 @@ flowchart LR
 
 ---
 
-## 네이티브 깊이와 개방형 생태계
-
-<table>
-<tr>
-
-<td width="33%" valign="top">
-
-### 네이티브 런타임 기능
-
-**Plan Mode**, **진행 중 개입(Steer)**, **백그라운드 터미널**, **임의 메시지 Fork**, **실시간 비용/캐시 지표**, **로컬 계정 원클릭 가져오기**를 그대로 유지합니다.
-
-</td>
-
-<td width="33%" valign="top">
-
-### 통합 확장 & Skill 라이브러리
-
-한 번 설치한 [Host 확장](../architecture/desktop-ui-extensions.md)이 데스크톱과 Web에 동시에 적용되며, [통합 Skill 라이브러리](../architecture/skill-library.md)로 모든 Agent가 같은 워크플로를 공유합니다.
-
-</td>
-
-<td width="33%" valign="top">
-
-### 예약 작업 & 외부 오케스트레이션
-
-[Schedules](../product/harness-schedules.md)로 정기 점검을 자동화하고, [CLI / MCP / HTTP](../architecture/external-clients.md)(`codexhost delegate`)로 스크립트나 봇에서도 로컬 Agent를 제어합니다.
-
-</td>
-
-</tr>
-</table>
-
----
-
 ## 지원 Agent
 
 네이티브 **Codex**와 공식 SDK / RPC 및 [ACP](https://agentclientprotocol.com/)로 사전 탑재된 **19개 이상의 코딩 Agent**를 지원합니다. 상세 지원 표는 **[기능 경계 문서 →](../harnesses/capability-boundaries.md)**를 참고하세요.

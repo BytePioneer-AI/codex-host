@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { builtinProviderConfigSchema } from "./builtin-provider-config.js";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
 import type { ZcodeVerifier } from "./verification/index.js";
@@ -17,22 +18,6 @@ import { PersonalCodingPlanAccount } from "./personal-coding-plan.js";
 
 // Account configuration and request auth are read-only projections of ZCode Desktop state.
 const SIGN_IN = "Sign in to ZCode Desktop with a Start Plan account, then try again";
-const builtinSchema = z.object({
-  revision: z.union([z.number(), z.string()]),
-  config: z.object({
-    providerConfigRules: z.object({
-      providerRules: z.array(
-        z.object({
-          providerId: z.string().min(1),
-          config: z.object({
-            builtinModelIds: z.array(z.string()).optional(),
-            access: z.object({ mode: z.string(), accountType: z.string() }).partial().optional(),
-          }),
-        }),
-      ),
-    }),
-  }),
-});
 
 // Start Plan entitlement, as ZCode Desktop decides it: the account's balance names the active plans
 // and, per balance, the Models the plan allows. An account without such a plan must not be offered
@@ -213,7 +198,7 @@ export async function accountConfig(
   codingPlan: PersonalCodingPlanAccount;
 }> {
   const file = installation.builtinProviderConfig;
-  const builtin = builtinSchema.parse(JSON.parse(await readFile(file, "utf8")));
+  const builtin = builtinProviderConfigSchema.parse(JSON.parse(await readFile(file, "utf8")));
   // The CLI keeps its previous registry unless this matches its own Built-in layer revision.
   const basedOnZCodeBuiltinRevision = `zcode-builtin:${builtin.revision}:${createHash("sha256")
     .update(path.resolve(file))

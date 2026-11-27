@@ -1,4 +1,4 @@
-import { assert, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createReleaseNotesElement } from "../../src/settings/release-notes.js";
 
@@ -162,18 +162,14 @@ describe("Release notes Markdown", () => {
     );
 
     expect(root.children.map((child) => (child as FakeElement).tagName)).toEqual(["details", "p"]);
-    const [details, outside] = root.children;
-    assert(details instanceof FakeElement && outside instanceof FakeElement);
+    const [details, outside] = root.children as FakeElement[];
     const body = details.children[1] as FakeElement;
     expect(body.children.map((child) => (child as FakeElement).tagName)).toEqual([
       "pre",
       "details",
       "p",
     ]);
-    const [pre, nested, inside] = body.children;
-    assert(
-      pre instanceof FakeElement && nested instanceof FakeElement && inside instanceof FakeElement,
-    );
+    const [pre, nested, inside] = body.children as FakeElement[];
     const code = pre.children[0] as FakeElement;
     expect(code.tagName).toBe("code");
     expect(code.className).toBe("language-html");

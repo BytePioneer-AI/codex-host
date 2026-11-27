@@ -1,11 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import {
-  createServer,
-  request as httpRequest,
-  ServerResponse,
-  type IncomingMessage,
-} from "node:http";
+import { createServer, request as httpRequest, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1159,7 +1154,10 @@ it("reaps stalled standalone SSE sessions without interrupting long-running POST
     });
     return req;
   }
-  function consumeSseLines(stream: IncomingMessage, onLine: (line: string) => void) {
+  function consumeSseLines(
+    stream: import("node:http").IncomingMessage,
+    onLine: (line: string) => void,
+  ) {
     const decoder = new TextDecoder();
     let pending = "";
     stream.on("data", (chunk: Buffer) => {
@@ -1177,7 +1175,7 @@ it("reaps stalled standalone SSE sessions without interrupting long-running POST
   // 1. Healthy standalone SSE sends keepalives, reconnects cleanly, and stalls trigger reap.
   const first = await initializeSession();
   const sse1 = openStandaloneSse(first.sessionId);
-  const [sse1Res] = (await once(sse1, "response")) as [IncomingMessage];
+  const [sse1Res] = (await once(sse1, "response")) as [import("node:http").IncomingMessage];
   expect(sse1Res.statusCode).toBe(200);
   const keepAliveSeen = Promise.withResolvers<undefined>();
   consumeSseLines(sse1Res, (line) => {
@@ -1207,7 +1205,7 @@ it("reaps stalled standalone SSE sessions without interrupting long-running POST
   });
   try {
     const sse2 = openStandaloneSse(first.sessionId);
-    const [sse2Res] = (await once(sse2, "response")) as [IncomingMessage];
+    const [sse2Res] = (await once(sse2, "response")) as [import("node:http").IncomingMessage];
     expect(sse2Res.statusCode).toBe(200);
     sse2Res.resume();
     stallWrites = true;
@@ -1219,7 +1217,7 @@ it("reaps stalled standalone SSE sessions without interrupting long-running POST
   // 2. An in-flight POST tool call must stay alive past detachedSessionTimeoutMs even after SSE drops.
   const second = await initializeSession();
   const sse = openStandaloneSse(second.sessionId);
-  const [sseRes] = (await once(sse, "response")) as [IncomingMessage];
+  const [sseRes] = (await once(sse, "response")) as [import("node:http").IncomingMessage];
   expect(sseRes.statusCode).toBe(200);
   const elicitationId = Promise.withResolvers<string>();
   consumeSseLines(sseRes, (line) => {

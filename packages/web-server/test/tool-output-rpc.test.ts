@@ -421,14 +421,14 @@ it("protects in-flight local and remote session/toolOutput reads from idle evict
     aggregatedOutput: bigOutput,
     exitCode: 0,
   });
-  const localReloadStarted = Promise.withResolvers<undefined>();
-  const releaseLocalReload = Promise.withResolvers<undefined>();
-  t.after(() => releaseLocalReload.resolve(undefined));
+  const localReloadStarted = Promise.withResolvers<void>();
+  const releaseLocalReload = Promise.withResolvers<void>();
+  t.after(() => releaseLocalReload.resolve());
   const baseHostRequest = host.request.bind(host);
   let holdLocalReload = false;
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     if (holdLocalReload && method === "thread/turns/list") {
-      localReloadStarted.resolve(undefined);
+      localReloadStarted.resolve();
       await releaseLocalReload.promise;
     }
     return baseHostRequest<T>(method, params);
@@ -456,7 +456,7 @@ it("protects in-flight local and remote session/toolOutput reads from idle evict
   // Trigger idle view timer past IDLE_VIEW_MS while session/toolOutput is in flight.
   t.mock.timers.tick(60_000);
   t.mock.timers.tick(IDLE_VIEW_MS + 60_000);
-  releaseLocalReload.resolve(undefined);
+  releaseLocalReload.resolve();
   const localLoaded = await localLoad;
   assert.ok(localLoaded.ok, "in-flight local session/toolOutput must survive idle eviction");
   assert.equal((localLoaded.value as { text: string }).text, bigOutput);
@@ -465,9 +465,9 @@ it("protects in-flight local and remote session/toolOutput reads from idle evict
   // retiring the view afterwards clears entry.row.turns without mutating the old array.
   const remoteOutput = "REMOTE-EVICT-" + "R".repeat(75_000);
   const sessionId = remoteSessionId("remote-control:desktop-evict", "remote-thread-evict");
-  const remoteReloadStarted = Promise.withResolvers<undefined>();
-  const releaseRemoteReload = Promise.withResolvers<undefined>();
-  t.after(() => releaseRemoteReload.resolve(undefined));
+  const remoteReloadStarted = Promise.withResolvers<void>();
+  const releaseRemoteReload = Promise.withResolvers<void>();
+  t.after(() => releaseRemoteReload.resolve());
   let holdRemoteReload = false;
   let remoteReads = 0;
   const remote = new RemoteSessions(new EventHub(dir), async (operation) => {
@@ -491,7 +491,7 @@ it("protects in-flight local and remote session/toolOutput reads from idle evict
     if (operation.kind === "read") {
       remoteReads += 1;
       if (holdRemoteReload) {
-        remoteReloadStarted.resolve(undefined);
+        remoteReloadStarted.resolve();
         await releaseRemoteReload.promise;
       }
       return {
@@ -572,7 +572,7 @@ it("protects in-flight local and remote session/toolOutput reads from idle evict
   remote.discardIdleViews();
   assert.ok(entry.view, "in-flight remote session/toolOutput must protect view from eviction");
 
-  releaseRemoteReload.resolve(undefined);
+  releaseRemoteReload.resolve();
   const remoteLoaded = await remoteLoad;
   assert.ok(remoteLoaded.ok);
   assert.equal((remoteLoaded.value as { text: string }).text, remoteOutput);

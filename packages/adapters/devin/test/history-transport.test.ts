@@ -183,6 +183,264 @@ describe("synthetic Devin native history wire", () => {
       }
     },
   );
+  it("still prompts when the optional pre-Turn step listing times out", async () => {
+    environment.DEVIN_HISTORY_SCENARIO = "pre-prompt-timeout";
+    const opened = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const done = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("next"),
+        input: [{ type: "text", text: "synthetic" }],
+      });
+      await vi.waitFor(
+        () =>
+          expect(outputs).toContainEqual(
+            expect.objectContaining({
+              event: expect.objectContaining({
+                type: "turn.completed",
+                outcome: expect.objectContaining({ status: "succeeded" }),
+                nativeTurnRef: expect.objectContaining({ nativeTurnKey: "next" }),
+              }),
+            }),
+          ),
+        { timeout: 4_000 },
+      );
+      expect(
+        outputs.some(
+          (output) => output.kind === "event" && output.event.type === "session.faulted",
+        ),
+      ).toBe(false);
+    } finally {
+      await session.close();
+      await done;
+    }
+  });
+  it("cancels before the prompt is sent without closing the native session", async () => {
+    environment.DEVIN_HISTORY_SCENARIO = "pre-prompt-timeout";
+    const opened = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const done = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const completed = () =>
+      outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "turn.completed" ? [output.event] : [],
+      );
+    try {
+      const first = hostTurnIdSchema.parse("cancelled-early");
+      await session.execute({
+        type: "turn.start",
+        turnId: first,
+        input: [{ type: "text", text: "synthetic" }],
+      });
+      expect(await session.execute({ type: "turn.cancel", turnId: first })).toMatchObject({
+        ok: true,
+      });
+      await vi.waitFor(() => expect(completed()).toHaveLength(1));
+      expect(completed()[0]).toMatchObject({ outcome: { status: "cancelled" } });
+      expect(completed()[0]).not.toHaveProperty("nativeTurnRef");
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("next"),
+          input: [{ type: "text", text: "synthetic" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(completed()).toHaveLength(2), { timeout: 8_000 });
+      expect(completed()[1]).toMatchObject({ outcome: { status: "succeeded" } });
+      expect((await requests()).some((request) => request.method === "session/cancel")).toBe(false);
+    } finally {
+      await session.close();
+      await done;
+    }
+  }, 10_000);
+  it("bounds hung optional listSteps to one in-flight request with a short timeout budget", async () => {
+    environment.DEVIN_HISTORY_SCENARIO = "pre-prompt-hang";
+    const slowAdapter = new DevinAdapter({ environment, timeoutMs: 10_000 });
+    const opened = await slowAdapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const done = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const completed = () =>
+      outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "turn.completed" ? [output.event] : [],
+      );
+    try {
+      const startedAt = Date.now();
+      for (const id of ["hang-1", "hang-2", "hang-3"]) {
+        expect(
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(id),
+            input: [{ type: "text", text: "synthetic" }],
+          }),
+        ).toMatchObject({ ok: true });
+        await vi.waitFor(
+          () => expect(completed().some((event) => event.turnId === id)).toBe(true),
+          {
+            timeout: 5_000,
+          },
+        );
+      }
+      expect(Date.now() - startedAt).toBeLessThan(6_000);
+      expect(
+        outputs.some(
+          (output) => output.kind === "event" && output.event.type === "session.faulted",
+        ),
+      ).toBe(false);
+      const trace = await requests();
+      expect(trace.filter((request) => request.method === "session/prompt")).toHaveLength(3);
+      expect(
+        trace.filter((request) => request.method === "_cognition.ai/revert/listSteps"),
+      ).toHaveLength(1);
+    } finally {
+      await slowAdapter.close();
+      await done;
+    }
+  }, 10_000);
+  it("does not adopt a late listSteps response as the next Turn baseline", async () => {
+    environment.DEVIN_HISTORY_SCENARIO = "late-pre-prompt-response";
+    const fastAdapter = new DevinAdapter({ environment, timeoutMs: 300 });
+    const opened = await fastAdapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const done = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const completed = () =>
+      outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "turn.completed" ? [output.event] : [],
+      );
+    try {
+      for (const [index, id] of ["turn-1", "turn-2", "turn-3"].entries()) {
+        expect(
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(id),
+            input: [{ type: "text", text: "synthetic" }],
+          }),
+        ).toMatchObject({ ok: true });
+        await vi.waitFor(() => expect(completed()).toHaveLength(index + 1), { timeout: 4_000 });
+      }
+      expect(completed()[0]).toMatchObject({
+        outcome: { status: "succeeded" },
+        nativeTurnRef: { nativeTurnKey: "t1" },
+      });
+      expect(completed()[1]).toMatchObject({
+        outcome: { status: "failed", error: { code: "protocolError" } },
+      });
+      expect(completed()[1]).not.toHaveProperty("nativeTurnRef");
+      expect(completed()[2]).toMatchObject({
+        outcome: { status: "succeeded", checkpoint: { checkpointId: "step-t3" } },
+        nativeTurnRef: { nativeTurnKey: "t3" },
+      });
+      expect(
+        outputs.some(
+          (output) => output.kind === "event" && output.event.type === "session.faulted",
+        ),
+      ).toBe(false);
+      const trace = await requests();
+      const firstPrompt = trace.findIndex((request) => request.method === "session/prompt");
+      const secondPrompt = trace.findIndex(
+        (request, index) => index > firstPrompt && request.method === "session/prompt",
+      );
+      expect(
+        trace
+          .slice(firstPrompt + 1, secondPrompt)
+          .filter((request) => request.method === "_cognition.ai/revert/listSteps"),
+      ).toHaveLength(1);
+    } finally {
+      await fastAdapter.close();
+      await done;
+    }
+  }, 10_000);
+  it("keeps the session healthy and skips session/cancel when missing-ID post-prompt listSteps hangs", async () => {
+    environment.DEVIN_HISTORY_SCENARIO = "compacted-post-prompt-timeout";
+    const slowAdapter = new DevinAdapter({ environment, timeoutMs: 10_000 });
+    const opened = await slowAdapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const done = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const completed = () =>
+      outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "turn.completed" ? [output.event] : [],
+      );
+    try {
+      const first = hostTurnIdSchema.parse("compacted-hang");
+      const startedAt = Date.now();
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: first,
+          input: [{ type: "text", text: "synthetic" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await requests()).filter(
+              (request) => request.method === "_cognition.ai/revert/listSteps",
+            ),
+          ).toHaveLength(2),
+        { timeout: 4_000 },
+      );
+      expect(await session.execute({ type: "turn.cancel", turnId: first })).toMatchObject({
+        ok: true,
+      });
+      await vi.waitFor(() => expect(completed()).toHaveLength(1), { timeout: 5_000 });
+      expect(Date.now() - startedAt).toBeLessThan(6_000);
+      expect(completed()[0]).toMatchObject({
+        outcome: { status: "failed", error: { code: "protocolError" } },
+      });
+      expect(completed()[0]).not.toHaveProperty("nativeTurnRef");
+      expect(
+        outputs.some(
+          (output) => output.kind === "event" && output.event.type === "session.faulted",
+        ),
+      ).toBe(false);
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("after-timeout"),
+          input: [{ type: "text", text: "synthetic" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(completed()).toHaveLength(2), { timeout: 4_000 });
+      expect(completed()[1]).toMatchObject({
+        outcome: { status: "succeeded", checkpoint: { checkpointId: "step-after-timeout" } },
+        nativeTurnRef: { nativeTurnKey: "after-timeout" },
+      });
+      const trace = await requests();
+      expect(trace.some((request) => request.method === "session/cancel")).toBe(false);
+      const firstPrompt = trace.findIndex((request) => request.method === "session/prompt");
+      const secondPrompt = trace.findIndex(
+        (request, index) => index > firstPrompt && request.method === "session/prompt",
+      );
+      expect(
+        trace
+          .slice(firstPrompt + 1, secondPrompt)
+          .filter((request) => request.method === "_cognition.ai/revert/listSteps"),
+      ).toHaveLength(1);
+    } finally {
+      await slowAdapter.close();
+      await done;
+    }
+  }, 10_000);
   it.each(["normal", "single"])(
     "rolls back %s history with confirmed configuration",
     async (scenario) => {

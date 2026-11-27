@@ -43,7 +43,9 @@ const info = () => ({
 const send = (value) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`);
 let cwd;
 let sessionId;
-let continued = false;
+let promptCount = 0;
+const addedKeys = [];
+let heldListStepsId;
 const keys = () =>
   sessionId === "source"
     ? sourceKeys
@@ -52,6 +54,18 @@ const keys = () =>
       : scenario === "wrong-prefix"
         ? ["u3"]
         : sourceKeys.slice(0, Number(sessionId?.split("-")[1]));
+const makeSteps = (list) =>
+  list.map((key, index) => ({
+    stepId: `step-${key}`,
+    stepNumber: index + 1,
+    kind: "prompt",
+    userMessageId: key,
+    toolCallId: null,
+    questionNodeId: null,
+    revertTargetNodeId: `before-${key}`,
+    forkTargetNodeId: `after-${key}`,
+    summary: key,
+  }));
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
   if (process.env.DEVIN_TEST_LOG)
@@ -82,7 +96,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     case "session/load":
       sessionId = message.params.sessionId;
       cwd = message.params.cwd;
-      for (const key of [...keys(), ...(continued ? ["next"] : [])]) {
+      for (const key of [...keys(), ...addedKeys]) {
         for (const update of [
           {
             sessionUpdate: "user_message_chunk",
@@ -112,7 +126,18 @@ for await (const line of createInterface({ input: process.stdin })) {
       };
       break;
     case "_cognition.ai/revert/listSteps":
-      if (continued) {
+      if (scenario === "pre-prompt-hang") continue;
+      if (scenario === "pre-prompt-timeout" && promptCount === 0) continue;
+      if (
+        scenario === "late-pre-prompt-response" &&
+        promptCount === 0 &&
+        heldListStepsId === undefined
+      ) {
+        heldListStepsId = message.id;
+        continue;
+      }
+      if (scenario === "compacted-post-prompt-timeout" && promptCount === 1) continue;
+      if (promptCount > 0) {
         if (scenario === "checkpoint-exit") process.exit(7);
         if (scenario === "checkpoint-timeout") continue;
         if (scenario === "checkpoint-error") {
@@ -127,19 +152,7 @@ for await (const line of createInterface({ input: process.stdin })) {
           continue;
         }
       }
-      result = {
-        steps: [...keys(), ...(continued ? ["next"] : [])].map((key, index) => ({
-          stepId: `step-${key}`,
-          stepNumber: index + 1,
-          kind: "prompt",
-          userMessageId: key,
-          toolCallId: null,
-          questionNodeId: null,
-          revertTargetNodeId: `before-${key}`,
-          forkTargetNodeId: `after-${key}`,
-          summary: key,
-        })),
-      };
+      result = { steps: makeSteps([...keys(), ...addedKeys]) };
       break;
     case "_cognition.ai/revert/forkFromStep": {
       if (scenario === "fork-error") {
@@ -160,7 +173,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       result = { configOptions };
       break;
     case "session/prompt":
-      continued = true;
+      promptCount += 1;
       send({
         method: "session/update",
         params: {
@@ -171,7 +184,37 @@ for await (const line of createInterface({ input: process.stdin })) {
           },
         },
       });
-      result = { stopReason: "end_turn", _meta: { "cognition.ai/userMessageId": "next" } };
+      if (scenario === "pre-prompt-hang") {
+        result = { stopReason: "end_turn" };
+      } else if (scenario === "late-pre-prompt-response") {
+        if (promptCount === 1) {
+          addedKeys.push("t1");
+          result = { stopReason: "end_turn", _meta: { "cognition.ai/userMessageId": "t1" } };
+        } else if (promptCount === 2) {
+          if (heldListStepsId !== undefined) {
+            send({ id: heldListStepsId, result: { steps: makeSteps(keys()) } });
+            heldListStepsId = undefined;
+          }
+          result = { stopReason: "end_turn" };
+        } else {
+          addedKeys.push("t3");
+          result = { stopReason: "end_turn" };
+        }
+      } else if (scenario === "compacted-post-prompt-timeout") {
+        if (promptCount === 1) {
+          addedKeys.push("compacted");
+          result = { stopReason: "end_turn" };
+        } else {
+          addedKeys.push("after-timeout");
+          result = {
+            stopReason: "end_turn",
+            _meta: { "cognition.ai/userMessageId": "after-timeout" },
+          };
+        }
+      } else {
+        if (!addedKeys.includes("next")) addedKeys.push("next");
+        result = { stopReason: "end_turn", _meta: { "cognition.ai/userMessageId": "next" } };
+      }
       break;
     default:
       throw new Error(`Forbidden or unexpected synthetic RPC ${message.method}`);

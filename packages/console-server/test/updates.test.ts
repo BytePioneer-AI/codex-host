@@ -14,12 +14,14 @@ import { createConsoleUpdates, type ConsoleUpdateTarget } from "../src/updates.j
 const npmRegistry = vi.hoisted(() => ({
   installable: vi.fn(async (): Promise<boolean> => true),
   prefetch: vi.fn(async (): Promise<void> => {}),
+  latest: vi.fn(async (): Promise<UpdateManager.CodexhostLatestRelease | null> => null),
 }));
 vi.mock("@codexhost/update-manager", async (importOriginal) => {
   const original = await importOriginal<typeof UpdateManager>();
   return {
     ...original,
     createNpmReleaseAvailability: () => ({ installable: npmRegistry.installable }),
+    fetchLatestNpmRelease: npmRegistry.latest,
     createBackgroundUpdateManager: (
       dependencies: UpdateManager.BackgroundUpdateManagerDependencies = {},
     ) =>
@@ -117,6 +119,37 @@ describe("console updates", () => {
       packageRoot: environment.CODEXHOST_NPM_PACKAGE_ROOT,
       version: "1.1.0",
     });
+  });
+
+  it("falls back to the npm registry when GitHub Release discovery fails", async () => {
+    const { target, environment } = await npmLayout();
+    npmRegistry.latest.mockResolvedValueOnce({
+      ...release,
+      releaseNotes: null,
+      releaseNotesUrl: "",
+    });
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => {
+        throw new Error("GitHub latest Release request failed with HTTP 403");
+      },
+    });
+    await expect(updates.check(target)).resolves.toMatchObject({
+      currentVersion: "1.0.0",
+      installation: "npm",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      installationAvailable: true,
+      releaseNotes: null,
+      releaseNotesUrl: "",
+      error: null,
+    });
+    expect(npmRegistry.latest).toHaveBeenCalledWith(
+      environment.CODEXHOST_NPM_NODE_PATH,
+      environment.CODEXHOST_NPM_CLI_PATH,
+    );
   });
 
   it.each(["failed", "succeeded"])(

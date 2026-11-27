@@ -49,6 +49,7 @@ const coreActionOrder = new Map<string, number>(
     "session.new",
     "sidebar.left.toggle",
     "session.search",
+    "session.activityView",
     "workspace.add",
     "session.rename",
     "session.fork",

@@ -88,7 +88,9 @@ import {
   UNGROUPED_KEY,
 } from "../tree.ts";
 import { pinOrderSource } from "../pin-order.ts";
+import { deriveActivityView } from "../activity-view.ts";
 import { threadTreeOrderSource, workspaceTreeMembers } from "../thread-tree-order.ts";
+import { ActivityFilterIcon, ActivityViewList } from "./ActivityViewList.tsx";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
@@ -1724,6 +1726,7 @@ function WorkspaceBrowserContent({
   actions,
   startSession,
   open,
+  markCompletionsRead,
   requestSessionRename,
   notifyArchivedNotOpenable,
   renameWorkspace,
@@ -1752,8 +1755,11 @@ function WorkspaceBrowserContent({
   const home = useHostInfo((info) => info.home);
   const shortcuts = useShortcuts((rows) => rows);
   const searchShortcut = shortcuts.find((row) => row.id === "session.search");
+  const activityShortcut = shortcuts.find((row) => row.id === "session.activityView");
   const addShortcut = shortcuts.find((row) => row.id === "workspace.add");
   const shortcutState = useWorkspaceShortcuts((state) => state);
+  const panelActive = usePanelInfo((info) => info.activePanelId !== null);
+  const statuses = useSessionStatus((s) => s);
   // Ordering remains live while the rail or search replaces the list body.
   const list = useSessions((state) => state);
   const storedWorkspaces = useWorkspaces((state) => state.items);
@@ -1983,6 +1989,7 @@ function WorkspaceBrowserContent({
   // does not silently drop an in-progress filter.
   const [query, setQuery] = useState("");
   const [searchExpanded, setSearchExpanded] = useState(false);
+  const [activityViewOpen, setActivityViewOpen] = useState(false);
   const [revealSessionId, setRevealSessionId] = useState<SessionId | undefined>(undefined);
   const normalizedQuery = sanitizeSearchQuery(query).trim();
   const [remoteSearch, setRemoteSearch] = useState<RemoteSearchState>({
@@ -2160,6 +2167,18 @@ function WorkspaceBrowserContent({
     () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
     [hostScopeFiltered, effectiveHostScopeFilter],
   );
+  const activityProjection = useMemo(
+    () => deriveActivityView(scopedList, rowState, statuses),
+    [scopedList, rowState, statuses],
+  );
+  const activityCurrentId = panelActive ? undefined : mainSessionId;
+  const markAllActivityRead = useCallback(
+    (sessionIds: readonly SessionId[]): void => {
+      if (sessionIds.length === 0) return;
+      (markCompletionsRead ?? threadView.markCompletionsRead)(sessionIds);
+    },
+    [markCompletionsRead, threadView.markCompletionsRead],
+  );
   const openAddRemoteWorkspace = (): void => {
     const selectedRemoteHostId =
       effectiveHostScopeFilter.selectedHost !== "all" &&
@@ -2199,6 +2218,7 @@ function WorkspaceBrowserContent({
         ? undefined
         : nativeSections.find(({ workspaceIds }) => workspaceIds?.includes(workspaceId) === true));
     if (section) actions.setSectionExpanded(`native-section:${section.id}`, true);
+    setActivityViewOpen(false);
     setRevealSessionId(sessionId);
     setQuery("");
     setSearchExpanded(false);
@@ -2235,6 +2255,26 @@ function WorkspaceBrowserContent({
       expandSidebar();
     } else searchInput.current?.focus({ preventScroll: true });
   }, [shortcutState.searchRequest]);
+  const activityShortcutContextRef = useRef({ wide, searchActive: false });
+  activityShortcutContextRef.current = { wide, searchActive: searchExpanded || query !== "" };
+  useEffect(() => {
+    if (shortcutState.activityViewRequest === 0) return;
+    closeAddWorkspace();
+    const { wide: isWide, searchActive } = activityShortcutContextRef.current;
+    if (searchActive) {
+      setQuery("");
+      setSearchExpanded(false);
+      setActivityViewOpen(true);
+      if (!isWide) expandSidebar();
+      return;
+    }
+    if (!isWide) {
+      expandSidebar();
+      setActivityViewOpen(true);
+      return;
+    }
+    setActivityViewOpen((prev) => !prev);
+  }, [shortcutState.activityViewRequest]);
 
   useEffect(() => {
     if (!wide || !searchExpanded || searchOnExpand) return;
@@ -2407,6 +2447,44 @@ function WorkspaceBrowserContent({
           </span>
         )}
         {wide && (
+          <div className={clsx(css.activitySlot, searchExpanded && css.activitySlotHidden)}>
+            <Tooltip
+              label={t("activityView.label")}
+              shortcutKeys={activityShortcut?.keys}
+              side="bottom"
+              delayMs={500}
+            >
+              <button
+                type="button"
+                className={clsx(
+                  css.iconButton,
+                  css.wide,
+                  css.activityButton,
+                  activityViewOpen && css.activityButtonActive,
+                )}
+                aria-label={t("activityView.label")}
+                aria-pressed={activityViewOpen}
+                aria-keyshortcuts={activityShortcut?.aria}
+                onClick={() => {
+                  closeAddWorkspace();
+                  setActivityViewOpen((v) => !v);
+                }}
+              >
+                <span className={css.activityIconWrap}>
+                  <ActivityFilterIcon size={16} />
+                  {!activityViewOpen && activityProjection.hasAttention && (
+                    <span
+                      className={css.activityDot}
+                      data-attention={activityProjection.pendingCount > 0 ? "pending" : "unread"}
+                      aria-hidden="true"
+                    />
+                  )}
+                </span>
+              </button>
+            </Tooltip>
+          </div>
+        )}
+        {wide && (
           <div className={clsx(css.searchSlot, searchExpanded && css.searchSlotExpanded)}>
             <div
               ref={searchRoot}
@@ -2485,7 +2563,10 @@ function WorkspaceBrowserContent({
               onOrderPick={(mode) => {
                 actions.setOrderBy(mode, activeSessionOrders, orderSource);
               }}
-              onArchivedFilterPick={actions.setArchivedFilter}
+              onArchivedFilterPick={(filter) => {
+                if (filter === "only") setActivityViewOpen(false);
+                actions.setArchivedFilter(filter);
+              }}
               t={t}
             />
           )}
@@ -2656,6 +2737,22 @@ function WorkspaceBrowserContent({
               query={normalizedQuery}
               remote={remoteSearch}
               resultLimit={searchResultLimit}
+              t={t}
+            />
+          ) : activityViewOpen ? (
+            <ActivityViewList
+              projection={activityProjection}
+              currentId={activityCurrentId}
+              ready={list.phase === "ready" && workspaceReady}
+              animationResetKey={`activity/${hostScopeResetKey}`}
+              singleRemoteHostScoped={singleRemoteHostScoped}
+              onOpen={guardedOpen}
+              onSessionRenameRequest={requestSessionRename}
+              onMarkAllRead={markAllActivityRead}
+              onExit={() => {
+                setActivityViewOpen(false);
+              }}
+              renderSlot={renderSlot}
               t={t}
             />
           ) : groupBy === "flat" ? (

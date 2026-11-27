@@ -204,6 +204,21 @@
   object-fit: cover;
 }
 
+.annotationBadge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, transparent);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .preview {
   flex: 1 1 auto;
   min-width: 0;
@@ -217,6 +232,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   word-break: break-word;
+}
+
+.previewFallback {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .actions {

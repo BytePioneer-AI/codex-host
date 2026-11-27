@@ -435,6 +435,7 @@ export {
   parseAnnotatedMessage,
   responseAnnotationIndex,
   responseAnnotationsOf,
+  splitAnnotatedMessage,
   type ParsedAnnotatedMessage,
   type ResponseAnnotation,
 } from "./response-annotation.js";

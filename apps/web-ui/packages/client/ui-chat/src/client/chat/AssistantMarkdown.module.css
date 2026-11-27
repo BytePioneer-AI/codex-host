@@ -87,14 +87,21 @@
    the whole transcript width instead of clipping at the 748px message
    column, while the table content keeps starting at its normal x (the lead
    padding compensates the negative margin) — deepsuite chat TableWrapper
-   parity, with `.frame`'s `100cqw` minus `.scroll`'s inline padding standing
-   in for its JS-measured --dsl-virtual-list-width. `--dsh-table-spare` clamps
-   to zero when the transcript is narrower than the message column, so narrow
+   parity, with `--dsh-chat-viewport-width` (published on `.scroll` by
+   `ChatViewport`) minus `.scroll`'s inline padding standing in for its
+   JS-measured --dsl-virtual-list-width. `--dsh-table-spare` clamps to zero
+   when the transcript is narrower than the message column, so narrow
    viewports keep the plain in-column scroll with no sideways shift.
    Percentages resolve against the wrapper's containing block, so a table
    indented inside a list still reaches the same transcript edges. */
 .body :global(.md-table-wide) {
-  --dsh-table-viewport: calc(100cqw - 2 * var(--dsh-chat-scroll-pad-x, 0px));
+  --dsh-table-viewport: calc(
+    var(
+        --dsh-chat-viewport-width,
+        var(--dsh-chat-content-width) + 2 * var(--dsh-chat-scroll-pad-x, 0px)
+      ) -
+      2 * var(--dsh-chat-scroll-pad-x, 0px)
+  );
   --dsh-table-spare: max(
     0px,
     calc((var(--dsh-table-viewport) - var(--dsh-chat-content-width)) / 2)

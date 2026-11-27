@@ -4,8 +4,6 @@
   flex-direction: column;
   min-height: 0;
   flex: 1 1 auto;
-  /* Floating controls query this frame outside the clipped transcript. */
-  container-type: inline-size;
 }
 
 .root {
@@ -26,15 +24,17 @@
   /* Sides = composer clearance + 16px: on narrow viewports the transcript
      stays exactly 32px narrower than the input card (the shared width rule).
      Exposed as a custom property so wide markdown tables compute the exact
-     transcript content width from `.frame`'s inline-size container (`100cqw`)
-     without nesting a second `container-type: inline-size` directly around the
-     virtualized column (which perturbs WebKit scroll anchoring on row unmount). */
+     transcript content width from `--dsh-chat-viewport-width` published on
+     this element by `ChatViewport`, without placing `container-type: inline-size`
+     on any ancestor of the virtualized column. */
   --dsh-chat-scroll-pad-x: calc(var(--dsh-composer-side-clearance, 0px) + 16px);
   padding: 16px var(--dsh-chat-scroll-pad-x);
 }
 
-.root[data-chat-following-tail] .scroll,
-:global([data-conversation-scroll]):has(.root[data-chat-following-tail]) {
+.root:is([data-chat-following-tail], [data-chat-virtualizing]) .scroll,
+:global([data-conversation-scroll]):has(
+  .root:is([data-chat-following-tail], [data-chat-virtualizing])
+) {
   overflow-anchor: none;
 }
 

@@ -67,6 +67,7 @@ export class ChatViewport {
   private observation: { top: number; landing: ViewportLanding | null } = { top: 0, landing: null };
   private paging: PagingPosition | null = null;
   private touchY: number | null = null;
+  private viewportWidth: number | null = null;
 
   /**
    * Bind to the containing scrollport and observe content and viewport sizes.
@@ -79,6 +80,7 @@ export class ChatViewport {
     const composer = scroller.querySelector<HTMLElement>("[data-composer-seat]");
     const elements = { list, column, scroller, composer };
     this.elements = elements;
+    this.syncViewportWidth();
     scroller.addEventListener("scroll", this.onScroll, { passive: true });
     scroller.addEventListener("scrollend", this.onScrollEnd, { passive: true, capture: true });
     for (const type of READING_INTENTS)
@@ -86,6 +88,7 @@ export class ChatViewport {
     if (typeof ResizeObserver !== "undefined") {
       this.observer = new ResizeObserver(() => {
         if (this.elements !== elements) return;
+        this.syncViewportWidth();
         this.invalidate();
         this.events?.resize();
       });
@@ -98,6 +101,7 @@ export class ChatViewport {
   /** Disconnect DOM resources and clear observations for the detached view. */
   detach(): void {
     this.stopPreserving();
+    this.elements?.list.style.removeProperty("--dsh-chat-viewport-width");
     this.elements?.scroller.removeEventListener("scroll", this.onScroll);
     this.elements?.scroller.removeEventListener("scrollend", this.onScrollEnd, true);
     for (const type of READING_INTENTS)
@@ -108,7 +112,18 @@ export class ChatViewport {
     this.events = null;
     this.turns = [];
     this.touchY = null;
+    this.viewportWidth = null;
     this.observation = { top: 0, landing: null };
+  }
+
+  private syncViewportWidth(): void {
+    const list = this.elements?.list;
+    if (list === undefined) return;
+    const width = list.clientWidth;
+    if (width > 0 && width !== this.viewportWidth) {
+      this.viewportWidth = width;
+      list.style.setProperty("--dsh-chat-viewport-width", `${width}px`);
+    }
   }
 
   /**
@@ -150,6 +165,25 @@ export class ChatViewport {
    */
   acknowledge(metrics: ViewportMetrics): void {
     this.observation = { top: metrics.top, landing: null };
+  }
+
+  /**
+   * Shift the scroll attribution baseline after geometric scroll compensation
+   * (such as transcript virtualization) so the adjustment is not misread as reader motion.
+   * @param delta - signed change applied to `scroller.scrollTop`.
+   */
+  shiftObservation(delta: number): void {
+    if (!Number.isFinite(delta) || delta === 0) return;
+    this.observation = { top: Math.max(0, this.observation.top + delta), landing: null };
+    if (this.paging !== null) {
+      this.paging = {
+        ...this.paging,
+        position: {
+          ...this.paging.position,
+          scrollTop: Math.max(0, this.paging.position.scrollTop + delta),
+        },
+      };
+    }
   }
 
   /**
@@ -421,10 +455,23 @@ export class ChatViewport {
     return this.paging !== null;
   }
 
+  private isPagingDisplaced(metrics: ViewportMetrics): boolean {
+    const paging = this.paging;
+    const elements = this.elements;
+    if (paging === null || elements === null || !elements.list.contains(paging.row)) return false;
+    const scrollMoved =
+      Math.abs(metrics.top - Math.min(paging.position.scrollTop, metrics.floor)) > 0.5;
+    if (!scrollMoved) return false;
+    const top =
+      paging.row.getBoundingClientRect().top - elements.scroller.getBoundingClientRect().top;
+    return Math.abs(top - paging.position.anchorTop) > 0.5;
+  }
+
   /**
    * Compensate inner scrolling first, then the outer scrollport, within their actual scroll ranges.
    * An inner write pauses its bound follow controller so the reading anchor takes priority.
-   * @returns the actual landing, or null when no visible retained row remains.
+   * Releases paging ownership without writing if the reader already displaced the scrollport.
+   * @returns the actual landing, or null when no visible retained row remains or the reader moved.
    */
   preserve(): ViewportLanding | null {
     let paging = this.paging;
@@ -445,6 +492,12 @@ export class ChatViewport {
       this.stopPreserving();
       return null;
     }
+    const preMetrics = this.metrics();
+    if (preMetrics === null) return null;
+    if (this.isPagingDisplaced(preMetrics)) {
+      this.stopPreserving();
+      return null;
+    }
     if (group !== null && group.body.contains(row)) {
       const top = row.getBoundingClientRect().top - group.body.getBoundingClientRect().top;
       const metrics = scrollMetrics(group.body);
@@ -462,7 +515,14 @@ export class ChatViewport {
     if (metrics === null) return null;
     const top = row.getBoundingClientRect().top - elements.scroller.getBoundingClientRect().top;
     const target = metrics.top + top - position.anchorTop;
-    return this.write(target, metrics, null, { key: position.anchorKey, top });
+    const landing = this.write(target, metrics, null, { key: position.anchorKey, top });
+    if (landing !== null && this.paging === paging) {
+      this.paging = {
+        ...paging,
+        position: { ...position, scrollTop: landing.metrics.top },
+      };
+    }
+    return landing;
   }
 
   /**
@@ -535,7 +595,12 @@ export class ChatViewport {
     // Reader motion stays reader-owned during paging, including touch inertia.
     // Content commits and ResizeObserver handle prepend compensation separately.
     const scroll = this.readScroll();
-    if (scroll !== null) this.events?.scroll(scroll);
+    if (scroll !== null) {
+      if (this.paging !== null && this.isPagingDisplaced(scroll.metrics)) {
+        this.stopPreserving();
+      }
+      this.events?.scroll(scroll);
+    }
   };
 
   private readonly onScrollEnd = (event: Event): void => {
@@ -551,24 +616,26 @@ export class ChatViewport {
       this.touchY = null;
       return;
     }
-    if (
-      event.target instanceof Element &&
-      event.target.closest(
-        '[data-composer-seat], [data-turn-navigation], input, textarea, [contenteditable="true"]',
+    const isWheel = event instanceof WheelEvent;
+    if (event.target instanceof Element) {
+      if (event.target.closest("[data-turn-navigation]")) return;
+      if (
+        !isWheel &&
+        event.target.closest('[data-composer-seat], input, textarea, [contenteditable="true"]')
       )
-    )
-      return;
+        return;
+    }
+    if (isWheel && event.deltaY === 0) return;
     if (
       event.type === "keydown" &&
       (!(event instanceof KeyboardEvent) || !SCROLL_KEYS.has(event.key))
     )
       return;
-    let older =
-      event instanceof WheelEvent
-        ? event.deltaY < 0
-        : event instanceof KeyboardEvent &&
-          (["ArrowUp", "PageUp", "Home"].includes(event.key) ||
-            (event.key === " " && event.shiftKey));
+    let older = isWheel
+      ? event.deltaY < 0
+      : event instanceof KeyboardEvent &&
+        (["ArrowUp", "PageUp", "Home"].includes(event.key) ||
+          (event.key === " " && event.shiftKey));
     if (typeof TouchEvent !== "undefined" && event instanceof TouchEvent) {
       const y = event.touches[0]?.clientY;
       older =
@@ -579,8 +646,9 @@ export class ChatViewport {
       if (event.type === "touchstart") return;
     }
     if (event instanceof PointerEvent && event.pointerType === "touch") return;
-    // Inner tool/code scrollports own their own upward gestures until their top.
-    if (older && event.target instanceof Element) {
+    // Inner scrollports (tool/code panels and multi-line composer editors) own
+    // gestures in directions where they still have remaining scroll room.
+    if (event.target instanceof Element) {
       for (
         let node: Element | null = event.target;
         node && node !== this.elements?.scroller;
@@ -588,12 +656,18 @@ export class ChatViewport {
       ) {
         if (
           node instanceof HTMLElement &&
-          node.scrollTop > 0 &&
           node.scrollHeight > node.clientHeight &&
           /auto|scroll/.test(getComputedStyle(node).overflowY)
         ) {
-          older = false;
-          break;
+          if (isWheel) {
+            const canScrollUp = event.deltaY < 0 && node.scrollTop > 0;
+            const canScrollDown =
+              event.deltaY > 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1;
+            if (canScrollUp || canScrollDown) return;
+          } else if (older && node.scrollTop > 0) {
+            older = false;
+            break;
+          }
         }
       }
     }

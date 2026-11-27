@@ -558,6 +558,7 @@ export function ChatView({
     savedAnchorFlowKey,
     busyTurn: scroll.busyTurn,
     onTailScrollClamp: scroll.reconcileTail,
+    onScrollCompensated: scroll.adjustBaseline,
   });
   const [pendingTurnJump, setPendingTurnJump] = useState<{
     readonly sessionId: string;
@@ -634,7 +635,11 @@ export function ChatView({
           t={t}
         />
       )}
-      <div className={css.root} data-chat-following-tail={scroll.followingTail ? "" : undefined}>
+      <div
+        className={css.root}
+        data-chat-following-tail={scroll.followingTail ? "" : undefined}
+        data-chat-virtualizing={virtualization.active ? "" : undefined}
+      >
         <div ref={scroll.listRef} className={css.scroll}>
           <div ref={scroll.columnRef} className={css.column} data-chat-flow="">
             {openState === "loading" && order.length === 0 && (

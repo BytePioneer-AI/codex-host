@@ -296,6 +296,7 @@ interface HarnessProps {
   withConversationScroll?: boolean;
   followingTail?: boolean;
   onTailScrollClamp?: () => void;
+  onScrollCompensated?: (delta: number) => void;
   onHandle?: (handle: TranscriptVirtualization) => void;
 }
 
@@ -316,6 +317,7 @@ function VirtualizedTranscriptHarness({
   withConversationScroll = true,
   followingTail = false,
   onTailScrollClamp,
+  onScrollCompensated,
   onHandle,
 }: HarnessProps) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -340,6 +342,7 @@ function VirtualizedTranscriptHarness({
     findLeaseMaxDurationMs,
     overscanMargin,
     onTailScrollClamp,
+    onScrollCompensated,
   });
   onHandle?.(virtualization);
 
@@ -1613,5 +1616,177 @@ describe("transcript row-shell content virtualization and find lease", () => {
     });
     expect(onTailScrollClamp).not.toHaveBeenCalled();
     expect(awayScrollTop).toBe(1000);
+  });
+
+  it("samples fresh live DOM height with subpixel precision at unmount so height growth after caching never collapses the shell", async () => {
+    const total = VIRTUALIZE_THRESHOLD + 12;
+    const { entries, nodes } = buildEntries(total);
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-fresh-unmount",
+          entries,
+          nodes,
+        }),
+      );
+    });
+
+    const io = findVirtualizationIO(mockIO.instances)!;
+    const row4 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-4"]')!;
+
+    // Initial mount height recorded as 120px when row4 first settles in viewport.
+    mockRowHeight(row4, 120);
+    await act(async () => {
+      io.emit([{ target: row4, isIntersecting: true, height: 120 }]);
+    });
+    expect(row4.querySelector('[data-rendered-body="node-4"]')).not.toBeNull();
+
+    // Row4 dynamically grows to 342.37px (e.g. image loaded or block expanded) before RO fires,
+    // then leaves viewport and unmounts.
+    mockRowHeight(row4, 342.37);
+    await act(async () => {
+      io.emit([{ target: row4, isIntersecting: false, height: 120 }]);
+    });
+
+    expect(row4.querySelector("[data-rendered-body]")).toBeNull();
+    expect(row4.hasAttribute("data-chat-virtualized")).toBe(true);
+    expect(row4.style.minHeight).toBe("342.37px");
+  });
+
+  it("advances scrollTop monotonically across downward unmount/mount batches and recovers from synchronous layout clamps", async () => {
+    const total = 70;
+    const { entries, nodes } = buildEntries(total);
+    const compensatedDeltas: number[] = [];
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-monotonic-down",
+          entries,
+          nodes,
+          onScrollCompensated: (delta) => {
+            compensatedDeltas.push(delta);
+          },
+        }),
+      );
+    });
+
+    const io = findVirtualizationIO(mockIO.instances)!;
+    const scroller = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-chat-flow-key]"));
+    const clientHeight = 600;
+    const mountedHeights = new Map<number, number>();
+    for (let i = 0; i < total; i += 1) {
+      mountedHeights.set(i, 180 + (i % 4) * 40);
+    }
+
+    const rowHeight = (index: number): number => {
+      const row = rows[index]!;
+      if (row.hasAttribute("data-chat-virtualized")) {
+        const parsed = Number.parseFloat(row.style.minHeight);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : ESTIMATED_NODE_HEIGHT;
+      }
+      return mountedHeights.get(index) ?? 180;
+    };
+
+    const rowDocTop = (index: number): number => {
+      let y = 0;
+      for (let i = 0; i < index; i += 1) y += rowHeight(i);
+      return y;
+    };
+
+    const totalHeight = (): number => {
+      let h = 0;
+      for (let i = 0; i < total; i += 1) h += rowHeight(i);
+      return h;
+    };
+
+    let scrollTopValue = 400;
+    let clampFired = false;
+    const triggerRow = rows[4]!;
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      get: () => clientHeight,
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => totalHeight(),
+    });
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => {
+        // Trigger once immediately after batch 2 commits row 4's unmount (simulating WebKit clamp).
+        if (!clampFired && triggerRow.hasAttribute("data-chat-virtualized")) {
+          clampFired = true;
+          scrollTopValue = Math.max(0, scrollTopValue - 600);
+        }
+        return scrollTopValue;
+      },
+      set: (value: number) => {
+        const floor = Math.max(0, totalHeight() - clientHeight);
+        scrollTopValue = Math.max(0, Math.min(floor, value));
+      },
+    });
+    Object.defineProperty(scroller, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 0,
+          bottom: clientHeight,
+          height: clientHeight,
+          left: 0,
+          right: 600,
+          width: 600,
+        }) as DOMRect,
+    });
+    for (let i = 0; i < total; i += 1) {
+      const idx = i;
+      Object.defineProperty(rows[idx]!, "getBoundingClientRect", {
+        configurable: true,
+        value: () => {
+          const top = rowDocTop(idx) - scrollTopValue;
+          const height = rowHeight(idx);
+          return { top, bottom: top + height, height, left: 0, right: 600, width: 600 } as DOMRect;
+        },
+      });
+    }
+
+    // Settle initial viewport window around rows 0..14.
+    await act(async () => {
+      io.emit(
+        rows.map((row, idx) => ({
+          target: row,
+          isIntersecting: idx <= 14,
+          height: rowHeight(idx),
+        })),
+      );
+    });
+
+    // Walk downward in batches, simulating wheel increments + above-viewport unmounts + below-viewport mounts,
+    // including a synchronous commit clamp on batch 2 (when row 4 unmounts).
+    let previousTop = scrollTopValue;
+    for (let batch = 1; batch <= 8; batch += 1) {
+      const floor = totalHeight() - clientHeight;
+      scrollTopValue = Math.min(floor, scrollTopValue + 900);
+      const targetBeforeCommit = scrollTopValue;
+      const windowStart = Math.min(total - PIN_TAIL, batch * 4);
+      const windowEnd = Math.min(total - 1, windowStart + 14);
+      await act(async () => {
+        io.emit(
+          rows.map((row, idx) => ({
+            target: row,
+            isIntersecting: idx >= windowStart && idx <= windowEnd,
+            height: rowHeight(idx),
+          })),
+        );
+      });
+      // scrollTop must advance monotonically and never snap backward behind previousTop or targetBeforeCommit.
+      expect(scrollTopValue).toBeGreaterThanOrEqual(previousTop);
+      expect(scrollTopValue).toBeGreaterThanOrEqual(targetBeforeCommit - 1);
+      previousTop = scrollTopValue;
+    }
+    expect(clampFired).toBe(true);
+    expect(compensatedDeltas.some((delta) => delta >= 599)).toBe(true);
   });
 });

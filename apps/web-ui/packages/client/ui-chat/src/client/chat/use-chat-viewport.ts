@@ -94,6 +94,7 @@ export class ChatViewport {
       });
       this.observer.observe(column);
       this.observer.observe(scroller);
+      if (list !== scroller) this.observer.observe(list);
       if (composer !== null) this.observer.observe(composer);
     }
   }

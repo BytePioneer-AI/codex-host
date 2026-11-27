@@ -1207,6 +1207,7 @@ describe("transcript row-shell content virtualization and find lease", () => {
   it("compensates scrollTop when above-viewport rows expand on engines without overflow-anchor, without disturbing tail-follow", async () => {
     const total = 56;
     const { entries, nodes } = buildEntries(total);
+    const onScrollCompensated = vi.fn();
 
     await act(async () => {
       root.render(
@@ -1214,6 +1215,7 @@ describe("transcript row-shell content virtualization and find lease", () => {
           sessionId: "s-anchor-comp",
           entries,
           nodes,
+          onScrollCompensated,
         }),
       );
     });
@@ -1266,6 +1268,8 @@ describe("transcript row-shell content virtualization and find lease", () => {
     });
     expect(row2.querySelector("[data-rendered-body]")).not.toBeNull();
     expect(scrollTopValue).toBe(1200);
+    expect(onScrollCompensated).toHaveBeenCalledTimes(1);
+    expect(onScrollCompensated).toHaveBeenCalledWith(200);
   });
 
   it("exempts [data-chat-virtualized] row shells from ChatViewport :empty checks during paging and fallback capture", () => {
@@ -1703,28 +1707,37 @@ describe("transcript row-shell content virtualization and find lease", () => {
     };
 
     let scrollTopValue = 400;
-    let clampFired = false;
-    const triggerRow = rows[4]!;
+    let pureClampFired = false;
+    let mixedClampFired = false;
+    let extraAboveOffset = 0;
+    const pureClampRow = rows[4]!;
+    const mixedClampRow = rows[12]!;
     Object.defineProperty(scroller, "clientHeight", {
       configurable: true,
       get: () => clientHeight,
     });
     Object.defineProperty(scroller, "scrollHeight", {
       configurable: true,
-      get: () => totalHeight(),
+      get: () => totalHeight() + extraAboveOffset,
     });
     Object.defineProperty(scroller, "scrollTop", {
       configurable: true,
       get: () => {
-        // Trigger once immediately after batch 2 commits row 4's unmount (simulating WebKit clamp).
-        if (!clampFired && triggerRow.hasAttribute("data-chat-virtualized")) {
-          clampFired = true;
+        // Pure synchronous clamp on batch 2 (no net above-viewport height change).
+        if (!pureClampFired && pureClampRow.hasAttribute("data-chat-virtualized")) {
+          pureClampFired = true;
           scrollTopValue = Math.max(0, scrollTopValue - 600);
+        }
+        // Combined synchronous clamp (-400px) + genuine above-viewport height growth (+25px) on batch 4.
+        if (!mixedClampFired && mixedClampRow.hasAttribute("data-chat-virtualized")) {
+          mixedClampFired = true;
+          extraAboveOffset += 25;
+          scrollTopValue = Math.max(0, scrollTopValue - 400);
         }
         return scrollTopValue;
       },
       set: (value: number) => {
-        const floor = Math.max(0, totalHeight() - clientHeight);
+        const floor = Math.max(0, totalHeight() + extraAboveOffset - clientHeight);
         scrollTopValue = Math.max(0, Math.min(floor, value));
       },
     });
@@ -1745,7 +1758,8 @@ describe("transcript row-shell content virtualization and find lease", () => {
       Object.defineProperty(rows[idx]!, "getBoundingClientRect", {
         configurable: true,
         value: () => {
-          const top = rowDocTop(idx) - scrollTopValue;
+          const offset = idx > 12 ? extraAboveOffset : 0;
+          const top = rowDocTop(idx) + offset - scrollTopValue;
           const height = rowHeight(idx);
           return { top, bottom: top + height, height, left: 0, right: 600, width: 600 } as DOMRect;
         },
@@ -1764,10 +1778,10 @@ describe("transcript row-shell content virtualization and find lease", () => {
     });
 
     // Walk downward in batches, simulating wheel increments + above-viewport unmounts + below-viewport mounts,
-    // including a synchronous commit clamp on batch 2 (when row 4 unmounts).
+    // including a pure synchronous clamp on batch 2 and a clamp + genuine +25px growth on batch 4.
     let previousTop = scrollTopValue;
     for (let batch = 1; batch <= 8; batch += 1) {
-      const floor = totalHeight() - clientHeight;
+      const floor = totalHeight() + extraAboveOffset - clientHeight;
       scrollTopValue = Math.min(floor, scrollTopValue + 900);
       const targetBeforeCommit = scrollTopValue;
       const windowStart = Math.min(total - PIN_TAIL, batch * 4);
@@ -1786,7 +1800,10 @@ describe("transcript row-shell content virtualization and find lease", () => {
       expect(scrollTopValue).toBeGreaterThanOrEqual(targetBeforeCommit - 1);
       previousTop = scrollTopValue;
     }
-    expect(clampFired).toBe(true);
-    expect(compensatedDeltas.some((delta) => delta >= 599)).toBe(true);
+    expect(pureClampFired).toBe(true);
+    expect(mixedClampFired).toBe(true);
+    // Pure clamp recovery (batch 2) must NOT report +600; combined clamp + 25px growth (batch 4)
+    // must report only the +25px net height shift, keeping ChatViewport.observation.top unpolluted.
+    expect(compensatedDeltas).toEqual([25]);
   });
 });

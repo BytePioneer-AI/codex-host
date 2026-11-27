@@ -437,6 +437,7 @@ interface PendingScrollCompensation {
   readonly scroller: HTMLElement;
   readonly anchorEl: HTMLElement;
   readonly prevTop: number;
+  readonly prevScrollTop: number;
   readonly scrollVersion: number;
 }
 
@@ -978,8 +979,9 @@ export function useTranscriptVirtualization({
     const scroller = list?.closest<HTMLElement>("[data-conversation-scroll]") ?? list ?? null;
     if (scroller !== null && scroller.isConnected) {
       const floor = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const prevScrollTop = scroller.scrollTop;
       const followingTailAttr = list?.closest("[data-chat-following-tail]") !== null;
-      const nearTail = floor <= 0 || floor - scroller.scrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX;
+      const nearTail = floor <= 0 || floor - prevScrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX;
       if (nearTail) {
         if (followingTailAttr && floor > 0 && mountedSetChanged(prevMounted, currentMountedKeys)) {
           pendingTailRestoreRef.current = scroller;
@@ -1045,6 +1047,7 @@ export function useTranscriptVirtualization({
               scroller,
               anchorEl,
               prevTop,
+              prevScrollTop,
               scrollVersion: scrollVersionRef.current,
             };
           }
@@ -1086,9 +1089,9 @@ export function useTranscriptVirtualization({
       const delta = nextTop - pendingCompensation.prevTop;
       if (Math.abs(delta) > 0.5) {
         pendingCompensation.scroller.scrollTop = beforeScrollTop + delta;
-        const actualDelta = pendingCompensation.scroller.scrollTop - beforeScrollTop;
-        if (Math.abs(actualDelta) > 0.01) {
-          onScrollCompensatedRef.current?.(actualDelta);
+        const netDelta = pendingCompensation.scroller.scrollTop - pendingCompensation.prevScrollTop;
+        if (Math.abs(netDelta) > 0.01) {
+          onScrollCompensatedRef.current?.(netDelta);
         }
       }
     }

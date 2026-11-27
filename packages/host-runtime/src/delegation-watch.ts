@@ -675,9 +675,7 @@ export class DelegationWatchService {
       // Registered before the messages are removed, so a restart cannot drop a promised watch.
       for (const { watchAfterDelivery } of pending) {
         if (!watchAfterDelivery) continue;
-        await this.#watchDelivered(notifyThreadId, watchAfterDelivery).catch((error: unknown) =>
-          this.#diagnose(error),
-        );
+        await this.#watchDelivered(notifyThreadId, watchAfterDelivery, false);
       }
       for (const watch of pending) this.#remove(watch);
     } catch (error) {
@@ -781,6 +779,7 @@ export class DelegationWatchService {
   async #watchDelivered(
     threadId: string,
     { notifyThreadId, timeoutMs }: { notifyThreadId: string; timeoutMs: number },
+    required = true,
   ): Promise<ThreadWatchResult> {
     const result: ThreadWatchResult = {
       threadId,
@@ -791,18 +790,27 @@ export class DelegationWatchService {
     };
     if (this.#watching(threadId, notifyThreadId)) return result;
     const now = Date.now();
-    await this.#add(
-      {
-        id: randomUUID(),
-        threadId,
-        notifyThreadId,
-        state: "watching",
-        registeredAt: new Date(now).toISOString(),
-        timeoutMs,
-        deadline: now + timeoutMs,
-      },
-      "Could not persist Thread watch",
-    );
+    const watch: Watch = {
+      id: randomUUID(),
+      threadId,
+      notifyThreadId,
+      state: "watching",
+      registeredAt: new Date(now).toISOString(),
+      timeoutMs,
+      deadline: now + timeoutMs,
+    };
+    if (required) {
+      await this.#add(watch, "Could not persist Thread watch");
+      return result;
+    }
+    if (this.#closed) {
+      // Delivery already started a Turn before shutdown; save the promised watch for the next Runtime.
+      await this.#write((store) => store.save(persisted(watch)));
+      return result;
+    }
+    this.#watches.push(watch);
+    await this.#persist(watch);
+    this.#schedule();
     return result;
   }
 

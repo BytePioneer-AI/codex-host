@@ -603,4 +603,59 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     expect(fake.sent).toHaveLength(1);
     expect(diagnose).toHaveBeenCalled();
   });
+
+  it("keeps an afterDelivery watch working without re-sending the mailbox message when watch persistence fails", async () => {
+    const diagnose = vi.fn();
+    const store = memoryStore();
+    const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const watches = new DelegationWatchService(fake, {
+      pollIntervalMs: POLL_MS,
+      store,
+      diagnose,
+    });
+    try {
+      fake.send.mockRejectedValueOnce(new DelegationControlError("THREAD_BUSY", "busy"));
+      await expect(
+        watches.mail({
+          threadId: "child",
+          message: "check the result",
+          from: "parent",
+          watch: { notifyThreadId: "parent", timeoutMs: 60_000 },
+        }),
+      ).resolves.toMatchObject({
+        delivery: "mailbox",
+        watch: { state: "afterDelivery", notifyThreadId: "parent" },
+      });
+
+      const originalSave = store.save.bind(store);
+      let failedWatchSave = false;
+      vi.spyOn(store, "save").mockImplementation(async (record) => {
+        if (!failedWatchSave && record.state === "watching") {
+          failedWatchSave = true;
+          throw new Error("disk full");
+        }
+        return originalSave(record);
+      });
+
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(failedWatchSave).toBe(true);
+      expect(diagnose).toHaveBeenCalled();
+      expect(fake.sent).toHaveLength(1);
+      expect(fake.sent[0]?.threadId).toBe("child");
+      await expect(watches.watches()).resolves.toMatchObject({
+        watches: [{ threadId: "child", notifyThreadId: "parent", state: "watching" }],
+      });
+
+      fake.update("child", { status: "completed" });
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(fake.sent).toHaveLength(2);
+      expect(fake.sent[1]?.threadId).toBe("parent");
+      expect(parseThreadWatchNotice(fake.sent[1]?.message ?? "")).toEqual([
+        { threadId: "child", label: "child", outcome: "completed" },
+      ]);
+      await expect(watches.watches()).resolves.toEqual({ watches: [] });
+    } finally {
+      watches.close();
+    }
+  });
 });

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as c from "@codexhost/shared-contracts";
+import type { ChHostClient } from "./ch-host-client.ts";
 import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
 import {
@@ -29,6 +30,8 @@ export interface PeerHostManagerOptions {
   resolveSelfShare?: ResolvePeerSelfShare;
   /** Optional DNS resolver override for peer probe host validation (used in tests). */
   dnsLookup?: PeerDnsLookup;
+  /** Optional hook attaching to each enabled Peer's realtime channel; returns a cleanup callback. */
+  onPeerRealtime?: (hostId: string, realtime: NonNullable<ChHostClient["realtime"]>) => () => void;
 }
 
 const MAX_LINKED_PEER_IDS = 128;
@@ -46,12 +49,14 @@ export interface PeerHostRegisterOptions {
 export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
   private sources = new Map<string, PeerThreadSource>();
+  private peerRealtimeCleanups = new Map<string, () => void>();
   private readonly allowLoopback: boolean;
   private readonly localNodeId: string | undefined;
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   private readonly resolveSelfShare: ResolvePeerSelfShare | undefined;
   private readonly dnsLookup: PeerDnsLookup | undefined;
+  private readonly onPeerRealtime: PeerHostManagerOptions["onPeerRealtime"];
   onChange?: (hostId?: string) => void;
   onPeerRemoved?: (hostId: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
@@ -74,6 +79,7 @@ export class PeerHostManager {
     this.projector = options.projector;
     this.resolveSelfShare = options.resolveSelfShare;
     this.dnsLookup = options.dnsLookup;
+    this.onPeerRealtime = options.onPeerRealtime;
     for (const record of store.load()) this.install(record);
   }
 
@@ -101,6 +107,8 @@ export class PeerHostManager {
         ? previous.manifest
         : undefined;
     const next = client ?? this.createClient(record, inheritedManifest);
+    this.peerRealtimeCleanups.get(record.peerId)?.();
+    this.peerRealtimeCleanups.delete(record.peerId);
     this.sources.get(record.peerId)?.close();
     this.sources.delete(record.peerId);
     previous?.close();
@@ -140,6 +148,12 @@ export class PeerHostManager {
         },
       });
       this.sources.set(record.peerId, source);
+      if (this.onPeerRealtime) {
+        this.peerRealtimeCleanups.set(
+          record.peerId,
+          this.onPeerRealtime(next.hostId, host.realtime),
+        );
+      }
     }
     void next.start();
     return next;
@@ -621,6 +635,8 @@ export class PeerHostManager {
         switch (action) {
           case "remove":
             this.store.save(this.records().filter((r) => r.peerId !== peerId));
+            this.peerRealtimeCleanups.get(peerId)?.();
+            this.peerRealtimeCleanups.delete(peerId);
             this.sources.get(peerId)?.close();
             this.sources.delete(peerId);
             client.close();
@@ -729,6 +745,8 @@ export class PeerHostManager {
   }
 
   close() {
+    for (const stop of this.peerRealtimeCleanups.values()) stop();
+    this.peerRealtimeCleanups.clear();
     for (const s of this.sources.values()) s.close();
     this.sources.clear();
     for (const p of this.clients.values()) p.close();

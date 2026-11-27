@@ -796,6 +796,11 @@ export const en = {
     "This device is notified when a turn finishes or an agent needs your approval or answer.",
   "notifications.off": "Get notified on this device when a turn finishes or an agent needs you.",
   "notifications.denied": "Notifications are blocked for this site in your browser settings.",
+  "notifications.shell.denied":
+    "System notifications are blocked for CodexHost. Allow them in system notification settings.",
+  "notifications.shell.unsupported": "Native notifications are not supported in this environment.",
+  "notifications.openSettings": "Open system settings",
+  "notifications.insecure": "Push notifications require HTTPS or a localhost address.",
   "notifications.unsupported": "This browser does not support push notifications.",
   "notifications.needs-install":
     "On iPhone and iPad, add CodexHost to the Home Screen (Share → Add to Home Screen), then enable notifications there.",
@@ -803,6 +808,8 @@ export const en = {
   "notifications.disable": "Turn off",
   "notifications.test": "Send test",
   "notifications.testing": "Sending…",
+  "notifications.testTitle": "Test notification",
+  "notifications.testBody": "Notifications are working on this device.",
   "notifications.testSent":
     "Test notification submitted to this device. Check its notification tray.",
   "notifications.testNotSent":
@@ -1475,6 +1482,10 @@ export const zh: Record<ImportLocaleKey, string> = {
   "notifications.on": "一轮结束、需要审批或回答问题时，会通知这台设备。",
   "notifications.off": "一轮结束或 Agent 需要你时，在这台设备上收到通知。",
   "notifications.denied": "浏览器设置中已阻止此网站的通知。",
+  "notifications.shell.denied": "系统设置中已阻止 CodexHost 发送通知，请在系统通知设置中允许。",
+  "notifications.shell.unsupported": "当前系统环境暂不支持原生通知。",
+  "notifications.openSettings": "打开系统通知设置",
+  "notifications.insecure": "需要通过 HTTPS 或本机地址访问才能开启推送通知。",
   "notifications.unsupported": "此浏览器不支持推送通知。",
   "notifications.needs-install":
     "在 iPhone / iPad 上，请先把 CodexHost 添加到主屏幕（分享 → 添加到主屏幕），再在那里开启通知。",
@@ -1482,6 +1493,8 @@ export const zh: Record<ImportLocaleKey, string> = {
   "notifications.disable": "关闭",
   "notifications.test": "发送测试",
   "notifications.testing": "正在发送…",
+  "notifications.testTitle": "通知测试",
+  "notifications.testBody": "这台设备可以正常接收通知。",
   "notifications.testSent": "测试通知已提交到这台设备，请检查通知中心。",
   "notifications.testNotSent": "测试通知未发送。请检查连接后重试；若仍失败，请关闭再重新开启通知。",
   "notifications.testFailed": "无法发送测试通知。请检查连接后重试。",

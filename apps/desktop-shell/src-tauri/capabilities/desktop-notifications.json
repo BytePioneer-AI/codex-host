@@ -1,0 +1,16 @@
+{
+  "identifier": "desktop-notifications",
+  "description": "Controlled native notification commands for the main desktop shell window on the local loopback Web UI only.",
+  "webviews": ["main"],
+  "local": false,
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+  },
+  "permissions": [
+    "allow-notification-get-state",
+    "allow-notification-request-permission",
+    "allow-notification-set-enabled",
+    "allow-notification-send",
+    "allow-notification-open-settings"
+  ]
+}

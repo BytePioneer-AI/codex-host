@@ -130,12 +130,25 @@ mod tests {
         let visibility_pos = script
             .find("window.__codexhostSetWindowHidden =")
             .expect("window visibility bridge registration must exist");
+        let notifications_pos = script
+            .find("window.__codexhostNotifications = Object.freeze")
+            .expect("notifications bridge registration must exist");
         let root_pos = script
             .find("document.documentElement")
             .expect("root attribute setup must exist");
         assert!(
-            bridge_pos < root_pos && zoom_pos < root_pos && visibility_pos < root_pos,
+            bridge_pos < root_pos
+                && zoom_pos < root_pos
+                && visibility_pos < root_pos
+                && notifications_pos < root_pos,
             "bridges must be registered before any document.documentElement access at document_start"
+        );
+        let non_embedded_gate = script[..notifications_pos]
+            .rfind("if (!isEmbeddedPage)")
+            .expect("notifications bridge must be inside an !isEmbeddedPage branch");
+        assert!(
+            non_embedded_gate > visibility_pos && non_embedded_gate < notifications_pos,
+            "notifications bridge must be explicitly gated to non-embedded pages"
         );
         assert!(
             script.contains("window_visibility_get")

@@ -9,7 +9,7 @@
   "app": {
     "windows": [],
     "security": {
-      "capabilities": ["embedded-pages", "window-chrome"],
+      "capabilities": ["embedded-pages", "window-chrome", "desktop-notifications"],
       "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
     }
   },

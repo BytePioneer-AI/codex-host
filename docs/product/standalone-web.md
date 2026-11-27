@@ -46,7 +46,7 @@ Web「设置 → 通用设置 → 显示」提供「背景图片」与「背景�
 
 Web「设置 → 通用设置」顶部的「应用与通知」分组提供「安装 CodexHost 应用」和通知入口。浏览器发出可安装事件后，点击「安装应用」唤起原生确认弹窗；确认、取消或失败后不重复使用同一次安装事件。用户接受安装请求不等于安装完成，只有浏览器确认完成或页面以独立应用模式运行时才显示已安装状态。安装事件由浏览器壳在异步加载插件前监听，设置入口通过客户端服务读取，不依赖设置页是否打开；浏览器没有提供事件、暂不满足条件或已在其他窗口安装时，显示「安装指引」，不据此断言浏览器不支持 PWA。
 
-指引按当前设备说明安卓浏览器菜单与 GitHub Releases 轻量原生 APK 下载入口、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。在原生桌面壳内打开时（`window.__CODEXHOST_DESKTOP_SHELL__ === true`）隐藏此浏览器 PWA 安装入口。
+指引按当前设备说明安卓浏览器菜单与 GitHub Releases 轻量原生 APK 下载入口、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。在原生桌面壳、Android 壳或其它原生壳（`window.__CODEXHOST_DESKTOP_SHELL__ === true`、`window.__CODEXHOST_NATIVE_SHELL__ === true` 或 `window.__codexhostAndroidHostSwitcher != null`）内打开时隐藏此浏览器 PWA 安装入口。
 
 iOS/iPadOS 主屏幕模式通过 `display-mode: standalone` 与 `-webkit-touch-callout` 支持检测启用透明顶边兼容层：固定在视口顶边，高 6px、全宽，使用 `backdrop-filter: blur(0px)`（含 Safari 前缀），不绘制实色底、不改变下方像素、不占布局空间、不接收触摸，也不进入可访问性树。该尝试依据 WebKit `LocalFrameView::fixedContainerEdges` 对背景滤镜容器的识别路径，用于规避 [WebKit 329103](https://bugs.webkit.org/show_bug.cgi?id=329103) 所报告的系统顶部虚化侵入页面内容；零半径滤镜不能替换为 `none`，否则不再提供该识别条件。不改状态栏样式 meta、安全区留白或侧栏毛玻璃，也不隐藏系统时钟和电池区域。普通浏览器、Android 和桌面不启用。该模式的根画布固定为深色 `#151517`，为系统状态栏提供稳定的深色背景，不尝试随应用主题动态切换系统顶部。应用内部仍由 `body` 上的主题正常切换亮色、暗色或跟随系统；固定深色画布不向页面顶部增加实色覆盖条，也不触发刷新或重启。主题呈现器写入的 `theme-color` 插在页面静态默认值之前，浏览器取第一个匹配项，系统状态栏和浏览器外围随应用实际背景色变化，而不是只跟随系统深浅色；移除后回落到静态默认值。WebKit 主干的识别逻辑不保证已发布 iOS 的系统显示效果；固定深色顶部在亮／暗主题冷启动、运行中切换和横竖屏下的表现仍需 iOS 真机验收。
 
@@ -58,13 +58,15 @@ iOS/iPadOS 主屏幕模式通过 `display-mode: standalone` 与 `-webkit-touch-c
 - **顶部气泡与窗口栏避让**：快捷键触发缩放时在视口顶部居中显示半透明比例药丸（不拦截指针、单一 `role="status"` 区域并在淡出后清空文本），按当前 `--dsh-shell-zoom` 反向保持视觉字号与间距稳定，并以 `calc(var(--dsh-frame-top-clearance, 48px) + 16px / var(--dsh-shell-zoom, 1))` 在不同倍率与全屏状态下避让顶部拖动条与标题栏。macOS 通过非全屏态派生变量 `--dsh-mac-lights-end` 与 `--dsh-mac-lights-bottom` 对原生红绿灯周围留白及侧栏品牌行上边距做反比补偿（低倍率下不遮挡红绿灯，同时保持侧栏切换键在展开／收起时竖向位置固定）；Windows 标题栏在低于 `100%` 倍率时对高度与右上角窗口按钮做反比补偿（保持不小于原生 `36px` 拖动高度与 `46×36` 按钮视觉尺寸），高于 `100%` 时随页面同步放大以保持标题栏内侧栏按钮居中不裁切。极小窗口（如最小宽度下放大至 `200%`）使容器宽度低于 `640 CSS px` 时与浏览器行为一致进入窄屏抽屉布局，红绿灯避让仍保持生效。
 - **设置项与双向同步**：仅在桌面壳环境（存在 `window.__codexhostZoom`）时，在「设置 → 通用设置 → 显示与语言」紧邻「字号大小」后展示「界面缩放」下拉菜单（11 档预设，`100%` 标注为默认），与仅作用于会话正文的「字号大小」区分；通过下拉调整即时保存并静默应用（不弹出顶部比例气泡），快捷键调整也会实时同步刷新设置行当前值。
 
-## Web Push 通知
+## Web Push 与原生桌面壳通知
 
-Web「设置 → 通用设置 → 应用与通知」为当前浏览器开启通知，并提供测试推送。需要浏览器授权、HTTPS 安全上下文（localhost 除外）和可用的系统通知设置；iPhone／iPad 需先添加到主屏幕，再在主屏幕应用内开启。电脑上的 Web 与 Host 必须保持运行且能连接浏览器推送服务，浏览器页面不必保持打开或订阅会话正文。
+Web「设置 → 通用设置 → 应用与通知」为当前浏览器或原生桌面壳开启通知，并提供测试推送。浏览器模式需要授权、HTTPS 安全上下文（localhost 除外）和可用的系统通知设置；非 HTTPS 地址（如局域网或 Tailscale IP 的 HTTP 访问）会提示需要 HTTPS 或本机地址，不误报为浏览器不支持或要求 iOS 添加到主屏幕。iPhone 与 iPad（含桌面模式 UA 的 iPadOS Safari）需先添加到主屏幕，再在主屏幕应用内开启。浏览器模式下电脑上的 Web 与 Host 必须保持运行且能连接浏览器推送服务，浏览器页面不必保持打开或订阅会话正文。
 
 源码 Web（`npm start web` 和打包预览）与安装版后台 Web 共用原生 Launcher 的代理继承规则：显式代理环境变量优先，macOS／Windows 补齐缺失的静态系统代理，Linux 沿用环境变量与系统路由；保留 `NO_PROXY` 和显式 `NODE_USE_ENV_PROXY=0`。代理配置在 Web 启动时读取，不探测或切换 VPN，不修改 DNS，也不展开 PAC／WPAD。通知通过 `web-push` 的显式代理传输兼容全部受支持的 Node 版本，并遵循 `NO_PROXY` 与代理禁用设置；请求设置 10 秒 socket 空闲超时，不保证总耗时不超过 10 秒。连接失败不删除仍有效的设备订阅。
 
-网关直接监听共享 Host 的回合完成和待交互事件，读取有界快照，向有效订阅推送原生 Codex／外部 Harness 的完成、失败、待审批或待回答通知；通知不代替用户回答交互。停止或取消的回合不发送完成通知。没有推送订阅时不为通知读取快照，正文增量也不触发通知读取。同一 Host 代次内近期回合／交互按身份去重；断线续接按事件日志处理，启动或无法续接的完整重置不扫描旧历史补发，通知不保证持久送达。点击通知打开对应会话。无论 Web 页面在前台、后台还是已关闭，Service Worker 收到推送后均请求显示系统通知，不因页面可见或获得焦点而跳过；实际呈现受系统通知权限与专注模式等设置影响。
+网关直接监听本机共享 Host 及已启用远程 Peer 的回合完成和待交互事件，读取有界快照，产出原生 Codex／外部 Harness 的完成、失败、待审批或待回答通知（远程 Peer 会话使用 `remoteSessionId(hostId, threadId)` 避免与本机 Thread ID 冲突）；通知不代替用户回答交互。停止或取消的回合不发送完成通知。既无有效 Web Push 订阅也无在线事件客户端时不为通知读取快照，正文增量也不触发通知读取。同一 Host 代次内近期回合／交互按身份去重；断线续接按事件日志处理，启动或无法续接的完整重置不扫描旧历史补发，通知不保证持久送达。有效 Web Push 订阅继续通过推送服务投递；存在在线客户端时，网关同时通过事件流广播 `codexhost/notification`，供原生壳消费。点击通知打开对应会话。浏览器模式下，无论 Web 页面在前台、后台还是已关闭，Service Worker 收到推送后均请求显示系统通知，不因页面可见或获得焦点而跳过；实际呈现受系统通知权限与专注模式等设置影响。
+
+独立原生桌面壳（`apps/desktop-shell/src-tauri`）仅在实时 Web 页注入 `window.__codexhostNotifications` 桥接（不注入内置引导／加载页，并跳过浏览器 Service Worker 与 Web Push 订阅流程），将开启状态原子持久化到数据目录下的 `desktop-shell-notifications-v1.json`（Unix 权限 `0600`）。通知相关 Tauri 命令仅允许在已认证的本机回环 Web 源（`Page::Web` 且严格匹配 `last_login` origin、无 userinfo）调用，并对标题／正文／标识截断及按 5 秒最多 10 条限流。原生桌面壳在窗口可见、获得焦点且主视图正停留在同一会话时抑制弹窗，后台、失焦或停留在其他会话时弹出系统原生通知；点击通知后将主窗口置前并跳转到对应会话。macOS 使用 `CFBundleIdentifier = com.codexhost.shell`，并在通知开启期间持有 `NSProcessInfo` 后台活动令牌以减轻 App Nap 延迟；Windows 登记进程与 HKCU `AppUserModelId` 及安装包开始菜单快捷方式 `com.codexhost.shell`。`tauri-plugin-notification` 在桌面端直接将权限解析为 `granted`，系统通知开关与专注模式仍由操作系统控制；若原生壳返回 `denied` 且提供系统设置入口，设置行展示「打开系统通知设置」按钮。原生壳登出时保留本机壳层通知开关。
 
 ## 安装版后台 Web
 

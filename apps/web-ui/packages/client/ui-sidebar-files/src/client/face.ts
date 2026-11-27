@@ -131,7 +131,7 @@ export interface FilesInjected {
   /**
    * Seed this tab's tree and list its root.
    * @param tabId - the tab being drawn.
-   * @param root - absolute path of the workspace root.
+   * @param root - absolute or workspace-relative path to the directory to list.
    * @param signal - the tab record's lifetime.
    */
   readonly start: (tabId: TabId, root: string, signal: AbortSignal) => void;
@@ -212,38 +212,44 @@ export function filesFace(
         roots.get(tabId)?.setAutomatic(enabled);
       },
       start(tabId, root, signal) {
-        actions.start(tabId, root);
-        signal.addEventListener(
-          "abort",
-          () => {
-            void roots.get(tabId)?.close();
-            roots.delete(tabId);
-            generations.delete(tabId);
-            actions.forget(tabId);
-          },
-          { once: true },
-        );
-        roots.set(
-          tabId,
-          new DirectoryNode(
-            root,
-            (path, lifetime) => load(tabId, path, lifetime),
-            (path, lifetime) => watch(sessionId, path, lifetime),
-            (path, error) => {
-              if (!signal.aborted)
-                actions.failed(
-                  tabId,
-                  path,
-                  new RemoteError(
-                    "gateway/internal",
-                    error instanceof Error ? error.message : String(error),
-                    {},
-                  ),
-                );
+        const previous = roots.get(tabId);
+        if (signal.aborted || previous?.path === root) return;
+        if (previous === undefined) {
+          signal.addEventListener(
+            "abort",
+            () => {
+              void roots.get(tabId)?.close();
+              roots.delete(tabId);
+              generations.delete(tabId);
+              actions.forget(tabId);
             },
-            signal,
-          ).open(),
+            { once: true },
+          );
+        } else {
+          void previous.close();
+          generations.delete(tabId);
+        }
+        actions.start(tabId, root);
+        const node = new DirectoryNode(
+          root,
+          (path, lifetime) => load(tabId, path, lifetime),
+          (path, lifetime) => watch(sessionId, path, lifetime),
+          (path, error) => {
+            if (roots.get(tabId) === node)
+              actions.failed(
+                tabId,
+                path,
+                new RemoteError(
+                  "gateway/internal",
+                  error instanceof Error ? error.message : String(error),
+                  {},
+                ),
+              );
+          },
+          signal,
         );
+        roots.set(tabId, node);
+        node.open();
       },
       load: (tabId, path, signal) => {
         void load(tabId, path, signal);

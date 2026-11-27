@@ -34,6 +34,13 @@ export type { DirLevel, FilesState, FilesTabState, LevelState } from "./store.ts
 export type { FilesInjected, ListWorkspaceDirectory, WorkspaceFilesListRemote } from "./face.ts";
 export type { FilesBodyProps } from "./FilesBody.tsx";
 
+declare module "@deepseek-ai/dsh-client-ui-sidebar-right/client" {
+  interface SidebarRightTabParamsMap {
+    /** Root directory in the Session's workspace, absolute or workspace-relative. */
+    files: { readonly directory: string };
+  }
+}
+
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface SlotMap {
     /** Workspace directory actions after the file tree's reload control. */

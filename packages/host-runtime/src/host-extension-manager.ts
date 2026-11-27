@@ -7,6 +7,7 @@ import {
   hostExtensionDataDirectory,
   HostExtensionInstallConflict,
   HostExtensionRevisionConflict,
+  markDefaultHostExtensionSeeded,
   migrateLegacyDesktopExtensionsOnce,
   prepareHostExtension,
   readHostExtension,
@@ -14,6 +15,7 @@ import {
   readHostExtensionBackend,
   readHostExtensionConfiguration,
   readHostExtensionSettings,
+  readSeededDefaultHostExtensions,
   reportHostExtensionInstall,
   resolveHostExtensionStatsUrl,
   rollbackHostExtension,
@@ -24,6 +26,7 @@ import {
 } from "@codexhost/harness-plugin-files";
 import {
   jsonObjectSchema,
+  resolveDesktopExtensionSlots,
   type ExtensionActivitySnapshot,
   type ExtensionHarnessPresentation,
   type HostExtensionListItem,
@@ -32,6 +35,9 @@ import {
   type HOST_EXTENSIONS_RPC as RPC,
 } from "@codexhost/shared-contracts";
 import { errorMessage } from "./desktop-rpc.js";
+
+export const DEFAULT_DESKTOP_CATALOG_EXTENSIONS = Object.freeze(["sidebar-thread-tree"] as const);
+const DISABLE_DEFAULT_EXTENSIONS_ENV = "CODEXHOST_DISABLE_DEFAULT_EXTENSIONS";
 
 type Valid = Extract<HostExtensionListItem, { state: "valid" }>;
 type Instance = {
@@ -72,6 +78,9 @@ export class HostExtensionManager {
   readonly #activityConsumers = new Set<Instance>();
   readonly #closeController = new AbortController();
   readonly #inFlightOperations = new Set<Promise<unknown>>();
+  readonly #userTouchedIds = new Set<string>();
+  #userRecovered = false;
+  #defaultSeedTask: Promise<void> | undefined;
   #queue = Promise.resolve();
   // Backend activation/disposal can wait for settings IPC. Do not make IPC wait
   // on the lifecycle queue (or hold the lifecycle queue while invoking handlers).
@@ -120,6 +129,36 @@ export class HostExtensionManager {
       });
     }
     return this.#closing;
+  }
+
+  seedDefaultDesktopExtensions(
+    ids: readonly string[] = DEFAULT_DESKTOP_CATALOG_EXTENSIONS,
+    environment: NodeJS.ProcessEnv = process.env,
+  ): Promise<void> {
+    if (
+      this.#closing ||
+      ids.length === 0 ||
+      (environment[DISABLE_DEFAULT_EXTENSIONS_ENV] ??
+        process.env[DISABLE_DEFAULT_EXTENSIONS_ENV]) === "1"
+    ) {
+      return Promise.resolve();
+    }
+    return (this.#defaultSeedTask ??= this.#trackInFlight(async () => {
+      try {
+        await this.start();
+        if (this.#closing) return;
+        for (const id of ids) {
+          if (this.#closing) return;
+          await this.#seedDefaultDesktopExtension(id, environment);
+        }
+      } catch (error) {
+        if (!this.#closing && !this.#closeController.signal.aborted) {
+          this.diagnose(
+            `Default Desktop extension seeding failed: ${formatDiagnosticError(error)}`,
+          );
+        }
+      }
+    }));
   }
 
   list(): Promise<HostExtensionsRpcResult<typeof RPC.list>> {
@@ -203,6 +242,7 @@ export class HostExtensionManager {
       try {
         const installed = await this.#run(async () => {
           const committed = await staged.commit({ expectedDigest: null });
+          this.#userTouchedIds.add(committed.id);
           // An enabled ID can survive a damaged/missing install; honor the selection.
           try {
             if ((await readHostExtensionConfiguration(this.dataDir)).enabled.includes(committed.id))
@@ -313,9 +353,14 @@ export class HostExtensionManager {
         if (change.action === "enable" && !enabledEntry)
           throw new Error("Extension is not installed or is invalid");
         const configuration = await updateHostExtensionConfiguration(this.dataDir, change);
-        if (change.action === "disableAll") await this.#stopAll();
-        else if (change.action === "disable") await this.#stop(change.id);
-        else if (enabledEntry) {
+        if (change.action === "disableAll") {
+          this.#userRecovered = true;
+          await this.#stopAll();
+        } else if (change.action === "disable") {
+          this.#userTouchedIds.add(change.id);
+          await this.#stop(change.id);
+        } else if (enabledEntry) {
+          this.#userTouchedIds.add(change.id);
           if (this.#instances.get(change.id)?.state === "failed") await this.#stop(change.id);
           await this.#startBackend(enabledEntry);
         }
@@ -338,6 +383,7 @@ export class HostExtensionManager {
       )
         throw new HostExtensionInstallConflict("Extension activation changed");
       await this.#stop(id);
+      this.#userTouchedIds.add(id);
       try {
         return { id, removed: await uninstallHostExtension({ dataDir: this.dataDir, ...input }) };
       } catch (error) {
@@ -393,6 +439,96 @@ export class HostExtensionManager {
       return { pending: instance.process.invoke(input.method, input.params) };
     });
     return pending;
+  }
+
+  async #seedDefaultDesktopExtension(id: string, environment: NodeJS.ProcessEnv): Promise<void> {
+    try {
+      const shouldPrepare = await this.#run(async () => {
+        const seeded = await readSeededDefaultHostExtensions(this.dataDir);
+        if (seeded.includes(id)) return false;
+        if (this.#userRecovered || this.#userTouchedIds.has(id)) {
+          await markDefaultHostExtensionSeeded(this.dataDir, id);
+          return false;
+        }
+        const { extensions } = await discoverHostExtensions(this.dataDir);
+        if (extensions.some((entry) => entry.id === id)) {
+          await markDefaultHostExtensionSeeded(this.dataDir, id);
+          return false;
+        }
+        return true;
+      });
+      if (!shouldPrepare || this.#closing) return;
+
+      const staged = await prepareHostExtension({
+        dataDir: this.dataDir,
+        source: { type: "catalog", id },
+        expected: { id },
+        signal: this.#closeController.signal,
+      });
+      let reportInstall = false;
+      try {
+        reportInstall = await this.#run(async () => {
+          const seeded = await readSeededDefaultHostExtensions(this.dataDir);
+          if (seeded.includes(id)) return false;
+          if (this.#userRecovered || this.#userTouchedIds.has(id)) {
+            await markDefaultHostExtensionSeeded(this.dataDir, id);
+            return false;
+          }
+          let committed: HostExtensionDiskInstallation & { replaced: boolean };
+          try {
+            committed = await staged.commit({ expectedDigest: null });
+          } catch (error) {
+            if (error instanceof HostExtensionInstallConflict) {
+              await markDefaultHostExtensionSeeded(this.dataDir, id);
+              return false;
+            }
+            throw error;
+          }
+          const { configuration, installations } = await discoverHostExtensions(this.dataDir);
+          const conflictWith =
+            committed.manifest.desktop && committed.manifest.slots?.length
+              ? resolveDesktopExtensionSlots(
+                  [
+                    ...configuration.enabled.filter((entry) => entry !== committed.id),
+                    committed.id,
+                  ],
+                  installations
+                    .filter(({ manifest }) => manifest.desktop)
+                    .map(({ id: extensionId, manifest }) => ({
+                      id: extensionId,
+                      slots: manifest.slots ?? [],
+                    })),
+                ).conflicts.get(committed.id)
+              : undefined;
+          if (conflictWith !== undefined) {
+            this.diagnose(
+              `Default Desktop extension ${id} was installed without enabling due to slot conflict with ${conflictWith}`,
+            );
+            await markDefaultHostExtensionSeeded(this.dataDir, id);
+            this.#publish();
+            return true;
+          }
+          try {
+            await updateHostExtensionConfiguration(this.dataDir, { action: "enable", id });
+            await this.#startBackend(committed);
+            await markDefaultHostExtensionSeeded(this.dataDir, id);
+          } finally {
+            this.#publish();
+          }
+          return true;
+        });
+      } finally {
+        await staged.dispose();
+      }
+      if (reportInstall) {
+        void reportHostExtensionInstall(id, resolveHostExtensionStatsUrl(environment));
+      }
+    } catch (error) {
+      if (this.#closing || this.#closeController.signal.aborted) return;
+      this.diagnose(
+        `Default Desktop extension ${id} could not be installed: ${formatDiagnosticError(error)}`,
+      );
+    }
   }
 
   async #location({ id, activationId }: HostExtensionsRpcParams<typeof RPC.settingsGet>) {

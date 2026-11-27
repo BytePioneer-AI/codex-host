@@ -112,7 +112,8 @@ export function registerHarnessDiscovery(ctx: Context): void {
     const row = ctx.sessions.list.getSnapshot().byId[id];
     if (
       !connection.generation.getSnapshot() ||
-      row?.projectionValues?.nativeConnection?.state === "reconnecting"
+      row?.projectionValues?.nativeConnection?.state === "reconnecting" ||
+      (isRemotePeer(id) && connectionStateOf(id) !== "connected")
     )
       return t("discovery.offline");
     if (pending.has(id)) return t("discovery.pending");
@@ -256,11 +257,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
             if (cache.get(sessionId) !== entry || !supported(sessionId)) return [];
             const query = req.query.toLocaleLowerCase();
             const codex = harnessIdOf(sessionId) === "codex";
-            const remotePeer = isRemotePeer(sessionId);
-            const visibleCommands = remotePeer
-              ? catalog.commands.filter((command) => !isDirectCommand(command))
-              : catalog.commands;
-            const rows: InputTriggerCandidate[] = visibleCommands
+            const rows: InputTriggerCandidate[] = catalog.commands
               .filter((command) =>
                 `${command.invocation} ${command.label}`.toLocaleLowerCase().includes(query),
               )
@@ -298,7 +295,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
                 disabledReason: t("discovery.static"),
                 section: t("discovery.commands"),
               });
-            if (!visibleCommands.length && !query && catalog.source !== "static")
+            if (!catalog.commands.length && !query && catalog.source !== "static")
               rows.push({
                 name: t("discovery.empty"),
                 disabledReason: t("discovery.empty"),
@@ -350,10 +347,6 @@ export function registerHarnessDiscovery(ctx: Context): void {
             return "handled";
           }
           if (isDirectCommand(command)) {
-            if (isRemotePeer(id)) {
-              notify(id, t("discovery.stale"));
-              return "handled";
-            }
             execute(pick, commandId);
             return "handled";
           }

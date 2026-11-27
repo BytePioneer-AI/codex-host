@@ -38,7 +38,7 @@ import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
-import { ChHarnessCommands } from "./ch-harness-commands.ts";
+import { ChHarnessCommands, permissionCommand } from "./ch-harness-commands.ts";
 import { WebSkills } from "./skills.ts";
 import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ChThreadEditing } from "./ch-thread-edit.ts";
@@ -2217,14 +2217,7 @@ export class ChSessions {
     }));
     // /model is a client-owned contribution backed by the model-selection API,
     // not an executable Host command. Advertising it here breaks the menu roster.
-    rpc.register("commands/list", () => [
-      {
-        definitionId: "@deepseek-ai/dsh-permission-presets",
-        name: "permission",
-        description: "Select a native permission mode",
-        input: { hint: "<mode>" },
-      },
-    ]);
+    rpc.register("commands/list", () => [permissionCommand]);
     rpc.register("commands/execute", async (args) => {
       const id = String(args.agentId ?? "");
       const match = /^\/permission\s+(.+)$/u.exec(String(args.line ?? ""));

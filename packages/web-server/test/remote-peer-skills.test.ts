@@ -64,6 +64,7 @@ interface TestPeerFixture {
 
 function createFixture(options: {
   peerRows?: ChThread[];
+  peerArchivedIds?: string[];
   peerOwnership?: Array<{ threadId: string; owner: "codex" | "external"; harnessId?: string }>;
   onPeerRpc?: (method: string, params: Record<string, unknown>) => unknown;
 }): TestPeerFixture {
@@ -124,8 +125,12 @@ function createFixture(options: {
           threads: peerRows,
           ownership: peerOwnership,
           officialCursor: { live: null },
-          archivedThreadIds: [],
+          archivedThreadIds: options.peerArchivedIds ?? [],
         } as T;
+      }
+      if (method === "thread/read") {
+        const thread = peerRows.find((row) => row.id === params.threadId);
+        if (thread) return { thread } as T;
       }
       if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
       if (method === "codexhost/harness/plugins/list") {
@@ -252,6 +257,10 @@ function createFixture(options: {
   rpc.register("codexhost/executeThreadCommand", () => {
     localCalls.push("codexhost/executeThreadCommand");
     return { accepted: true };
+  });
+  rpc.register("commands/list", () => {
+    localCalls.push("commands/list");
+    return [];
   });
   remote.install(rpc, streams);
 
@@ -391,7 +400,7 @@ it("forwards codexhost/skills/list for remote peer external threads and drafts w
   assert.deepEqual(fx.localCalls, []);
 });
 
-it("forwards codexhost/threadCommands for peer threads and Codex drafts while skipping non-Codex drafts and blocking execute", async (t) => {
+it("discovers commands for submitted Peer Threads and Codex drafts without giving drafts direct execution", async (t) => {
   const threadCatalog = {
     source: "live",
     commands: [
@@ -488,14 +497,135 @@ it("forwards codexhost/threadCommands for peer threads and Codex drafts while sk
     ],
   );
 
-  // Direct execution remains rejected on remote peer sessions and drafts.
-  for (const sessionId of [remoteSessionId(fx.peerHostId, "codex-thread"), draftId]) {
-    const execResult = await fx.rpc.dispatch("codexhost/executeThreadCommand", {
-      args: { request: { sessionId, commandId: "cmd:compact" } },
+  const execResult = await fx.rpc.dispatch("codexhost/executeThreadCommand", {
+    args: { request: { sessionId: draftId, commandId: "cmd:compact" } },
+  });
+  assert.equal(execResult.ok, false);
+  assert.equal(execResult.error.code, "command/unavailable");
+
+  assert.deepEqual(
+    await fx.rpc.dispatch("commands/list", {
+      args: { agentId: remoteSessionId(fx.peerHostId, "ext-thread") },
+    }),
+    {
+      ok: true,
+      value: [
+        {
+          definitionId: "@deepseek-ai/dsh-permission-presets",
+          name: "permission",
+          description: "Select a native permission mode",
+          input: { hint: "<mode>" },
+        },
+      ],
+    },
+  );
+  assert.deepEqual(await fx.rpc.dispatch("commands/list", { args: { agentId: draftId } }), {
+    ok: true,
+    value: [],
+  });
+  assert.deepEqual(fx.localCalls, []);
+});
+
+const peerCommandMethod = "codexhost/thread/command/execute";
+const peerCommandCatalog = {
+  commands: [
+    { id: "native.compact", invocation: "/compact", label: "Compact", argumentMode: "text" },
+    { id: "native.cost", invocation: "/cost", label: "Cost", argumentMode: "none" },
+    { id: "native.plan", invocation: "/plan", label: "Plan", argumentMode: "text" },
+  ],
+};
+
+it("executes direct commands by stable ID on the owning Peer, preserving arguments and results", async (t) => {
+  const fx = createFixture({
+    onPeerRpc(method, params) {
+      if (method === "codexhost/thread/commands/inspect") return peerCommandCatalog;
+      if (method === peerCommandMethod)
+        return { accepted: true, turnId: `turn:${params.commandId}` };
+      return undefined;
+    },
+  });
+  t.after(() => fx.close());
+  await fx.remote.refresh();
+
+  for (const params of [
+    { threadId: "ext-thread", commandId: "native.compact", arguments: { text: "Keep decisions" } },
+    { threadId: "ext-thread", commandId: "native.cost" },
+  ]) {
+    const { threadId, ...input } = params;
+    assert.deepEqual(
+      await fx.rpc.dispatch("codexhost/executeThreadCommand", {
+        args: { request: { sessionId: remoteSessionId(fx.peerHostId, threadId), ...input } },
+      }),
+      { ok: true, value: { accepted: true, turnId: `turn:${input.commandId}` } },
+    );
+    assert.deepEqual(fx.peerCalls.filter((call) => call.method === peerCommandMethod).at(-1), {
+      method: peerCommandMethod,
+      params,
     });
-    assert.equal(execResult.ok, false);
-    assert.equal(execResult.error.code, "remote/unsupported");
   }
+  assert.deepEqual(fx.localCalls, []);
+});
+
+it("rejects ineligible Peer commands and propagates Peer write errors without retrying", async (t) => {
+  let busy = true;
+  const write = Promise.withResolvers<never>();
+  const started = Promise.withResolvers<void>();
+  const fx = createFixture({
+    peerArchivedIds: ["codex-thread"],
+    onPeerRpc(method, params) {
+      if (method === "thread/read" && params.threadId === "ext-thread" && busy)
+        return { thread: makeRow("ext-thread", { status: { type: "active" } }) };
+      if (method === "codexhost/thread/commands/inspect") return peerCommandCatalog;
+      if (method === peerCommandMethod) {
+        started.resolve();
+        return write.promise;
+      }
+      return undefined;
+    },
+  });
+  t.after(() => fx.close());
+  await fx.remote.refresh();
+  const execute = (threadId = "ext-thread", commandId = "native.cost") =>
+    fx.rpc.dispatch("codexhost/executeThreadCommand", {
+      args: { request: { sessionId: remoteSessionId(fx.peerHostId, threadId), commandId } },
+    });
+  const expectError = async (attempt: ReturnType<typeof execute>, code: string) => {
+    const result = await attempt;
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, code);
+    return result.error;
+  };
+
+  await expectError(execute(), "session/busy");
+  busy = false;
+  for (const threadId of ["codex-thread", "subagent-thread", "readonly-thread"])
+    await expectError(execute(threadId), "command/unavailable");
+  await expectError(execute("ext-thread", "native.plan"), "command/unavailable");
+  await expectError(execute("ext-thread", "native.stale"), "command/unavailable");
+  await expectError(execute("ext-thread", "/cost"), "command/invalid");
+  assert.equal(
+    fx.peerCalls.some((call) => call.method === peerCommandMethod),
+    false,
+  );
+
+  const attempt = execute();
+  assert.equal(
+    await Promise.race([started.promise, attempt]),
+    undefined,
+    "Peer write did not start",
+  );
+  await expectError(execute(), "session/busy");
+  write.reject(
+    new RpcError("remote/request-failed", "Native command refused", { hostCode: -32078 }),
+  );
+  const peerError = await expectError(attempt, "remote/request-failed");
+  assert.equal(peerError.message, "Native command refused");
+  assert.deepEqual(peerError.details, { hostCode: -32078 });
+
+  fx.peerOnline = false;
+  fx.emitPeerUpdate({ type: "connection", online: false });
+  await expectError(execute(), "remote/offline");
+  assert.equal(fx.peerCalls.filter((call) => call.method === peerCommandMethod).length, 1);
   assert.deepEqual(fx.localCalls, []);
 });
 
@@ -520,6 +650,16 @@ it("rejects SSH and remote-control sessions without falling back to the Hub", as
     });
     assert.equal(commandsRes.ok, false);
     assert.equal(commandsRes.error.code, "command/unavailable");
+
+    const executeRes = await fx.rpc.dispatch("codexhost/executeThreadCommand", {
+      args: { request: { sessionId: threadSessionId, commandId: "native.compact" } },
+    });
+    assert.equal(executeRes.ok, false);
+    assert.equal(executeRes.error.code, "remote/unsupported");
+    assert.deepEqual(
+      await fx.rpc.dispatch("commands/list", { args: { agentId: threadSessionId } }),
+      { ok: true, value: [] },
+    );
 
     const draftRes = await fx.rpc.dispatch("session/create", {
       args: {

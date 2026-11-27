@@ -4,12 +4,15 @@ import {
   REMOTE_PEER_ID_PATTERN,
   remotePeerHostId,
   skillsListResultSchema,
+  threadCommandExecuteParamsSchema,
+  threadCommandExecuteResultSchema,
   threadOwnershipSchema,
   type HarnessCommandCatalog,
   type SkillsListParams,
   type SkillsListResult,
 } from "@codexhost/shared-contracts";
 import { ChHarnessCatalog } from "./ch-harness-catalog.ts";
+import { requireDirectCommand } from "./ch-harness-commands.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { nextCatalogCursor, readSessionPage } from "./ch-session-page.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
@@ -98,6 +101,7 @@ export class PeerThreadSource {
   private readonly histories = new Map<string, ChThreadHistory>();
   private readonly knownRows = new Map<string, ChThread>();
   private readonly knownHarnesses = new Map<string, string>();
+  private readonly pendingCommands = new Set<string>();
   private readonly stopCatalogInvalidation: () => void;
   private epoch: string | undefined;
   private listedForEpoch: string | undefined;
@@ -660,6 +664,46 @@ export class PeerThreadSource {
         return { commands: [] };
       }
       throw error;
+    }
+  }
+
+  async executeThreadCommand(
+    threadId: string,
+    input: { commandId?: unknown; arguments?: unknown },
+  ) {
+    const params = threadCommandExecuteParamsSchema.safeParse({
+      threadId,
+      commandId: input.commandId,
+      ...(input.arguments === undefined ? {} : { arguments: input.arguments }),
+    });
+    if (!params.success)
+      throw new RpcError("command/invalid", "Invalid Thread command parameters.");
+    const busy = () =>
+      new RpcError("session/busy", "The Thread is busy. Direct commands cannot be queued.");
+    if (this.pendingCommands.has(threadId)) throw busy();
+    const epoch = this.host.manifestEpoch();
+    this.pendingCommands.add(threadId);
+    try {
+      const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
+        threadId,
+        includeTurns: false,
+      });
+      if (thread.id !== threadId || thread.parentThreadId || thread.canAcceptDirectInput === false)
+        throw new RpcError("command/unavailable", "Commands require an editable remote Thread.");
+      if (thread.status.type === "active") throw busy();
+      requireDirectCommand(await this.inspectThreadCommands(threadId), params.data.commandId);
+      if (this.host.manifestEpoch() !== epoch)
+        throw new RpcError("remote/connection-changed", "Remote peer changed before dispatch.");
+      if (this.knownArchived.get(threadId)?.archived)
+        throw new RpcError("command/unavailable", "Commands require an unarchived Thread.");
+      const result = threadCommandExecuteResultSchema.safeParse(
+        await this.host.request("codexhost/thread/command/execute", params.data),
+      );
+      if (!result.success)
+        throw new RpcError("remote/read-failed", "Remote peer returned an invalid command result.");
+      return result.data;
+    } finally {
+      this.pendingCommands.delete(threadId);
     }
   }
 

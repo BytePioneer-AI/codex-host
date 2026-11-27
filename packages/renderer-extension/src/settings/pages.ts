@@ -664,7 +664,12 @@ function updatesPage(
         panel.replaceChildren();
         setManualFallback(Boolean(result.error) || actionableStatus !== null);
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
-        const inlineUpdate = !result.error && !actionableStatus && result.updateAvailable;
+        const inlineUpdate =
+          !result.error &&
+          !actionableStatus &&
+          !result.status?.serviceStopOutput &&
+          result.updateAvailable &&
+          result.installationAvailable;
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
         panel.append(

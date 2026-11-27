@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-gate-a-native"
-version = "0.27.0"
+version = "0.28.2"
 dependencies = [
  "codexhost-platform",
  "codexhost-shim",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-launcher"
-version = "0.27.0"
+version = "0.28.2"
 dependencies = [
  "codexhost-platform",
  "fs2",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-platform"
-version = "0.27.0"
+version = "0.28.2"
 dependencies = [
  "libproc",
  "nix",
@@ -375,23 +375,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "codexhost-screenshot"
+version = "0.28.2"
+dependencies = [
+ "codexhost-platform",
+ "windows",
+ "winresource",
+ "xcap",
+]
+
+[[package]]
 name = "codexhost-shim"
-version = "0.27.0"
+version = "0.28.2"
 dependencies = [
  "codexhost-platform",
  "fs2",
  "nix",
  "signal-hook",
+ "winresource",
 ]
 
 [[package]]
 name = "codexhost-updater"
-version = "0.27.0"
+version = "0.28.2"
 dependencies = [
  "codexhost-platform",
  "serde",
  "serde_json",
  "sha2",
+ "winresource",
 ]
 
 [[package]]

@@ -170,9 +170,16 @@ export interface WorkspaceMoveSessionToSectionRequest {
   readonly sectionId: string | null;
 }
 
-export interface WorkspaceMoveSessionToSectionValue {
+export interface WorkspaceMoveWorkspaceToSectionRequest {
+  readonly workspaceId: WorkspaceId;
   readonly sectionId: string | null;
 }
+
+export interface WorkspaceMoveToSectionValue {
+  readonly sectionId: string | null;
+}
+
+export type WorkspaceMoveSessionToSectionValue = WorkspaceMoveToSectionValue;
 
 /** Groups supplied by the native Codex app-server. */
 export interface WorkspaceThreadSection {

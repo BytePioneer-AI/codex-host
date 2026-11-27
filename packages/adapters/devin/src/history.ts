@@ -66,6 +66,22 @@ export function devinCheckpoint(
     : undefined;
 }
 
+/**
+ * Devin omits the prompt result's user message ID when the Turn compacted its context, but
+ * listSteps keeps the prompt step. Accept only a user message ID that is new to this Turn's
+ * single added prompt step.
+ */
+export function devinAddedPromptKey(before: DevinHistoryStep[], after: DevinHistoryStep[]) {
+  const prompts = after.filter((step) => step.kind === "prompt");
+  const added = prompts.filter((step) => !before.some(({ stepId }) => stepId === step.stepId));
+  const key = added.length === 1 ? added[0]?.userMessageId : undefined;
+  return key?.trim() &&
+    !before.some((step) => step.userMessageId === key) &&
+    prompts.filter((step) => step.userMessageId === key).length === 1
+    ? key
+    : undefined;
+}
+
 async function readHistory(transport: DevinTransport) {
   const replay = await transport.reload();
   const snapshot = devinSnapshot(transport.sessionId, replay);

@@ -1,5 +1,5 @@
 /** Accessible menu groups with shared sticky-heading presentation and viewport observation. */
-import { useId, type ReactNode } from "react";
+import { useEffect, useId, type ReactNode, type RefObject } from "react";
 import css from "./MenuGroup.module.css";
 
 /**
@@ -134,4 +134,23 @@ export function observeStickyMenuGroups(viewport: HTMLElement): () => void {
       if (heading.hasAttribute("data-stuck")) heading.removeAttribute("data-stuck");
     }
   };
+}
+
+/**
+ * Observe sticky MenuGroup headings inside `viewportRef`, rebuilding the underlying
+ * IntersectionObserver and ResizeObserver only when the viewport opens/closes or
+ * the mounted group key structure changes.
+ * @param viewportRef - Scroll container hosting direct MenuGroup children.
+ * @param groupStructureKey - Serialized key sequence for mounted MenuGroup children,
+ *   or null when the menu is closed or has no sticky groups.
+ */
+export function useStickyMenuGroups(
+  viewportRef: RefObject<HTMLElement>,
+  groupStructureKey: string | null,
+): void {
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (viewport === null || groupStructureKey === null || groupStructureKey === "") return;
+    return observeStickyMenuGroups(viewport);
+  }, [viewportRef, groupStructureKey]);
 }

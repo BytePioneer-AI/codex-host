@@ -291,6 +291,92 @@ fn help_prints_usage_to_stdout_and_succeeds() {
 }
 
 #[test]
+fn native_subcommand_help_succeeds_without_starting_services() {
+    let root = std::env::temp_dir().join(format!("codexhost-help-{}", std::process::id()));
+    let runtime = root.join("missing-runtime");
+    let runtime = runtime.to_str().unwrap();
+    for (arguments, synopsis) in [
+        (&["web"][..], "codexhost web [--background]"),
+        (&["launch"], "codexhost launch ["),
+        (&["inspect"], "codexhost inspect [--json]"),
+        (&["status"], "codexhost status"),
+        (&["stop"], "codexhost stop ["),
+        (&["app"], "codexhost app [--onboarding]"),
+        (&["launch-prefs"], "codexhost launch-prefs get --json"),
+        (&["autostart"], "codexhost autostart on|off|status"),
+        (&["console"], "codexhost console"),
+        (&["update"], "codexhost update"),
+        (&["desktop-screenshot"], "codexhost desktop-screenshot"),
+        (&["stop-for-update"], "codexhost stop-for-update ["),
+        (&["open-file"], "codexhost open-file <file>"),
+        (&["reveal-file"], "codexhost reveal-file <absolute-path>"),
+        (&["open-loopback-url"], "codexhost open-loopback-url"),
+        (&["proxy-environment"], "codexhost proxy-environment"),
+        (
+            &["web-service"],
+            "codexhost web-service <ensure|stop|serve>",
+        ),
+        // npm puts its runtime options ahead of the user's arguments.
+        (
+            &[
+                "web",
+                "--node",
+                runtime,
+                "--host-runtime",
+                runtime,
+                "--web-runtime",
+                runtime,
+                "--background",
+            ],
+            "codexhost web [--background]",
+        ),
+        (
+            &[
+                "launch",
+                "--shim",
+                runtime,
+                "--host-runtime",
+                runtime,
+                "--desktop-controller",
+                runtime,
+                "--renderer",
+                runtime,
+            ],
+            "codexhost launch [",
+        ),
+    ] {
+        for flag in ["--help", "-h"] {
+            let output = Command::new(launcher_path())
+                .args(arguments)
+                .arg(flag)
+                .env("HOME", &root)
+                .env("USERPROFILE", &root)
+                .env("CODEXHOST_DATA_DIR", &root)
+                .env("CODEXHOST_CONSOLE", "0")
+                .output()
+                .expect("run launcher");
+            let wrote_data = root.exists();
+            if wrote_data {
+                fs::remove_dir_all(&root).expect("remove test data");
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{arguments:?} {flag}: {stderr}"
+            );
+            assert!(stderr.is_empty(), "{arguments:?} {flag}: {stderr}");
+            assert!(
+                stdout.starts_with(&format!("usage: {synopsis}")),
+                "{stdout}"
+            );
+            assert!(!wrote_data, "{arguments:?} {flag} wrote startup data");
+        }
+    }
+}
+
+#[test]
 fn desktop_screenshot_rejects_arguments_before_capturing() {
     let output = Command::new(launcher_path())
         .args(["desktop-screenshot", "--output", "untrusted.png"])

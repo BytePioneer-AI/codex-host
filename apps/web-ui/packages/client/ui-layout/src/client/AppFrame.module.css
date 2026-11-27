@@ -105,8 +105,10 @@
 
 /* Hairline border overlay on the main surface: wraps the top-left and
    bottom-left circular curves without shifting child layout or being painted
-   over by opaque main-panel backgrounds. On 2x+ displays the 200%/scale(0.5)
-   layer guarantees a true 1-physical-pixel (0.5px CSS) hairline around arcs. */
+   over by opaque main-panel backgrounds. On 2x+ displays, an inset 0.5px
+   box-shadow paints a 1-physical-pixel hairline at 1x box size across both
+   WebKit and Chromium, while extending right by 1px lets .centerCol's
+   overflow: hidden clip the right edge. */
 .centerCol::after {
   content: "";
   position: absolute;
@@ -123,12 +125,9 @@
 
 @media (min-resolution: 2dppx) {
   .centerCol::after {
-    inset: 0 auto auto 0;
-    width: 200%;
-    height: 200%;
-    border-radius: calc(var(--dsh-main-seam-radius) * 2) 0 0 calc(var(--dsh-main-seam-radius) * 2);
-    transform: scale(0.5);
-    transform-origin: 0 0;
+    inset: 0 -1px 0 0;
+    border: none;
+    box-shadow: inset 0 0 0 0.5px var(--dsh-main-seam-border);
   }
 }
 
@@ -204,6 +203,13 @@
 :global(body[data-codexhost-wallpaper]) .centerCol::after {
   border-top: none;
   border-bottom: none;
+}
+
+@media (min-resolution: 2dppx) {
+  :global(body[data-codexhost-wallpaper]) .centerCol::after {
+    inset: 0;
+    box-shadow: inset 0.5px 0 0 0 var(--dsh-main-seam-border);
+  }
 }
 
 :global(html:is(:not([data-platform="darwin"]), [data-tauri-shell]) body[data-codexhost-wallpaper])
@@ -458,11 +464,11 @@
       [data-rightbar-fullscreen]
     )
     .rightbarCol::after {
-    inset: 0 auto auto 0;
-    width: 200%;
-    height: 200%;
-    transform: scale(0.5);
-    transform-origin: 0 0;
+    border-top: none;
+    border-bottom: none;
+    box-shadow:
+      inset 0 0.5px 0 0 var(--dsh-main-seam-border),
+      inset 0 -0.5px 0 0 var(--dsh-main-seam-border);
   }
 }
 
@@ -549,11 +555,11 @@
   --phone-drawer-highlight: color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent);
 }
 
-@supports (backdrop-filter: blur(18px)) or (-webkit-backdrop-filter: blur(18px)) {
+@supports (backdrop-filter: blur(24px)) or (-webkit-backdrop-filter: blur(24px)) {
   .phoneDrawer {
-    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 38%, transparent);
-    -webkit-backdrop-filter: blur(18px);
-    backdrop-filter: blur(18px);
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 92%, transparent);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    backdrop-filter: blur(24px) saturate(150%);
   }
 }
 

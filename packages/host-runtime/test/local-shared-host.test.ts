@@ -215,9 +215,10 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
   }
 });
 
-it.each([true, false])("forwards current Desktop browser access (%s)", async (enabled) => {
+it.each([true, false])("forwards current Desktop runtime context (%s)", async (enabled) => {
   const pipe = path.join(tmpdir(), "codex-app-tools-synthetic.sock");
-  const browserAccess = {
+  const desktopContext = {
+    CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "native-desktop-fixture",
     BROWSER_USE_ACCESS_EXECUTOR_ID: "synthetic-executor",
     BROWSER_USE_ACCESS_PIPE_PATH: path.join(tmpdir(), "browser-access-synthetic.sock"),
     BROWSER_USE_ACCESS_VERIFYING_IDENTITY: "synthetic-verifying-identity",
@@ -229,7 +230,7 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
         environment: {
           CODEXHOST_DATA_DIR: f.root,
           ...Object.fromEntries(
-            Object.keys(browserAccess).map((key) => [key, "stale-service-value"]),
+            Object.keys(desktopContext).map((key) => [key, "stale-service-value"]),
           ),
         },
         runtimeUrl: import.meta.url,
@@ -271,8 +272,9 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
         CODEXHOST_LAUNCHER_EXECUTABLE: path.join(f.root, "unused-launcher"),
         CODEXHOST_DATA_DIR: f.root,
         CODEX_APP_TOOLS_PIPE_PATH: pipe,
-        ...(enabled ? browserAccess : {}),
+        ...(enabled ? desktopContext : {}),
         BROWSER_USE_ACCESS_UNRELATED: "must-not-cross",
+        CODEX_UNRELATED_CLIENT_SETTING: "must-not-cross",
         NODE_OPTIONS: "must-not-cross",
         UNRELATED_DESKTOP_SECRET: "must-not-cross",
       },
@@ -282,11 +284,12 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
     );
     expect(configured).toHaveLength(1);
     expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
-    for (const [key, value] of Object.entries(browserAccess)) {
+    for (const [key, value] of Object.entries(desktopContext)) {
       if (enabled) expect(configured[0]?.[key]).toBe(value);
       else expect(configured[0]).not.toHaveProperty(key);
     }
     expect(configured[0]).not.toHaveProperty("BROWSER_USE_ACCESS_UNRELATED");
+    expect(configured[0]).not.toHaveProperty("CODEX_UNRELATED_CLIENT_SETTING");
     expect(configured[0]).not.toHaveProperty("NODE_OPTIONS");
     expect(configured[0]).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
   } finally {
@@ -571,6 +574,7 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
       { id: "old", name: "Old", hostSectionIds: { local: "stale" }, itemKeys: ["codex:project:a"] },
     ]),
     "electron-owner-atoms:owner": sections([
+      { hostSectionIds: { local: "official-papers" }, itemKeys: [] },
       {
         id: "papers",
         name: "Papers",
@@ -588,6 +592,9 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
         hostSectionIds: { "remote-control:env": "remote-section" },
         itemKeys: ["codex:project:hidden"],
       },
+      { hostSectionIds: { local: "malformed" }, itemKeys: null },
+      { hostSectionIds: { local: "unknown-items" }, itemKeys: [null] },
+      { hostSectionIds: { local: "empty" }, itemKeys: [] },
       {
         id: "threads",
         name: "Threads",
@@ -599,6 +606,8 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   writeFileSync(file, JSON.stringify(sectioned));
   expect((await readNativeWorkspaceSnapshot(environment)).sectionProjects).toEqual({
     "official-papers": ["selected", "first"],
+    "official-threads": [],
+    empty: [],
   });
   writeFileSync(
     file,

@@ -25,6 +25,10 @@ Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树�
 
 Windows 共享 Host 同时提供 Remote Control 监听时，原生进程沿用首次确认的可执行文件与启动参数。每个本地 Desktop 连接单独提供当前工具端点。断开最近的 Desktop 后，下一次空闲请求使用上一个仍在线的 Desktop 的端点。Remote Control 观察者可以在此过程中继续使用原有 Thread。
 
+Desktop 自带的 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` 也属于这份连接上下文，按原值传给官方进程。原生 Codex 用它生成 HTTP 的 `originator` 和 User-Agent 来源前缀；共享 Host 的管理连接不能因先初始化而取代 Desktop 的来源。不替换 `clientInfo`，不写死 User-Agent，也不根据供应商选择身份。User-Agent 的其他附加信息仍由官方进程管理。
+
+来源变量与工具端点一起按在线 Desktop 更新：空闲后端在变化后重建，活动任务继续使用其原进程，连接断开后使用仍在线的 Desktop 上下文；没有在线 Desktop 时清除失效值。变量缺失时保留 Codex 的原生默认行为，不继承共享服务中的旧 Desktop 来源，也不持久化或补造原生身份。
+
 ## 原生 Codex Fork 的模型继承
 
 Desktop 可能在 `thread/fork` 中省略 Model，原生 app-server 因此使用全局默认配置，而不是来源 Thread 的配置。共享原生通道对 Desktop 与 Web 一致补齐省略的 Model、Provider、Thinking 和 Fast：来源只取当前原生进程通过 `thread/start`、`thread/resume`、`thread/fork` 响应或 `thread/settings/updated` 确认的设置，不读取 Host 的最后一次草稿选择，也不复制权限、指令或其他配置。
@@ -66,6 +70,12 @@ Desktop 的原生预热池按工作目录匹配。每次创建使用独立的消
 - `thread/archive`、`thread/unarchive`、`thread/delete`、`thread/metadata/update` 及 `turn/*`、`thread/read` 等：先按 `threadId` 判定归属，官方 Thread 原样转发，外部 Thread 才解码参数。
 - `thread/queue/*`：官方 Thread 原样转发；外部 Thread 的 list/add/update/delete/reorder/start 由 Host 管理真实队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)。不支持的外部队列方法返回 `-32076`。
 - 其他带外部 `threadId` 的 `thread/*` 请求返回 `-32076`。例外是 `thread/attachment/list`、`thread/settings/update`：不带 codexhost 渲染扩展的官方客户端（如 SSH 连接的 ChatGPT iOS app）打开 Thread 或发送前会调用它们，因此按官方结构返回空结果。`thread/settings/update` 只确认、不应用，权限仍由 Harness 自己的权限模式决定。
+
+## 官方自动导入的镜像 Thread
+
+官方 Codex 开启 `external-agent-import-sync-enabled` 时，会把 `~/.claude/projects` 等位置的 Harness 原生会话导入为一个新的官方 Thread，登记在 `$CODEX_HOME/external_agent_session_imports.json`。这个 Thread 与 codexhost 已列出的外部 Thread 指向同一份原生会话，却是不同的 ID，没有父子关系，会作为多余的顶层会话出现，委派产生的子 Thread 尤其明显。
+
+Host 在 `thread/list`、`codexhost/thread/catalog/read` 和委派列表中跳过这类镜像：导入记录的 `source_path` 与本地外部 Thread 的原生会话一致（Claude Code 按会话文件名，Pi、OMP 按 `locator.sessionFile`），且该 Thread 的 `recencyAt` 不晚于导入时间。导入后在 Codex 里续聊过、或已放进分区的镜像归用户所有，保持可见。独立的 Claude 会话不在 codexhost 中，不受影响。导入索引缺失或损坏时按“无镜像”处理。项目目录按过滤后的可见行判断是否继续翻页。聚合列表达到扫描上限时返回续页游标，后续读取沿用原有排序。只在列表聚合里省略，按 ID 的 `thread/read`、`thread/resume` 与深链不变；`section_position` 排序的分区列表不过滤。共享 Host 的查看端只能用本地 Mapping Store 匹配。
 
 ## 外部 Thread 的归档与永久删除
 

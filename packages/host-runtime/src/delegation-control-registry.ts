@@ -616,7 +616,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     }
     const registration = await this.#registrationForThread(local.threadId);
     if (!local.interrupt) return registration.send(local);
-    const send = { threadId: local.threadId, message: local.message };
+    // `interrupt` tells the registration this send may go ahead of queued follow-ups.
+    const send = { threadId: local.threadId, message: local.message, interrupt: true };
     return this.#watchService.holdNotifications(local.threadId, () =>
       interruptAndSend(registration, send),
     );

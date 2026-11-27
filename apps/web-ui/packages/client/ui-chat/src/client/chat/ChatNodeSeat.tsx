@@ -1,5 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { JsonBlock } from "@deepseek-ai/dsh-client-ui-primitives";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  CodeBlockFoldMemoryProvider,
+  JsonBlock,
+  useCodeBlockFoldMemory,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type {
   ConversationLocationDataStore,
@@ -35,6 +39,12 @@ interface ChatNodeSeatProps extends Omit<ChatNodeOwnerProps, "responseAnnotation
   readonly actions: ChatViewSlotProps["actions"];
   readonly renderSlot: ChatViewSlotProps["renderSlot"];
   readonly t: ChatViewSlotProps["t"];
+  /** Whether this row's slot content should be mounted. Nested group members stay mounted. */
+  readonly mounted?: boolean;
+  /** Reserved height (px) while unmounted; ignored for hidden or zero-height seats. */
+  readonly placeholderHeight?: number;
+  /** Registers this top-level row shell with the transcript virtualizer. */
+  readonly registerRow?: (flowKey: string, element: HTMLDivElement | null) => void;
 }
 
 type RoutedChatNodeOwner = {
@@ -56,6 +66,36 @@ function turnOf(node: ChatNode | undefined): number | undefined {
 /** File diffs and compaction stay visible; ordinary tools fold into work details. */
 function isIndependentProcessToolNode(node: ChatNode | undefined): boolean {
   return node?.kind === "tool-call" && isIndependentProcessTool(node.data.root.name);
+}
+
+const CHAT_NODE_SLOT_NAME = "conversation.chat.node";
+
+function seatSlotOf(wrapper: Element): Element | null {
+  for (let child = wrapper.firstElementChild; child !== null; child = child.nextElementSibling) {
+    if (child.getAttribute("data-slot") === CHAT_NODE_SLOT_NAME) return child;
+  }
+  return null;
+}
+
+function isElementEmpty(element: Element): boolean {
+  for (let node = element.firstChild; node !== null; node = node.nextSibling) {
+    if (node.nodeType === Node.ELEMENT_NODE) return false;
+    if (
+      (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) &&
+      (node.nodeValue?.length ?? 0) > 0
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function syncSeatEmptyAttribute(wrapper: HTMLElement, slot: Element | null): void {
+  if (slot !== null && isElementEmpty(slot)) {
+    wrapper.setAttribute("data-chat-empty", "");
+  } else {
+    wrapper.removeAttribute("data-chat-empty");
+  }
 }
 
 /**
@@ -85,6 +125,9 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
   actions,
   renderSlot,
   t,
+  mounted = true,
+  placeholderHeight,
+  registerRow,
 }: ChatNodeSeatProps) {
   const node = useChatNode(nodeKey);
   const routedNode = node as ChatNode | undefined;
@@ -166,7 +209,62 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
   }, [processMember, setOpen]);
   const wrapperRef = useSearchableHidden(processHidden, revealProcess);
   useNearViewport(wrapperRef, node !== undefined);
+  const flowKey =
+    routedNode === undefined
+      ? undefined
+      : groupPart === undefined || groupPart === "response"
+        ? routedNode.key
+        : JSON.stringify([routedNode.key, groupPart]);
+  const hasRow = routedNode !== undefined && flowKey !== undefined;
+  // Reflect an empty direct `conversation.chat.node` slot onto the row shell so CSS
+  // can collapse empty seats without `:has()` sibling selectors inside container queries.
+  useLayoutEffect(() => {
+    const element = wrapperRef.current;
+    if (element === null) return;
+    if (!mounted || !hasRow) {
+      element.removeAttribute("data-chat-empty");
+      return;
+    }
+    let observedSlot = seatSlotOf(element);
+    syncSeatEmptyAttribute(element, observedSlot);
+    if (typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(() => {
+      const nextSlot = seatSlotOf(element);
+      if (nextSlot !== observedSlot) {
+        observer.disconnect();
+        observer.observe(element, { childList: true });
+        if (nextSlot !== null) observer.observe(nextSlot, { childList: true });
+        observedSlot = nextSlot;
+      }
+      syncSeatEmptyAttribute(element, nextSlot);
+    });
+    observer.observe(element, { childList: true });
+    if (observedSlot !== null) observer.observe(observedSlot, { childList: true });
+    return () => {
+      observer.disconnect();
+    };
+  }, [mounted, hasRow, wrapperRef]);
+  useLayoutEffect(() => {
+    const element = wrapperRef.current;
+    if (element === null || !mounted || !hasRow) return;
+    syncSeatEmptyAttribute(element, seatSlotOf(element));
+  });
+  useLayoutEffect(() => {
+    if (registerRow === undefined || flowKey === undefined) return;
+    const element = wrapperRef.current;
+    if (element === null) return;
+    registerRow(flowKey, element);
+    return () => {
+      registerRow(flowKey, null);
+    };
+  }, [registerRow, flowKey, wrapperRef]);
   const [disclosureReset] = useState(() => createSnapshotStore(0));
+  const inheritedFoldMemory = useCodeBlockFoldMemory();
+  const ownFoldMemoryRef = useRef<Map<string, boolean> | null>(null);
+  if (inheritedFoldMemory === undefined && ownFoldMemoryRef.current === null) {
+    ownFoldMemoryRef.current = new Map();
+  }
+  const foldMemory = inheritedFoldMemory ?? ownFoldMemoryRef.current!;
   // A reply resolves its annotation citations against the message it answers.
   const responseAnnotations = useTurnAnnotations(nodeStore, turn);
   const turnData = turnDataOf(routedNode);
@@ -217,15 +315,13 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       responseAnnotations,
     ],
   );
-  if (routedNode === undefined || owner === null) return null;
+  if (routedNode === undefined || owner === null || flowKey === undefined) return null;
   // Runtime dispatch owns the correlation: every Node's discriminant is the
   // keyed-slot entry passed alongside that same Node. TypeScript does not
   // distribute an object containing a union into a union of objects itself.
   const routedOwner = { ...owner, node: routedNode } as RoutedChatNodeOwner;
-  const flowKey =
-    groupPart === undefined || groupPart === "response"
-      ? routedNode.key
-      : JSON.stringify([routedNode.key, groupPart]);
+  const virtualizedPlaceholder =
+    !mounted && !processHidden && placeholderHeight !== undefined && placeholderHeight > 0;
   return (
     <div
       ref={wrapperRef}
@@ -240,18 +336,24 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       data-turn-process-member={processMember || undefined}
       data-turn-process-hidden={processHidden || undefined}
       data-turn-process-answer={compactAnswer || undefined}
+      data-chat-virtualized={virtualizedPlaceholder ? "" : undefined}
+      style={virtualizedPlaceholder ? { minHeight: placeholderHeight } : undefined}
     >
-      {renderSlot("conversation.chat.node", routedOwner, {
-        entryKey: routedNode.kind,
-        hookContext,
-        fallback: (
-          <JsonBlock
-            label={t("message.unknownSurface", { type: routedNode.kind })}
-            payload={routedNode.data}
-            truncatedLabel={(total) => t("json.truncated", { total })}
-          />
-        ),
-      })}
+      {mounted ? (
+        <CodeBlockFoldMemoryProvider memory={foldMemory} scope={flowKey}>
+          {renderSlot("conversation.chat.node", routedOwner, {
+            entryKey: routedNode.kind,
+            hookContext,
+            fallback: (
+              <JsonBlock
+                label={t("message.unknownSurface", { type: routedNode.kind })}
+                payload={routedNode.data}
+                truncatedLabel={(total) => t("json.truncated", { total })}
+              />
+            ),
+          })}
+        </CodeBlockFoldMemoryProvider>
+      ) : null}
     </div>
   );
 });

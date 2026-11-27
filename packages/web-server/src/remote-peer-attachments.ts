@@ -11,6 +11,16 @@ import {
   type NativeImageSource,
 } from "./native-user-input.ts";
 import { peerFetch, type PeerHostClient } from "./peer-host-client.ts";
+import {
+  matchesImageETag,
+  PEER_IMAGE_SECURITY_HEADERS,
+  peerImageCacheHeaders,
+  peerImageETag,
+  peerImageLength,
+  readPeerImageBytes,
+  servePeerImageBody,
+} from "./peer-image-http.ts";
+import { readPeerJson } from "./peer-request-error.ts";
 import { RpcError } from "./transport.ts";
 import type { WebFileRef } from "./web-files.ts";
 import { inspectImage, WEB_IMAGE_LIMITS, type WebImageRef } from "./web-images.ts";
@@ -35,11 +45,6 @@ export interface RemotePeerAttachmentsOptions {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_UPLOAD_TIMEOUT_MS = 120_000;
-const SAFE_PROXY_HEADERS = {
-  "Cache-Control": "private, no-store",
-  "X-Content-Type-Options": "nosniff",
-  "Content-Security-Policy": "sandbox; default-src 'none'",
-} as const;
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -115,40 +120,6 @@ function extractPeerHttpStatus(error: RpcError): number | undefined {
   return typeof status === "number" && Number.isInteger(status) ? status : undefined;
 }
 
-async function readBoundedBytes(response: Response, maxBytes: number): Promise<Buffer> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength !== null) {
-    const declared = Number(contentLength);
-    if (Number.isFinite(declared) && declared > maxBytes) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new RpcError("session/attachment-invalid", "Image exceeds 50 MiB.", {
-        reason: "IMAGE_TOO_LARGE",
-      });
-    }
-  }
-  if (!response.body) return Buffer.alloc(0);
-  const reader = response.body.getReader();
-  const parts: Buffer[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new RpcError("session/attachment-invalid", "Image exceeds 50 MiB.", {
-          reason: "IMAGE_TOO_LARGE",
-        });
-      }
-      parts.push(Buffer.from(value));
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(parts, total);
-}
-
 function decodeDataImageUrl(url: string): ReturnType<typeof inspectImage> {
   if (url.length > Math.ceil(WEB_IMAGE_LIMITS.maxImageBytes / 3) * 4 + 64) {
     throw new RpcError("session/attachment-invalid", "Image exceeds 50 MiB.", {
@@ -172,6 +143,7 @@ function writeProxyError(
   message: string,
   isHead: boolean,
 ): void {
+  if (response.destroyed || response.writableEnded) return;
   if (response.headersSent) {
     response.destroy();
     return;
@@ -179,7 +151,8 @@ function writeProxyError(
   response
     .writeHead(status, {
       "Content-Type": "text/plain; charset=utf-8",
-      ...SAFE_PROXY_HEADERS,
+      "Cache-Control": "private, no-store",
+      ...PEER_IMAGE_SECURITY_HEADERS,
     })
     .end(isHead ? undefined : message);
 }
@@ -233,6 +206,7 @@ export class RemotePeerAttachments {
     chunks: AsyncIterable<Uint8Array>,
     name?: string,
     imageMediaType?: string,
+    contentLength?: number,
   ): Promise<{ receiptId: string; file: WebFileRef }> {
     const activePeer = this.requireSupported(peer);
     const query = new URLSearchParams();
@@ -255,21 +229,20 @@ export class RemotePeerAttachments {
       `/api/peer/v1/uploads?${query.toString()}`,
       {
         method: "POST",
-        headers: { "content-type": "application/octet-stream" },
+        headers: {
+          "content-type": "application/octet-stream",
+          ...(contentLength === undefined ? {} : { "content-length": String(contentLength) }),
+        },
         body: toReadableStream(chunks),
         duplex: "half",
         timeoutMs: this.uploadTimeoutMs,
       },
     );
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new RpcError(
-        "remote/request-failed",
-        "Remote peer returned an invalid upload response",
-      );
-    }
+    const payload = await readPeerJson(
+      response,
+      "remote/request-failed",
+      "Remote peer returned an invalid upload response",
+    );
     const parsed = c.remotePeerUploadResultSchema.safeParse(payload);
     if (!parsed.success) {
       throw new RpcError(
@@ -317,15 +290,11 @@ export class RemotePeerAttachments {
       body: validated.data,
       timeoutMs: this.requestTimeoutMs,
     });
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new RpcError(
-        "remote/request-failed",
-        "Remote peer returned an invalid prompt response",
-      );
-    }
+    const payload = await readPeerJson(
+      response,
+      "remote/request-failed",
+      "Remote peer returned an invalid prompt response",
+    );
     const parsed = c.remotePeerPromptResultSchema.safeParse(payload);
     if (!parsed.success) {
       throw new RpcError(
@@ -422,7 +391,7 @@ export class RemotePeerAttachments {
       }
       throw error;
     }
-    const bytes = await readBoundedBytes(response, WEB_IMAGE_LIMITS.maxImageBytes);
+    const bytes = await readPeerImageBytes(response);
     let image;
     try {
       image = inspectImage(bytes);
@@ -508,76 +477,53 @@ export class RemotePeerAttachments {
     };
     response.once("close", onClose);
     const query = new URLSearchParams({ threadId, path });
+    const condition = request.headers["if-none-match"];
     try {
       const upstream = await peerFetch(peer.record, `/api/peer/v1/file?${query.toString()}`, {
         method: isHead ? "HEAD" : "GET",
+        headers: {
+          "accept-encoding": "identity",
+          ...(condition === undefined ? {} : { "if-none-match": condition }),
+        },
         signal: abort.signal,
         timeoutMs: this.requestTimeoutMs,
       });
+      const etag = peerImageETag(upstream.headers.get("etag"));
+      if (upstream.status === 304 && etag && matchesImageETag(condition, etag)) {
+        response.writeHead(304, peerImageCacheHeaders(etag)).end();
+        return;
+      }
       const remoteType =
         upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-      if (!WEB_IMAGE_LIMITS.mediaTypes.includes(remoteType)) {
+      if (upstream.status !== 200 || !WEB_IMAGE_LIMITS.mediaTypes.includes(remoteType)) {
         await upstream.body?.cancel().catch(() => undefined);
         writeProxyError(response, 502, "remote peer returned non-image response", isHead);
         return;
       }
+      const length = peerImageLength(upstream);
       if (isHead) {
-        const rawLength = upstream.headers.get("content-length");
-        const parsedLength = rawLength !== null ? Number(rawLength) : undefined;
-        if (parsedLength !== undefined && Number.isFinite(parsedLength)) {
-          if (parsedLength > WEB_IMAGE_LIMITS.maxImageBytes) {
-            writeProxyError(response, 413, "image too large", true);
-            return;
-          }
-        }
-        response.writeHead(200, {
-          "Content-Type": remoteType,
-          ...(parsedLength !== undefined && Number.isSafeInteger(parsedLength) && parsedLength >= 0
-            ? { "Content-Length": String(parsedLength) }
-            : {}),
-          ...SAFE_PROXY_HEADERS,
-        });
-        response.end();
+        response
+          .writeHead(200, {
+            ...peerImageCacheHeaders(etag),
+            "Content-Type": remoteType,
+            ...(length === undefined ? {} : { "Content-Length": String(length) }),
+          })
+          .end();
         return;
       }
-      let bytes: Buffer;
-      try {
-        bytes = await readBoundedBytes(upstream, WEB_IMAGE_LIMITS.maxImageBytes);
-      } catch (error) {
-        if (
-          error instanceof RpcError &&
-          "reason" in error.details &&
-          error.details.reason === "IMAGE_TOO_LARGE"
-        ) {
-          writeProxyError(response, 413, "image too large", false);
-          return;
-        }
-        writeProxyError(response, 502, "remote peer unavailable", false);
-        return;
-      }
-      let image;
-      try {
-        image = inspectImage(bytes);
-      } catch (error) {
-        const reason =
-          error instanceof RpcError && "reason" in error.details ? error.details.reason : undefined;
-        if (reason === "IMAGE_TOO_LARGE" || reason === "IMAGE_TOO_MANY_PIXELS") {
-          writeProxyError(response, 413, "image too large", false);
-          return;
-        }
-        writeProxyError(response, 502, "remote peer returned invalid image", false);
-        return;
-      }
-      if (response.writableEnded || response.destroyed) return;
-      response.writeHead(200, {
-        "Content-Type": image.ref.mediaType,
-        "Content-Length": String(image.bytes.length),
-        ...SAFE_PROXY_HEADERS,
-      });
-      response.end(image.bytes);
+      await servePeerImageBody(upstream, response, etag, length);
     } catch (error) {
       if (response.writableEnded || response.destroyed) return;
       if (error instanceof RpcError) {
+        const reason = "reason" in error.details ? error.details.reason : undefined;
+        if (reason === "IMAGE_TOO_LARGE" || reason === "IMAGE_TOO_MANY_PIXELS") {
+          writeProxyError(response, 413, "image too large", isHead);
+          return;
+        }
+        if (error.code === "session/attachment-invalid") {
+          writeProxyError(response, 502, "remote peer returned invalid image", isHead);
+          return;
+        }
         const status = extractPeerHttpStatus(error);
         if (status !== undefined && status >= 400 && status < 500) {
           const message =
@@ -592,6 +538,7 @@ export class RemotePeerAttachments {
       }
       writeProxyError(response, 502, "remote peer unavailable", isHead);
     } finally {
+      abort.abort();
       response.off("close", onClose);
     }
   }

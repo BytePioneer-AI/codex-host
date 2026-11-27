@@ -250,10 +250,17 @@ button.crumb:hover {
 
 :global([data-phone])
   .root[data-phase="active"]
-  > :global([data-slot="conversation.header.notice"]:not(:empty)) {
-  margin-top: var(--dsh-phone-header-height);
+  > :global([data-slot="conversation.header.notice"])
+  > * {
   position: relative;
   z-index: 5;
+}
+
+:global([data-phone])
+  .root[data-phase="active"]
+  > :global([data-slot="conversation.header.notice"])
+  > :first-child {
+  margin-top: var(--dsh-phone-header-height);
 }
 
 /* Progressive top veil adapts to the active header height (1 row or 2 rows) so scrolled
@@ -530,7 +537,8 @@ button.crumb:hover {
 
   :global([data-phone])
     .root[data-phase="active"]
-    > :global([data-slot="conversation.header.notice"]:not(:empty)) {
+    > :global([data-slot="conversation.header.notice"])
+    > :first-child {
     margin-top: 0;
   }
 
@@ -572,7 +580,8 @@ button.crumb:hover {
 
   :global([data-phone])
     .root[data-phase="active"]
-    > :global([data-slot="conversation.header.notice"]:not(:empty)) {
+    > :global([data-slot="conversation.header.notice"])
+    > :first-child {
     margin-top: 0;
   }
 

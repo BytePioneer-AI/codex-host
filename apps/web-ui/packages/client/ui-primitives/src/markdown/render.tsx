@@ -24,6 +24,7 @@ import type * as Md from "mdast";
 import type {} from "mdast-util-math";
 import { normalizeUri } from "micromark-util-sanitize-uri";
 import type { CodeToolbarLabels } from "../CodeToolbar.tsx";
+import type { CodexFileCitationNode } from "./annotation-directives.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
 import { parseFileLink } from "./file-link.ts";
 import { linkContextMenuProps } from "./link-context-menu.ts";
@@ -207,6 +208,11 @@ export interface MarkdownRenderContext {
    * code into the annotation's inline label; absent leaves the token as code.
    */
   readonly responseAnnotations?: MarkdownResponseAnnotations | undefined;
+  /**
+   * Harness file citations: turns `:codex-file-citation{path="..."}` into an
+   * opener for the cited path; absent leaves the marker as its raw text.
+   */
+  readonly fileCitations?: MarkdownFileMentions | undefined;
   /** Local-path image vocabulary; absent wherever no rewriting owner exists. */
   readonly pathImages: MarkdownPathImages | undefined;
   /** Inside an anchor's children: interactive mentions must not nest there. */
@@ -476,6 +482,33 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
         </span>
       );
     }
+    case "codexFileCitation": {
+      // Desktop opens a cited file through the owner's vocabulary, exactly like
+      // an inline-code file mention; inside an anchor the marker stays text.
+      const citation =
+        context.inLink === true || node.path.trim() === ""
+          ? undefined
+          : context.fileCitations?.resolve(node.path);
+      if (citation !== undefined) {
+        return (
+          <code key={key}>
+            <button
+              type="button"
+              className={css.fileMention}
+              title={citation.title}
+              aria-label={citation.label}
+              onClick={citation.open}
+            >
+              <LinkIconMedium kind={classifyLinkPath(node.path)} className={css.linkIcon} />
+              {node.path}
+            </button>
+          </code>
+        );
+      }
+      // Without an opener vocabulary the marker keeps its raw spelling, so no
+      // citation information is lost (matching the file-mention fallback).
+      return <Fragment key={key}>{fileCitationMarker(node)}</Fragment>;
+    }
     case "html":
       // No HTML parser enters the pipeline: raw HTML stays literal text.
       return node.value;
@@ -521,6 +554,36 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
   }
 }
 
+function MarkdownCodeBlock({
+  foldKey,
+  code,
+  lang,
+  streaming,
+  labels,
+}: {
+  readonly foldKey: string;
+  readonly code: string;
+  readonly lang: string | undefined;
+  readonly streaming: boolean;
+  readonly labels: MarkdownCodeLabels;
+}): ReactNode {
+  const { collapsibleCodeBlocks, expandCodeLabel, collapseCodeLabel } = useMarkdownDelegate();
+  return (
+    <CodeBlock
+      foldKey={foldKey}
+      code={code}
+      lang={lang}
+      streaming={streaming}
+      collapsible={collapsibleCodeBlocks}
+      expandCodeLabel={expandCodeLabel}
+      collapseCodeLabel={collapseCodeLabel}
+      copyLabel={labels.copyLabel}
+      copiedLabel={labels.copiedLabel}
+      toolbarLabels={labels.toolbarLabels}
+    />
+  );
+}
+
 function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): ReactNode {
   const language = node.lang ?? undefined;
   if (node.value === "") {
@@ -540,8 +603,9 @@ function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): Re
     return <Fragment key={key}>{renderTexToReact(`${node.value}\n`, true)}</Fragment>;
   }
   return (
-    <CodeBlock
+    <MarkdownCodeBlock
       key={key}
+      foldKey={String(key)}
       // The replaced hast pipeline appended one synthetic newline that
       // CodeBlock's display trim removes; feeding the bare value would make
       // that trim eat a REAL trailing blank line inside the fence instead.
@@ -553,9 +617,7 @@ function renderCode(node: Md.Code, key: Key, context: MarkdownRenderContext): Re
       // has no content yet and took the empty-fence arm above, so `lang`
       // here is final: it can never re-resolve to a different grammar.
       streaming={context.streaming}
-      copyLabel={context.labels.code.copyLabel}
-      copiedLabel={context.labels.code.copiedLabel}
-      toolbarLabels={context.labels.code.toolbarLabels}
+      labels={context.labels.code}
     />
   );
 }
@@ -775,6 +837,16 @@ function MarkdownFileLink({
       }
     />
   );
+}
+
+/** Rebuild the raw marker of an unresolvable file citation, preserving the data. */
+function fileCitationMarker(node: CodexFileCitationNode): string {
+  const path = node.path.replaceAll('"', '\\"');
+  const attributes =
+    node.purpose === undefined
+      ? `path="${path}"`
+      : `path="${path}" purpose="${node.purpose.replaceAll('"', '\\"')}"`;
+  return `:codex-file-citation{${attributes}}`;
 }
 
 /**

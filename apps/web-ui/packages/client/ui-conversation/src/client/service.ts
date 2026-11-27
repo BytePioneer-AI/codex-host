@@ -41,7 +41,7 @@ import type {
   SubmitOutcome,
 } from "./contract/input.ts";
 import type { InputSubmitMode } from "./contract/composer-submission.ts";
-import { preparePhoto } from "./prepare-photo.ts";
+import { isPreparablePhotoType, preparePhoto } from "./prepare-photo.ts";
 
 /**
  * The outward conversation face (`ctx.conversation`): the scope-addressed
@@ -309,6 +309,9 @@ export class ConversationController extends Service implements IConversation {
         mode,
         text,
         attachments: pendingAttachments,
+        onObserved: (observedAttachments) => {
+          this.aliasObservedAttachments(session.sessionId, attachments, observedAttachments);
+        },
         onRetire: (settlement) => {
           this.settleSubmittedAttachments(session.sessionId, attachments, settlement);
           finishRetirement?.(settlement);
@@ -385,6 +388,12 @@ export class ConversationController extends Service implements IConversation {
         const image = browserDraftAttachment(entry.imageFile);
         probeDimensions(image);
         attachment = image;
+        this.ctx.get("uiConversation")?.cacheUploadedImage(sessionId, {
+          attachmentId: entry.file.attachmentId,
+          blob: entry.imageFile,
+          name: entry.file.name,
+          bytes: entry.file.bytes,
+        });
       } else {
         attachment = {
           kind: "file",
@@ -472,10 +481,7 @@ export class ConversationController extends Service implements IConversation {
         )
           return;
         let file = attachment.file;
-        if (
-          attachment.kind === "image" &&
-          (file.type === "image/jpeg" || file.type === "image/webp")
-        ) {
+        if (attachment.kind === "image" && isPreparablePhotoType(file.type)) {
           let prepared = this.preparedPhotos.get(attachment);
           if (prepared === undefined) {
             prepared = preparePhoto(file);
@@ -488,6 +494,7 @@ export class ConversationController extends Service implements IConversation {
           )
             return;
           this.fileUploads.update((draft) => {
+            if (!(attachment.id in draft)) return;
             draft[attachment.id] = { status: "uploading", loaded: 0, total: file.size };
           });
         }
@@ -510,6 +517,14 @@ export class ConversationController extends Service implements IConversation {
           attachment.kind === "image" ? file.type : undefined,
         );
         if (this.fileUploadOperations.get(attachment.id)?.controller !== controller) return;
+        if (result.ok && attachment.kind === "image") {
+          this.ctx.get("uiConversation")?.cacheUploadedImage(sessionId, {
+            attachmentId: result.value.file.attachmentId,
+            blob: file,
+            name: result.value.file.name,
+            bytes: result.value.file.bytes,
+          });
+        }
         this.fileUploads.update((draft) => {
           if (!(attachment.id in draft)) return;
           draft[attachment.id] = result.ok
@@ -598,13 +613,22 @@ export class ConversationController extends Service implements IConversation {
   releaseDraftAttachment(id: DraftAttachmentId): void {
     const attachment = this.draftAttachments.get(id);
     if (attachment === undefined) return;
+    const sessionId = this.uploadSessions.get(id);
+    const upload = this.fileUploads.getSnapshot()[id];
     const operation = this.fileUploadOperations.get(id);
     this.fileUploadOperations.delete(id);
     operation?.controller.abort();
     this.draftAttachments.delete(id);
     this.uploadSessions.delete(id);
     this.foregroundRetried.delete(id);
-    if (attachment.kind === "image") revokePreview(attachment.previewUrl);
+    if (attachment.kind === "image") {
+      if (sessionId !== undefined && upload?.status === "ready") {
+        this.ctx
+          .get("uiConversation")
+          ?.clearPendingUploadedImage(sessionId, upload.file.attachmentId);
+      }
+      revokePreview(attachment.previewUrl);
+    }
     // The stored Host object stays durable; only the draft's upload state ends.
     this.fileUploads.set(
       Object.fromEntries(
@@ -680,6 +704,36 @@ export class ConversationController extends Service implements IConversation {
   }
 
   /**
+   * Bind observed durable image references to their pre-cached uploaded blobs
+   * synchronously before the durable transcript node's first render frame.
+   * Draft entries and echo preview URLs remain live until `onRetire`.
+   */
+  private aliasObservedAttachments(
+    sessionId: SessionId,
+    attachments: readonly ComposerAttachment[],
+    observedAttachments: Extract<
+      PendingSubmissionRetirement,
+      { reason: "observed" }
+    >["attachments"],
+  ): void {
+    const uiConversation = this.ctx.get("uiConversation");
+    if (uiConversation === undefined) return;
+    const uploads = this.fileUploads.getSnapshot();
+    let observedIndex = 0;
+    for (const attachment of attachments) {
+      const ref = observedAttachments[observedIndex++];
+      if (this.draftAttachments.get(attachment.id) === undefined) continue;
+      if (attachment.kind !== "image" || ref === undefined || !("mediaType" in ref)) continue;
+      const upload = uploads[attachment.id];
+      const uploadedAttachmentId =
+        upload?.status === "ready" ? upload.file.attachmentId : undefined;
+      if (uploadedAttachmentId !== undefined) {
+        uiConversation.aliasUploadedImage(sessionId, uploadedAttachmentId, ref);
+      }
+    }
+  }
+
+  /**
    * Settle one submission's draft attachments when its echo retires. Observed:
    * each image leaves the registry, handing its preview URL to the durable
    * image cache (seeded under the admitted reference so the transcript node
@@ -703,18 +757,33 @@ export class ConversationController extends Service implements IConversation {
         this.releaseDraftAttachment(attachment.id);
         continue;
       }
+      const upload = this.fileUploads.getSnapshot()[attachment.id];
+      const uploadedAttachmentId =
+        upload?.status === "ready" ? upload.file.attachmentId : undefined;
       this.uploadSessions.delete(attachment.id);
       this.foregroundRetried.delete(attachment.id);
       this.fileUploads.update((draft) => {
         delete draft[attachment.id];
       });
       this.draftAttachments.delete(attachment.id);
-      if (
-        ref !== undefined &&
-        "mediaType" in ref &&
-        uiConversation?.seedImageUrl(sessionId, ref, attachment.previewUrl) === true
-      )
-        continue;
+      if (ref !== undefined && "mediaType" in ref) {
+        if (
+          uploadedAttachmentId !== undefined &&
+          uiConversation?.aliasUploadedImage(sessionId, uploadedAttachmentId, ref) === true
+        ) {
+          revokePreview(attachment.previewUrl);
+          continue;
+        }
+        if (
+          uiConversation?.seedImageUrl(
+            sessionId,
+            ref,
+            attachment.previewUrl,
+            attachment.file.size,
+          ) === true
+        )
+          continue;
+      }
       revokePreview(attachment.previewUrl);
     }
   }

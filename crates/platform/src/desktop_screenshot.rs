@@ -1,7 +1,9 @@
 //! One explicitly requested primary-display image, without input control or persistent files.
+//!
+//! macOS captures in-process so TCC Screen Recording permission stays attached to the signed
+//! launcher bundle. Windows captures in the dedicated `codexhost-screenshot` helper binary.
 
 use std::fmt;
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use std::io::{self, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,11 +31,10 @@ impl fmt::Display for DesktopScreenshotError {
 impl std::error::Error for DesktopScreenshotError {}
 
 /// Capture only the primary display. Callers own timeout and concurrent-request limits.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
     use xcap::image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 
-    #[cfg(target_os = "macos")]
     macos_capture_permission(
         objc2_core_graphics::CGPreflightScreenCaptureAccess(),
         || objc2_core_graphics::CGRequestScreenCaptureAccess(),
@@ -43,17 +44,15 @@ pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
             );
         },
     )?;
-    #[cfg(target_os = "windows")]
-    windows::check_session()?;
 
     let monitors = xcap::Monitor::all().map_err(|_| DesktopScreenshotError::DisplayUnavailable)?;
-    let index = primary_index(monitors.iter().map(|monitor| {
+    let index = select_primary_desktop_index(monitors.iter().map(|monitor| {
         monitor
             .is_primary()
             .map_err(|_| DesktopScreenshotError::DisplayUnavailable)
     }))?;
     let monitor = &monitors[index];
-    check_dimensions(
+    check_desktop_screenshot_dimensions(
         monitor
             .width()
             .map_err(|_| DesktopScreenshotError::CaptureFailed)?,
@@ -64,8 +63,8 @@ pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
     let image = monitor
         .capture_image()
         .map_err(|_| DesktopScreenshotError::CaptureFailed)?;
-    check_dimensions(image.width(), image.height())?;
-    let mut output = LimitedImage(Vec::new());
+    check_desktop_screenshot_dimensions(image.width(), image.height())?;
+    let mut output = LimitedDesktopImage::new();
     PngEncoder::new(&mut output)
         .write_image(
             image.as_raw(),
@@ -74,10 +73,10 @@ pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
             ExtendedColorType::Rgba8,
         )
         .map_err(|_| DesktopScreenshotError::ImageTooLarge)?;
-    Ok(output.0)
+    Ok(output.into_inner())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 pub fn capture_primary_desktop() -> Result<Vec<u8>, DesktopScreenshotError> {
     Err(DesktopScreenshotError::Unsupported)
 }
@@ -96,8 +95,7 @@ fn macos_capture_permission(
     Err(DesktopScreenshotError::PermissionDenied)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn primary_index(
+pub fn select_primary_desktop_index(
     flags: impl IntoIterator<Item = Result<bool, DesktopScreenshotError>>,
 ) -> Result<usize, DesktopScreenshotError> {
     let mut primary = None;
@@ -112,8 +110,10 @@ fn primary_index(
     primary.ok_or(DesktopScreenshotError::DisplayUnavailable)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn check_dimensions(width: u32, height: u32) -> Result<(), DesktopScreenshotError> {
+pub fn check_desktop_screenshot_dimensions(
+    width: u32,
+    height: u32,
+) -> Result<(), DesktopScreenshotError> {
     if width == 0 || height == 0 {
         return Err(DesktopScreenshotError::CaptureFailed);
     }
@@ -124,16 +124,26 @@ fn check_dimensions(width: u32, height: u32) -> Result<(), DesktopScreenshotErro
 }
 
 // Matches the Web image limit; encoding aborts before growing an oversized output buffer.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
+pub const MAX_DESKTOP_SCREENSHOT_BYTES: usize = 50 * 1024 * 1024;
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-struct LimitedImage(Vec<u8>);
+#[derive(Default)]
+pub struct LimitedDesktopImage(Vec<u8>);
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-impl Write for LimitedImage {
+impl LimitedDesktopImage {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl Write for LimitedDesktopImage {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > MAX_IMAGE_BYTES.saturating_sub(self.0.len()) {
+        if bytes.len() > MAX_DESKTOP_SCREENSHOT_BYTES.saturating_sub(self.0.len()) {
             return Err(io::Error::other("desktop image exceeds its byte limit"));
         }
         self.0.extend_from_slice(bytes);
@@ -142,55 +152,6 @@ impl Write for LimitedImage {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-#[allow(unsafe_code)]
-mod windows {
-    use super::DesktopScreenshotError;
-    use ::windows::Win32::{
-        Foundation::HANDLE,
-        System::{
-            StationsAndDesktops::{
-                CloseDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS, GetThreadDesktop,
-                GetUserObjectInformationW, HDESK, OpenInputDesktop, UOI_NAME,
-            },
-            Threading::GetCurrentThreadId,
-        },
-        UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
-    };
-
-    /// Do not capture a stale thread desktop while the input desktop is locked or secure.
-    pub(super) fn check_session() -> Result<(), DesktopScreenshotError> {
-        unsafe {
-            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            let input = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS)
-                .map_err(|_| DesktopScreenshotError::DisplayUnavailable)?;
-            let result = (|| {
-                let current = GetThreadDesktop(GetCurrentThreadId())
-                    .map_err(|_| DesktopScreenshotError::DisplayUnavailable)?;
-                let name = |desktop: HDESK| {
-                    let mut buffer = [0_u16; 256];
-                    let mut length = 0_u32;
-                    GetUserObjectInformationW(
-                        HANDLE(desktop.0),
-                        UOI_NAME,
-                        Some(buffer.as_mut_ptr().cast()),
-                        std::mem::size_of_val(&buffer) as u32,
-                        Some(&mut length),
-                    )
-                    .map_err(|_| DesktopScreenshotError::DisplayUnavailable)?;
-                    Ok::<_, DesktopScreenshotError>(buffer)
-                };
-                if name(input)? != name(current)? {
-                    return Err(DesktopScreenshotError::DisplayUnavailable);
-                }
-                Ok(())
-            })();
-            let _ = CloseDesktop(input);
-            result
-        }
     }
 }
 
@@ -226,35 +187,38 @@ mod tests {
 
     #[test]
     fn primary_selection_never_falls_back_to_an_arbitrary_monitor() {
-        assert_eq!(primary_index([Ok(false), Ok(true)]), Ok(1));
+        assert_eq!(select_primary_desktop_index([Ok(false), Ok(true)]), Ok(1));
         for flags in [vec![], vec![Ok(false)], vec![Ok(true), Ok(true)]] {
             assert_eq!(
-                primary_index(flags),
+                select_primary_desktop_index(flags),
                 Err(DesktopScreenshotError::DisplayUnavailable)
             );
         }
         assert_eq!(
-            primary_index([Ok(true), Err(DesktopScreenshotError::DisplayUnavailable)]),
+            select_primary_desktop_index([
+                Ok(true),
+                Err(DesktopScreenshotError::DisplayUnavailable)
+            ]),
             Err(DesktopScreenshotError::DisplayUnavailable)
         );
     }
 
     #[test]
     fn image_limits_bound_dimensions_and_encoded_bytes() {
-        assert!(check_dimensions(3840, 2160).is_ok());
+        assert!(check_desktop_screenshot_dimensions(3840, 2160).is_ok());
         assert_eq!(
-            check_dimensions(0, 100),
+            check_desktop_screenshot_dimensions(0, 100),
             Err(DesktopScreenshotError::CaptureFailed)
         );
-        assert!(check_dimensions(9000, 100).is_ok());
+        assert!(check_desktop_screenshot_dimensions(9000, 100).is_ok());
         assert_eq!(
-            check_dimensions(8192, 8192),
+            check_desktop_screenshot_dimensions(8192, 8192),
             Err(DesktopScreenshotError::ImageTooLarge)
         );
-        let mut output = LimitedImage(vec![0; MAX_IMAGE_BYTES - 1]);
+        let mut output = LimitedDesktopImage(vec![0; MAX_DESKTOP_SCREENSHOT_BYTES - 1]);
         assert!(output.write_all(&[1]).is_ok());
         assert!(output.write_all(&[2]).is_err());
-        assert_eq!(output.0.len(), MAX_IMAGE_BYTES);
+        assert_eq!(output.into_inner().len(), MAX_DESKTOP_SCREENSHOT_BYTES);
     }
 
     #[test]
@@ -269,9 +233,9 @@ mod tests {
         );
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn unsupported_platform_never_attempts_capture() {
+    fn non_macos_in_process_capture_is_unsupported() {
         assert_eq!(
             capture_primary_desktop(),
             Err(DesktopScreenshotError::Unsupported)

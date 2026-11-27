@@ -9689,4 +9689,46 @@ describe("Claude Code Workflow runs", () => {
     expect(outputs.some((event) => event.type === "item.started")).toBe(false);
     await session.close();
   });
+
+  it("reads a persisted Claude Session snapshot cold without creating a transport", async () => {
+    const { adapter, dependencies, history } = fixture();
+    history.push(
+      {
+        type: "user",
+        uuid: "claude-u1",
+        session_id: "claude-cold-1",
+        message: { role: "user", content: "cold prompt" },
+      },
+      {
+        type: "assistant",
+        uuid: "claude-a1",
+        session_id: "claude-cold-1",
+        message: {
+          id: "msg-1",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "cold claude reply" }],
+        },
+      },
+    );
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "claude-cold-1",
+      formatVersion: 1,
+    });
+    const result = await adapter.readSnapshot({ nativeRef, cwd: "/synthetic" });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        turns: [{ nativeTurnRef: { nativeTurnKey: "claude-u1" } }],
+      },
+    });
+    expect(JSON.stringify(result)).toContain("cold claude reply");
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+    expect(dependencies.readSessionMessages).toHaveBeenCalledWith({
+      sessionId: "claude-cold-1",
+      cwd: "/synthetic",
+    });
+    await adapter.close();
+  });
 });

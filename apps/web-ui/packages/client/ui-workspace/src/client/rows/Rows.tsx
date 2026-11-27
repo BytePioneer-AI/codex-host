@@ -2,7 +2,8 @@
  * Workspace browser tree row components (figma Cell set 14:3080): pure presentational —
  * all data and callbacks arrive via props. Folder color/shape follows expansion;
  * hover swaps for time and action buttons are CSS-only. Titles stay still; dwelling
- * on a row reveals its full title in the existing hover card. A Session row's "..." menu and
+ * on a row reveals its full title in the existing hover card. Workspace rows share one
+ * action menu between right-click and the ellipsis button. A Session row's "..." menu and
  * its hover buttons are the `sidebar.workspaces.session.menu.item` and
  * `sidebar.workspaces.session.row.action` lists, rendered through the
  * browser's `renderSlot` with the menu's open state as the occurrence's hook
@@ -31,6 +32,7 @@ import {
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
+import { SessionId } from "@deepseek-ai/dsh-session/types";
 import { abbreviateHomePath } from "@deepseek-ai/dsh-util-workspace-path";
 import type { MenuOpenState, WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { GroupNode, SearchResultNode, SessionNode } from "../tree.ts";
@@ -206,8 +208,8 @@ export function ProjectRowItem({
   onToggle: () => void;
   onCreate: () => void;
   pin?: { pinned: boolean; toggle: () => void } | undefined;
-  /** Rename and delete are available for local Workspaces. */
-  actions?: { rename: () => void; delete: () => void } | undefined;
+  /** Local Workspace actions; absent for the ungrouped bucket and remote Workspaces. */
+  actions?: { rename: () => void; moveToSection?: () => void; delete: () => void } | undefined;
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined;
   /** Whether to show remote host accent rail and tag when viewing multiple hosts. */
@@ -242,6 +244,9 @@ export function ProjectRowItem({
     ...(actions
       ? [
           { id: "rename", label: t("rename"), icon: <IconEditOutlineRegular /> },
+          ...(actions.moveToSection
+            ? [{ id: "move", label: t("menu.moveToSection"), icon: <IconFolderCloseRegular /> }]
+            : []),
           {
             id: "delete",
             label: t("delete.workspace"),
@@ -335,6 +340,7 @@ export function ProjectRowItem({
               setMenuOpen(false);
               if (id === "pin") pin?.toggle();
               if (id === "rename") actions?.rename();
+              if (id === "move") actions?.moveToSection?.();
               if (id === "delete") actions?.delete();
             }}
             portal
@@ -628,7 +634,14 @@ export function SessionNodeItem({
   const row = node;
   const { expansion, toggle, markCompletionsRead, collapseStyle } = useThreadTreeView();
   const childGroupId = useThreadChildGroup();
-  const depth = node.tree?.depth ?? 0;
+  const tree = node.tree;
+  const depth = tree?.depth ?? 0;
+  const markChildThreadsRead =
+    !row.archived && tree !== undefined && tree.activity.completed > 0
+      ? () => {
+          markCompletionsRead(tree.descendantIds.map(SessionId));
+        }
+      : undefined;
   const expanded = expansion[node.id] === true;
   const drag = depth === 0 ? suppliedDrag : undefined;
   const title = displayTitle(node, t);
@@ -863,7 +876,12 @@ export function SessionNodeItem({
                 >
                   {renderSlot(
                     "sidebar.workspaces.session.menu.item",
-                    { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
+                    {
+                      sessionId: node.id,
+                      displayTitle: row.title,
+                      threadTreeChild: depth > 0,
+                      ...(markChildThreadsRead === undefined ? {} : { markChildThreadsRead }),
+                    },
                     { hookContext: menuOpenState },
                   )}
                 </Menu>

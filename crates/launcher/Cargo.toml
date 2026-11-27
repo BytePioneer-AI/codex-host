@@ -14,7 +14,7 @@ name = "codexhost-start"
 path = "src/start_menu.rs"
 
 [dependencies]
-codexhost-platform = { path = "../platform" }
+codexhost-platform = { path = "../platform", features = ["windows-task-dialog"] }
 fs2 = "0.4.3"
 getrandom = "0.3.4"
 serde = { version = "1.0.228", features = ["derive"] }

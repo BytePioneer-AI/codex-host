@@ -108,4 +108,67 @@ describe("InputTriggerController lexicon notifications", () => {
       controller.dispose();
     }
   });
+
+  it("coalesces same-turn invalidations into one microtask and refetches only invalidated sources", async () => {
+    const notifiers = new Map<string, () => void>();
+    const inflightSignals = new Map<string, AbortSignal[]>();
+    const pendingHealthy = Promise.withResolvers<[{ name: string; label: string }]>();
+    let healthyCalls = 0;
+
+    const makeSource = (name: string, slow = false): InputTriggerSource => ({
+      trigger: "#",
+      name,
+      candidates: vi.fn(async (_session, req) => {
+        const list = inflightSignals.get(name) ?? [];
+        list.push(req.signal);
+        inflightSignals.set(name, list);
+        if (slow) {
+          healthyCalls += 1;
+          return pendingHealthy.promise;
+        }
+        return [{ name: `${name}-item`, label: `${name} item` }];
+      }),
+      subscribeCandidates: (_session, listener) => {
+        notifiers.set(name, listener);
+        return () => {
+          notifiers.delete(name);
+        };
+      },
+      onPick: () => "handled",
+    });
+
+    const sourceA = makeSource("agents");
+    const sourceB = makeSource("commands");
+    const sourceC = makeSource("files", true);
+
+    const { controller } = createController([sourceA, sourceB, sourceC]);
+    try {
+      controller.track("#", 1, { tier: "plain" }, 1);
+      expect(sourceA.candidates).toHaveBeenCalledTimes(1);
+      expect(sourceB.candidates).toHaveBeenCalledTimes(1);
+      expect(sourceC.candidates).toHaveBeenCalledTimes(1);
+
+      // Multiple invalidations in the same turn coalesce into one microtask and
+      // only refetch invalidated sources (leaving healthy in-flight sourceC untouched).
+      notifiers.get("agents")?.();
+      notifiers.get("agents")?.();
+      notifiers.get("commands")?.();
+      await Promise.resolve();
+
+      expect(sourceA.candidates).toHaveBeenCalledTimes(2);
+      expect(sourceB.candidates).toHaveBeenCalledTimes(2);
+      expect(sourceC.candidates).toHaveBeenCalledTimes(1);
+      expect(healthyCalls).toBe(1);
+      expect(inflightSignals.get("files")?.[0]?.aborted).toBe(false);
+
+      pendingHealthy.resolve([{ name: "file-1", label: "src/index.ts" }]);
+      await Promise.resolve();
+      await Promise.resolve();
+      const filesGroup = controller.menu.getSnapshot().groups.find((g) => g.source === "files");
+      expect(filesGroup?.status).toBe("ready");
+      expect(filesGroup?.items).toEqual([{ name: "file-1", label: "src/index.ts" }]);
+    } finally {
+      controller.dispose();
+    }
+  });
 });

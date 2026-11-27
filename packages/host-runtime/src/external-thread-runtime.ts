@@ -121,6 +121,26 @@ export type ExternalThreadResolution =
   | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
 
+export type ExternalThreadColdRead =
+  | { kind: "official" }
+  | { kind: "error"; error: ExternalThreadRpcError }
+  | { kind: "loaded"; thread: ExternalThread }
+  | {
+      kind: "cold";
+      record: StoredThreadRecordV1;
+      sessionId: string;
+      thread: JsonObject;
+      turns: JsonObject[];
+      historicalPlans: ReadonlyMap<string, TodoPlan>;
+      persistentPlan: boolean;
+      configuration: {
+        effectiveModel?: HarnessModelRef;
+        effectiveThinkingOptionId?: HarnessThinkingOptionId;
+        effectivePermissionModeId?: HarnessPermissionModeId;
+      };
+    }
+  | { kind: "unsupported" };
+
 function nativeTurnKey(turn: { nativeTurnRef: HostTurnSnapshot["nativeTurnRef"] }): string {
   const ref = turn.nativeTurnRef;
   return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
@@ -275,6 +295,7 @@ export class ExternalThreadRuntime {
     ExternalHarnessId,
     HarnessSessionCapabilities["history"]
   >();
+  readonly #persistentPlanHarnesses = new Set<ExternalHarnessId>();
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
@@ -461,11 +482,14 @@ export class ExternalThreadRuntime {
       throw new Error(`External Harness '${input.record.harnessId}' is not registered`);
     }
     const initialState = input.restoredState ?? input.session.initialState;
-    const effectiveModel = input.requestedModel ?? initialState.effectiveModel;
+    const effectiveModel = initialState.effectiveModel ?? input.requestedModel;
     const effectiveThinkingOptionId =
-      input.requestedThinkingOptionId ?? initialState.effectiveThinkingOptionId;
+      initialState.effectiveThinkingOptionId ??
+      (initialState.availableThinkingOptions !== undefined
+        ? undefined
+        : input.requestedThinkingOptionId);
     const effectivePermissionModeId =
-      input.requestedPermissionModeId ?? initialState.effectivePermissionModeId;
+      initialState.effectivePermissionModeId ?? input.requestedPermissionModeId;
     const observerState: HarnessSessionState = {
       ...initialState,
       ...(effectiveModel ? { effectiveModel } : {}),
@@ -523,6 +547,9 @@ export class ExternalThreadRuntime {
     };
     if (!input.record.subagent) {
       this.#historyCapabilities.set(harnessId, input.session.capabilities.history);
+      if (input.session.capabilities.persistentPlan === true) {
+        this.#persistentPlanHarnesses.add(harnessId);
+      }
     }
     this.#restoreUsageMeasurements(externalThread);
     this.idleRelease.touch(externalThread);
@@ -681,7 +708,10 @@ export class ExternalThreadRuntime {
     return { kind: "external", record, thread: null };
   }
 
-  async resolve(threadId: string): Promise<ExternalThreadResolution> {
+  async resolve(
+    threadId: string,
+    options?: { touch?: boolean },
+  ): Promise<ExternalThreadResolution> {
     try {
       return await this.#withLifecycle(threadId, async () => {
         // Read after admission, never act on a location captured before another recovery.
@@ -695,7 +725,7 @@ export class ExternalThreadRuntime {
             const current = this.#threads.get(threadId);
             if (current) return { kind: "external", thread: current, historyFresh: false };
           } else {
-            this.idleRelease.touch(location.thread);
+            if (options?.touch !== false) this.idleRelease.touch(location.thread);
             return { kind: "external", thread: location.thread, historyFresh: false };
           }
         }
@@ -703,6 +733,76 @@ export class ExternalThreadRuntime {
           kind: "external",
           thread: await this.#restore(location.record),
           historyFresh: true,
+        };
+      });
+    } catch (error) {
+      return { kind: "error", error: recoveryError(error) };
+    }
+  }
+
+  /**
+   * Read-only history lookup that never spawns a Harness process when the Adapter supports
+   * stateless cold reads and never resets idle-release timers on already-loaded Sessions.
+   */
+  async readCold(threadId: string): Promise<ExternalThreadColdRead> {
+    try {
+      return await this.#withLifecycle(threadId, async () => {
+        const location = await this.#locate(threadId);
+        if (location.kind !== "external") return location;
+        if (location.thread) {
+          if (location.thread.sessionUnavailable && this.#idleForRestore(location.thread)) {
+            await this.#dropIdleSession(location.thread);
+            const current = this.#threads.get(threadId);
+            if (current) return { kind: "loaded", thread: current };
+          } else {
+            return { kind: "loaded", thread: location.thread };
+          }
+        }
+        const record = location.record;
+        if (record.subagent || !record.nativeSessionRef) return { kind: "unsupported" };
+        const harnessId = record.harnessId as ExternalHarnessId;
+        const adapter = this.#adapters.get(harnessId);
+        if (!adapter?.readSnapshot) return { kind: "unsupported" };
+        const snapshot = await adapter.readSnapshot({
+          nativeRef: record.nativeSessionRef as NativeSessionRef,
+          cwd: record.cwd,
+        });
+        if (!snapshot.ok) {
+          if (snapshot.error.code === "unsupported") return { kind: "unsupported" };
+          return { kind: "error", error: mapExternalThreadHarnessError(snapshot.error, "read") };
+        }
+        const aligned = await this.#repository.alignSnapshot(
+          record,
+          snapshot.value,
+          this.#failedTurns(record),
+        );
+        const storedSelection = decodeExternalTransportSelection(
+          aligned.record.harnessId,
+          aligned.record.transportModelId,
+        );
+        const snapshotState = snapshot.value.state;
+        const effectiveModel = snapshotState?.effectiveModel ?? storedSelection?.model;
+        const effectiveThinkingOptionId =
+          snapshotState?.effectiveThinkingOptionId ?? storedSelection?.thinkingOptionId;
+        const effectivePermissionModeId =
+          snapshotState?.effectivePermissionModeId ?? storedSelection?.permissionModeId;
+        const sessionId = await this.#repository.sessionTreeId(aligned.record);
+        const turns = this.#mergeFailedTurns(aligned.record, aligned.turns);
+        const thread = externalThreadValue({ record: aligned.record, turns, sessionId });
+        return {
+          kind: "cold",
+          record: aligned.record,
+          sessionId,
+          thread,
+          turns,
+          historicalPlans: aligned.historicalPlans,
+          persistentPlan:
+            snapshot.value.persistentPlan === true || this.#persistentPlanHarnesses.has(harnessId),
+          configuration: {
+            ...(effectiveModel ? { effectiveModel } : {}),
+            ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
+            ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
+          },
         };
       });
     } catch (error) {

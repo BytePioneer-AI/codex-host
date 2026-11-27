@@ -10,6 +10,7 @@
 
 - `crates/`
   - `launcher/`: native application launch
+  - `screenshot/`: Windows desktop screenshot helper
   - `shim/`: process proxying
   - `updater/`: update installation
   - `platform/`: cross-platform native integration

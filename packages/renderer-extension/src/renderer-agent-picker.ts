@@ -11,6 +11,7 @@ import {
 } from "./agent-selection-state.js";
 import type { CodexAccountSummary, HarnessPluginDescriptor } from "@codexhost/shared-contracts";
 import { createRendererAgentIcon, rendererAgentLabel } from "./renderer-agent-icon.js";
+import { createSwapIcon } from "./renderer-handoff-view.js";
 import {
   mountRendererModelSelectionNotice,
   type RendererModelSelectionNotice,
@@ -31,15 +32,25 @@ function pickerGroupMessages(): Pick<
   "locale" | "pickerMoreAgentsLabel" | "pickerManageLink" | "pickerHideUnusedAgentsCta"
 > & {
   readonly ownershipErrorLabel: string;
+  readonly handoffSectionLabel: string;
+  readonly handoffHintLabel: string;
+  readonly handoffSameLabel: (name: string) => string;
+  readonly handoffTooltipSuffix: string;
 } {
   const languages = typeof navigator !== "undefined" ? navigator.languages : [];
   const messages = rendererSettingsMessages(resolveRendererSettingsLocale(languages));
+  const isZh = messages.locale === "zh-CN";
   return {
     ...messages,
-    ownershipErrorLabel:
-      messages.locale === "zh-CN"
-        ? "无法确认会话的 Agent；重新聚焦窗口以重试"
-        : "Unable to determine the Thread Agent; refocus the window to retry",
+    ownershipErrorLabel: isZh
+      ? "无法确认会话的 Agent；重新聚焦窗口以重试"
+      : "Unable to determine the Thread Agent; refocus the window to retry",
+    handoffSectionLabel: isZh ? "交接上下文到新会话" : "Hand off to new conversation",
+    handoffHintLabel: isZh
+      ? "原会话保留只读，交接后在新会话继续。"
+      : "Original stays read-only; continues in a new conversation.",
+    handoffSameLabel: (name) => (isZh ? `用 ${name} 新开交接会话` : `New ${name} handoff`),
+    handoffTooltipSuffix: isZh ? " · 上下文交接" : " · Context handoff",
   };
 }
 
@@ -75,6 +86,7 @@ interface AgentOptionControl {
   row: HTMLElement;
   button: HTMLButtonElement;
   check: HTMLElement;
+  swap: HTMLElement;
   // Shared 24x24 slot: renders as an Install ("+") action when the Agent is
   // not installed, or a red error ("!") action once it has failed — the two
   // are mutually exclusive since `RendererAgentAvailability` is a single
@@ -95,6 +107,7 @@ export interface RendererAgentPickerControl {
   plugins: readonly HarnessPluginDescriptor[];
   options: Partial<Record<RendererAgent, AgentOptionControl>>;
   updateAvailability(availability: AgentAvailability): void;
+  setBoundHandoff(agent: RendererAgent | null, showSameHandoff: boolean): void;
   showSwitchFailure(): void;
   close(): void;
   dispose(): void;
@@ -132,12 +145,19 @@ export function rendererAgentPickerTooltip(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   activeAccount: CodexAccountSummary | undefined,
   plugin?: HarnessPluginDescriptor,
+  handoffAvailable = false,
 ): string {
   const account =
     state.agent === "codex" && activeAccount
       ? ` · ${activeAccount.email ?? activeAccount.label}`
       : "";
-  return `Agent: ${rendererAgentLabel(state.agent, plugin)}${account}${state.phase === "locked" ? " (locked)" : ""}`;
+  const suffix =
+    state.phase === "locked"
+      ? handoffAvailable
+        ? pickerGroupMessages().handoffTooltipSuffix
+        : " (locked)"
+      : "";
+  return `Agent: ${rendererAgentLabel(state.agent, plugin)}${account}${suffix}`;
 }
 
 export function rendererAgentPickerView(
@@ -147,14 +167,21 @@ export function rendererAgentPickerView(
   agents: readonly RendererAgent[],
   availability: AgentAvailability = {},
   plugin?: HarnessPluginDescriptor,
+  handoffAvailable = false,
 ): RendererAgentPickerView {
+  const boundHandoff = state.phase === "locked" && handoffAvailable;
   const optionDisabled = Object.fromEntries(
     agents.map((agent) => [
       agent,
-      switching ||
-        state.phase === "locked" ||
-        (agent !== "codex" &&
-          (adapterState !== "ready" || !isPickerAgentSelectable(availability[agent]))),
+      boundHandoff
+        ? switching ||
+          (agent !== state.agent &&
+            agent !== "codex" &&
+            (adapterState !== "ready" || !isPickerAgentSelectable(availability[agent])))
+        : switching ||
+          state.phase === "locked" ||
+          (agent !== "codex" &&
+            (adapterState !== "ready" || !isPickerAgentSelectable(availability[agent]))),
     ]),
   ) as Partial<Record<RendererAgent, boolean>>;
   const downloadVisible = Object.fromEntries(
@@ -170,7 +197,9 @@ export function rendererAgentPickerView(
   return {
     label: rendererAgentLabel(state.agent, plugin),
     triggerDisabled:
-      switching || state.phase === "locked" || (agents.length < 2 && state.agent === "codex"),
+      switching ||
+      (state.phase === "locked" && !handoffAvailable) ||
+      (state.phase === "draft" && agents.length < 2 && state.agent === "codex"),
     nativeModelHidden: switching || state.agent !== "codex",
     optionDisabled,
     downloadVisible,
@@ -208,6 +237,7 @@ export function mountRendererAgentPicker(
   onOpen?: () => void,
   groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
   plugins: readonly HarnessPluginDescriptor[] = [],
+  onHandoff?: (agent: RendererAgent, anchor: HTMLButtonElement) => void,
 ): RendererAgentPickerControl {
   const root = document.createElement("div");
   root.setAttribute(CONTROL_ATTRIBUTE, composerId);
@@ -295,12 +325,20 @@ export function mountRendererAgentPicker(
   const rowsByAgent = new Map<RendererAgent, HTMLDivElement>();
   const groupMessages = pickerGroupMessages();
   let switchFailureNotice: RendererModelSelectionNotice | undefined;
+  let boundHandoffAgent: RendererAgent | null = null;
+  let showSameHandoff = false;
 
+  let moreOpen = false;
+  let regroupMenu: (() => void) | null = null;
   const close = (): void => {
     if (!popoverOpen(menu)) return;
     if (typeof menu.hidePopover === "function") menu.hidePopover();
     else menu.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
+    if (moreOpen) {
+      moreOpen = false;
+      regroupMenu?.();
+    }
   };
   const focusOption = (position: "first" | "last" | "selected"): void => {
     const available = [
@@ -358,10 +396,23 @@ export function mountRendererAgentPicker(
     const check = document.createElement("span");
     check.textContent = "\u2713";
     check.setAttribute("aria-hidden", "true");
-    check.style.width = "24px";
-    check.style.flex = "none";
-    check.style.textAlign = "center";
+    check.style.position = "absolute";
+    check.style.inset = "0";
+    check.style.display = "inline-flex";
+    check.style.alignItems = "center";
+    check.style.justifyContent = "center";
     check.style.visibility = "hidden";
+
+    const swap = document.createElement("span");
+    swap.setAttribute("aria-hidden", "true");
+    swap.style.position = "absolute";
+    swap.style.inset = "0";
+    swap.style.display = "inline-flex";
+    swap.style.alignItems = "center";
+    swap.style.justifyContent = "center";
+    swap.style.opacity = "0.55";
+    swap.style.visibility = "hidden";
+    swap.append(createSwapIcon(document, 14));
 
     const label = document.createElement("span");
     const plugin = plugins.find(({ id }) => id === agent);
@@ -373,6 +424,15 @@ export function mountRendererAgentPicker(
     label.style.whiteSpace = "nowrap";
     button.append(createRendererAgentIcon(agent, 20, document, plugin), label);
     button.addEventListener("click", () => {
+      if (boundHandoffAgent !== null) {
+        close();
+        if (agent === boundHandoffAgent) {
+          trigger.focus();
+        } else {
+          onHandoff?.(agent, trigger);
+        }
+        return;
+      }
       const selected = button.getAttribute("aria-pressed") === "true";
       close();
       trigger.focus();
@@ -433,12 +493,110 @@ export function mountRendererAgentPicker(
     actionSlot.style.width = "24px";
     actionSlot.style.height = "24px";
     actionSlot.style.pointerEvents = "none";
-    actionSlot.append(check);
+    actionSlot.append(check, swap);
     if (action) actionSlot.append(action);
     row.append(button, actionSlot);
-    options[agent] = { row, button, check, action };
+    options[agent] = { row, button, check, swap, action };
     rowsByAgent.set(agent, row);
   }
+
+  const boundCurrentGroup = document.createElement("div");
+  boundCurrentGroup.style.display = "none";
+  boundCurrentGroup.style.flexDirection = "column";
+  boundCurrentGroup.style.gap = "2px";
+
+  const handoffSeparator = document.createElement("div");
+  handoffSeparator.setAttribute("role", "separator");
+  handoffSeparator.style.display = "none";
+  handoffSeparator.style.height = "1px";
+  handoffSeparator.style.margin = "4px 2px";
+  handoffSeparator.style.background = "rgba(127, 127, 127, 0.16)";
+
+  const handoffHeading = document.createElement("div");
+  handoffHeading.setAttribute("role", "presentation");
+  handoffHeading.textContent = groupMessages.handoffSectionLabel;
+  handoffHeading.style.display = "none";
+  handoffHeading.style.padding = "4px 8px";
+  handoffHeading.style.font = "400 11px/15px system-ui, sans-serif";
+  handoffHeading.style.opacity = "0.62";
+
+  const sameHandoffRow = document.createElement("div");
+  sameHandoffRow.style.position = "relative";
+  sameHandoffRow.style.display = "none";
+  sameHandoffRow.style.alignItems = "center";
+  const sameHandoffButton = document.createElement("button");
+  sameHandoffButton.type = "button";
+  sameHandoffButton.setAttribute("role", "menuitem");
+  sameHandoffButton.style.display = "flex";
+  sameHandoffButton.style.alignItems = "center";
+  sameHandoffButton.style.gap = "8px";
+  sameHandoffButton.style.minWidth = "0";
+  sameHandoffButton.style.width = "100%";
+  sameHandoffButton.style.height = "36px";
+  sameHandoffButton.style.padding = "0 34px 0 8px";
+  sameHandoffButton.style.border = "0";
+  sameHandoffButton.style.borderRadius = "4px";
+  sameHandoffButton.style.background = "transparent";
+  sameHandoffButton.style.color = "inherit";
+  sameHandoffButton.style.font = "500 13px/1 system-ui, sans-serif";
+  sameHandoffButton.style.textAlign = "left";
+  sameHandoffButton.style.cursor = "pointer";
+  sameHandoffButton.addEventListener("pointerenter", () => {
+    sameHandoffButton.style.background = "rgba(127, 127, 127, 0.1)";
+  });
+  sameHandoffButton.addEventListener("pointerleave", () => {
+    sameHandoffButton.style.background = "transparent";
+  });
+  sameHandoffButton.addEventListener("focus", () => {
+    sameHandoffButton.style.background = "rgba(127, 127, 127, 0.1)";
+  });
+  sameHandoffButton.addEventListener("blur", () => {
+    sameHandoffButton.style.background = "transparent";
+  });
+  const sameHandoffIconSlot = document.createElement("span");
+  sameHandoffIconSlot.style.display = "inline-flex";
+  sameHandoffIconSlot.style.alignItems = "center";
+  sameHandoffIconSlot.style.justifyContent = "center";
+  sameHandoffIconSlot.style.width = "20px";
+  sameHandoffIconSlot.style.height = "20px";
+  sameHandoffIconSlot.style.flex = "none";
+  const sameHandoffLabel = document.createElement("span");
+  sameHandoffLabel.style.minWidth = "0";
+  sameHandoffLabel.style.flex = "1 1 auto";
+  sameHandoffLabel.style.overflow = "hidden";
+  sameHandoffLabel.style.textOverflow = "ellipsis";
+  sameHandoffLabel.style.whiteSpace = "nowrap";
+  sameHandoffButton.append(sameHandoffIconSlot, sameHandoffLabel);
+  sameHandoffButton.addEventListener("click", () => {
+    const current = boundHandoffAgent;
+    close();
+    if (current) onHandoff?.(current, trigger);
+  });
+  const sameHandoffSwapSlot = document.createElement("span");
+  sameHandoffSwapSlot.setAttribute("aria-hidden", "true");
+  sameHandoffSwapSlot.style.position = "absolute";
+  sameHandoffSwapSlot.style.top = "6px";
+  sameHandoffSwapSlot.style.right = "4px";
+  sameHandoffSwapSlot.style.display = "inline-flex";
+  sameHandoffSwapSlot.style.alignItems = "center";
+  sameHandoffSwapSlot.style.justifyContent = "center";
+  sameHandoffSwapSlot.style.width = "24px";
+  sameHandoffSwapSlot.style.height = "24px";
+  sameHandoffSwapSlot.style.opacity = "0.55";
+  sameHandoffSwapSlot.style.pointerEvents = "none";
+  sameHandoffSwapSlot.append(createSwapIcon(document, 14));
+  sameHandoffRow.append(sameHandoffButton, sameHandoffSwapSlot);
+
+  const handoffFooter = document.createElement("div");
+  handoffFooter.setAttribute("role", "presentation");
+  handoffFooter.textContent = groupMessages.handoffHintLabel;
+  handoffFooter.style.display = "none";
+  handoffFooter.style.marginTop = "4px";
+  handoffFooter.style.padding = "6px 8px 4px";
+  handoffFooter.style.borderTop = "1px solid rgba(127, 127, 127, 0.16)";
+  handoffFooter.style.font = "400 11px/15px system-ui, sans-serif";
+  handoffFooter.style.opacity = "0.62";
+  handoffFooter.style.whiteSpace = "normal";
 
   // "Main" holds every enabled Agent by default; a user can fold the ones
   // they never switch to into "More" from the Connections settings page.
@@ -448,8 +606,6 @@ export function mountRendererAgentPicker(
   mainGroup.style.display = "flex";
   mainGroup.style.flexDirection = "column";
   mainGroup.style.gap = "2px";
-
-  let moreOpen = false;
   const moreToggle = document.createElement("button");
   moreToggle.type = "button";
   moreToggle.style.display = "none";
@@ -543,8 +699,12 @@ export function mountRendererAgentPicker(
 
     // Codex is always pinned to Main and isn't tracked by the preference
     // store (it's the always-on default, not offered in Connections'
-    // grouping list).
-    if (enabledSet.has("codex")) {
+    // grouping list). In bound-handoff mode, the current Agent is pinned above
+    // the handoff divider instead of appearing inside Main/More.
+    if (boundHandoffAgent !== null) {
+      seen.add(boundHandoffAgent);
+    }
+    if (enabledSet.has("codex") && !seen.has("codex")) {
       nextMain.push("codex");
       seen.add("codex");
     }
@@ -578,6 +738,10 @@ export function mountRendererAgentPicker(
       Number(notInstalled.has(a)) - Number(notInstalled.has(b));
     mainAgents = nextMain.sort(installationOrder);
     moreAgents = nextMore.sort(installationOrder);
+    const boundRow = boundHandoffAgent ? rowsByAgent.get(boundHandoffAgent) : undefined;
+    boundCurrentGroup.replaceChildren(...(boundRow ? [boundRow] : []));
+    boundCurrentGroup.style.display = boundRow ? "flex" : "none";
+
     const mainChildren: HTMLElement[] = [];
     for (const agent of mainAgents) {
       const row = rowsByAgent.get(agent);
@@ -589,6 +753,22 @@ export function mountRendererAgentPicker(
         .map((agent) => rowsByAgent.get(agent))
         .filter((el): el is HTMLDivElement => !!el),
     );
+    const hasSecondaryRows = mainAgents.length > 0 || moreAgents.length > 0 || showSameHandoff;
+    handoffSeparator.style.display = boundRow && hasSecondaryRows ? "block" : "none";
+    handoffHeading.style.display = boundHandoffAgent && hasSecondaryRows ? "block" : "none";
+    if (boundHandoffAgent && showSameHandoff) {
+      const plugin = plugins.find(({ id }) => id === boundHandoffAgent);
+      sameHandoffIconSlot.replaceChildren(
+        createRendererAgentIcon(boundHandoffAgent, 20, document, plugin),
+      );
+      sameHandoffLabel.textContent = groupMessages.handoffSameLabel(
+        rendererAgentLabel(boundHandoffAgent, plugin),
+      );
+      sameHandoffRow.style.display = "flex";
+    } else {
+      sameHandoffRow.style.display = "none";
+    }
+    handoffFooter.style.display = boundHandoffAgent ? "block" : "none";
     const showMoreGroup = moreAgents.length > 0;
     const showCta = !showMoreGroup && enabledAgents.length > AGENT_GROUP_CTA_THRESHOLD;
     moreToggle.style.display = showMoreGroup ? "flex" : "none";
@@ -597,6 +777,7 @@ export function mountRendererAgentPicker(
     moreLabel.textContent = `${groupMessages.pickerMoreAgentsLabel} (${moreAgents.length})`;
     moreArrow.textContent = moreOpen ? "▾" : "▸";
   };
+  regroupMenu = regroup;
   moreToggle.addEventListener("click", () => {
     moreOpen = !moreOpen;
     regroup();
@@ -604,7 +785,17 @@ export function mountRendererAgentPicker(
   regroup();
   const unsubscribeGroup = groupPreference.subscribe(regroup);
 
-  menu.append(mainGroup, moreToggle, morePanel, cta);
+  menu.append(
+    boundCurrentGroup,
+    handoffSeparator,
+    handoffHeading,
+    sameHandoffRow,
+    mainGroup,
+    moreToggle,
+    morePanel,
+    cta,
+    handoffFooter,
+  );
   root.append(trigger, menu);
 
   const onTriggerClick = (): void => {
@@ -678,6 +869,12 @@ export function mountRendererAgentPicker(
       notInstalled = next;
       regroup();
     },
+    setBoundHandoff(agent, sameHandoff) {
+      if (boundHandoffAgent === agent && showSameHandoff === sameHandoff) return;
+      boundHandoffAgent = agent;
+      showSameHandoff = sameHandoff;
+      regroup();
+    },
     showSwitchFailure() {
       switchFailureNotice ??= mountRendererModelSelectionNotice(trigger);
       if (groupMessages.locale === "zh-CN") {
@@ -714,7 +911,9 @@ export function renderRendererAgentPicker(
   availability: AgentAvailability = {},
   currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
+  handoffAvailable = false,
 ): RendererAgentPickerView {
+  const effectiveHandoff = handoffAvailable && !ownershipError;
   const view = rendererAgentPickerView(
     state,
     adapterState,
@@ -722,8 +921,14 @@ export function renderRendererAgentPicker(
     control.agents,
     availability,
     control.plugins.find(({ id }) => id === state.agent),
+    effectiveHandoff,
   );
+  const boundHandoff = state.phase === "locked" && effectiveHandoff;
+  const hasOtherReady =
+    boundHandoff &&
+    control.agents.some((agent) => agent !== state.agent && !(view.optionDisabled[agent] ?? true));
   control.updateAvailability(availability);
+  control.setBoundHandoff(boundHandoff ? state.agent : null, boundHandoff && !hasOtherReady);
   if (control.iconSlot.dataset.agent !== state.agent) {
     control.iconSlot.replaceChildren(
       createRendererAgentIcon(
@@ -741,7 +946,7 @@ export function renderRendererAgentPicker(
     "aria-label",
     ownershipError
       ? pickerGroupMessages().ownershipErrorLabel
-      : state.phase === "locked"
+      : state.phase === "locked" && !effectiveHandoff
         ? `Agent: ${view.label}`
         : `Select Agent, current ${view.label}`,
   );
@@ -751,6 +956,7 @@ export function renderRendererAgentPicker(
         state,
         currentCodexAccount ?? undefined,
         control.plugins.find(({ id }) => id === state.agent),
+        effectiveHandoff,
       );
   control.trigger.style.cursor = control.trigger.disabled ? "not-allowed" : "pointer";
   control.trigger.style.opacity = control.trigger.disabled && !switching ? "0.72" : "1";
@@ -763,6 +969,10 @@ export function renderRendererAgentPicker(
     const option = control.options[agent];
     if (!option) continue;
     const selected = agent === state.agent;
+    const externalAgent = agent !== "codex" ? (agent as ExternalRendererAgent) : null;
+    const showInstall = externalAgent !== null && view.downloadVisible[externalAgent] === true;
+    const showError = externalAgent !== null && view.errorVisible[externalAgent] === true;
+    const actionVisible = showInstall || showError;
     option.button.disabled = view.optionDisabled[agent] ?? true;
     option.button.setAttribute("aria-checked", String(selected));
     option.button.setAttribute("aria-pressed", String(selected));
@@ -770,11 +980,10 @@ export function renderRendererAgentPicker(
     option.button.style.cursor = option.button.disabled ? "not-allowed" : "pointer";
     option.button.style.opacity = option.button.disabled && !selected ? "0.5" : "1";
     option.check.style.visibility = selected ? "visible" : "hidden";
+    option.swap.style.visibility =
+      boundHandoff && !selected && !option.button.disabled && !actionVisible ? "visible" : "hidden";
     if (option.action) {
-      const externalAgent = agent as ExternalRendererAgent;
-      const showInstall = view.downloadVisible[externalAgent] === true;
-      const showError = view.errorVisible[externalAgent] === true;
-      const visible = showInstall || showError;
+      const visible = actionVisible;
       option.action.hidden = false;
       option.action.disabled = !visible;
       option.action.style.display = "inline-flex";

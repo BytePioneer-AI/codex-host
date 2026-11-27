@@ -27,6 +27,8 @@ import type {
   WorkspaceThreadSection,
   WorkspaceMoveSessionToSectionRequest,
   WorkspaceMoveSessionToSectionValue,
+  WorkspaceMoveWorkspaceToSectionRequest,
+  WorkspaceMoveToSectionValue,
 } from "../types.ts";
 
 /** Complete generated `ctx.remote.workspace` namespace. */
@@ -318,6 +320,12 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     request: WorkspaceMoveSessionToSectionRequest,
   ): Promise<RemoteResult<WorkspaceMoveSessionToSectionValue>> {
     return this.remote.moveSessionToSection(request);
+  }
+
+  moveWorkspaceToSection(
+    request: WorkspaceMoveWorkspaceToSectionRequest,
+  ): Promise<RemoteResult<WorkspaceMoveToSectionValue>> {
+    return this.remote.moveWorkspaceToSection(request);
   }
 
   /** Merge one decoded Workspace upsert from the current follow generation. */

@@ -32,7 +32,7 @@
   <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>下载</strong></a> · <a href="#快速开始">快速开始</a> · <a href="#在-codex-desktop-里用所有-agent">Desktop</a> · <a href="#多-agent-分工">多 Agent 分工</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="https://chost.dev"><strong>CodexHost 官网</strong></a> · <a href="https://chost.dev/download"><strong>下载</strong></a> · <a href="#快速开始">快速开始</a> · <a href="#在-codex-desktop-里用所有-agent">Desktop</a> · <a href="#多-agent-分工">多 Agent 分工</a> · <a href="#加入交流群">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.ko.md">한국어</a></p>
 
 <img width="90%" src="../imgs/hero-desktop-phone.png" alt="Codex Desktop 中同一项目下的多个 Agent 会话与 Diff 审查面板，右下角是手机上打开的同一个会话">
 

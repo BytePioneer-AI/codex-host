@@ -1301,7 +1301,7 @@ it("translates thread:// links across mutually paired A <-> B delegation start/s
             threadId: input.threadId,
             turnId: `turn-${rec.messages.length}`,
             harnessId: "codex",
-            status: "completed",
+            status: "running",
             next: { read: "read", wait: "wait" },
           };
         },

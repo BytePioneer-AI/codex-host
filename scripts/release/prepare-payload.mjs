@@ -155,6 +155,7 @@ export function releaseBuildCommands(
         "codexhost-shim",
         "--package",
         "codexhost-updater",
+        ...(target.hostPlatform === "win32" ? ["--package", "codexhost-screenshot"] : []),
       ],
     },
     // Linux releases have no native Desktop shell; Web and Codex Desktop remain the interfaces.
@@ -309,7 +310,9 @@ export function expectedPayloadPaths(target) {
     ...expectedWebPaths(target),
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
-    ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
+    ...(target.hostPlatform === "win32"
+      ? ["libexec/codexhost-node-repl.exe", "libexec/codexhost-screenshot.exe"]
+      : []),
     ...(target.hostPlatform === "darwin"
       ? MACOS_SHELL_BUNDLE_PATHS
       : target.hostPlatform === "linux"
@@ -446,6 +449,12 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
       path.join(rustOutput, "codexhost-node-repl.exe"),
       path.join(payloadRoot, "libexec", "codexhost-node-repl.exe"),
       "release Desktop tool proxy",
+      true,
+    );
+    await copyReleaseFile(
+      path.join(rustOutput, "codexhost-screenshot.exe"),
+      path.join(payloadRoot, "libexec", "codexhost-screenshot.exe"),
+      "release Desktop screenshot helper",
       true,
     );
   }

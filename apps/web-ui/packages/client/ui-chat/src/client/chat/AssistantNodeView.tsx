@@ -10,7 +10,10 @@ import { AssistantMarkdown } from "./AssistantMarkdown.tsx";
 import { ResponseAnnotationMarks } from "./ResponseAnnotationMarks.tsx";
 import { annotationLabels } from "../markdown-labels.ts";
 import { EXCLUDED_SELECTION } from "./response-selection.ts";
-import type { MarkdownResponseAnnotations } from "@deepseek-ai/dsh-client-ui-primitives";
+import type {
+  MarkdownFileMentions,
+  MarkdownResponseAnnotations,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import css from "./SelectionActions.module.css";
 
 function insideAnnotationMark(element: Element | null, host: Element): boolean {
@@ -93,6 +96,23 @@ export const AssistantNodeView = memo(function AssistantNodeView({
     () => (owner === undefined ? undefined : fileMentions(owner)),
     [fileMentions, owner],
   );
+  // Harness file citations open through the view's own openFile, independent
+  // of the Turn-tail mention vocabulary: a citation names the file it read.
+  const fileCitations = useMemo<MarkdownFileMentions | undefined>(() => {
+    if (openFile === undefined) return undefined;
+    return {
+      resolve: (path: string) => {
+        if (path.trim() === "") return undefined;
+        return {
+          open: () => {
+            void openFile(path);
+          },
+          label: path,
+          title: path,
+        };
+      },
+    };
+  }, [openFile]);
   const reasoningHidden =
     turnProcess !== undefined &&
     turnProcess.foldable &&
@@ -136,6 +156,7 @@ export const AssistantNodeView = memo(function AssistantNodeView({
         usePresentation={usePresentation}
         revealProcess={revealProcess}
         mentions={mentions}
+        fileCitations={fileCitations}
         responseAnnotations={citations}
         t={t}
       />

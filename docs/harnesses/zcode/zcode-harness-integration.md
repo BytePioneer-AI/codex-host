@@ -28,7 +28,7 @@ AppImage 格式因没有固定安装路径而不作自动检测；用户可自�
 
 每个 Session 一个进程：`<runtime> <resources>/glm/zcode.cjs app-server --stdio --surface desktop`，cwd 为工作区，并设置 `ELECTRON_RUN_AS_NODE=1`。其中 `<runtime>` 在 macOS 下为 Electron Helper 可执行文件，Windows 下为 `<productName>.exe`，Linux 下为 `<linuxExecutableName>`。这与 ZCode Desktop 启动自带 CLI 的方式相同（开源 `zcodeAgentProcessManager.ts` 的 `resolveBundledWorkspaceZCodeAgentCommand`，Desktop Host 作为 utilityProcess 并在 spawn 时使用 `process.execPath` 即 Helper / 主可执行文件）：CLI 运行在 App 自带的 Electron Node 运行时上，在 macOS 下属于后台 `UIElement` 进程不会在 Dock 栏产生独立应用图标，其插件中为 Electron 预编译的原生模块也因此可用。与 Desktop 一样，CLI 的工具子进程会继承 `ELECTRON_RUN_AS_NODE`。环境变量为 Thread 环境加上：
 
-- `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`：已装 App 的 `config/provider/zcode-builtin.json`（环境中已显式设置时沿用）。
+- `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`：按「内置 Provider 配置」选取的文件（环境中已显式设置时沿用该路径）。
 - `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`：`{ZCODE_DATA_BASE_DIR || HOME}/.zcode/v2/provider_config.json`（已显式设置时沿用）。
 - `ZCODE_APP_VERSION`：已装 App 的版本。Desktop 启动 CLI 时注入同样的版本；缺失时 CLI 在请求指纹头（`User-Agent`、`X-ZCode-App-Version`）里以自身内部版本自报，Start Plan 网关会把这种请求按异常活动拒绝。
 
@@ -47,6 +47,20 @@ CLI 发来的反向请求（`src/transport.ts`）：
 | `interaction/browserList` / `browserExecute` | 空列表 / `backend_unavailable` |
 | `automation/*`、`offPeak/*` 及其他 | `-32601`；创建会话不开启 Off-Peak 与动态工作流工具 |
 
+## 内置 Provider 配置
+
+ZCode Desktop 的安装包自带 `config/provider/zcode-builtin.json`，并从 Endpoint 把更新后的配置刷新到 `{ZCODE_DATA_BASE_DIR || HOME}/.zcode/v2/runtime/provider/<平台>/<App 版本>/endpoint-<键>/zcode-builtin.json`（Desktop 的 `resolveZCodeBuiltinCachePaths`）；它启动自带 CLI 时传入的是刷新后的文件。App 发布后新增的 Model 只存在于刷新后的文件中。
+
+Adapter 按以下顺序选取传给 CLI 的 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`：
+
+1. 环境中已显式设置的 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`。
+2. 已安装 App 版本在上述目录下的 `zcode-builtin.json`。文件须能按 Adapter 读取内置配置的结构解析（`revision` 与 `config.providerConfigRules.providerRules`），且 `revision` 高于安装包自带文件；同一版本有多个 Endpoint 目录时取 `revision` 最高者。
+3. 安装包自带的 `config/provider/zcode-builtin.json`。
+
+刷新后的文件缺失、无法解析或 `revision` 不高于安装包文件时，仍使用安装包自带文件，检测结果不受影响。`basedOnZCodeBuiltinRevision` 随所选文件计算。
+
+实测（Windows x64，ZCode 4.0.0）：安装包自带文件为 revision 44，不含 GLM-5.4；Desktop 刷新后的文件为 revision 48，含 GLM-5.4。
+
 ## 账号与鉴权
 
 支持 Start Plan 与个人 Coding Plan，团队 Coding Plan 暂不支持。凭据只读：Adapter 读取 ZCode Desktop 写入的 `{ZCODE_DATA_BASE_DIR || HOME}/.zcode/v2/credentials.json`，从不写入，也不复制到 codexhost 配置、Native Ref、日志、错误信息或磁盘。
@@ -55,7 +69,7 @@ CLI 发来的反向请求（`src/transport.ts`）：
 - ZCode 3.18.2 的 `enc:v2:` 校验存储来源、密钥指纹和 AES-GCM 认证标签。`enc:v2:env:` 使用与 Desktop 一致的 `ZCODE_CREDENTIAL_SECRET`、`ZCODE_CREDENTIAL_SECRET_FILE` 或同目录私有 `credential-secret`；`enc:v2:os:` 只读 Host 用户会话的系统凭据库：macOS Keychain、Windows Credential Manager 或 Linux Secret Service。Linux 需要安装提供 `/usr/bin/secret-tool` 的 libsecret 工具包，并能连接该用户会话中已解锁的 Secret Service。
 - macOS 下 `enc:v2:os:` 按需读取 `ZCode Credential Encryption` 条目（每次最多等待 30 秒）：冷启动预热、后台可用性探测、窗口焦点刷新与 Web 批量刷新只复用 Host 进程内已缓存的密钥，不主动触发钥匙串弹窗；仅在用户主动选择 ZCode、打开/创建非预热 ZCode 会话、或显式重检（如点击连接页刷新、ZCode 模型刷新、CLI `codexhost harness inspect zcode`）时才允许尝试读取。读取成功后的密钥缓存在当前 Host 进程内存中；若被拒绝、超时或密钥指纹不匹配，则记录在当前进程内，后续探测、切换、重开或请求期鉴权不再自动重试弹窗（仅显式重检才再试一次），且不尝试将密文当作认证值。未授权且没有独立个人 Provider 时返回 `credentialAccessRequired`（`retryable: false`），Desktop 仍允许在 Picker 中点选 ZCode 触发授权，Web 模型列表也保留对应的刷新入口。
 
-- **账号配置**：进程启动后、任何会话操作之前推送 `provider/updateAccountConfig`。只接受 `oauth:active_provider` 的 `zai`、`bigmodel`、`zai_cn` 三个渠道；`zai_cn` 的 Start Plan 属于 `bigmodel` 家族，不要求关联 BigModel。Start Plan 权益按 Desktop 的做法判定：Adapter 在内存中读取 JWT 及 `~/.zcode/v2/telemetry-state.json` 中的 `deviceMid`，请求 `GET <origin>/api/v1/zcode-plan/billing/balance?app_version=<version>`（Bearer JWT 与 `X-Device-Mid`，缺少后者服务端返回 400；超时 15 秒；`<origin>` 为 `ZCODE_BASE_URL`，默认 `https://zcode.z.ai`）。有效套餐指 status 为 active、`plan_id` 或 `name` 含 `start-plan`（或两者都缺失）、且 `ends_at` 未过的套餐；可用模型取属于有效套餐的余额中的 `model:*` capability（没有时取 `show_name`），按内置配置该 Provider 的 `builtinModelIds` 统一大小写。模型列表非空才算 entitled，并只下发这些模型；没有订阅、已过期、尚未生效、缺少 JWT 或设备 ID、请求失败时一律按无权处理（`entitled: false`、`availability: "unavailable"`、`unavailableReason: "not-entitled"`，不下发模型），因此未订阅的账号不会看到 Start Plan 模型，没有指定模型的会话也不会落到它上面。Overlay revision 随计算出的 providers/states 摘要变化。`basedOnZCodeBuiltinRevision` 为 `zcode-builtin:<release.revision>:<sha256(内置配置绝对路径)>`，与 CLI 自己的内置层不一致时 CLI 会静默保留旧注册表，因此回执的 `receivedRevision` 必须等于发出的 revision。未登录时推送空 Overlay，只剩个人 Provider。账号在进程生命周期内不重新推送，切换账号后需重新打开 Thread。
+- **账号配置**：进程启动后、任何会话操作之前推送 `provider/updateAccountConfig`。只接受 `oauth:active_provider` 的 `zai`、`bigmodel`、`zai_cn` 三个渠道；`zai_cn` 的 Start Plan 属于 `bigmodel` 家族，不要求关联 BigModel。Start Plan 权益按 Desktop 的做法判定：Adapter 在内存中读取 JWT 及 `~/.zcode/v2/telemetry-state.json` 中的 `deviceMid`，请求 `GET <origin>/api/v1/zcode-plan/billing/balance?app_version=<version>`（Bearer JWT 与 `X-Device-Mid`，缺少后者服务端返回 400；超时 15 秒；`<origin>` 为 `ZCODE_BASE_URL`，默认 `https://zcode.z.ai`）。有效套餐指 status 为 active、`plan_id` 或 `name` 含 `start-plan`（或两者都缺失）、且 `ends_at` 未过的套餐；可用模型取属于有效套餐的余额中的 `model:*` capability（没有时取 `show_name`），按内置配置该 Provider 的 `builtinModelIds` 统一大小写。模型列表非空才算 entitled，并只下发这些模型；没有订阅、已过期、尚未生效、缺少 JWT 或设备 ID、请求失败时一律按无权处理（`entitled: false`、`availability: "unavailable"`、`unavailableReason: "not-entitled"`，不下发模型），因此未订阅的账号不会看到 Start Plan 模型，没有指定模型的会话也不会落到它上面。Overlay revision 随计算出的 providers/states 摘要变化。`basedOnZCodeBuiltinRevision` 为 `zcode-builtin:<内置配置的 revision>:<sha256(内置配置绝对路径)>`，与 CLI 自己的内置层不一致时 CLI 会静默保留旧注册表，因此回执的 `receivedRevision` 必须等于发出的 revision。未登录时推送空 Overlay，只剩个人 Provider。账号在进程生命周期内不重新推送，切换账号后需重新打开 Thread。
 - **请求期鉴权**：CLI 对 Start Plan 的每次模型请求发出 Header 请求。Adapter 在内存中读取并按上述规则解密 `zcodejwttoken`，调用验证器取得一次性验证码 Header，回 `{headersApplied:true, requestAuth:{apiKey, headers}}`。未支持的账号模式、凭据缺失或解密失败回 `{headersApplied:false, errorMessage}`。个人 Coding Plan 不使用这条 JWT / 验证码路径。收到 `interaction/providerRuntimeHeadersCancelled` 时中止对应请求的验证。设置了 `ZCODE_DATA_BASE_DIR` 或 `ZCODE_CREDENTIAL_SECRET` 时须与 Desktop 登录环境一致。
 
 ### 个人 Coding Plan
@@ -116,3 +130,5 @@ CODEXHOST_TEST_ZCODE_APP=/Applications/ZCode.app npx vitest run --config tests/v
 ```
 
 Host 集成测试需要先 `npm run build:typescript` 生成插件包。2026-09-28 在 macOS arm64 / ZCode 3.14.3（CLI 0.16.9）上，Host 分别使用 Node 22.22 与 Node 24 均通过：目录、检测不留会话、多轮/恢复、取消后继续、并行工作区工具环境、原生提问、审批、配置、文件差异，以及 Start Plan 的 JWT 与验证码 Header 注入、多个 Session 共用一个验证器且只预热一次；真实 Loader → Host 路由 → 原生 Turn → 历史路径另有集成测试。验证页的共享队列、取消隔离、预热、每次验证新实例、过期回调隔离、F008 与“`show()` 后再次 `getInstance` 再 success”另有单元测试。真实 Start Plan 验收见上文“账号验证页”。2026-09-30 在 macOS arm64 / ZCode 3.14.4 上实测：CLI 及其 MCP 子进程以 Helper 运行，登记为 `UIElement`，Dock 无图标；服务端配置 `skip_model_request: true` 时多步工具任务的 6 次模型请求均未触发验证；目录只列出套餐允许的 Start Plan 模型；自定义 Provider 会话正常；恢复后的会话立即给出已用上下文与缓存用量。这些历史验证针对 Start Plan 与通用 CLI 能力；ZCode 3.16.3 的三平台个人 Coding Plan 和 SSH 验证范围见本节开头。
+
+内置 Provider 配置的选取由 `test/installation.test.ts` 覆盖。2026-11-27 在 Windows x64 / ZCode 4.0.0 上，以源码构建的 Host 在独立数据目录实测，环境未设置 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`：ZCode 的模型目录含 `account:bigmodel-individual-coding-plan/GLM-5.4`，未指定 Model 的委派以 GLM-5.4 执行；同一环境下不含该选取逻辑的构建不含 GLM-5.4。macOS 与 Linux 未实测。

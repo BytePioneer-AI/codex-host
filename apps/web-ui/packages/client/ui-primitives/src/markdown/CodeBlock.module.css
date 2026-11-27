@@ -158,6 +158,74 @@
   user-select: none;
 }
 
+.foldable :where(pre) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.foldBar {
+  position: relative;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsl-code-block-background);
+  border-bottom-left-radius: var(--dsl-code-block-border-radius);
+  border-bottom-right-radius: var(--dsl-code-block-border-radius);
+}
+
+.foldFade::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 100%;
+  height: 28px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--dsl-code-block-background));
+}
+
+:global(body[data-codexhost-wallpaper]) .foldBar {
+  background: color-mix(in srgb, var(--dsl-code-block-background) 84%, transparent);
+}
+
+:global(body[data-codexhost-wallpaper]) .foldFade::before {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--dsl-code-block-background) 84%, transparent)
+  );
+}
+
+.foldButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 14px;
+  border: 0;
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsl-code-block-banner-font);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.foldButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.foldButton:focus-visible {
+  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.foldIcon {
+  flex: none;
+}
+
 /* iOS WebKit skips these wrapper paints; the banner and pre already own the
    same rounded surfaces. */
 @supports (-webkit-touch-callout: none) {

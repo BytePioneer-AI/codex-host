@@ -137,14 +137,24 @@ beforeEach(() => {
         steps: [
           // Deliberately reordered and interleaved question steps: never map by position/text.
           ...turns
-            .toReversed()
-            .map((id) => ({ stepId: `step-${id}`, kind: "prompt", userMessageId: id })),
+            .map((id, index) => ({
+              // A reused user message ID still gets its own native step.
+              stepId: turns.indexOf(id) === index ? `step-${id}` : `step-${id}-${index}`,
+              kind: "prompt",
+              userMessageId: id,
+            }))
+            .toReversed(),
           { stepId: "question", kind: "questionAnswer", userMessageId: "u1" },
         ],
       };
     const index = turns.findIndex((key) => `step-${key}` === params?.stepId);
     histories.set("child", turns.slice(0, index + 1));
     return { forkedSessionId: "child" };
+  });
+  vi.spyOn(DevinTransport.prototype, "optionalListSteps").mockImplementation(function (
+    this: DevinTransport,
+  ) {
+    return this.historyRequest("listSteps");
   });
   vi.spyOn(DevinTransport.prototype, "configure").mockImplementation(async function (
     this: DevinTransport,
@@ -345,6 +355,10 @@ describe("Devin exact native history", () => {
         stopReason: "end_turn",
         _meta: { "cognition.ai/userMessageId": "continued" },
       });
+      const outputs: unknown[] = [];
+      const done = (async () => {
+        for await (const output of child.outputs) outputs.push(output);
+      })();
       expect(
         await child.execute({
           type: "turn.start",
@@ -353,6 +367,13 @@ describe("Devin exact native history", () => {
         }),
       ).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+      await child.close();
+      await done;
+      expect(outputs).not.toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: "session.state.changed" }),
+        }),
+      );
     },
   );
   it("detects source history changes instead of returning a child", async () => {
@@ -465,6 +486,161 @@ describe("Devin exact native history", () => {
     release();
     await deriving;
   });
+  it.each([
+    { added: ["compacted"], key: "compacted", status: "succeeded" },
+    { added: ["  compacted  "], key: "  compacted  ", status: "succeeded" },
+    { added: [], key: undefined, status: "failed" },
+    { added: ["   "], key: undefined, status: "failed" },
+    { added: ["one", "two"], key: undefined, status: "failed" },
+    { added: ["u3"], key: undefined, status: "failed" },
+  ])(
+    "recovers a result without user message ID only from one added prompt step ($added)",
+    async ({ added, key, status }) => {
+      const source = await value(await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd }));
+      const outputs: HarnessOutput[] = [];
+      const done = (async () => {
+        for await (const output of source.outputs) outputs.push(output);
+      })();
+      // Devin omits _meta.userMessageId after compacting context mid-Turn.
+      vi.spyOn(DevinTransport.prototype, "prompt").mockImplementation(async () => {
+        histories.set("source", [...present(histories.get("source")), ...added]);
+        return { stopReason: "end_turn" };
+      });
+      await source.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("compacted-turn"),
+        input: [{ type: "text", text: "long task" }],
+      });
+      try {
+        await vi.waitFor(() =>
+          expect(outputs).toContainEqual(
+            expect.objectContaining({ event: expect.objectContaining({ type: "turn.completed" }) }),
+          ),
+        );
+        const completed = outputs.find(
+          (output) => output.kind === "event" && output.event.type === "turn.completed",
+        );
+        const event = completed?.kind === "event" ? completed.event : undefined;
+        expect(event).toMatchObject({
+          outcome:
+            status === "failed"
+              ? { status: "failed", error: { code: "protocolError" } }
+              : { status },
+        });
+        if (event?.type !== "turn.completed") throw new Error("Missing terminal");
+        expect(event.nativeTurnRef?.nativeTurnKey).toBe(key);
+        if (key) expect(event.outcome.checkpoint?.checkpointId).toBe(`step-${key}`);
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "session.faulted",
+          ),
+        ).toBe(false);
+      } finally {
+        await source.close();
+        await done;
+      }
+    },
+  );
+  it.each(["with-id", "without-id"] as const)(
+    "does not force-close a healthy Session when turn.cancel arrives during post-prompt listSteps (%s)",
+    async (mode) => {
+      vi.useFakeTimers();
+      vi.mocked(DevinTransport.prototype.close).mockRestore();
+      const realClose = DevinTransport.prototype.close;
+      let rejectPendingSteps: ((error: Error) => void) | undefined;
+      vi.spyOn(DevinTransport.prototype, "close").mockImplementation(function (
+        this: DevinTransport,
+      ) {
+        rejectPendingSteps?.(new Error("Devin session closed"));
+        return realClose.call(this);
+      });
+      const source = await value(await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd }));
+      const outputs: HarnessOutput[] = [];
+      const done = (async () => {
+        for await (const output of source.outputs) outputs.push(output);
+      })();
+      const originalHistory = present(
+        vi.mocked(DevinTransport.prototype.historyRequest).getMockImplementation(),
+      );
+      let listCalls = 0;
+      let resolvePostSteps!: (value: unknown) => void;
+      vi.spyOn(DevinTransport.prototype, "historyRequest").mockImplementation(async function (
+        this: DevinTransport,
+        method,
+        params,
+      ) {
+        if (method === "listSteps") {
+          listCalls += 1;
+          if (listCalls === 2) {
+            return new Promise((resolve, reject) => {
+              resolvePostSteps = resolve;
+              rejectPendingSteps = reject;
+            });
+          }
+        }
+        return originalHistory.call(this, method, params);
+      });
+      let promptCalls = 0;
+      vi.spyOn(DevinTransport.prototype, "prompt").mockImplementation(async () => {
+        promptCalls += 1;
+        const id = promptCalls === 1 ? "first" : "second";
+        histories.set("source", [...present(histories.get("source")), id]);
+        return promptCalls === 1 && mode === "without-id"
+          ? { stopReason: "end_turn" }
+          : { stopReason: "end_turn", _meta: { "cognition.ai/userMessageId": id } };
+      });
+      const flush = async () => {
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+      };
+      try {
+        const turnId = hostTurnIdSchema.parse("late-cancel");
+        expect(
+          await source.execute({
+            type: "turn.start",
+            turnId,
+            input: [{ type: "text", text: "first" }],
+          }),
+        ).toMatchObject({ ok: true });
+        await flush();
+        expect(resolvePostSteps).toBeTypeOf("function");
+        expect(await source.execute({ type: "turn.cancel", turnId })).toMatchObject({ ok: true });
+        await vi.advanceTimersByTimeAsync(10_000);
+        rejectPendingSteps = undefined;
+        resolvePostSteps(await originalHistory.call(present(opened[0]), "listSteps"));
+        await flush();
+        const completed = outputs.flatMap((output) =>
+          output.kind === "event" && output.event.type === "turn.completed" ? [output.event] : [],
+        );
+        expect(completed).toHaveLength(1);
+        expect(completed[0]).toMatchObject({
+          outcome: { status: "succeeded", checkpoint: { checkpointId: "step-first" } },
+          nativeTurnRef: { nativeTurnKey: "first" },
+        });
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "session.faulted",
+          ),
+        ).toBe(false);
+        expect(
+          await source.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("after-late-cancel"),
+            input: [{ type: "text", text: "second" }],
+          }),
+        ).toMatchObject({ ok: true });
+        await flush();
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+        await source.close();
+        await done;
+      }
+    },
+  );
   it("keeps a healthy Session usable when optional checkpoint discovery fails", async () => {
     const source = await value(await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd }));
     const outputs: HarnessOutput[] = [];

@@ -8,11 +8,17 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { HarnessPreferencesStore } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
-import { CodexTurnProjector, type ExternalHarnessId } from "@codexhost/protocol-core";
+import {
+  CodexTurnProjector,
+  decodeExternalTransportSelection,
+  type ExternalHarnessId,
+} from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
@@ -36,6 +42,7 @@ async function fixture(
   ) => Promise<string | undefined | { cwd?: string; title?: string }> = async () => undefined,
   environment: NodeJS.ProcessEnv = {},
   externalThreadBusy: (thread: ExternalThread) => boolean = (thread) => thread.running,
+  externalQueueWaiting: (thread: ExternalThread) => boolean = () => false,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
@@ -99,6 +106,7 @@ async function fixture(
     },
     activeOfficialParents: () => [],
     externalThreadBusy,
+    externalQueueWaiting,
     pendingQuestions: () => [...pending],
   });
   return {
@@ -564,6 +572,146 @@ describe("HarnessDelegationCoordinator", () => {
       expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
       expect(result.configuration?.requested).toEqual({ model, thinkingOptionId });
       expect((await value.repository.list())[0]?.transportModelId).not.toBe("codexhost/pi-native");
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("persists the confirmed initialState Model and permission mode without startup state events", async () => {
+    const requestedModel = harnessModelRefSchema.parse({ id: "grok[fast=false]" });
+    const confirmedModel = harnessModelRefSchema.parse({ id: "grok[context=256k,fast=false]" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const bypass = harnessPermissionModeIdSchema.parse("bypass");
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: requestedModel,
+          label: "Grok",
+          supportedThinkingOptionIds: [thinkingOptionId],
+        },
+      ],
+      defaultModel: requestedModel,
+      thinkingOptions: [{ id: thinkingOptionId, label: "High" }],
+      defaultThinkingOptionId: thinkingOptionId,
+    });
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "accept-edits", label: "Code" },
+        { id: "bypass", label: "Bypass Permissions", dangerous: true },
+      ],
+      defaultModeId: "accept-edits",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("cursor-cli"),
+      catalog,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const originalOpen = adapter.open.bind(adapter);
+    vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      const opened = await originalOpen(input);
+      if (!opened.ok) return opened;
+      Object.defineProperty(opened.value, "initialState", {
+        configurable: true,
+        value: {
+          ...opened.value.initialState,
+          effectiveModel: confirmedModel,
+          effectiveThinkingOptionId: thinkingOptionId,
+          effectivePermissionModeId: bypass,
+        },
+      });
+      return opened;
+    });
+    const value = await fixture(adapter);
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "cursor-cli",
+        task: "preserve confirmed startup configuration",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model: requestedModel,
+        thinkingOptionId,
+      });
+      expect(result.configuration?.effective?.effectiveModel).toEqual(confirmedModel);
+      const stored = (await value.repository.list())[0];
+      expect(
+        stored ? decodeExternalTransportSelection("cursor-cli", stored.transportModelId) : null,
+      ).toEqual({
+        model: confirmedModel,
+        thinkingOptionId,
+        permissionModeId: bypass,
+      });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not persist requested Thinking when confirmed initialState has an empty Thinking catalog", async () => {
+    const requestedModel = harnessModelRefSchema.parse({ id: "swe-2-1-medium" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("devin.bWF4");
+    const bypass = harnessPermissionModeIdSchema.parse("bypass");
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: requestedModel,
+          label: "SWE-2.1",
+          supportedThinkingOptionIds: [thinkingOptionId],
+        },
+      ],
+      defaultModel: requestedModel,
+      thinkingOptions: [{ id: thinkingOptionId, label: "Max" }],
+      defaultThinkingOptionId: thinkingOptionId,
+    });
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "accept-edits", label: "Code" },
+        { id: "bypass", label: "Bypass Permissions", dangerous: true },
+      ],
+      defaultModeId: "accept-edits",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("devin"),
+      catalog,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const originalOpen = adapter.open.bind(adapter);
+    vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      const opened = await originalOpen(input);
+      if (!opened.ok) return opened;
+      Object.defineProperty(opened.value, "initialState", {
+        configurable: true,
+        value: {
+          nativeRef: opened.value.initialState.nativeRef,
+          effectiveModel: requestedModel,
+          availableThinkingOptions: [],
+          effectivePermissionModeId: bypass,
+        },
+      });
+      return opened;
+    });
+    const value = await fixture(adapter);
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "devin",
+        task: "omit cleared startup thinking",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        model: requestedModel,
+        thinkingOptionId,
+      });
+      expect(result.configuration?.effective?.effectiveThinkingOptionId).toBeUndefined();
+      const stored = (await value.repository.list())[0];
+      expect(
+        stored ? decodeExternalTransportSelection("devin", stored.transportModelId) : null,
+      ).toEqual({
+        model: requestedModel,
+        permissionModeId: bypass,
+      });
     } finally {
       await value.close();
     }
@@ -1081,6 +1229,36 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it.each([{ interrupt: true }, { steer: true }])(
+    "leaves the next Turn to queued follow-ups unless the send overrides them (%o)",
+    async (override) => {
+      const value = await fixture(undefined, undefined, undefined, undefined, () => true);
+      try {
+        const started = await value.coordinator.start({
+          harnessId: "pi",
+          task: "first",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+        });
+        value.adapter.sessions[0]?.succeedTurn();
+        const thread = value.runtime.get(started.threadId);
+        if (!thread) throw new Error("Missing delegated Thread");
+        thread.running = false;
+        thread.activeTurnId = null;
+
+        await expect(
+          value.coordinator.send({ threadId: started.threadId, message: "agent note" }),
+        ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+        await expect(
+          value.coordinator.send({ threadId: started.threadId, message: "override", ...override }),
+        ).resolves.toMatchObject({ status: "running" });
+        expect(value.delivered).toEqual(["first", "override"]);
+      } finally {
+        await value.close();
+      }
+    },
+  );
+
   it("rolls back Session, Thread, and Delegation when initial task delivery fails", async () => {
     const value = await fixture(new FailingTurnAdapter(harnessIdSchema.parse("pi")));
     try {
@@ -1545,6 +1723,59 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.wait({ threadId: started.threadId, view: "result", timeoutMs: 10 }),
       ).resolves.toMatchObject({ timedOut: true, pendingQuestions: [] });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("reads and exports an unloaded external Thread cold without opening a Harness Session", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "cold read task",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      const session = adapter.sessions[0];
+      if (!thread || !session) throw new Error("delegated Thread was not created");
+      session.appendText("cold reply");
+      session.succeedTurn();
+      thread.running = false;
+      thread.activeTurnId = null;
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      await session.close();
+      value.runtime.remove(thread.id);
+      expect(value.runtime.get(thread.id)).toBeUndefined();
+
+      const open = vi.spyOn(adapter, "open");
+      const readSnapshot = vi.fn(async () => snapshot);
+      adapter.readSnapshot = readSnapshot;
+
+      const readResult = await value.coordinator.read({
+        threadId: started.threadId,
+        view: "messages",
+      });
+      expect(readResult).toMatchObject({
+        threadId: started.threadId,
+        harnessId: "pi",
+        status: "completed",
+        totalTurns: 1,
+      });
+      expect(JSON.stringify(readResult)).toContain("cold reply");
+
+      const exported = await value.coordinator.exportThread({
+        threadId: started.threadId,
+        out: path.join(value.directory, "cold-export.json"),
+      });
+      expect(exported).toMatchObject({ harnessId: "pi", turns: 1, complete: true });
+      expect(await readFile(exported.path, "utf8")).toContain("cold reply");
+
+      expect(open).not.toHaveBeenCalled();
+      expect(readSnapshot).toHaveBeenCalledTimes(2);
+      expect(value.runtime.get(thread.id)).toBeUndefined();
     } finally {
       await value.close();
     }

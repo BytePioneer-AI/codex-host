@@ -41,6 +41,12 @@ export interface MarkdownDelegate {
    */
   readonly openFile?:
     ((path: string, options?: { line?: number; external?: boolean }) => void) | undefined;
+  /** Fold settled long Markdown code fences by default inside this scope. */
+  readonly collapsibleCodeBlocks?: boolean | undefined;
+  /** Localized expand label for folded code fences (receives total line count). */
+  readonly expandCodeLabel?: ((totalLines: number) => string) | undefined;
+  /** Localized collapse label for expanded foldable code fences. */
+  readonly collapseCodeLabel?: string | undefined;
 }
 
 const MarkdownDelegateContext = createContext<MarkdownDelegate>({});
@@ -63,10 +69,31 @@ export function MarkdownDelegateProvider({
   openFile,
   fileImages,
   resolveLink,
+  collapsibleCodeBlocks,
+  expandCodeLabel,
+  collapseCodeLabel,
 }: MarkdownDelegateProviderProps): ReactNode {
   const delegate = useMemo(
-    () => ({ openExternalLink, onLinkContextMenu, openFile, fileImages, resolveLink }),
-    [openExternalLink, onLinkContextMenu, openFile, fileImages, resolveLink],
+    () => ({
+      openExternalLink,
+      onLinkContextMenu,
+      openFile,
+      fileImages,
+      resolveLink,
+      collapsibleCodeBlocks,
+      expandCodeLabel,
+      collapseCodeLabel,
+    }),
+    [
+      openExternalLink,
+      onLinkContextMenu,
+      openFile,
+      fileImages,
+      resolveLink,
+      collapsibleCodeBlocks,
+      expandCodeLabel,
+      collapseCodeLabel,
+    ],
   );
   return (
     <MarkdownDelegateContext.Provider value={delegate}>{children}</MarkdownDelegateContext.Provider>
@@ -79,4 +106,48 @@ export function MarkdownDelegateProvider({
  */
 export function useMarkdownDelegate(): MarkdownDelegate {
   return useContext(MarkdownDelegateContext);
+}
+
+/** Persistent per-row fold state cache that survives virtualized content unmounts. */
+export interface CodeBlockFoldMemory {
+  get(key: string): boolean | undefined;
+  set(key: string, expanded: boolean): void;
+}
+
+const CodeBlockFoldMemoryContext = createContext<CodeBlockFoldMemory | undefined>(undefined);
+
+/**
+ * Provide a row-scoped fold state cache to nested {@link CodeBlock} instances so
+ * user-expanded or stream-settled blocks keep their state and height across
+ * virtualized unmount/remount cycles.
+ */
+export function CodeBlockFoldMemoryProvider({
+  memory,
+  scope,
+  children,
+}: {
+  readonly memory: CodeBlockFoldMemory;
+  readonly scope?: string | undefined;
+  readonly children: ReactNode;
+}): ReactNode {
+  const scoped = useMemo<CodeBlockFoldMemory>(() => {
+    if (scope === undefined || scope === "") return memory;
+    const prefix = `${scope}\0`;
+    return {
+      get: (key) => memory.get(`${prefix}${key}`),
+      set: (key, expanded) => {
+        memory.set(`${prefix}${key}`, expanded);
+      },
+    };
+  }, [memory, scope]);
+  return (
+    <CodeBlockFoldMemoryContext.Provider value={scoped}>
+      {children}
+    </CodeBlockFoldMemoryContext.Provider>
+  );
+}
+
+/** Read the enclosing row's code-block fold memory, if present. */
+export function useCodeBlockFoldMemory(): CodeBlockFoldMemory | undefined {
+  return useContext(CodeBlockFoldMemoryContext);
 }

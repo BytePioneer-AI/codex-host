@@ -10,7 +10,7 @@ import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { ModelDirectoryState } from "./directory.ts";
 
 /** Availability of cross-Harness context handoff for the current session. */
-export type HarnessHandoffStatus = "ready" | "pending" | "unsupported";
+export type HarnessHandoffStatus = "ready" | "pending" | "unavailable" | "unsupported";
 
 /** Reactive session handoff trigger injected when Chat context handoff is available. */
 export interface HarnessHandoffControl {
@@ -44,4 +44,6 @@ export interface ModelSelectInjected {
   };
   /** Cross-Harness context handoff launcher for bound local sessions. */
   handoff?: HarnessHandoffControl;
+  /** Open the Connections settings page (optionally focusing a specific Harness row). */
+  openConnections?: (focusAgentId?: string) => void;
 }

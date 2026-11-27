@@ -24,7 +24,11 @@ it("reports upload ownership, intake/storage and trusted ingress timings without
   let rejectAfter = false;
   const inputs = new ChFileInputs(files, images, async (id) => {
     now += ++ownerCalls % 2 ? 20 : 30;
-    if (rejectAfter && ownerCalls % 2 === 0) throw new Error("owner unavailable");
+    if (rejectAfter && ownerCalls % 2 === 0) {
+      throw new TypeError(`Bearer private-token cannot access ${root}`, {
+        cause: Object.assign(new Error(`${root}/private.png`), { code: "ECONNRESET" }),
+      });
+    }
     return id;
   });
   const upload = files.upload.bind(files);
@@ -75,6 +79,9 @@ it("reports upload ownership, intake/storage and trusted ingress timings without
       viaRelay: relay,
       httpVersion: "1.1",
       ok: !rejectAfter,
+      ...(rejectAfter
+        ? { errorCode: "gateway/internal", errorType: "TypeError", causeCode: "ECONNRESET" }
+        : {}),
       totalMs: 60,
       firstByteMs: 20,
       bodyEndMs: 20,

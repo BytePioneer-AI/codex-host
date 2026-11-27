@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-platform"
-version = "0.27.0"
+version = "0.28.2"
 dependencies = [
  "libproc",
  "nix",
@@ -494,8 +494,9 @@ dependencies = [
 
 [[package]]
 name = "codexhost-shell"
-version = "0.27.0"
+version = "0.28.2"
 dependencies = [
+ "cc",
  "codexhost-platform",
  "getrandom 0.3.4",
  "objc2",

@@ -28,6 +28,7 @@ export class ChatReading {
   private sampleTimer: number | null = null;
   private probeFrame: number | null = null;
   private sampled: ((sample: ReadingSample) => void) | null = null;
+  private pendingMovedByReader = false;
 
   constructor(
     private readonly viewport: ChatViewport,
@@ -144,14 +145,16 @@ export class ChatReading {
    * @param scroll - attributed scroll delivery; other reader movement remains pending until sampled.
    */
   readonly onScroll = (scroll: ViewportScroll): void => {
+    const movedByReader = scroll.movedByReader || this.pendingMovedByReader;
     if (
-      (!scroll.movedByReader && this.state.followingTail) ||
-      (scroll.movedByReader && scroll.metrics.top >= scroll.metrics.floor)
+      (!movedByReader && this.state.followingTail) ||
+      (movedByReader && scroll.metrics.top >= scroll.metrics.floor)
     ) {
       this.followTail();
-      this.sampled?.({ position: null, movedByReader: scroll.movedByReader, followingTail: true });
+      this.sampled?.({ position: null, movedByReader, followingTail: true });
       return;
     }
+    if (scroll.movedByReader) this.pendingMovedByReader = true;
     this.sampleTimer ??= window.setTimeout(this.flushSample, SCROLL_SAMPLE_INTERVAL_MS);
   };
 
@@ -208,6 +211,7 @@ export class ChatReading {
       cancelAnimationFrame(this.probeFrame);
     this.sampleTimer = null;
     this.probeFrame = null;
+    this.pendingMovedByReader = false;
   }
 
   private readonly probe = (): void => {
@@ -223,12 +227,14 @@ export class ChatReading {
 
   private readonly flushSample = (): void => {
     if (!this.pending) return;
+    const hadReaderMove = this.pendingMovedByReader;
     this.cancelPending();
     const scroll = this.viewport.readScroll();
     if (scroll === null) return;
-    const followingTail = this.follow.sample(scroll.metrics, scroll.movedByReader);
+    const movedByReader = hadReaderMove || scroll.movedByReader;
+    const followingTail = this.follow.sample(scroll.metrics, movedByReader);
     let position: ChatScrollPosition | null = null;
-    if (!scroll.movedByReader && followingTail) this.followTail();
+    if (!movedByReader && followingTail) this.followTail();
     else {
       position = followingTail ? null : this.viewport.capturePosition();
       this.viewport.acknowledge(scroll.metrics);
@@ -238,7 +244,7 @@ export class ChatReading {
         : this.viewport.readVisibleTurn(scroll.metrics);
       this.publish({ initialized: true, followingTail, activeTurn });
     }
-    this.sampled?.({ position, movedByReader: scroll.movedByReader, followingTail });
+    this.sampled?.({ position, movedByReader, followingTail });
   };
 }
 

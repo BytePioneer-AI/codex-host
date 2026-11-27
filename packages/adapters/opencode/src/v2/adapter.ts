@@ -173,17 +173,21 @@ export class V2Adapter implements HarnessAdapter {
         info = await client.session.get({ sessionID: ref.nativeSessionId });
         if (info.id !== ref.nativeSessionId || !sameDirectory(info.location.directory, input.cwd))
           throw new Error("OpenCode returned a different Native Session or directory");
+        if (info.revert)
+          throw new Error(
+            "Clear the staged OpenCode v2 revert before using this Session in codexhost",
+          );
         if ((await client.session.active())[info.id])
           throw new Error("OpenCode Session is already running");
-        const source = await readHistory(
-          client,
-          info,
-          this.options.toolOutputLimit ?? 64_000,
-          models.index,
-        );
-        if (source.snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
-          throw new Error("OpenCode history contains an incomplete execution");
         if (input.kind !== "resume") {
+          const source = await readHistory(
+            client,
+            info,
+            this.options.toolOutputLimit ?? 64_000,
+            models.index,
+          );
+          if (source.snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
+            throw new Error("OpenCode history contains an incomplete execution");
           const parent = info;
           const turns = source.snapshot.turns;
           let count: number;

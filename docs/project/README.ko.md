@@ -32,7 +32,7 @@ Codex와 똑같이 Diff 검토, Fork, 승인을 사용할 수 있고, 서로 작
   <a href="../harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
 
-<p align="center"><a href="https://github.com/BytePioneer-AI/codex-host/releases"><strong>다운로드</strong></a> · <a href="#빠른-시작">빠른 시작</a> · <a href="#desktop">Desktop</a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
+<p align="center"><a href="https://chost.dev/en"><strong>CodexHost 공식 사이트</strong></a> · <a href="https://chost.dev/en/download"><strong>다운로드</strong></a> · <a href="#빠른-시작">빠른 시작</a> · <a href="#desktop">Desktop</a> · <a href="#agent-간-협업">Agent 간 협업</a> · <a href="#교류-그룹-참여">微信交流群</a> · <a href="../../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
 
 <img width="90%" src="../imgs/hero-desktop-phone.png" alt="Codex Desktop의 한 프로젝트에서 실행 중인 여러 Agent 세션과 Diff 검토 패널, 오른쪽 아래에는 휴대폰에서 연 같은 세션">
 

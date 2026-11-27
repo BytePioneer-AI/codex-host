@@ -43,6 +43,8 @@ import { createSkillIcon, skillMention } from "./renderer-skill-reference.js";
 
 const MENU_ATTRIBUTE = "data-codexhost-delegation-mention-menu";
 const STYLE_ATTRIBUTE = "data-codexhost-delegation-mention-style";
+export const DELEGATION_MENTION_MENU_SELECTOR = `[${MENU_ATTRIBUTE}]`;
+export const DELEGATION_MENTION_STYLE_SELECTOR = `style[${STYLE_ATTRIBUTE}]`;
 const MENU_MAX_HEIGHT = 320;
 const SOURCE_TAG = "codexhost";
 // Class lists mirror Desktop's composer suggestion menu (measured from the
@@ -350,47 +352,70 @@ export function installRendererDelegationMention(
   let active: ActiveTrigger | null = null;
   /** Selectable entries in display order; disabled commands are not included. */
   let entries: MenuEntry[] = [];
+  let optionElements: HTMLElement[] = [];
   let activeIndex = 0;
+  let highlightedIndex = -1;
   let composing = false;
   let inserting = false;
   let openedFor: { node: Text; start: number } | null = null;
   let rowsRendered = 0;
+  let lastRenderKey: string | null = null;
+  let lastChipStyleKey: string | null = null;
+  let refreshFrame: number | null = null;
+  let refreshPending = false;
 
   const close = (): void => {
     active = null;
     openedFor = null;
     entries = [];
+    optionElements = [];
+    highlightedIndex = -1;
+    lastRenderKey = null;
     setMenuOpen(false);
     list.replaceChildren();
     options.onClose?.();
   };
 
-  const highlight = (): void => {
-    [...list.querySelectorAll<HTMLElement>("[role=option]")].forEach((item, index) => {
-      const selected = index === activeIndex;
-      item.setAttribute("aria-selected", String(selected));
-      for (const name of ROW_HIGHLIGHT_CLASSES) item.classList.toggle(name, selected);
-      item.classList.toggle(ROW_IDLE_CLASS, !selected);
-      if (selected) item.scrollIntoView({ block: "nearest" });
-    });
+  const applyOptionSelection = (item: HTMLElement, selected: boolean): void => {
+    item.setAttribute("aria-selected", String(selected));
+    for (const name of ROW_HIGHLIGHT_CLASSES) item.classList.toggle(name, selected);
+    item.classList.toggle(ROW_IDLE_CLASS, !selected);
   };
 
-  /** Match Desktop: span the Composer and sit just above it. */
+  const highlight = (scrollToActive: boolean): void => {
+    if (highlightedIndex >= 0 && highlightedIndex < optionElements.length) {
+      const prev = optionElements[highlightedIndex];
+      if (prev && highlightedIndex !== activeIndex) applyOptionSelection(prev, false);
+    }
+    const next = optionElements[activeIndex];
+    if (next) {
+      applyOptionSelection(next, true);
+      if (scrollToActive) next.scrollIntoView({ block: "nearest" });
+    }
+    highlightedIndex = next ? activeIndex : -1;
+  };
+
+  /** Match Desktop: span the Composer and sit just above it (reads batched before writes). */
   const position = (trigger: ActiveTrigger): void => {
     const anchor = options.anchorForEditor(trigger.editor) ?? trigger.editor;
     const rect = anchor.getBoundingClientRect();
-    const width = Math.min(rect.width, view.innerWidth - VIEWPORT_MARGIN * 2);
+    const viewportWidth = view.innerWidth;
+    const viewportHeight = view.innerHeight;
+    const width = Math.min(rect.width, viewportWidth - VIEWPORT_MARGIN * 2);
     const left = Math.max(
       VIEWPORT_MARGIN,
-      Math.min(rect.left, view.innerWidth - width - VIEWPORT_MARGIN),
+      Math.min(rect.left, viewportWidth - width - VIEWPORT_MARGIN),
     );
-    menu.style.width = `${width}px`;
+    const nextWidth = `${width}px`;
+    const widthChanged = menu.style.width !== nextWidth;
+    const measuredHeight = widthChanged ? null : menu.getBoundingClientRect().height;
+    if (widthChanged) menu.style.width = nextWidth;
     menu.style.left = `${left}px`;
-    const height = menu.getBoundingClientRect().height;
+    const height = measuredHeight ?? menu.getBoundingClientRect().height;
     const above = rect.top >= height + MENU_GAP + VIEWPORT_MARGIN;
     menu.style.top = above
       ? `${rect.top - height - MENU_GAP}px`
-      : `${Math.min(view.innerHeight - height - VIEWPORT_MARGIN, rect.bottom + MENU_GAP)}px`;
+      : `${Math.min(viewportHeight - height - VIEWPORT_MARGIN, rect.bottom + MENU_GAP)}px`;
   };
 
   /** Every section carries a quiet source tag, like Desktop's "Personal". */
@@ -442,26 +467,32 @@ export function installRendererDelegationMention(
     item.addEventListener("pointermove", () => {
       if (activeIndex === index) return;
       activeIndex = index;
-      highlight();
+      highlight(false);
     });
     // Keep editor focus and selection while choosing with the pointer.
     item.addEventListener("mousedown", (event) => event.preventDefault());
     item.addEventListener("click", () => void choose(entry));
+    optionElements.push(item);
     return item;
   };
 
   const render = (
     trigger: ActiveTrigger,
+    locale: RendererSettingsLocale,
     commands: {
       source: RendererDelegationCommandSource;
-      matches: HarnessCommandDescriptor[];
+      matches: readonly { command: HarnessCommandDescriptor; reason: string | null }[];
     } | null,
-    targets: RendererDelegationTarget[],
-    skills: RendererDelegationSkillSource | null,
+    targets: readonly RendererDelegationTarget[],
+    skills: {
+      source: RendererDelegationSkillSource;
+      matches: readonly LibrarySkill[];
+    } | null,
+    prevActiveIndex: number,
   ): void => {
-    const locale = options.readLocale();
     const rows: HTMLElement[] = [];
     entries = [];
+    optionElements = [];
     if (targets.length > 0) {
       rows.push(sectionHeader(agentsTitle(locale)));
       for (const target of targets) {
@@ -480,8 +511,7 @@ export function installRendererDelegationMention(
     if (commands) {
       if (commands.matches.length) {
         rows.push(sectionHeader(commandsTitle(locale)));
-        for (const command of commands.matches) {
-          const reason = commands.source.disabledReason(command);
+        for (const { command, reason } of commands.matches) {
           const presentation = rendererHarnessCommandPresentation(command, locale);
           const content = rowContent(
             createHarnessCommandIcon(ownerDocument),
@@ -514,7 +544,7 @@ export function installRendererDelegationMention(
     }
     if (skills) {
       rows.push(sectionHeader(skillsTitle(locale)));
-      const matches = filterDelegationSkills(skills.skills, trigger.query);
+      const { source: skillSource, matches } = skills;
       for (const skill of matches) {
         const scope =
           locale === "zh-CN"
@@ -538,31 +568,57 @@ export function installRendererDelegationMention(
         row.append(rowContent(null, label, detail));
         rows.push(row);
       };
-      if (skills.error) {
+      if (skillSource.error) {
         rows.push(
           optionRow(
-            { kind: "retrySkills", retry: skills.retry },
+            { kind: "retrySkills", retry: skillSource.retry },
             rowContent(
               null,
               locale === "zh-CN" ? "重试 Skill 库" : "Retry Skill Library",
-              skills.error,
+              skillSource.error,
             ),
           ),
         );
-      } else if (skills.notice) hint(skills.notice);
+      } else if (skillSource.notice) hint(skillSource.notice);
       else if (!matches.length) hint(locale === "zh-CN" ? "未找到 Skill" : "No Skills found");
-      if (skills.warning)
+      if (skillSource.warning)
         hint(
           locale === "zh-CN" ? "部分 Skill 无法读取" : "Some Skills could not be read",
-          skills.warning,
+          skillSource.warning,
         );
     }
     rowsRendered = rows.length;
-    list.replaceChildren(...rows);
     activeIndex = Math.min(activeIndex, Math.max(0, entries.length - 1));
+    for (let index = 0; index < optionElements.length; index += 1) {
+      const item = optionElements[index];
+      if (item) applyOptionSelection(item, index === activeIndex);
+    }
+    highlightedIndex = optionElements[activeIndex] ? activeIndex : -1;
+
+    // Batch layout reads before DOM/style writes to avoid layout thrashing.
+    const anchor = options.anchorForEditor(trigger.editor) ?? trigger.editor;
+    const rect = anchor.getBoundingClientRect();
+    const viewportWidth = view.innerWidth;
+    const viewportHeight = view.innerHeight;
+    const width = Math.min(rect.width, viewportWidth - VIEWPORT_MARGIN * 2);
+    const left = Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(rect.left, viewportWidth - width - VIEWPORT_MARGIN),
+    );
+
+    list.replaceChildren(...rows);
+    menu.style.width = `${width}px`;
+    menu.style.left = `${left}px`;
     setMenuOpen(true);
-    highlight();
-    position(trigger);
+
+    const height = menu.getBoundingClientRect().height;
+    const above = rect.top >= height + MENU_GAP + VIEWPORT_MARGIN;
+    menu.style.top = above
+      ? `${rect.top - height - MENU_GAP}px`
+      : `${Math.min(viewportHeight - height - VIEWPORT_MARGIN, rect.bottom + MENU_GAP)}px`;
+    if (activeIndex !== prevActiveIndex) {
+      optionElements[activeIndex]?.scrollIntoView({ block: "nearest" });
+    }
   };
 
   const readTrigger = (): ActiveTrigger | null => {
@@ -601,22 +657,109 @@ export function installRendererDelegationMention(
       options.onOpen?.(trigger.editor);
     }
     const allTargets = options.readTargets(trigger.editor);
-    syncChipStyle(ownerDocument, allTargets, iconCache);
+    const chipStyleKey = allTargets
+      .map(({ agent, plugin }) => `${agent}\x1f${plugin?.icon ?? ""}\x1f${plugin?.iconStyle ?? ""}`)
+      .join("\x1e");
+    if (chipStyleKey !== lastChipStyleKey) {
+      lastChipStyleKey = chipStyleKey;
+      syncChipStyle(ownerDocument, allTargets, iconCache);
+    }
     const targets = filterDelegationTargets(allTargets, trigger.query);
     const source = options.readCommands(trigger.editor);
-    const commandMatches = source ? filterDelegationCommands(source.commands, trigger.query) : [];
+    const commandMatches = source
+      ? filterDelegationCommands(source.commands, trigger.query).map((command) => ({
+          command,
+          reason: source.disabledReason(command),
+        }))
+      : [];
     const skills = options.readSkills?.(trigger.editor) ?? null;
+    const skillMatches = skills ? filterDelegationSkills(skills.skills, trigger.query) : [];
     const showsNotice = Boolean(source?.pendingNotice) && trigger.query === "";
     if (targets.length === 0 && commandMatches.length === 0 && !showsNotice && !skills) {
       close();
       return;
     }
-    const sameQuery = active?.query === trigger.query && active.node === trigger.node;
+    const locale = options.readLocale();
+    const renderKey = [
+      locale,
+      targets
+        .map(
+          ({ agent, label, plugin }) =>
+            `${agent}\x1f${label}\x1f${plugin?.icon ?? ""}\x1f${plugin?.iconStyle ?? ""}`,
+        )
+        .join("\x1e"),
+      source
+        ? `${source.pendingNotice ?? ""}\x1f${commandMatches
+            .map(
+              ({ command, reason }) =>
+                `${command.id}\x1f${command.label}\x1f${command.description ?? ""}\x1f${reason ?? ""}`,
+            )
+            .join("\x1e")}`
+        : "",
+      skills
+        ? `${skills.error ?? ""}\x1f${skills.notice ?? ""}\x1f${skills.warning ?? ""}\x1f${skillMatches
+            .map(
+              (skill) =>
+                `${skill.path}\x1f${skill.name}\x1f${skill.scope}\x1f${skill.source}\x1f${skill.description ?? ""}`,
+            )
+            .join("\x1e")}`
+        : "",
+    ].join("\x1d");
+    const sameQuery =
+      active !== null &&
+      active.query === trigger.query &&
+      active.node === trigger.node &&
+      active.start === trigger.start &&
+      active.editor === trigger.editor;
     active = trigger;
+    if (sameQuery && isMenuOpen() && lastRenderKey === renderKey) return;
+    const prevActiveIndex = isMenuOpen() ? activeIndex : 0;
     if (!sameQuery) activeIndex = 0;
-    render(trigger, source ? { source, matches: commandMatches } : null, targets, skills);
+    lastRenderKey = renderKey;
+    render(
+      trigger,
+      locale,
+      source ? { source, matches: commandMatches } : null,
+      targets,
+      skills ? { source: skills, matches: skillMatches } : null,
+      prevActiveIndex,
+    );
     // Keep a menu of only disabled rows open so their explanation stays visible.
     if (rowsRendered === 0) close();
+  };
+
+  const cancelScheduledRefresh = (): void => {
+    if (refreshFrame !== null) {
+      view.cancelAnimationFrame(refreshFrame);
+      refreshFrame = null;
+    }
+    refreshPending = false;
+  };
+
+  const flushScheduledRefresh = (): void => {
+    cancelScheduledRefresh();
+    refresh();
+  };
+
+  const scheduleRefresh = (leading: boolean): void => {
+    if (leading && refreshFrame === null) {
+      refresh();
+      refreshFrame = view.requestAnimationFrame(() => {
+        refreshFrame = null;
+        if (!refreshPending) return;
+        refreshPending = false;
+        refresh();
+      });
+      return;
+    }
+    refreshPending = true;
+    if (refreshFrame !== null) return;
+    refreshFrame = view.requestAnimationFrame(() => {
+      refreshFrame = null;
+      if (!refreshPending) return;
+      refreshPending = false;
+      refresh();
+    });
   };
 
   const waitForSelectionSync = (): Promise<void> =>
@@ -724,9 +867,21 @@ export function installRendererDelegationMention(
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (!isMenuOpen() || !active || event.isComposing) return;
+    if (event.isComposing) return;
+    if (
+      refreshPending &&
+      (event.key === "ArrowDown" ||
+        event.key === "ArrowUp" ||
+        event.key === "Enter" ||
+        event.key === "Tab" ||
+        event.key === "Escape")
+    ) {
+      flushScheduledRefresh();
+    }
+    if (!isMenuOpen() || !active) return;
     // With nothing selectable, only Escape belongs to the menu.
     if (entries.length === 0 && event.key !== "Escape") return;
+    const prevActiveIndex = activeIndex;
     let handled = true;
     if (event.key === "ArrowDown") activeIndex = (activeIndex + 1) % entries.length;
     else if (event.key === "ArrowUp") {
@@ -739,15 +894,21 @@ export function installRendererDelegationMention(
     if (!handled) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (isMenuOpen()) highlight();
+    if (isMenuOpen()) highlight(activeIndex !== prevActiveIndex);
   };
 
+  const onInput = (): void => {
+    scheduleRefresh(true);
+  };
+  const onSelectionChange = (): void => {
+    scheduleRefresh(false);
+  };
   const onCompositionStart = (): void => {
     composing = true;
   };
   const onCompositionEnd = (): void => {
     composing = false;
-    refresh();
+    flushScheduledRefresh();
   };
   const onPointerDown = (event: PointerEvent): void => {
     if (isMenuOpen() && !menu.contains(event.target as Node)) close();
@@ -759,8 +920,8 @@ export function installRendererDelegationMention(
   // Window capture runs before the Composer submit handlers registered on the
   // document, so Enter picks a target instead of sending the prompt.
   view.addEventListener("keydown", onKeyDown, true);
-  ownerDocument.addEventListener("input", refresh, true);
-  ownerDocument.addEventListener("selectionchange", refresh);
+  ownerDocument.addEventListener("input", onInput, true);
+  ownerDocument.addEventListener("selectionchange", onSelectionChange);
   ownerDocument.addEventListener("compositionstart", onCompositionStart, true);
   ownerDocument.addEventListener("compositionend", onCompositionEnd, true);
   ownerDocument.addEventListener("pointerdown", onPointerDown, true);
@@ -768,9 +929,10 @@ export function installRendererDelegationMention(
   view.addEventListener("scroll", onViewportChange, true);
 
   const dispose = (): void => {
+    cancelScheduledRefresh();
     view.removeEventListener("keydown", onKeyDown, true);
-    ownerDocument.removeEventListener("input", refresh, true);
-    ownerDocument.removeEventListener("selectionchange", refresh);
+    ownerDocument.removeEventListener("input", onInput, true);
+    ownerDocument.removeEventListener("selectionchange", onSelectionChange);
     ownerDocument.removeEventListener("compositionstart", onCompositionStart, true);
     ownerDocument.removeEventListener("compositionend", onCompositionEnd, true);
     ownerDocument.removeEventListener("pointerdown", onPointerDown, true);
@@ -797,7 +959,7 @@ export function installRendererDelegationMention(
   return {
     openFor,
     refresh: () => {
-      if (openedFor) refresh();
+      if (openedFor) flushScheduledRefresh();
     },
     dispose,
   };

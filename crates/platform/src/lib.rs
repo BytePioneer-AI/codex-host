@@ -19,7 +19,10 @@ mod desktop_launch;
 mod desktop_screenshot;
 #[cfg(any(target_os = "windows", test))]
 mod windows_command_line;
-pub use desktop_screenshot::{DesktopScreenshotError, capture_primary_desktop};
+pub use desktop_screenshot::{
+    DesktopScreenshotError, LimitedDesktopImage, MAX_DESKTOP_SCREENSHOT_BYTES,
+    capture_primary_desktop, check_desktop_screenshot_dimensions, select_primary_desktop_index,
+};
 mod independent_service;
 mod installation;
 #[cfg(target_os = "linux")]
@@ -59,6 +62,9 @@ mod windows_process;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_proxy;
+#[cfg(all(target_os = "windows", feature = "windows-task-dialog"))]
+#[allow(unsafe_code)]
+mod windows_task_dialog;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod windows_ui;
@@ -123,10 +129,10 @@ pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 pub use windows_desktop::resume_packaged_application;
 #[cfg(target_os = "windows")]
 pub use windows_installer::shutdown_processes_for_executables;
+#[cfg(all(target_os = "windows", feature = "windows-task-dialog"))]
+pub use windows_task_dialog::{RunningDesktopChoice, prompt_running_desktop};
 #[cfg(target_os = "windows")]
-pub use windows_ui::{
-    RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,
-};
+pub use windows_ui::{hide_console_window, show_error_dialog};
 
 pub const CRATE_NAME: &str = "codexhost-platform";
 #[cfg(target_os = "windows")]

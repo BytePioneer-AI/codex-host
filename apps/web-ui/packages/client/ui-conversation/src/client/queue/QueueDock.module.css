@@ -29,7 +29,7 @@
 
 .panel {
   position: relative;
-  isolation: isolate;
+  z-index: 0;
   overflow: hidden;
   width: 100%;
   padding: 2px 0;
@@ -44,6 +44,7 @@
   inset: 0;
   border-radius: inherit;
   background: var(--dsw-specific-menu);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
   content: "";
   pointer-events: none;

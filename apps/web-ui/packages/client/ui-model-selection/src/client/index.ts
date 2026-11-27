@@ -131,6 +131,28 @@ function resolveHandoffLauncher(scope: ClientContext): ChatHandoffLauncherHandle
     : undefined;
 }
 
+interface SettingsNavigationHandle {
+  openSection(id: string): void;
+}
+
+function resolveSettingsNavigation(scope: ClientContext): SettingsNavigationHandle | undefined {
+  const lookup = scope as { get(name: string): unknown };
+  const nav = lookup.get("settingsNavigation");
+  return typeof (nav as Partial<SettingsNavigationHandle> | undefined)?.openSection === "function"
+    ? (nav as SettingsNavigationHandle)
+    : undefined;
+}
+
+function focusWebConnectionsAgent(agentId: string): void {
+  if (typeof window === "undefined") return;
+  const win = window as unknown as {
+    __codexhostPendingConnectionsFocus?: string;
+    __codexhostWebSettingsV1?: { focusConnectionsAgent?: (key: string) => void };
+  };
+  win.__codexhostPendingConnectionsFocus = agentId;
+  win.__codexhostWebSettingsV1?.focusConnectionsAgent?.(agentId);
+}
+
 /** Dictionary namespace owned by this plugin. */
 const NS = "model";
 
@@ -257,10 +279,19 @@ export function apply(ctx: ClientContext): void {
                 });
               },
             };
+            const openConnections = isRemote
+              ? undefined
+              : (focusAgentId?: string) => {
+                  const nav = resolveSettingsNavigation(scope);
+                  if (nav === undefined) return;
+                  if (focusAgentId !== undefined) focusWebConnectionsAgent(focusAgentId);
+                  nav.openSection("codexhost-connections");
+                };
             return {
               available,
               iconHost,
               handoff,
+              ...(openConnections === undefined ? {} : { openConnections }),
               directory: directory.store,
               load: () => {
                 if (available)

@@ -27,7 +27,11 @@ export function PinnedSection({
   hasWorkspaces = false,
 }: Pick<RowProps, "currentId" | "onOpen" | "onRenameRequest" | "renderSlot" | "t"> & {
   rows: readonly SessionNode[];
-  customSection?: { key: string; name: string };
+  customSection?: {
+    key: string;
+    name: string;
+    projectDrop?: ComponentProps<typeof SectionHeading>["projectDrop"];
+  };
   revealSessionId?: RowProps["currentId"];
   onSessionRevealed: (id: SessionNode["id"]) => void;
   showHost?: boolean;
@@ -55,6 +59,7 @@ export function PinnedSection({
         expanded={expanded}
         onToggle={onToggle}
         rowKey={`section:${customSection?.key ?? PINNED_SECTION_KEY}`}
+        projectDrop={customSection?.projectDrop}
       />
       {expanded && (
         <ThreadTreeRows roots={rows}>

@@ -1,6 +1,6 @@
 {
   "name": "codexhost",
-  "version": "0.27.0",
+  "version": "0.28.2",
   "private": true,
   "license": "LGPL-3.0-only",
   "type": "module",
@@ -41,7 +41,7 @@
     "test:web:distribution": "npm run test:distribution --workspace=@codexhost/web-server",
     "test:shared-host": "npm run build:typescript && npm run build:renderer && cargo build --locked --package codexhost-launcher && node --import tsx --test packages/host-runtime/test/native/*.test.ts",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
-    "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim --package codexhost-updater",
+    "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-screenshot --package codexhost-shim --package codexhost-updater",
     "release:prepare": "node scripts/release/prepare-version.mjs",
     "release:package": "node scripts/release/prepare-payload.mjs",
     "release:npm": "node scripts/release/prepare-npm.mjs",

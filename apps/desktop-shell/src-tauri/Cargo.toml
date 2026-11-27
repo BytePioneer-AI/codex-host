@@ -1,9 +1,13 @@
 [package]
 name = "codexhost-shell"
-version = "0.27.0"
+version = "0.28.2"
 edition = "2024"
 rust-version = "1.97.1"
 publish = false
+
+[package.metadata.tauri-winres]
+OriginalFilename = "codexhost-shell.exe"
+InternalName = "codexhost-shell"
 
 [workspace]
 
@@ -12,6 +16,7 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
+cc = "1"
 tauri-build = "2"
 
 [dependencies]

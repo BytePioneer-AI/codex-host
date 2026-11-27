@@ -14,6 +14,7 @@ export interface HandoffEventWindowLike {
 
 export interface HandoffSessionSnapshotLike {
   readonly openState: string;
+  readonly running: boolean;
 }
 
 export interface ResolvedHandoffPoint {
@@ -28,7 +29,7 @@ export function resolveHandoffPoint(
   window: HandoffEventWindowLike | undefined,
 ): ResolvedHandoffPoint {
   if (session === undefined || window === undefined || session.openState !== "open") {
-    return { status: "pending" };
+    return { status: session?.running === true ? "pending" : "unavailable" };
   }
   let lastTurnEnd: TurnEndLikeEvent | undefined;
   let lastCompletedSeq: number | undefined;
@@ -42,7 +43,9 @@ export function resolveHandoffPoint(
     }
   }
   if (lastTurnEnd === undefined) {
-    return window.hasMore ? { status: "ready" } : { status: "pending" };
+    return window.hasMore
+      ? { status: "ready" }
+      : { status: session.running ? "pending" : "unavailable" };
   }
   if (lastTurnEnd.data?.reason?.kind === "completed") {
     return { status: "ready" };
@@ -50,5 +53,7 @@ export function resolveHandoffPoint(
   if (lastCompletedSeq !== undefined) {
     return { status: "ready", atSeq: lastCompletedSeq };
   }
-  return window.hasMore ? { status: "ready" } : { status: "pending" };
+  return window.hasMore
+    ? { status: "ready" }
+    : { status: session.running ? "pending" : "unavailable" };
 }

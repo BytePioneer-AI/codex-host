@@ -474,6 +474,7 @@ function createFixtureAdapter(
       env: spawnOptions.environment,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
     fixtureChildren.push(child);
     return child;

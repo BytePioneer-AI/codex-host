@@ -52,6 +52,7 @@
   border: 0;
   border-radius: var(--dsw-radius-lg);
   background: var(--dsw-specific-menu);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
   box-shadow: var(--dsw-elevation-prominent);

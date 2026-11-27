@@ -9,11 +9,11 @@
 
 :where(.surface) {
   position: relative;
+  z-index: 0;
 }
 
 .surface {
   anchor-name: var(--dsh-menu-anchor);
-  isolation: isolate;
 }
 
 /* Filtering only the background keeps nested menus and fixed overlays free of
@@ -24,6 +24,7 @@
   z-index: -1;
   border-radius: inherit;
   background: var(--dsw-menu-surface-fill);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
   pointer-events: none;
 }
@@ -35,15 +36,17 @@
 /* Chromium needs opaque pixels behind the page content to blur it over native
  * vibrancy. Body isolation keeps this backing above the native window and below
  * the page; CSS anchors limit it to this menu without a layout observer. */
-:global(html[data-platform="darwin"]) .backing {
-  display: block;
-  position: fixed;
-  position-anchor: var(--dsh-menu-anchor);
-  top: anchor(top);
-  left: anchor(left);
-  width: anchor-size(width, 0px);
-  height: anchor-size(height, 0px);
-  z-index: -1;
-  background: var(--dsw-alias-bg-base);
-  pointer-events: none;
+@supports (position-anchor: --dsh-menu) and (width: anchor-size(width)) {
+  :global(html[data-platform="darwin"]:not([data-tauri-shell])) .backing {
+    display: block;
+    position: fixed;
+    position-anchor: var(--dsh-menu-anchor);
+    top: anchor(top);
+    left: anchor(left);
+    width: anchor-size(width, 0px);
+    height: anchor-size(height, 0px);
+    z-index: -1;
+    background: var(--dsw-alias-bg-base);
+    pointer-events: none;
+  }
 }

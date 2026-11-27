@@ -31,6 +31,7 @@ import {
   shouldRefreshCodexAccountsForAdapterState,
   rendererUsageRefreshDelay,
   canScheduleExternalThreadUsageRefresh,
+  hasExternalThreadUsageEvidence,
   shouldPersistNewThreadConfigurationSelection,
   shouldReloadExternalCatalogAfterAvailabilityRefresh,
   shouldRetryExternalThreadUsage,
@@ -458,12 +459,24 @@ describe("Renderer Composer DOM behavior", () => {
     expect(rendererUsageRefreshDelay(99)).toBe(8000);
   });
 
-  it("stops polling for a quota or balance that never arrives once usage is shown", () => {
-    expect(canScheduleExternalThreadUsageRefresh(null, 99)).toBe(true);
-    const usage = { totalCostUsd: 0.168 };
-    expect(canScheduleExternalThreadUsageRefresh(usage, 0)).toBe(true);
-    expect(canScheduleExternalThreadUsageRefresh(usage, 5)).toBe(true);
-    expect(canScheduleExternalThreadUsageRefresh(usage, 6)).toBe(false);
+  it("stops polling after a bounded retry pass when usage is still missing", () => {
+    expect(canScheduleExternalThreadUsageRefresh(0)).toBe(true);
+    expect(canScheduleExternalThreadUsageRefresh(5)).toBe(true);
+    expect(canScheduleExternalThreadUsageRefresh(6)).toBe(false);
+  });
+
+  it("restarts bounded usage retries only when a notification has usable Thread usage", () => {
+    expect(hasExternalThreadUsageEvidence({ usage: null })).toBe(false);
+    expect(
+      hasExternalThreadUsageEvidence({ usage: null, accountCredits: { usedPercent: 33 } }),
+    ).toBe(false);
+    expect(
+      hasExternalThreadUsageEvidence({
+        usage: null,
+        accountBalance: { amount: 12.34, currency: "CNY" },
+      }),
+    ).toBe(false);
+    expect(hasExternalThreadUsageEvidence({ usage: { totalCostUsd: 0.168 } })).toBe(true);
   });
 
   it("replaces only an unambiguous native Model control and restores stale controls", () => {

@@ -22,6 +22,33 @@ interface FileUploadResponse {
   readonly body: string;
 }
 
+const MAX_IMAGE_SNAPSHOT_BYTES = 50 * 1024 * 1024;
+
+/** Read image bytes in the page while it holds access to the dropped File. */
+async function snapshotImage(file: File, signal?: AbortSignal): Promise<Blob> {
+  signal?.throwIfAborted();
+  const idle = new AbortController();
+  const lifetime = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
+  const arm = () =>
+    setTimeout(() => idle.abort(new Error("Upload made no progress for 60 seconds.")), 60_000);
+  let deadline = arm();
+  try {
+    const progress = new TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>>({
+      transform(chunk, controller) {
+        if (chunk.byteLength > 0) {
+          clearTimeout(deadline);
+          deadline = arm();
+        }
+        controller.enqueue(chunk);
+      },
+    });
+    const bytes = file.stream().pipeThrough(progress, { signal: lifetime });
+    return await new Response(bytes, { headers: { "content-type": file.type } }).blob();
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
 interface UploadWorkerStart {
   readonly url: string;
   readonly body: FileUploadBody;
@@ -227,7 +254,15 @@ export class FileUploadRuntime extends Service implements FileUploadService {
     if (name !== undefined) query.set("name", name);
     if (imageMediaType !== undefined) query.set("imageMediaType", imageMediaType);
     // All browser carriers use raw-byte intake, never the bounded JSON RPC route.
-    const body = data instanceof Uint8Array ? new Blob([Uint8Array.from(data).buffer]) : data;
+    let body = data instanceof Uint8Array ? new Blob([Uint8Array.from(data).buffer]) : data;
+    if (
+      imageMediaType !== undefined &&
+      data instanceof File &&
+      data.size <= MAX_IMAGE_SNAPSHOT_BYTES
+    ) {
+      // WebKit's networking process can lose access to a dropped File even while the page can read it.
+      body = await snapshotImage(data, signal);
+    }
     const response = await this.post({
       path: `${FILE_UPLOAD_ROUTE}?${query.toString()}`,
       body,

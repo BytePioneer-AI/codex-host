@@ -18,6 +18,7 @@ it("Blob, Uint8Array and stream carriers all bypass the JSON RPC file-size ceili
   const bodies: Uint8Array[] = [];
   const bytes = Uint8Array.from([0, 255, 1, 42]);
   const ordinaryFile = new File([bytes], "original.bin");
+  let receivedBytes: number | undefined;
   scope.__DSH_FILE_UPLOAD__ = {
     fetch: async (url, init) => {
       assert.match(String(url), /^api\/session\/uploadFileBinary\?/u);
@@ -34,7 +35,7 @@ it("Blob, Uint8Array and stream carriers all bypass the JSON RPC file-size ceili
           ok: true,
           value: {
             receiptId: "receipt",
-            file: { attachmentId: "file", name: "data.bin", bytes: bytes.length },
+            file: { attachmentId: "file", name: "data.bin", bytes: receivedBytes ?? bytes.length },
           },
         }),
       );
@@ -58,6 +59,12 @@ it("Blob, Uint8Array and stream carriers all bypass the JSON RPC file-size ceili
   }
   assert.equal(bodies.length, 4);
   for (const body of bodies) assert.deepEqual(body, bytes);
+  receivedBytes = 0;
+  assert.ok((await runtime.upload("thread" as never, new File([], "empty.txt"))).ok);
+  await assert.rejects(
+    runtime.upload("thread" as never, ordinaryFile),
+    /expected 4 bytes.*received 0/u,
+  );
 });
 
 it("declares image uploads explicitly and keeps transport failures distinct from business refusals", async (t) => {

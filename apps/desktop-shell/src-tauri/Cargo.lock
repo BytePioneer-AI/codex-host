@@ -496,6 +496,7 @@ dependencies = [
 name = "codexhost-shell"
 version = "0.28.1"
 dependencies = [
+ "cc",
  "codexhost-platform",
  "getrandom 0.3.4",
  "objc2",

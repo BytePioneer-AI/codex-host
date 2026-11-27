@@ -255,6 +255,7 @@ export class FileUploadRuntime extends Service implements FileUploadService {
     if (imageMediaType !== undefined) query.set("imageMediaType", imageMediaType);
     // All browser carriers use raw-byte intake, never the bounded JSON RPC route.
     let body = data instanceof Uint8Array ? new Blob([Uint8Array.from(data).buffer]) : data;
+    const expectedBytes = body instanceof Blob ? body.size : undefined;
     if (
       imageMediaType !== undefined &&
       data instanceof File &&
@@ -273,7 +274,13 @@ export class FileUploadRuntime extends Service implements FileUploadService {
     if (response.status !== 200) {
       throw new Error(`file upload transport failed with HTTP ${String(response.status)}`);
     }
-    return parseFileUploadResult(response.body);
+    const result = parseFileUploadResult(response.body);
+    if (result.ok && expectedBytes !== undefined && result.value.file.bytes !== expectedBytes) {
+      throw new Error(
+        `File upload expected ${expectedBytes} bytes but received ${result.value.file.bytes}.`,
+      );
+    }
+    return result;
   }
 }
 

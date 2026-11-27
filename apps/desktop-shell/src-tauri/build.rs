@@ -1,4 +1,11 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rerun-if-changed=src/macos_file_drop.m");
+        cc::Build::new()
+            .file("src/macos_file_drop.m")
+            .flag("-fobjc-arc")
+            .compile("codexhost_file_drop");
+    }
     // Unbundled macOS debug runs (`npm start app`) need an embedded Info.plist
     // so WKWebView exposes `navigator.mediaDevices` for voice input.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")

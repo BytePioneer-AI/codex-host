@@ -52,6 +52,19 @@ describe("file-citation directive grammar", () => {
     expect(firstChildOf(":codex-file-citation-not-a-directive")?.type).toBe("text");
   });
 
+  it("leaves bare, empty-path, missing-path, and incomplete streaming directives as plain text", () => {
+    for (const input of [
+      ":codex-file-citation",
+      ':codex-file-citation{path=""}',
+      ':codex-file-citation{path="   "}',
+      ':codex-file-citation{purpose="source"}',
+      ':codex-file-citation{path="src/de',
+    ]) {
+      expect(firstChildOf(input)).toMatchObject({ type: "text", value: input });
+      expect(extractMarkdownPlainText(input)).toBe(input.replace(/\s+/g, " "));
+    }
+  });
+
   it("projects an unresolvable citation as the path, not the marker", () => {
     expect(extractMarkdownPlainText('see :codex-file-citation{path="notes.md"} here')).toContain(
       "notes.md",

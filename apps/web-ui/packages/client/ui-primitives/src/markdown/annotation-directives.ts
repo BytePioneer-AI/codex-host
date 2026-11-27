@@ -206,14 +206,20 @@ function readDirective(
   // The native attribute lexer reads one span, including intervening `}{` or
   // labels. In particular, `{index="1"}{index="2"}` does not reassign `index`,
   // whereas `{index="1"}{ index="2"}` does.
+  const kind = kindOf(matchedName);
   const attributes =
     attributesStart < 0
       ? { index: "", path: "", purpose: undefined }
       : readAttributes(source.slice(attributesStart + 1, attributesEnd));
   if (attributes === undefined) return undefined;
-  if (name !== matchedName.slice(1))
-    return { end, kind: kindOf(matchedName), index: "", path: "", purpose: undefined };
-  return { end, kind: kindOf(matchedName), ...attributes };
+  if (kind === "file-citation") {
+    if (attributesStart < 0 || name !== matchedName.slice(1) || attributes.path.trim() === "") {
+      return undefined;
+    }
+    return { end, kind, ...attributes };
+  }
+  if (name !== matchedName.slice(1)) return { end, kind, index: "", path: "", purpose: undefined };
+  return { end, kind, ...attributes };
 }
 
 /** Which renderer node a matched directive name produces. */

@@ -486,7 +486,9 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
       // Desktop opens a cited file through the owner's vocabulary, exactly like
       // an inline-code file mention; inside an anchor the marker stays text.
       const citation =
-        context.inLink === true ? undefined : context.fileCitations?.resolve(node.path);
+        context.inLink === true || node.path.trim() === ""
+          ? undefined
+          : context.fileCitations?.resolve(node.path);
       if (citation !== undefined) {
         return (
           <code key={key}>
@@ -837,10 +839,6 @@ function MarkdownFileLink({
   );
 }
 
-/**
- * The complete inline-code value when it is exactly an absolute HTTP(S) URL
- * (no surrounding whitespace); anything else stays inert code.
- */
 /** Rebuild the raw marker of an unresolvable file citation, preserving the data. */
 function fileCitationMarker(node: CodexFileCitationNode): string {
   const path = node.path.replaceAll('"', '\\"');
@@ -851,6 +849,10 @@ function fileCitationMarker(node: CodexFileCitationNode): string {
   return `:codex-file-citation{${attributes}}`;
 }
 
+/**
+ * The complete inline-code value when it is exactly an absolute HTTP(S) URL
+ * (no surrounding whitespace); anything else stays inert code.
+ */
 function inlineCodeHttpUrl(value: string): string | undefined {
   if (value.trim() !== value) return undefined;
   try {

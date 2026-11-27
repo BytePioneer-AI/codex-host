@@ -238,7 +238,7 @@ export const MarkdownText = memo(function MarkdownText({
   fileMentions?: MarkdownFileMentions | undefined;
   pathImages?: MarkdownPathImages | undefined;
   responseAnnotations?: MarkdownResponseAnnotations | undefined;
-  /** Harvest file citations: opens `:codex-file-citation{path="..."}` markers; absent keeps the marker text. */
+  /** Harness file citations: opens `:codex-file-citation{path="..."}` markers; absent keeps the marker text. */
   fileCitations?: MarkdownFileMentions | undefined;
   variant?: "body" | "compact";
 }) {

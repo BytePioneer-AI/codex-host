@@ -101,13 +101,16 @@ export const AssistantNodeView = memo(function AssistantNodeView({
   const fileCitations = useMemo<MarkdownFileMentions | undefined>(() => {
     if (openFile === undefined) return undefined;
     return {
-      resolve: (path: string) => ({
-        open: () => {
-          void openFile(path);
-        },
-        label: path,
-        title: path,
-      }),
+      resolve: (path: string) => {
+        if (path.trim() === "") return undefined;
+        return {
+          open: () => {
+            void openFile(path);
+          },
+          label: path,
+          title: path,
+        };
+      },
     };
   }, [openFile]);
   const reasoningHidden =

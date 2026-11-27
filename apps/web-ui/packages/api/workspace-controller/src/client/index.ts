@@ -131,6 +131,9 @@ function acceptIncrement(accept: WorkspaceFollowSink, frame: WorkspaceFollowIncr
     case "pinned":
       accept.replacePinned(frame.pinnedSessionIds);
       return;
+    case "pinnedWorkspaces":
+      accept.replacePinnedWorkspaces(frame.pinnedWorkspaceIds);
+      return;
     case "threadSections":
       accept.replaceThreadSections(frame.threadSections);
       return;

@@ -1,4 +1,9 @@
 import { canReorderWorkspaces, resolveWorkspaceDropAnchor } from "./workspace-reorder.ts";
+import {
+  computeWorkspaceParents,
+  partitionRootWorkspaceGroups,
+  resolveWorkspaceSectionOwners,
+} from "./workspace-sections.ts";
 /**
  * The workspace/session browsing region filling the sidebar shell's
  * `sidebar.workspaces` hole: section header (title + view options + add
@@ -77,7 +82,6 @@ import {
   deriveThreadForest,
   orderByRecency,
   owningGroupKey,
-  owningParentFolder,
   pinCurrentBlank,
   reconcileManualOrder,
   sessionMemberIds,
@@ -346,33 +350,6 @@ interface WorkspaceDragState {
   over: { id: WorkspaceId; half: "before" | "after" } | null;
 }
 
-/** Resolve nearest registered parent Workspace within each host and section scope. */
-function computeWorkspaceParents(
-  workspaces: readonly WorkspaceView[],
-  nestWorkspaces: boolean,
-  sectionOf: ReadonlyMap<string, string>,
-  pinnedWorkspaceIds: ReadonlySet<string>,
-): Map<string, WorkspaceId | undefined> {
-  if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
-  const scopeOf = (workspace: WorkspaceView) =>
-    `${workspace.remote?.hostId ?? "local"}\n${sectionOf.get(workspace.workspaceId) ?? ""}`;
-  const pathsByScope = new Map<string, Map<string, WorkspaceId>>();
-  for (const workspace of workspaces) {
-    const scope = scopeOf(workspace);
-    const paths = pathsByScope.get(scope) ?? new Map<string, WorkspaceId>();
-    if (workspace.path) paths.set(workspace.path, workspace.workspaceId);
-    pathsByScope.set(scope, paths);
-  }
-  return new Map<string, WorkspaceId | undefined>(
-    workspaces.map((workspace) => {
-      if (pinnedWorkspaceIds.has(workspace.workspaceId)) return [workspace.workspaceId, undefined];
-      const keysByPath = pathsByScope.get(scopeOf(workspace));
-      const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
-      return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
-    }),
-  );
-}
-
 /** Resolve an insertion side across the Workspace header, descendants, and Sessions. */
 function workspaceGroupHalf(e: {
   clientY: number;
@@ -389,6 +366,7 @@ type SessionTreeProps = Pick<
   | "open"
   | "insertWorkspaceBefore"
   | "moveWorkspaceToSection"
+  | "setWorkspacePinned"
   | "loadMoreSessions"
   | "t"
   | "usePanelInfo"
@@ -431,7 +409,6 @@ type SessionTreeProps = Pick<
     /** Save a drag order and select Manual. */
     setSessionOrder: (accountKey: string, order: readonly string[]) => void;
     pinnedWorkspaceIds: readonly string[];
-    setWorkspacePinned: (id: WorkspaceId, pinned: boolean) => void;
     /** Registry-global pin and archive sets plus the archived-visibility choice. */
     rowState: SessionRowState;
     nativeSections: readonly WorkspaceThreadSection[];
@@ -576,17 +553,10 @@ function SessionTree({
       ? undefined
       : owningGroupKey(ownWorkspaces, threadView.rootId(current));
   const pinnedWorkspaces = useMemo(() => new Set(pinnedWorkspaceIds), [pinnedWorkspaceIds]);
-  const nativeSectionOf = useMemo(() => {
-    const owners = new Map<string, string>();
-    for (const section of nativeSections)
-      for (const id of section.workspaceIds ?? []) if (!owners.has(id)) owners.set(id, section.id);
-    return owners;
-  }, [nativeSections]);
-  const sectionOf = useMemo(() => {
-    const owners = new Map(nativeSectionOf);
-    for (const id of pinnedWorkspaces) owners.set(id, PINNED_SECTION_KEY);
-    return owners;
-  }, [nativeSectionOf, pinnedWorkspaces]);
+  const { nativeSectionOf, sectionOf } = useMemo(
+    () => resolveWorkspaceSectionOwners(nativeSections, pinnedWorkspaces),
+    [nativeSections, pinnedWorkspaces],
+  );
   const [sectionMoveId, setSectionMoveId] = useState<WorkspaceId>();
   const [sectionMoveError, setSectionMoveError] = useState(false);
   const sectionProjects = useMemo(
@@ -766,25 +736,10 @@ function SessionTree({
     return keys;
   }, [currentGroup, revealGroup, rootKeyOf]);
   const [allWorkspacesShown, setAllWorkspacesShown] = useState(false);
-  const workspaceRoots = rootGroups.filter(
-    (group) => group.key !== UNGROUPED_KEY && !sectionOf.has(group.key),
+  const { pinnedGroups, sectionRoots, workspaceRoots } = useMemo(
+    () => partitionRootWorkspaceGroups(rootGroups, nativeSections, pinnedWorkspaceIds, sectionOf),
+    [nativeSections, pinnedWorkspaceIds, rootGroups, sectionOf],
   );
-  const rootsByKey = useMemo(
-    () => new Map(rootGroups.map((group) => [group.key, group])),
-    [rootGroups],
-  );
-  const pinnedGroups = pinnedWorkspaceIds.flatMap((id) => rootsByKey.get(id) ?? []);
-  const sectionRoots = useMemo(() => {
-    return new Map(
-      nativeSections.map((section) => [
-        section.id,
-        (section.workspaceIds ?? []).flatMap((id) => {
-          const group = rootsByKey.get(id);
-          return group !== undefined && sectionOf.get(id) === section.id ? [group] : [];
-        }),
-      ]),
-    );
-  }, [nativeSections, rootsByKey, sectionOf]);
   const collapsedWorkspaces = workspaceWindow(
     workspaceRoots,
     WORKSPACE_INITIAL_ROWS,
@@ -1025,13 +980,20 @@ function SessionTree({
               }
             }}
             drag={workspaceDragProps}
-            pin={{
-              pinned,
-              toggle: () => {
-                workspaceToRefocus.current = workspaceId;
-                setWorkspacePinned(workspaceId, !pinned);
-              },
-            }}
+            pin={
+              setWorkspacePinned
+                ? {
+                    pinned,
+                    toggle: () => {
+                      workspaceToRefocus.current = workspaceId;
+                      if (!pinned) setSectionExpanded(PINNED_SECTION_KEY, true);
+                      setWorkspacePinned(workspaceId, !pinned).catch((reason: unknown) => {
+                        console.warn("workspace pin rejected:", reason);
+                      });
+                    },
+                  }
+                : undefined
+            }
             actions={{
               ...(canMoveToSection ? { moveToSection: () => setSectionMoveId(workspaceId) } : {}),
               rename: () => onRenameRequest(workspaceId, group.label),
@@ -1301,7 +1263,7 @@ function SessionTree({
       {sectionMoveId && sectionProjects.has(sectionMoveId) && moveWorkspaceToSection && (
         <MoveSectionForm
           key={sectionMoveId}
-          current={sectionOf.get(sectionMoveId) ?? ""}
+          current={nativeSectionOf.get(sectionMoveId) ?? ""}
           sections={nativeSections}
           move={(target) => moveWorkspaceToSection(sectionMoveId, target)}
           dismiss={() => setSectionMoveId(undefined)}
@@ -1768,6 +1730,7 @@ function WorkspaceBrowserContent({
   deleteWorkspace,
   insertWorkspaceBefore,
   moveWorkspaceToSection,
+  setWorkspacePinned,
   unarchiveSession,
   createWorkspace,
   searchSessions,
@@ -1810,6 +1773,9 @@ function WorkspaceBrowserContent({
   const workspaceStreamState = useWorkspaces((state) => state.state);
   const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
   const pinnedSessionIds = useWorkspaces((state) => state.pinnedSessionIds);
+  const pinnedWorkspaceIds = useWorkspaces(
+    (state) => state.pinnedWorkspaceIds ?? NO_PINNED_WORKSPACE_IDS,
+  );
   const threadSections = useWorkspaces((state) => state.threadSections ?? NO_THREAD_SECTIONS);
   // Live occupancy of this surface's directory-flow hole (the same source the
   // flow reads): a composition without a picking affordance can add nothing.
@@ -1820,7 +1786,6 @@ function WorkspaceBrowserContent({
   const groupExpansion = useStore((s) => s.groupExpansion);
   const threadView = useThreadTreeView();
   const sectionExpansion = useStore((s) => s.sectionExpansion);
-  const pinnedWorkspaceIds = useStore((s) => s.pinnedWorkspaceIds ?? NO_PINNED_WORKSPACE_IDS);
   const sessionOrderByAccount = useStore((s) => s.sessionOrderByAccount);
   // Archived sessions are not openable: the row stays visible under the
   // filter but a click explains instead of navigating.
@@ -2420,7 +2385,6 @@ function WorkspaceBrowserContent({
     setDeleteError(null);
     deleteWorkspace(deleteTarget.workspaceId)
       .then(() => {
-        actions.setWorkspacePinned(deleteTarget.workspaceId, false);
         // Keep the confirmation pending until this component has rendered the
         // committed list projection without the deleted id. Closing earlier
         // exposes one stale React frame to the next Create Workspace gesture.
@@ -2742,7 +2706,7 @@ function WorkspaceBrowserContent({
               setSectionExpanded={actions.setSectionExpanded}
               setSessionOrder={saveSessionOrder}
               pinnedWorkspaceIds={pinnedWorkspaceIds}
-              setWorkspacePinned={actions.setWorkspacePinned}
+              setWorkspacePinned={setWorkspacePinned}
               rowState={rowState}
               nativeSections={nativeSections}
               onLeaveArchivedOnly={leaveArchivedOnly}

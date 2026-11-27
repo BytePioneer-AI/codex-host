@@ -10,6 +10,7 @@ import type { UiWorkspace } from "./navigation.ts";
 /** Transient requests consumed by the existing workspace browser. */
 export interface WorkspaceShortcutState {
   readonly searchRequest: number;
+  readonly activityViewRequest: number;
   readonly addRequested: boolean;
   readonly directoryBusy: boolean;
   readonly renameTarget: { readonly sessionId: SessionId; readonly currentTitle: string } | null;
@@ -19,6 +20,7 @@ export interface WorkspaceShortcutState {
 interface WorkspaceShortcutControls {
   state: SnapshotStore<WorkspaceShortcutState>;
   search: () => void;
+  toggleActivityView: () => void;
   add: () => void;
   closeAdd: () => void;
   directoryBusy: (busy: boolean) => void;
@@ -35,6 +37,7 @@ interface WorkspaceShortcutControls {
 export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
   const state = createSnapshotStore<WorkspaceShortcutState>({
     searchRequest: 0,
+    activityViewRequest: 0,
     addRequested: false,
     directoryBusy: false,
     renameTarget: null,
@@ -45,6 +48,10 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
     state,
     search: () => {
       state.set({ ...state.getSnapshot(), searchRequest: state.getSnapshot().searchRequest + 1 });
+    },
+    toggleActivityView: () => {
+      const current = state.getSnapshot();
+      state.set({ ...current, activityViewRequest: current.activityViewRequest + 1 });
     },
     add: () => {
       state.set(
@@ -151,6 +158,15 @@ export function installWorkspaceShortcuts(
     ["primary"],
     ["primary", "alt"],
     () => ({ status: "handled", run: controls.search }),
+  );
+  register(
+    "session.activityView",
+    () => t("activityView.label"),
+    ["activity view", "unread sessions"],
+    "KeyU",
+    ["primary", "alt"],
+    ["primary", "alt"],
+    () => ({ status: "handled", run: controls.toggleActivityView }),
   );
   register(
     "workspace.add",

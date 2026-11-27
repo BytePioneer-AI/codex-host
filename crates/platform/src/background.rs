@@ -119,7 +119,7 @@ pub fn configure_detached_service_command(
         GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
     use windows::Win32::System::Threading::{
-        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+        CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
     };
     // Null child stdio alone is insufficient: CreateProcess can also inherit the
     // caller's original stdio handles, keeping Node execFile capture pipes open
@@ -135,9 +135,64 @@ pub fn configure_detached_service_command(
         }
     }
     command.creation_flags(
-        (CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS).0,
+        (process_creation_flags_for_detached_service() | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS).0,
     );
     Ok(())
+}
+
+/// Whether the caller may request `CREATE_BREAKAWAY_FROM_JOB`.
+///
+/// `CreateProcess` fails with `ERROR_ACCESS_DENIED` (os error 5) when the
+/// calling process lives in a job that does not set
+/// `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. That is the reported failure mode for
+/// `codexhost launch` started by the Desktop shell under AppX activation and
+/// similar outer jobs, so the breakaway request is conditional: outside a job
+/// it is a no-op, and inside a job it is requested only when that job allows
+/// breakaway. When it cannot be requested, the service is simply left nested
+/// in the caller's job instead of failing to start.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+fn process_creation_flags_for_detached_service() -> windows::Win32::System::Threading::PROCESS_CREATION_FLAGS {
+    use std::mem::size_of;
+
+    use windows::Win32::System::JobObjects::{
+        IsProcessInJob, QueryInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JobObjectExtendedLimitInformation,
+    };
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, CREATE_BREAKAWAY_FROM_JOB, PROCESS_CREATION_FLAGS,
+    };
+
+    unsafe {
+        let mut in_job = windows::core::BOOL::default();
+        if IsProcessInJob(GetCurrentProcess(), None, &mut in_job).is_err() {
+            // Cannot determine job membership: start without the breakaway
+            // request rather than risking ERROR_ACCESS_DENIED.
+            return PROCESS_CREATION_FLAGS(0);
+        }
+        if !in_job.as_bool() {
+            // Not inside any job: the breakaway request has no effect.
+            return CREATE_BREAKAWAY_FROM_JOB;
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        let query = QueryInformationJobObject(
+            None,
+            JobObjectExtendedLimitInformation,
+            &mut limits as *mut _ as *mut core::ffi::c_void,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            None,
+        );
+        if query.is_ok()
+            && (limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_BREAKAWAY_OK).0 != 0
+        {
+            // The job allows breakaway; keep the detached-service guarantee.
+            CREATE_BREAKAWAY_FROM_JOB
+        } else {
+            // Cannot confirm breakaway support: start without it rather than
+            // failing the launch with ERROR_ACCESS_DENIED.
+            PROCESS_CREATION_FLAGS(0)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,8 @@ import {
   IconSparkleRegular,
   IconThinkOutlineRegular,
   TextShimmer,
+  focusWithoutRing,
+  pointerModality,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { GroupKey, NodeReference } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { ProcessActivity } from "../contract/process-groups.ts";
@@ -177,7 +179,15 @@ const ProcessGroupHeader = memo(function ProcessGroupHeader({
       aria-controls={bodyId}
       data-process-activity={activity}
       onClick={(event) => {
-        event.currentTarget.focus();
+        const button = event.currentTarget;
+        const body = button.ownerDocument.getElementById(bodyId);
+        if (open && body?.contains(button.ownerDocument.activeElement)) {
+          if (event.detail !== 0 || pointerModality()) {
+            focusWithoutRing(button, { preventScroll: true });
+          } else {
+            button.focus({ preventScroll: true });
+          }
+        }
         toggle();
       }}
     >

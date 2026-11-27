@@ -14,8 +14,11 @@
 
 /* ui-primitives/input-modality publishes the attribute. Editable controls keep
  * their focus feedback on click; other controls reveal rings on keyboard
- * navigation. Only ring paint is suppressed, not elevation or selected borders. */
+ * navigation. Only ring paint is suppressed, not elevation or selected borders;
+ * `outline-style: none` also suppresses WebKit's native `auto` ring, which
+ * ignores `outline-color: transparent`. */
 html[data-input-modality="pointer"] body :focus-visible:not(:read-write) {
   --dsw-focus-ring-color: transparent;
   outline-color: transparent;
+  outline-style: none;
 }

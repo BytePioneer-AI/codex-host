@@ -322,22 +322,34 @@ You can also reuse official Codex Desktop remote channels to control agents on a
 
 ## Supported Agents
 
-Native **Codex** plus **19+ preinstalled coding agents** connected through official SDKs, RPC, and [ACP](https://agentclientprotocol.com/)—reusing the CLIs and credentials already logged in on your machine. See the full feature matrix in **[Capability Boundaries →](docs/harnesses/capability-boundaries.md)**.
+Native **Codex** plus **19+ preinstalled coding agents** connected through official SDKs, RPC, and [ACP](https://agentclientprotocol.com/)—reusing the CLIs and credentials already logged in on your machine:
 
-<details>
-<summary><b>View all preinstalled coding agents</b></summary>
+<p align="center">
+  <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a>
+  <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
+  <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
+  <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="docs/imgs/badge-opencode.svg" /></a>
+  <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
+  <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a><br />
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH" src="https://img.shields.io/badge/DSH-4D6BFE?logo=deepseek&logoColor=white" /></a>
+  <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="https://img.shields.io/badge/Qwen_Code-6950EF?logo=qwen&logoColor=white" /></a>
+  <a href="https://docs.devin.ai/cli"><img alt="Devin" src="docs/imgs/badge-devin.svg" /></a>
+  <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/badge-agy.svg" /></a>
+  <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="docs/imgs/badge-kiro.svg" /></a>
+  <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="docs/imgs/badge-codebuddy.svg" /></a><br />
+  <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="docs/imgs/badge-workbuddy.svg" /></a>
+  <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="docs/imgs/badge-cursor.svg" /></a>
+  <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="docs/imgs/badge-hermes.svg" /></a>
+  <a href="https://qoder.com/cli"><img alt="Qoder" src="docs/imgs/badge-qoder.svg" /></a>
+  <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="docs/imgs/badge-kimi.svg" /></a>
+  <a href="https://zcode.z.ai/"><img alt="ZCode" src="docs/imgs/badge-zcode.svg" /></a>
+  <a href="docs/harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
+</p>
 
-<br />
-
-| | | | |
-| :--- | :--- | :--- | :--- |
-| [Codex](https://openai.com/codex/) | [Claude Code](https://code.claude.com/docs/en/quickstart) | [Pi](https://pi.dev/) | [Oh My Pi](https://github.com/can1357/oh-my-pi) |
-| [OpenCode](https://opencode.ai/docs/) | [Grok](https://grok.com/) | [Cursor CLI](https://cursor.com/docs/cli/overview) | [GitHub Copilot](docs/harnesses/copilot/copilot-harness-integration.md) |
-| [Antigravity (AGY)](https://antigravity.google/product/antigravity-cli) | [Devin](https://docs.devin.ai/cli) | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | [Qwen Code](https://github.com/QwenLM/qwen-code) |
-| [Kimi Code](https://moonshotai.github.io/kimi-code/) | [Kiro CLI](https://kiro.dev/docs/cli/) | [CodeBuddy](https://www.codebuddy.cn/home/) | [WorkBuddy](https://www.workbuddy.ai/docs/workbuddy/Quickstart) |
-| [Qoder / Qoder CN](https://qoder.com/cli) | [Hermes](https://hermes-agent.nousresearch.com/docs) | [ZCode](https://zcode.z.ai/) | [Build a custom Harness →](.agents/skills/codexhost-add-harness/SKILL.md) |
-
-</details>
+<p align="center">
+  <a href="docs/harnesses/capability-boundaries.md"><strong>Capability Boundaries →</strong></a> &nbsp;·&nbsp;
+  <a href=".agents/skills/codexhost-add-harness/SKILL.md">Build a custom Harness →</a>
+</p>
 
 ---
 

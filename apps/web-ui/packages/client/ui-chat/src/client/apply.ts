@@ -12,10 +12,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar-right/client";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar-browser/client";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
-// The `file` entry of `SidebarRightResourceParamsMap`, which types `{ params: { line } }` below.
-import type {} from "@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client";
 import {
-  fileAddressFor,
   isAbsoluteWorkspacePath,
   resolveWorkspacePath,
 } from "@deepseek-ai/dsh-util-workspace-path";
@@ -58,6 +55,7 @@ import {
   type ChatSettings,
 } from "../chat-settings.ts";
 import { LinkOpeningRow, type LinkOpeningRowInjected } from "./settings/LinkOpeningRow.tsx";
+import { openWorkspaceLink } from "./open-workspace-link.ts";
 import { useTurnDataValue } from "./chat/use-turn-data.ts";
 import { bindDisclosure } from "./chat/use-disclosure.ts";
 
@@ -289,18 +287,6 @@ export function apply(ctx: Context): void {
             },
             fileMentions: (owner: TurnTailOwnerProps) =>
               ctx.get("chatFileMentions")?.forClosing(owner, sessionId),
-            // Files open in the right Sidebar, not in a desktop application: the
-            // content stays in the product, beside the conversation that produced
-            // it. A relative path, or an absolute one inside the session's
-            // workspace, is addressed under this session's scope,
-            // `dsh-resource://file/session/<id>/<path>`; an absolute path
-            // elsewhere keeps its absolute spelling in the same Session's address.
-            // Which tab type claims the
-            // address is the Sidebar's decision, not this call site's.
-            // A line travels as a navigation parameter, not as part of the
-            // address: the file is one piece of content whether it is opened at
-            // its top or at line 400, so the same tab is revealed and told where
-            // to land.
             openFile: async (path, options) => {
               const cwd = ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd;
               if (options?.external || options?.reveal) {
@@ -318,10 +304,14 @@ export function apply(ctx: Context): void {
                 if (!result.ok) throw new Error(result.error.message);
                 return;
               }
-              const url = fileAddressFor(sessionId, cwd, path);
-              if (options?.line === undefined) ctx.sidebarRight.openResource(url);
-              else ctx.sidebarRight.openResource(url, { params: { line: options.line } });
-              await Promise.resolve();
+              await openWorkspaceLink(
+                ctx.remote.workspaceFiles,
+                ctx.sidebarRight,
+                sessionId,
+                cwd,
+                path,
+                options?.line,
+              );
             },
             openSkill: (name) => {
               const scope = ctx.sessions.scope(sessionId);

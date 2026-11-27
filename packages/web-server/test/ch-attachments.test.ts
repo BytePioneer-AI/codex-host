@@ -176,7 +176,7 @@ it("projects imageViews from older pages with the configured attachment callback
   assert.equal(attachments.read(history, ref.attachmentId).data, PNG);
 });
 
-it("keeps a completed imageView fingerprint when only the backing file changes", (t) => {
+it("keeps the observed image available while a running tool overwrites its file", (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-image-view-fingerprint-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, "captured.png");
@@ -184,13 +184,15 @@ it("keeps a completed imageView fingerprint when only the backing file changes",
   const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
   const host = new FakeChHost();
   const row = host.add("image-view-fingerprint", root);
+  row.status = { type: "active" };
   row.turns = [
     {
       id: "turn",
-      status: "completed",
+      status: "inProgress",
       items: [
         { id: "user", type: "userMessage", content: [{ type: "text", text: "look" }] },
         { id: "image", type: "imageView", path },
+        { id: "cmd", type: "commandExecution", command: "render", status: "inProgress" },
       ],
     },
   ];
@@ -207,14 +209,19 @@ it("keeps a completed imageView fingerprint when only the backing file changes",
   rendered.update(structuredClone(row));
   const projected = assistantImageRefs(rendered);
   assert.equal(projected.length, 1);
-  assert.equal(attachments.read(rendered, projected[0]?.attachmentId ?? "").data, PNG);
+  const attachmentId = projected[0]?.attachmentId ?? "";
 
   const changed = Buffer.from(PNG, "base64");
   changed[changed.length - 1] = (changed[changed.length - 1] ?? 0) ^ 1;
   writeFileSync(path, changed);
   assert.doesNotThrow(() => rendered.update(structuredClone(row)));
   assert.deepEqual(assistantImageRefs(rendered), projected);
-  assert.throws(() => attachments.read(rendered, projected[0]?.attachmentId ?? ""), /unavailable/u);
+  assert.equal(attachments.read(rendered, attachmentId).data, PNG);
+  // After eviction the replacement bytes still cannot satisfy the original observation.
+  for (let index = 0; index < 64; index++) {
+    attachments.projectImageView(row.id, path, `later-image-${index}`);
+  }
+  assert.throws(() => attachments.read(rendered, attachmentId), /unavailable/u);
   const replacement = join(root, "replacement.png");
   writeFileSync(replacement, Buffer.from(PNG, "base64"));
   const imageView = row.turns[0]?.items.find((item) => item.id === "image");
@@ -386,11 +393,14 @@ it("gives repeated imageViews of one path independent attachment identities", (t
   const refs = assistantImageRefs(rendered);
   assert.equal(refs.length, 2);
   assert.notEqual(refs[0]?.attachmentId, refs[1]?.attachmentId);
-  assert.throws(() => attachments.read(rendered, refs[0]?.attachmentId ?? ""), /unavailable/u);
+  assert.equal(attachments.read(rendered, refs[0]?.attachmentId ?? "").data, PNG);
   assert.equal(
     attachments.read(rendered, refs[1]?.attachmentId ?? "").data,
     changed.toString("base64"),
   );
+  // A cached observation is only accessible while the native item is in the loaded thread.
+  rendered.thread.turns = rendered.thread.turns.slice(1);
+  assert.throws(() => attachments.read(rendered, first.attachmentId), /unavailable/u);
 });
 
 it("handles structured localImage/file URLs and inline images; never fetches external URLs", (t) => {

@@ -46,10 +46,8 @@ historical reference.
 - `history/codexhost-rail-v1.svg`: the previous open C ring and center square,
   preserved with the rail's original geometry and stroke. The current rail reuses
   its geometry with a lighter stroke; this reference file remains unchanged.
-- `codexhost-app-icon.svg`: the previous plated CH application mark, retained at
-  its existing path for compatibility and historical reference. It is no longer
-  used by settings, console, native application, or installer icons. Native PNG
-  and ICO assets are generated from `codexhost-otter-color.svg`; see the
+- `codexhost-app-icon.svg`: the coastal wave badge application icon vector source
+  used to generate native PNG/ICO assets and Web/Wiki favicons; see the
   [application icon instructions](../../../../crates/launcher/assets/README.md).
 
 ## External artwork provenance

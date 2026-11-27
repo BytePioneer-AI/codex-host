@@ -89,6 +89,7 @@ export function devinError(error: unknown): HarnessError {
 function rejected(code: HarnessError["code"], message: string): { ok: false; error: HarnessError } {
   return { ok: false, error: { code, message, retryable: false } };
 }
+const openingSessions = new WeakSet<DevinSession>();
 export class DevinAdapter implements HarnessAdapter {
   readonly normalizeStoredModelRef = normalizeStoredDevinModelRef;
   readonly harnessId = harnessIdSchema.parse("devin");
@@ -229,6 +230,7 @@ export class DevinAdapter implements HarnessAdapter {
         },
         input.kind === "create",
       );
+      openingSessions.add(openedSession);
       session = openedSession;
       if ("model" in input && input.model) {
         const selected = await session.execute({ type: "model.select", model: input.model });
@@ -264,6 +266,7 @@ export class DevinAdapter implements HarnessAdapter {
       }
       if (this.#closed)
         throw new DevinHistoryError("invalidState", "Devin adapter closed during session startup");
+      openingSessions.delete(openedSession);
       this.#sessions.add(session);
       return { ok: true, value: session };
     } catch (error) {
@@ -457,7 +460,7 @@ export class DevinSession implements HarnessSession {
     delete this.initialState.effectiveModel;
     delete this.initialState.effectiveThinkingOptionId;
     Object.assign(this.initialState, state);
-    if (isDeepStrictEqual(this.initialState, previous)) return;
+    if (isDeepStrictEqual(this.initialState, previous) || openingSessions.has(this)) return;
     this.#channel.emit({
       kind: "event",
       event: { type: "session.state.changed", state: structuredClone(this.initialState) },

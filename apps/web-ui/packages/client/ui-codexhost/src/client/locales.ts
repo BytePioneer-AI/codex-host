@@ -1,5 +1,11 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
+  "video.title": "Video",
+  "video.preview": "Video preview: {name}",
+  "video.loading": "Loading video…",
+  "video.failed":
+    "This video could not be played. The format or codec may not be supported by your browser. Download the file to play it in another app.",
+  "video.retry": "Retry",
   "file.download": "Download",
   "file.download.cta": "Download file",
   "file.download.preparing": "Preparing…",
@@ -920,6 +926,11 @@ export const en = {
 export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
+  "video.title": "视频",
+  "video.preview": "视频预览：{name}",
+  "video.loading": "正在加载视频…",
+  "video.failed": "无法播放此视频，文件格式或编码可能不受浏览器支持。可下载后使用其他应用播放。",
+  "video.retry": "重试",
   "file.download": "下载",
   "file.download.cta": "下载文件",
   "file.download.preparing": "正在准备…",

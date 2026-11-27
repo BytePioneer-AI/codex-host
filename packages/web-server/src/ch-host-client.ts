@@ -59,6 +59,8 @@ export interface ChProjectSnapshot {
   projectless: string[];
   /** Projects in each native custom section, keyed by official section ID; shared Host only. */
   sectionProjects?: Record<string, string[]> | undefined;
+  /** Projects pinned in Codex Desktop (`pinned-project-ids`), in Desktop order; shared Host only. */
+  pinnedProjects?: string[] | undefined;
 }
 
 const exec = promisify(execFile);

@@ -377,6 +377,45 @@ describe("source-separated Thread catalog", () => {
     },
   );
 
+  it("omits untouched official import mirrors but keeps continued or sectioned ones", async () => {
+    const options = input();
+    const times = new Map([
+      ["mirror", 10],
+      ["continued", 10],
+      ["placed", 10],
+    ]);
+    options.readLocal = async () => ({ records: [], placements: [], officialImportTimes: times });
+    options.readContinuationImportTimes = async () => times;
+    options.requestOfficialPage = async () =>
+      page([
+        { ...row("mirror", 5), recencyAt: 5 },
+        { ...row("continued", 4), recencyAt: 90 },
+        { ...row("placed", 3), recencyAt: 3, section: { id: "pinned" } },
+        row("native", 2),
+      ]);
+    const firstPage = await readThreadCatalog(options);
+    expect(firstPage.threads.map((thread) => thread.id)).toEqual(["continued", "placed", "native"]);
+    const nextPage = await readThreadCatalog({ ...options, officialCursor: { live: "next" } });
+    expect(nextPage.threads.map((thread) => thread.id)).toEqual(["continued", "placed", "native"]);
+  });
+
+  it("continues a scoped read past a page containing only a hidden import", async () => {
+    const options = input();
+    options.scope = { cwd: "/project", excludeCwds: [] };
+    options.readLocal = async () => ({
+      records: [],
+      placements: [],
+      officialImportTimes: new Map([["mirror", 10]]),
+    });
+    options.requestOfficialPage = async ({ cursor }) =>
+      cursor === null
+        ? page([{ ...row("mirror", 5), recencyAt: 5, cwd: "/project" }], "more")
+        : page([{ ...row("native", 4), cwd: "/project" }]);
+    const result = await readThreadCatalog(options);
+    expect(result.threads.map((thread) => thread.id)).toEqual(["native"]);
+    expect(result.officialCursor).toEqual({ live: null });
+  });
+
   it("rejects a non-advancing native cursor without requesting another page", async () => {
     const request = vi.fn(async () => page([], "A"));
     await expect(

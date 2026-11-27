@@ -47,7 +47,22 @@ function insertSessionId(ids: readonly string[], sessionId: string, beforeId?: s
   return rest;
 }
 
+interface ProjectSectionOverride {
+  official: string | null;
+  target: string | null;
+}
+
+interface PinnedWorkspaceOverride {
+  official: boolean;
+  target: boolean;
+  pinnedAt?: number;
+}
+
 interface WorkspaceState {
+  /** Web sidebar placement, tied to the official placement it supersedes. */
+  projectSectionOverrides?: Record<string, ProjectSectionOverride>;
+  /** Web sidebar workspace pins, anchored to the official Desktop pin state they supersede. */
+  pinnedWorkspaceOverrides?: Record<string, PinnedWorkspaceOverride>;
   /** Web-created assignments keyed by the Host-qualified Web Session ID. */
   remoteProjectIds?: Record<string, string>;
   items: WorkspaceView[];
@@ -209,12 +224,12 @@ export function projectRootTitles(projects: readonly NativeProject[]): Map<strin
   return new Map(projectRoots(projects).map((root) => [root.path, root.title]));
 }
 
-/** One native Thread section and the Workspaces of the Desktop projects placed in it. */
+/** One native Thread section and its visible project Workspaces in sidebar order. */
 export interface ThreadSectionView {
   id: string;
   name: string;
   threadIds: string[];
-  /** Omitted when Desktop placed no registered project in the section. */
+  /** Omitted when the section contains no registered project. */
   workspaceIds?: string[];
 }
 
@@ -300,6 +315,8 @@ export class Workspaces {
   private referenceArchives: string[] | undefined;
   private remoteArchives: readonly string[] = [];
   private remoteGroups: WorkspaceView[] = [];
+  private officialPinnedWorkspaceIds: string[] = [];
+  private publishedPinnedWorkspaces: string[] = [];
 
   setRemoteGroups(groups: WorkspaceView[]): void {
     const previousOrder = this.list().map((group) => group.workspaceId);
@@ -317,30 +334,47 @@ export class Workspaces {
         type: "order",
         workspaceIds: nextOrder,
       });
+    this.publishPinnedWorkspaces();
   }
 
-  /** Remove persisted sidebar order entries belonging to a permanently removed remote host. */
+  /** Remove persisted sidebar order and pin overrides belonging to a permanently removed remote host. */
   removeRemoteHostOrder(hostId: string): void {
-    const current = this.state.displayOrder;
-    if (!current || current.length === 0) return;
     const remoteHostIds = new Map(
       this.remoteGroups.flatMap((group) =>
         group.remote ? [[group.workspaceId, group.remote.hostId] as const] : [],
       ),
     );
     const encodedPrefix = `remote-workspace:${encodeURIComponent(hostId)}:`;
-    const next = current.filter(
-      (id) =>
-        remoteWorkspaceHostId(id) !== hostId &&
-        remoteHostIds.get(id) !== hostId &&
-        !id.startsWith(encodedPrefix),
+    const belongsToHost = (id: string): boolean =>
+      remoteWorkspaceHostId(id) === hostId ||
+      remoteHostIds.get(id) === hostId ||
+      id.startsWith(encodedPrefix);
+
+    const currentOrder = this.state.displayOrder;
+    const nextOrder = currentOrder?.filter((id) => !belongsToHost(id));
+    const orderChanged =
+      currentOrder !== undefined &&
+      nextOrder !== undefined &&
+      nextOrder.length !== currentOrder.length;
+
+    const currentPins = this.pinnedWorkspaceOverrides();
+    const nextPins = Object.fromEntries(
+      Object.entries(currentPins).filter(([id]) => !belongsToHost(id)),
     );
-    if (next.length === current.length) return;
-    const { displayOrder, ...rest } = this.state;
+    const pinsChanged = Object.keys(nextPins).length !== Object.keys(currentPins).length;
+
+    if (!orderChanged && !pinsChanged) return;
+    const { displayOrder, pinnedWorkspaceOverrides, ...rest } = this.state;
     void displayOrder;
-    const state: WorkspaceState = next.length > 0 ? { ...rest, displayOrder: next } : rest;
+    void pinnedWorkspaceOverrides;
+    const state: WorkspaceState = {
+      ...rest,
+      ...(nextOrder && nextOrder.length > 0 ? { displayOrder: nextOrder } : {}),
+      ...(Object.keys(nextPins).length > 0 ? { pinnedWorkspaceOverrides: nextPins } : {}),
+    };
     this.data.writeJson(FILE, state);
     this.state = state;
+    if (pinsChanged) this.publishPinnedWorkspaces();
   }
 
   constructor(
@@ -353,6 +387,7 @@ export class Workspaces {
       archivedSessionIds: [],
       pinnedSessionIds: [],
     });
+    this.publishedPinnedWorkspaces = this.pinnedWorkspaceIds();
   }
 
   private save(): void {
@@ -533,6 +568,7 @@ export class Workspaces {
       };
     });
     this.publishWorkspaceChanges(before);
+    this.publishPinnedWorkspaces();
   }
 
   updateNativeProjectMember(sessionId: string, projectId: string | undefined): void {
@@ -639,7 +675,10 @@ export class Workspaces {
     this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
   }
 
-  /** Read-only native Thread sections; only the app-server and Desktop persist them. */
+  /** Unmodified official snapshot and the projection delivered to Web clients. */
+  private officialThreadSections: ThreadSectionView[] | undefined;
+  /** Projects registered when each section's member list was last read successfully. */
+  private projectSectionCoverage = new Map<string, ReadonlySet<string>>();
   private referenceThreadSections: ThreadSectionView[] = [];
 
   hasThreadSection(id: string): boolean {
@@ -674,9 +713,117 @@ export class Workspaces {
       });
       return workspaceIds.length > 0 ? { ...section, workspaceIds } : { ...section };
     });
+    const saved = this.state.projectSectionOverrides;
+    const registered =
+      this.nativeWorkspaces && new Set(this.nativeWorkspaces.map((item) => item.workspaceId));
+    const coverage = new Map<string, ReadonlySet<string>>();
+    if (registered) {
+      const located = new Set(next.flatMap((section) => section.workspaceIds ?? []));
+      for (const section of next) {
+        // An absent renderer row is unknown; an observed empty row confirms that the projects left.
+        if (Object.hasOwn(sectionProjects, section.id)) {
+          coverage.set(section.id, registered);
+          continue;
+        }
+        const lastRead = this.projectSectionCoverage.get(section.id);
+        if (lastRead) coverage.set(section.id, lastRead);
+        const previous =
+          this.officialThreadSections?.find((item) => item.id === section.id)?.workspaceIds ?? [];
+        const anchors = Object.entries(saved ?? {}).flatMap(([id, placement]) =>
+          placement.official === section.id ? [id] : [],
+        );
+        const retained = [...new Set([...previous, ...anchors])].filter(
+          (id) => registered.has(id) && !located.has(id),
+        );
+        if (retained.length) {
+          section.workspaceIds = retained;
+          for (const id of retained) located.add(id);
+        }
+      }
+    }
+    if (registered && saved) {
+      const available = new Set(next.map((section) => section.id));
+      const valid = Object.fromEntries(
+        Object.entries(saved).filter(
+          ([id, placement]) =>
+            registered.has(id) &&
+            (placement.target === null || available.has(placement.target)) &&
+            this.projectSection(next, id) === placement.official,
+        ),
+      );
+      if (Object.keys(valid).length !== Object.keys(saved).length) this.saveProjectSections(valid);
+    }
+    this.officialThreadSections = next;
+    this.projectSectionCoverage = coverage;
+    this.publishProjectSections();
+  }
+
+  private projectSection(
+    sections: readonly ThreadSectionView[],
+    workspaceId: string,
+  ): string | null {
+    return sections.find((section) => section.workspaceIds?.includes(workspaceId))?.id ?? null;
+  }
+
+  private saveProjectSections(overrides: Record<string, ProjectSectionOverride>): void {
+    const state = { ...this.state };
+    if (Object.keys(overrides).length) state.projectSectionOverrides = overrides;
+    else delete state.projectSectionOverrides;
+    this.data.writeJson(FILE, state);
+    this.state = state;
+  }
+
+  private publishProjectSections(): void {
+    const official = this.officialThreadSections ?? [];
+    const overrides = this.nativeWorkspaces ? this.state.projectSectionOverrides : undefined;
+    const next = !overrides
+      ? official
+      : official.map(({ workspaceIds, ...section }) => {
+          const ids = (workspaceIds ?? []).filter((id) => !Object.hasOwn(overrides, id));
+          for (const [id, placement] of Object.entries(overrides))
+            if (placement.target === section.id) ids.push(id);
+          return ids.length ? { ...section, workspaceIds: ids } : section;
+        });
     if (JSON.stringify(next) === JSON.stringify(this.referenceThreadSections)) return;
     this.referenceThreadSections = next;
     this.broadcast({ type: "threadSections", threadSections: next });
+  }
+
+  private moveWorkspaceToSection(
+    workspaceId: unknown,
+    sectionId: unknown,
+  ): { sectionId: string | null } {
+    if (
+      typeof workspaceId !== "string" ||
+      !this.officialThreadSections ||
+      !this.nativeWorkspaces?.some((workspace) => workspace.workspaceId === workspaceId) ||
+      !(sectionId === null || (typeof sectionId === "string" && this.hasThreadSection(sectionId)))
+    )
+      throw new RpcError("workspace/section-invalid", "Unknown local project or sidebar section.");
+    const official = this.projectSection(this.officialThreadSections, workspaceId);
+    if (
+      official === null &&
+      !this.state.projectSectionOverrides?.[workspaceId] &&
+      this.officialThreadSections.some(
+        (section) => !this.projectSectionCoverage.get(section.id)?.has(workspaceId),
+      )
+    )
+      throw new RpcError(
+        "workspace/section-invalid",
+        "The project's current sidebar section is unknown. Refresh the sidebar and try again.",
+      );
+    if (this.projectSection(this.referenceThreadSections, workspaceId) !== sectionId) {
+      // Reinsert at the tail so a second move appends after earlier arrivals in its destination.
+      const overrides = Object.fromEntries(
+        Object.entries(this.state.projectSectionOverrides ?? {}).filter(
+          ([id]) => id !== workspaceId,
+        ),
+      );
+      if (sectionId !== official) overrides[workspaceId] = { official, target: sectionId };
+      this.saveProjectSections(overrides);
+      this.publishProjectSections();
+    }
+    return { sectionId };
   }
 
   /** Ephemeral Host archive projection; shared Threads never use legacy Web archive flags. */
@@ -705,6 +852,173 @@ export class Workspaces {
   /** Authoritative visible pin list used by both the stream and RPC replies. */
   pinnedSessionIds(): string[] {
     return [...new Set([...this.localPinnedSessionIds(), ...this.remotePins])];
+  }
+
+  /** Authoritative visible pinned Workspaces: recent Web pins first, then Desktop pins in order. */
+  pinnedWorkspaceIds(): string[] {
+    const visibleIds = new Set(this.list().map((workspace) => workspace.workspaceId));
+    const overrides = this.pinnedWorkspaceOverrides();
+    const webPinned = Object.entries(overrides)
+      .filter(([id, entry]) => entry.target && visibleIds.has(id))
+      .sort(([, a], [, b]) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0))
+      .map(([id]) => id);
+    const webPinnedSet = new Set(webPinned);
+    const officialPinned = this.officialPinnedWorkspaceIds.filter(
+      (id) => visibleIds.has(id) && !webPinnedSet.has(id) && overrides[id]?.target !== false,
+    );
+    return [...webPinned, ...officialPinned];
+  }
+
+  /**
+   * Reconcile Desktop's read-only `pinned-project-ids` snapshot against Web overrides.
+   * Any override whose official Desktop state now matches `target` (or diverged from its
+   * recorded `official` anchor) is automatically cleared so Desktop and Web never conflict
+   * or duplicate a pinned workspace.
+   */
+  setReferencePinnedProjects(
+    projects: readonly { id: string; rootPaths: readonly string[] }[] = [],
+    pinnedProjects?: readonly string[],
+  ): void {
+    const resolvedOfficial: string[] = [];
+    const seen = new Set<string>();
+    const incoming = pinnedProjects ?? [];
+    if (this.nativeWorkspaces) {
+      for (const projectId of incoming) {
+        const workspace = this.nativeWorkspaces.find((item) => item.projectId === projectId);
+        if (workspace && !seen.has(workspace.workspaceId)) {
+          seen.add(workspace.workspaceId);
+          resolvedOfficial.push(workspace.workspaceId);
+        }
+      }
+    } else if (incoming.length > 0) {
+      const paths =
+        sectionRootPaths(projects, { pinned: incoming }, ["pinned"]).get("pinned") ?? [];
+      for (const rootPath of paths) {
+        const workspace = this.byPath(rootPath);
+        if (workspace && !seen.has(workspace.workspaceId)) {
+          seen.add(workspace.workspaceId);
+          resolvedOfficial.push(workspace.workspaceId);
+        }
+      }
+    }
+    const officialSet = new Set(resolvedOfficial);
+    const saved = this.pinnedWorkspaceOverrides();
+    const savedKeys = Object.keys(saved);
+    if (savedKeys.length > 0) {
+      const registeredNative = this.nativeWorkspaces
+        ? new Set(this.nativeWorkspaces.map((item) => item.workspaceId))
+        : undefined;
+      const localItems = new Set(this.state.items.map((item) => item.workspaceId));
+      const valid: Record<string, PinnedWorkspaceOverride> = {};
+      for (const [id, entry] of Object.entries(saved)) {
+        const isRemoteId = id.startsWith("remote-workspace:");
+        if (!isRemoteId) {
+          if (registeredNative) {
+            if (id.startsWith("codex-project:") && !registeredNative.has(id)) continue;
+          } else if (!localItems.has(id)) {
+            continue;
+          }
+        }
+        const currentOfficial = officialSet.has(id);
+        if (currentOfficial === entry.target || currentOfficial !== entry.official) continue;
+        valid[id] = entry;
+      }
+      if (Object.keys(valid).length !== savedKeys.length) {
+        this.savePinnedWorkspaces(valid);
+      }
+    }
+    this.officialPinnedWorkspaceIds = resolvedOfficial;
+    this.publishPinnedWorkspaces();
+  }
+
+  removePinnedWorkspaceOverride(workspaceId: string): void {
+    const existing = this.pinnedWorkspaceOverrides();
+    if (!Object.hasOwn(existing, workspaceId)) return;
+    const overrides = Object.fromEntries(
+      Object.entries(existing).filter(([id]) => id !== workspaceId),
+    );
+    this.savePinnedWorkspaces(overrides);
+    this.publishPinnedWorkspaces();
+  }
+
+  private pinnedWorkspaceOverrides(): Record<string, PinnedWorkspaceOverride> {
+    const raw = this.state.pinnedWorkspaceOverrides;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const valid: Record<string, PinnedWorkspaceOverride> = {};
+    for (const [id, entry] of Object.entries(raw)) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        typeof entry.official === "boolean" &&
+        typeof entry.target === "boolean"
+      ) {
+        valid[id] =
+          typeof entry.pinnedAt === "number" && Number.isFinite(entry.pinnedAt)
+            ? { official: entry.official, target: entry.target, pinnedAt: entry.pinnedAt }
+            : { official: entry.official, target: entry.target };
+      }
+    }
+    return valid;
+  }
+
+  private savePinnedWorkspaces(overrides: Record<string, PinnedWorkspaceOverride>): void {
+    const state: WorkspaceState = { ...this.state };
+    if (Object.keys(overrides).length > 0) state.pinnedWorkspaceOverrides = overrides;
+    else delete state.pinnedWorkspaceOverrides;
+    this.data.writeJson(FILE, state);
+    this.state = state;
+  }
+
+  private publishPinnedWorkspaces(): void {
+    const next = this.pinnedWorkspaceIds();
+    if (
+      next.length === this.publishedPinnedWorkspaces.length &&
+      next.every((id, index) => id === this.publishedPinnedWorkspaces[index])
+    )
+      return;
+    this.publishedPinnedWorkspaces = next;
+    this.broadcast({ type: "pinnedWorkspaces", pinnedWorkspaceIds: next });
+  }
+
+  private setWorkspacePinned(
+    workspaceId: unknown,
+    pinned: unknown,
+  ): { pinnedWorkspaceIds: string[] } {
+    if (typeof workspaceId !== "string" || !workspaceId || typeof pinned !== "boolean")
+      throw new RpcError("workspace/pin-invalid", "Invalid workspace pin request.");
+    const visible = this.list();
+    if (!visible.some((item) => item.workspaceId === workspaceId))
+      throw new RpcError("workspace/not-found", `Unknown workspace ${workspaceId}`, {
+        workspaceId,
+      });
+    const current = this.pinnedWorkspaceIds();
+    if (current.includes(workspaceId) === pinned) {
+      return { pinnedWorkspaceIds: current };
+    }
+    const official = this.officialPinnedWorkspaceIds.includes(workspaceId);
+    const existing = this.pinnedWorkspaceOverrides();
+    const overrides = Object.fromEntries(
+      Object.entries(existing).filter(([id]) => id !== workspaceId),
+    );
+    if (pinned !== official) {
+      if (pinned) {
+        let maxPinnedAt = 0;
+        for (const entry of Object.values(overrides)) {
+          if (entry.pinnedAt !== undefined && entry.pinnedAt > maxPinnedAt)
+            maxPinnedAt = entry.pinnedAt;
+        }
+        overrides[workspaceId] = {
+          official,
+          target: true,
+          pinnedAt: Math.max(Date.now(), maxPinnedAt + 1),
+        };
+      } else {
+        overrides[workspaceId] = { official, target: false };
+      }
+    }
+    this.savePinnedWorkspaces(overrides);
+    this.publishPinnedWorkspaces();
+    return { pinnedWorkspaceIds: this.pinnedWorkspaceIds() };
   }
 
   get(workspaceId: string): WorkspaceView | undefined {
@@ -992,6 +1306,7 @@ export class Workspaces {
     const workspaceIds = [...ids];
     if (JSON.stringify([...before.keys()]) !== JSON.stringify(workspaceIds))
       this.broadcast({ type: "order", workspaceIds });
+    this.publishPinnedWorkspaces();
   }
 
   /** An actual Web submission makes its selected folder an explicit Web workspace. */
@@ -1057,20 +1372,42 @@ export class Workspaces {
       const native = await commands?.delete(request.workspaceId);
       if (native) return native;
       const workspace = this.require(request.workspaceId);
-      const { displayOrder: currentDisplayOrder, ...stateWithoutDisplayOrder } = this.state;
+      const {
+        displayOrder: currentDisplayOrder,
+        pinnedWorkspaceOverrides: currentPinnedOverrides,
+        ...stateWithoutOrderOrPins
+      } = this.state;
+      void currentPinnedOverrides;
       const nextDisplayOrder = currentDisplayOrder?.filter((id) => id !== request.workspaceId);
+      const nextPinnedOverrides = Object.fromEntries(
+        Object.entries(this.pinnedWorkspaceOverrides()).filter(
+          ([id]) => id !== request.workspaceId,
+        ),
+      );
       const state: WorkspaceState = {
-        ...stateWithoutDisplayOrder,
+        ...stateWithoutOrderOrPins,
         items: this.state.items.filter((item) => item.workspaceId !== request.workspaceId),
         deletedPaths: [...(this.state.deletedPaths ?? []), workspace.path],
         ...(nextDisplayOrder && nextDisplayOrder.length > 0
           ? { displayOrder: nextDisplayOrder }
           : {}),
+        ...(Object.keys(nextPinnedOverrides).length > 0
+          ? { pinnedWorkspaceOverrides: nextPinnedOverrides }
+          : {}),
       };
       this.data.writeJson(FILE, state);
       this.state = state;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
+      this.publishPinnedWorkspaces();
       return { deleted: true };
+    });
+    rpc.register("workspace/moveWorkspaceToSection", async (args) => {
+      const request = requestOf<{ workspaceId?: unknown; sectionId?: unknown } | null>(args);
+      return this.moveWorkspaceToSection(request?.workspaceId, request?.sectionId);
+    });
+    rpc.register("workspace/setWorkspacePinned", async (args) => {
+      const request = requestOf<{ workspaceId?: unknown; pinned?: unknown } | null>(args);
+      return this.setWorkspacePinned(request?.workspaceId, request?.pinned);
     });
     rpc.register("workspace/insertBefore", async (args) => {
       const request = requestOf<{ workspaceId: string; beforeWorkspaceId?: string }>(args);
@@ -1137,6 +1474,7 @@ export class Workspaces {
         value: {
           items: this.list(),
           pinnedSessionIds: this.pinnedSessionIds(),
+          pinnedWorkspaceIds: this.pinnedWorkspaceIds(),
           threadSections: this.referenceThreadSections,
           archivedSessionIds: this.archivedSessionIds(),
           ...(this.referenceOnlyDefault ? { canStartProjectless: true } : {}),

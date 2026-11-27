@@ -29,7 +29,7 @@ import { inspectRequestPrompt } from "../contract/request-inspection.ts";
 import { inspectSystemPrompt, type SystemPromptState } from "../contract/system-prompt.ts";
 import { ConversationNodeAssembler } from "./assembler.ts";
 import { ConversationEventRegistry } from "./event-registry.ts";
-import { HistoricalImageCache } from "./historical-images.ts";
+import { HistoricalImageCache, type UploadedImageCacheEntry } from "./historical-images.ts";
 import { ConversationViewRegistry } from "./view-registry.ts";
 import { ConversationGroupRegistry } from "./group-registry.ts";
 
@@ -297,13 +297,47 @@ export class UiConversation extends Service {
    * Adopt an already-displayable URL for one durable reference (see
    * HistoricalImageCache.seed): the transcript node then renders it without a
    * byte round-trip.
-   * @param sessionId - Session authorization and lifetime scope.
+   * @param sessionId - Session authorization scope.
    * @param attachment - Durable image reference the URL displays.
    * @param url - browser URL to adopt.
+   * @param bytes - optional backing image size for LRU budget accounting.
    * @returns whether the cache took URL ownership.
    */
-  seedImageUrl(sessionId: SessionId, attachment: ImageAttachmentRef, url: string): boolean {
-    return this.images.seed(sessionId, attachment, url);
+  seedImageUrl(
+    sessionId: SessionId,
+    attachment: ImageAttachmentRef,
+    url: string,
+    bytes?: number,
+  ): boolean {
+    return this.images.seed(sessionId, attachment, url, bytes);
+  }
+
+  /**
+   * Cache a locally uploaded image Blob under its upload receipt identity and
+   * fallback indices so the rendered message reuses local bytes without RPC.
+   */
+  cacheUploadedImage(sessionId: SessionId, uploaded: UploadedImageCacheEntry): boolean {
+    return this.images.cacheUploaded(sessionId, uploaded);
+  }
+
+  /**
+   * Bind an observed message image reference to a previously uploaded image
+   * entry in the shared LRU cache.
+   */
+  aliasUploadedImage(
+    sessionId: SessionId,
+    uploadedAttachmentId: string,
+    target: ImageAttachmentRef,
+  ): boolean {
+    return this.images.aliasUploaded(sessionId, uploadedAttachmentId, target);
+  }
+
+  /**
+   * Clear pending-name fallback matching for an uploaded draft that was
+   * removed before submission.
+   */
+  clearPendingUploadedImage(sessionId: SessionId, uploadedAttachmentId: string): void {
+    this.images.clearPendingUploaded(sessionId, uploadedAttachmentId);
   }
 
   /**

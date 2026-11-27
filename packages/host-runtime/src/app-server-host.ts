@@ -305,6 +305,7 @@ import {
   type ProjectedTurn,
 } from "./external-turn-projection.js";
 import { HostExtensionManager } from "./host-extension-manager.js";
+import { ExtensionActivity } from "./extension-activity.js";
 import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
@@ -941,6 +942,7 @@ function isPassiveTelemetryOutput(output: HarnessOutput): boolean {
 }
 
 export class AppServerHost {
+  readonly #extensionActivity: ExtensionActivity;
   readonly #options: Required<
     Pick<AppServerHostOptions, "desktopInput" | "desktopOutput" | "diagnosticOutput">
   > &
@@ -1211,6 +1213,7 @@ export class AppServerHost {
       scope: this.#officialRuntimeScope,
       refreshBeforeRequests: !options.externalOnly,
       onBackendStopped: () => {
+        this.#extensionActivity?.resetNative();
         this.#pendingOfficialTurnStarts.clear();
         this.#pendingOfficialDeletes.clear();
         this.#activeOfficialTurns.clear();
@@ -1473,6 +1476,17 @@ export class AppServerHost {
       startNextQueuedExternalTurn: (thread) => this.#startNextQueuedExternalTurn(thread),
     });
     const desktopEnvironment = options.environment ?? process.env;
+    const extensionActivity = (this.#extensionActivity = new ExtensionActivity(
+      this.clientEvents,
+      (id) => this.#client.clientSnapshot(id, { truncateToolOutput: true }),
+      (error) => this.#diagnose(error),
+      async (id) => {
+        const location = await this.#locateExternalThread(id);
+        if (location.kind !== "external") return undefined;
+        const harnessId = location.record.harnessId;
+        return { id: harnessId, name: this.#harnessDisplayLabel(harnessId) };
+      },
+    ));
     this.hostExtensions =
       desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
         ? undefined
@@ -1481,6 +1495,22 @@ export class AppServerHost {
             codexhostDataDirectory(desktopEnvironment),
             (revision) => this.clientEvents.extensionsChanged(revision),
             (message) => this.#diagnose(message),
+            {
+              readActivity: async () => extensionActivity.read(),
+              describeHarness: async (id) => {
+                if (id === "codex") return { id: harnessIdSchema.parse("codex"), name: "Codex" };
+                const descriptor = this.#pluginDescriptors.find((item) => item.id === id);
+                return descriptor
+                  ? {
+                      id: descriptor.id,
+                      name: descriptor.name,
+                      ...(descriptor.icon ? { icon: descriptor.icon } : {}),
+                      ...(descriptor.iconStyle ? { iconStyle: descriptor.iconStyle } : {}),
+                    }
+                  : null;
+              },
+              desktopShell: desktopEnvironment.CODEXHOST_DESKTOP_SHELL_PATH,
+            },
           ));
     this.#desktopControl = new DesktopControlRequests({
       hostExtensions: this.hostExtensions,
@@ -1593,6 +1623,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#extensionActivity?.close();
     if (!this.#options.hostExtensions) void this.hostExtensions?.close();
     this.#skills?.dispose();
     this.#options.sharedThreads?.close();
@@ -1789,6 +1820,7 @@ export class AppServerHost {
     } finally {
       this.#skills?.dispose();
       this.#treeWatch.close();
+      this.#extensionActivity.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
       if (!this.#options.hostExtensions) await this.hostExtensions?.close();

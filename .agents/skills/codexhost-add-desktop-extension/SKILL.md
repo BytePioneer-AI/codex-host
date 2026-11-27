@@ -126,6 +126,14 @@ export async function activate(ctx) {
 - `ctx.extensionId`、`ctx.extensionDir`、`ctx.dataDir`（`$CODEXHOST_DATA_DIR/host-extension-data/<id>`）、`ctx.readSettings()`、`ctx.writeSettings(values)`、`ctx.handle(method, handler)`。
 - 后端随共享 Host 唯一运行 1 个进程，与前端开闭无关；**进程隔离不是权限沙箱**，只运行信任的代码。
 
+### 2.6 任务摘要、原生浮窗与 Web 标签页图标
+
+- 支持任务摘要的宿主提供可选 `ctx.activity.read()`，返回运行数、待处理数、有界会话摘要、有界通知及修订号，不暴露 Transcript；会话摘要只包含 Thread ID、标题、项目简称、状态与更新时间。用 `epoch` 与通知修订号维护已读状态。
+- 会话摘要的可选 `harness: { id, name }` 表示真实 Agent 归属；用 `ctx.harnesses?.describe(id)` 按需读取已安装 Harness 的图像与受限 `iconStyle`，未找到时使用通用图标，不根据模型名称猜测 Agent。
+- 安装了桌面壳的宿主可通过 `ctx.windows.available` / `open({ url, width, height })` / `close()` / `showHost(route?)` 托管一个透明置顶原生窗口。只允许显式端口的 `http://127.0.0.1` 与 96–640 的宽高；`showHost` 只接受根路径查询或片段，并复用主壳已有 Web 登录态。窗口属于扩展后端，禁用、卸载、更新或 Host 退出时回收，浮窗显示在 Host 所在电脑。
+- Web 注入可用 `api.tabIcon?.set(pngDataUrl | null)` 提交有界 PNG 标签页图标。宿主在文档隐藏和扩展卸载时恢复原图标；仅影响当前 CodexHost 文档。
+- 完整能力边界与原生页面拖动、交互区域协议见 [Host 扩展架构](../../../docs/architecture/desktop-ui-extensions.md)，可导入实例位于 `extensions/pet-companion/`。
+
 ## 3. 打包与隔离实测
 
 1. 将 `manifest.json`、构建后的 `page`/`widget`/`desktop`/`web`/`backend` 文件以及声明的图标、截图与静态资源打入 `.zip`（`manifest.json` 位于 ZIP 根或唯一顶层目录；ZIP ≤ 64 MiB）。如仅构建 `desktop` 经典入口，也可复用：

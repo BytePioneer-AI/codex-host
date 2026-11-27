@@ -1,3 +1,4 @@
+mod extension_window;
 mod instance;
 mod launcher;
 mod navigation;
@@ -72,7 +73,7 @@ impl Page {
 struct View {
     page: Page,
     last_login: Option<Url>,
-    pending_route: Option<&'static str>,
+    pending_route: Option<String>,
 }
 
 struct Shell {
@@ -157,7 +158,9 @@ fn web_event(app: &AppHandle, event: WebEvent) {
             view.page = Page::Web;
             view.last_login = Some(ready.login_url.clone());
             let mut url = ready.login_url;
-            url.set_fragment(view.pending_route.take());
+            if let Some(route) = view.pending_route.take() {
+                navigation::apply_host_route(&mut url, &route);
+            }
             drop(view);
             navigate(app, url);
             return;
@@ -311,7 +314,7 @@ fn set_visible(app: &AppHandle, visible: bool) {
     }
 }
 
-pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
+pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
         return;
@@ -325,11 +328,11 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
             target = view.last_login.clone().map(|mut url| {
                 // The login redirect forces a fresh document load. The Web UI
                 // reads the section hash on mount, not on hashchange.
-                url.set_fragment(Some(route));
+                navigation::apply_host_route(&mut url, route);
                 url
             });
         } else {
-            view.pending_route = Some(route);
+            view.pending_route = Some(route.to_owned());
         }
     }
     drop(view);
@@ -609,9 +612,14 @@ async fn window_zoom_set(
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--extension-window")) {
+        return extension_window::run();
+    }
     let options = Options::from_env()?;
     let activation = if options.onboarding {
         Activation::Onboarding
+    } else if let Some(route) = &options.route {
+        Activation::Route(route.clone())
     } else {
         Activation::Show
     };
@@ -664,7 +672,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Page::Loading(Status::Starting, None)
                 },
                 last_login: None,
-                pending_route: None,
+                pending_route: options.route,
             }),
             ensure_web,
             locale: locale.clone(),
@@ -844,6 +852,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let delivered = activation_app.run_on_main_thread(move || match activation {
                     Activation::Onboarding => show_onboarding(&handle),
                     Activation::Show => show_main(&handle, None),
+                    Activation::Route(route) => show_main(&handle, Some(&route)),
                 });
                 if delivered.is_err() {
                     eprintln!("CodexHost: could not deliver a desktop window activation");

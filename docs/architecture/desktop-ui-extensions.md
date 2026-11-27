@@ -132,6 +132,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 - ESM 模块（导出 `activate(api)`）与可选样式表，运行在 Web/PWA 宿主（`apps/web-ui/packages/client/ui-codexhost/src/client/native-extensions/`）。
 - 浏览器宿主通过 `codexhost/extensions/snapshot` 获取当前已启用快照，并订阅 `GET /api/ch/v1/events` 的 `extensions-changed` 事件驱动对账（单标签页引用计数复用，且在支持 Web Locks + `BroadcastChannel` 的同源多标签页间共享 1 条事件流，避免耗尽 HTTP/1.1 连接池），仅激活含 `manifest.web` 的条目；同代次仅设置修订变化时原地通知 `storage.onChange` 而不重建 DOM。
 - 传统 DSH Web 插件的独立管理/恢复入口（`WebUiExtensions` / `/extensions`）与之隔离并保持独立可用。
+- `api.tabIcon?.set(pngDataUrl | null)` 提交属于当前扩展的标签页图标。仅接受有界 PNG data URL；传 `null` 清除本扩展贡献。宿主在文档隐藏或扩展卸载时恢复原有 icon 节点，多扩展间保持独立所有权。该接口只作用于当前 CodexHost 文档。
 
 ## 单实例 Node 后端（`backend`）
 
@@ -139,6 +140,25 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 - `ctx` 提供 `extensionId`、`extensionDir`、`dataDir`（`$CODEXHOST_DATA_DIR/host-extension-data/<id>`）、`handle(method, handler)`、`readSettings()` 与 `writeSettings(values)`；可返回同步或异步清理函数 / `{ dispose() }`。
 - `HostExtensionManager` 在共享 Host 启动时自动拉起已启用后端，在启停、更新、卸载、恢复与 Host 关闭时串行对账并优雅回收旧进程。更新失败或异常退出记录在诊断日志与 `backendState: "failed"`，不会拖垮 Host。
 - **进程隔离不是权限沙箱**：后端以当前本机用户权限运行，只启用你信任的扩展。
+
+### 任务摘要与受管理原生窗口
+
+支持这些能力的宿主还会向后端提供可选 `ctx.activity`、`ctx.harnesses` 与 `ctx.windows`。扩展应检查能力存在性，旧宿主或未安装桌面壳时给出明确提示。
+
+| 方法 | 行为 |
+| --- | --- |
+| `ctx.activity.read()` | 返回 `{ epoch, revision, running, waiting, sessions, notifications }` 的绝对快照。`sessions` 最多 32 条，包含 Thread ID、会话标题、项目简称、`idle` / `running` / `waiting` / `completed` / `failed` 状态与更新时间；通知包含 Thread ID、稳定 key、`completed` / `failed` / `approval` / `question` 类型和修订号，不包含提示词、工具输出或 Transcript。 |
+| `ctx.windows.available` | 宿主是否找到现有安装布局中的桌面壳可执行文件。浮窗显示在 Host 所在电脑，远程浏览器不会在访问端创建系统窗口。 |
+| `ctx.harnesses.describe(id)` | 读取已安装 Harness 的名称、图像数据 URL 与受限 `iconStyle`，未找到时返回 `null`。会话摘要的可选 `harness: { id, name }` 来自实际 Thread 归属；图像单独按需读取，避免在每条会话和每次状态轮询中重复发送。官方会话使用保留的 `codex` 身份。 |
+| `ctx.windows.open({ url, width, height })` | 为此后端打开一个幂等的透明、无边框、置顶、跳过任务栏的窗口。只接受显式端口的 `http://127.0.0.1` URL，宽高为 96–640；先关闭再打开可更换 URL。 |
+| `ctx.windows.close()` | 结束此后端拥有的辅助窗口；扩展禁用、更新、卸载、异常退出与 Host 退出也会回收进程树。 |
+| `ctx.windows.showHost(route?)` | 显示 Host 主窗口并导航到现有 Web 路由；只接受 `/`、`/?...` 或 `/#...`，不能覆盖登录 token。适合从受管理浮窗打开已知 Thread。 |
+
+任务摘要监听现有 Client Channel 状态失效事件，通过规范快照核对官方与外部 Thread，不推断终端输出或改写 Harness 语义。最多跟踪 256 个 Thread，单 Thread 取最多 32 个交互，返回最多 32 条会话摘要与 256 条通知；重启 Host 会更换 `epoch`，扩展可用 `epoch` 与通知修订号维护已读位置。历史快照不会自行产生完成通知。
+
+原生窗口由 Rust 桌面壳的独立辅助模式创建，不占用主壳单实例。窗口只允许导航到最初的 loopback URL，并拒绝弹窗。后端持有的 stdin 关闭时窗口退出。页面可使用 `window.codexhostWindow.startDragging()` 和 `setHitRegions([{ x, y, width, height }])`；后者以窗口逻辑坐标声明最多 16 个交互矩形，其余区域穿透点击。原生权限仅授予辅助窗口，位置保存在扩展自己的数据目录，并在显示器变化后恢复到可见区域。浮窗应把拖动、状态气泡、会话面板和按钮声明为交互区域；透明背景继续穿透。
+
+可导入的实例见 [宠物伙伴扩展](../product/pet-companion-extension.md)。
 
 ## 统一 Host RPC、Web 薄代理与市场
 

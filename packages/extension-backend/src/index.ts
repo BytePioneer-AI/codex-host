@@ -1,6 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import type { HostExtensionBackendContext } from "@codexhost/shared-contracts";
+import {
+  extensionHarnessPresentationSchema,
+  type ExtensionActivitySnapshot,
+  type ExtensionHarnessPresentation,
+} from "@codexhost/shared-contracts";
+import { createExtensionWindows } from "./windows.js";
 
 export type ExtensionBackendEntry = Pick<
   HostExtensionBackendContext,
@@ -9,6 +15,8 @@ export type ExtensionBackendEntry = Pick<
   url: string;
   hash: string;
   installation: string;
+  desktopShell?: string | undefined;
+  hostDataDir?: string | undefined;
 };
 export interface ExtensionBackendOptions {
   readSettings(): Promise<Record<string, unknown>>;
@@ -16,6 +24,8 @@ export interface ExtensionBackendOptions {
   diagnose?(message: string): void;
   /** Explicit child environment; omitted means no inherited application secrets. */
   env?: NodeJS.ProcessEnv;
+  readActivity?(): Promise<ExtensionActivitySnapshot>;
+  describeHarness?(id: string): Promise<ExtensionHarnessPresentation | null>;
 }
 
 type Command =
@@ -23,7 +33,12 @@ type Command =
   | { op: "invoke"; method: string; params: unknown }
   | { op: "dispose" };
 type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string };
-type Settings = { op: "read" } | { op: "write"; values: Record<string, unknown> };
+type Settings =
+  | { op: "read" }
+  | { op: "write"; values: Record<string, unknown> }
+  | { op: "activity" }
+  | { op: "harness"; harnessId: string }
+  | { op: "showHost"; route: string };
 
 type BackendExports = { activate?: (context: HostExtensionBackendContext) => unknown };
 
@@ -50,14 +65,16 @@ function backendChild(
   maxSettingsInFlight: number,
   errors: typeof IPC_ERRORS,
   entryChanged: string,
+  windows: typeof createExtensionWindows,
 ) {
   const pendingSettings = new Map<
     number,
-    { resolve(value: Record<string, unknown>): void; reject(error: Error): void }
+    { resolve(value: unknown): void; reject(error: Error): void }
   >();
   const handlers = new Map<string, (params: unknown) => unknown>();
   let settingsId = 0;
   let dispose: (() => unknown) | undefined;
+  let closeWindow: (() => Promise<void>) | undefined;
   const send = (message: Reply | { settings: Settings & { id: number } }) => {
     let text: string;
     try {
@@ -80,7 +97,7 @@ function backendChild(
     process.send(text, undefined, undefined, () => undefined);
   };
   const settings = (command: Settings) =>
-    new Promise<Record<string, unknown>>((resolve, reject) => {
+    new Promise<unknown>((resolve, reject) => {
       if (pendingSettings.size >= maxSettingsInFlight) {
         reject(new Error(errors.settingsLimit));
         return;
@@ -138,6 +155,8 @@ function backendChild(
   const run = async (command: Command): Promise<unknown> => {
     if (command.op === "activate") {
       const { extensionId, extensionDir, dataDir } = command.entry;
+      const windowService = windows(command.entry.desktopShell, dataDir, command.entry.hostDataDir);
+      closeWindow = () => windowService.close();
       const module = await loadEntry(command.entry);
       const owner = typeof module.activate === "function" ? module : module.default;
       if (typeof owner?.activate !== "function")
@@ -147,8 +166,22 @@ function backendChild(
         extensionId,
         extensionDir,
         dataDir,
-        readSettings: () => settings({ op: "read" }),
-        writeSettings: (values) => settings({ op: "write", values }),
+        readSettings: () => settings({ op: "read" }) as Promise<Record<string, unknown>>,
+        writeSettings: (values) =>
+          settings({ op: "write", values }) as Promise<Record<string, unknown>>,
+        activity: {
+          read: () => settings({ op: "activity" }) as Promise<ExtensionActivitySnapshot>,
+        },
+        harnesses: {
+          describe: (harnessId) =>
+            settings({ op: "harness", harnessId }) as Promise<ExtensionHarnessPresentation | null>,
+        },
+        windows: {
+          ...windowService,
+          showHost: async (route = "/") => {
+            await settings({ op: "showHost", route });
+          },
+        },
         handle: (method, handler) => {
           if (!registering) throw new Error("Register handlers during activate(ctx)");
           if (
@@ -181,6 +214,7 @@ function backendChild(
     if (command.op === "dispose") {
       handlers.clear();
       await dispose?.();
+      await closeWindow?.();
       return null;
     }
     const handler = handlers.get(command.method);
@@ -245,6 +279,7 @@ export class ExtensionBackendProcess {
   #reaped = false;
   #stop: Promise<void> | undefined;
   readonly #methods = new Set<string>();
+  #entry: ExtensionBackendEntry | undefined;
 
   constructor(options: ExtensionBackendOptions) {
     this.#child = spawn(
@@ -254,12 +289,30 @@ export class ExtensionBackendProcess {
         "--max-old-space-size=128",
         "--input-type=module",
         "--eval",
-        `(${backendChild.toString()})(url => import(url), ${MAX_IPC_BYTES}, ${MAX_SETTINGS_IN_FLIGHT}, ${JSON.stringify(IPC_ERRORS)}, ${JSON.stringify(BACKEND_ENTRY_CHANGED)})`,
+        `(${backendChild.toString()})(url => import(url), ${MAX_IPC_BYTES}, ${MAX_SETTINGS_IN_FLIGHT}, ${JSON.stringify(IPC_ERRORS)}, ${JSON.stringify(BACKEND_ENTRY_CHANGED)}, ${createExtensionWindows.toString()})`,
       ],
       {
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         serialization: "advanced",
-        env: { SystemRoot: process.env.SystemRoot, ...options.env, NODE_OPTIONS: undefined },
+        env: {
+          SystemRoot: process.env.SystemRoot,
+          PATH: process.env.PATH,
+          USERPROFILE: process.env.USERPROFILE,
+          HOME: process.env.HOME,
+          APPDATA: process.env.APPDATA,
+          LOCALAPPDATA: process.env.LOCALAPPDATA,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          DISPLAY: process.env.DISPLAY,
+          WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
+          XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+          XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+          DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
+          LANG: process.env.LANG,
+          LC_ALL: process.env.LC_ALL,
+          ...options.env,
+          NODE_OPTIONS: undefined,
+        },
         detached: process.platform !== "win32",
         windowsHide: true,
       },
@@ -297,7 +350,8 @@ export class ExtensionBackendProcess {
         return;
       }
       const request = message.settings;
-      if (!request || !["read", "write"].includes(request.op)) return;
+      if (!request || !["read", "write", "activity", "harness", "showHost"].includes(request.op))
+        return;
       if (this.#settings.size >= MAX_SETTINGS_IN_FLIGHT) {
         this.#sendSettingsReply({
           id: request.id,
@@ -307,16 +361,50 @@ export class ExtensionBackendProcess {
         return;
       }
       const task = Promise.resolve()
-        .then(() =>
-          request.op === "read" ? options.readSettings() : options.writeSettings(request.values),
-        )
+        .then(() => {
+          if (request.op === "harness") {
+            if (
+              typeof request.harnessId !== "string" ||
+              !/^[a-z][a-z0-9._-]{0,127}$/u.test(request.harnessId)
+            )
+              throw new Error("Invalid Harness identity");
+            return Promise.resolve(options.describeHarness?.(request.harnessId)).then((value) =>
+              value ? extensionHarnessPresentationSchema.parse(value) : null,
+            );
+          }
+          if (request.op === "showHost") {
+            if (!this.#entry || this.#stopping) throw new Error("Backend is not active");
+            return createExtensionWindows(
+              this.#entry.desktopShell,
+              this.#entry.dataDir,
+              this.#entry.hostDataDir,
+            )
+              .showHost(request.route)
+              .then(() => null);
+          }
+          return request.op === "activity"
+            ? (options.readActivity?.() ?? {
+                epoch: "",
+                revision: 0,
+                running: 0,
+                waiting: 0,
+                sessions: [],
+                notifications: [],
+              })
+            : request.op === "read"
+              ? options.readSettings()
+              : options.writeSettings(request.values);
+        })
         .then(
           (value) => this.#sendSettingsReply({ id: request.id, ok: true, value }),
           () =>
             this.#sendSettingsReply({
               id: request.id,
               ok: false,
-              error: "Could not read or save backend settings",
+              error:
+                request.op === "showHost"
+                  ? "Could not open the Host window"
+                  : "Could not read or save backend settings",
             }),
         )
         .finally(() => this.#settings.delete(task));
@@ -331,6 +419,7 @@ export class ExtensionBackendProcess {
   async activate(entry: ExtensionBackendEntry): Promise<void> {
     if (this.#activated || this.#stopping) throw new Error("Backend cannot be activated twice");
     this.#activated = true;
+    this.#entry = entry;
     const methods = await this.#request({ op: "activate", entry }, 5_000);
     if (!Array.isArray(methods) || !methods.every((method) => typeof method === "string"))
       throw new Error("Invalid backend activation response");

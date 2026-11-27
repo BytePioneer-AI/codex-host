@@ -47,6 +47,8 @@ fn main() {
                 "window_zoom_get",
                 "window_zoom_step",
                 "window_zoom_set",
+                "extension_window_drag",
+                "extension_window_hit_regions",
             ])),
     )
     .expect("build Tauri desktop shell");

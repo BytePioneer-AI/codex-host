@@ -25,6 +25,8 @@ import {
 import {
   jsonObjectSchema,
   type HostExtensionListItem,
+  type ExtensionActivitySnapshot,
+  type ExtensionHarnessPresentation,
   type HostExtensionsRpcParams,
   type HostExtensionsRpcResult,
   type HOST_EXTENSIONS_RPC as RPC,
@@ -81,6 +83,11 @@ export class HostExtensionManager {
     private readonly dataDir: string,
     private readonly changed: (revision: number) => void,
     private readonly diagnose: (message: string) => void = () => undefined,
+    private readonly services: {
+      readActivity?(): Promise<ExtensionActivitySnapshot>;
+      describeHarness?(id: string): Promise<ExtensionHarnessPresentation | null>;
+      desktopShell?: string | undefined;
+    } = {},
   ) {}
 
   diagnoseOperationError(method: string, error: unknown): void {
@@ -427,6 +434,10 @@ export class HostExtensionManager {
       if (this.#closing) return true;
       const process = new ExtensionBackendProcess({
         diagnose: fail,
+        ...(this.services.readActivity ? { readActivity: this.services.readActivity } : {}),
+        ...(this.services.describeHarness
+          ? { describeHarness: this.services.describeHarness }
+          : {}),
         readSettings: async () => {
           assertCurrent();
           return (await readHostExtensionSettings(location)).values;
@@ -444,6 +455,8 @@ export class HostExtensionManager {
         url: pathToFileURL(entry.scriptPath).href,
         hash: entry.hash,
         installation: `${info.dev}:${info.ino}`,
+        desktopShell: this.services.desktopShell,
+        hostDataDir: this.dataDir,
       });
       assertCurrent();
       instance.state = "running";

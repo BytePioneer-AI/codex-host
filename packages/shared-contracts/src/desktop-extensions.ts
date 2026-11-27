@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { installedPluginIdSchema, pluginRelativeResourceSchema } from "./harness-plugins.js";
 import type { ThreadTreeSnapshot } from "./thread-tree-watch.js";
+import type { ExtensionBackendServices } from "./extension-services.js";
 
 export const DESKTOP_EXTENSION_API_VERSION = 1;
 export const DESKTOP_EXTENSION_LIMIT = 64;
@@ -382,6 +383,9 @@ export interface DesktopExtensionBackendContext {
   readSettings(): Promise<Record<string, unknown>>;
   writeSettings(values: Record<string, unknown>): Promise<Record<string, unknown>>;
   handle(method: string, handler: (params: unknown) => unknown | Promise<unknown>): void;
+  readonly activity?: ExtensionBackendServices["activity"];
+  readonly harnesses?: ExtensionBackendServices["harnesses"];
+  readonly windows?: ExtensionBackendServices["windows"];
 }
 
 export interface DesktopSidebarRow {

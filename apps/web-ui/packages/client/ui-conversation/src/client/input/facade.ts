@@ -129,6 +129,9 @@ function projectionContentChanged(prev: EditorProjection, next: EditorProjection
 
 const EMPTY_QUEUE: InboxState["next-turn"] = [];
 
+/** Coalesce synchronous localStorage draft writes during continuous typing. */
+export const DRAFT_PERSIST_DEBOUNCE_MS = 180;
+
 /** Unavailable catalogs contain no named text references. */
 const EMPTY_LEXICON: ReadonlyMap<"/" | "@" | "#", readonly string[]> = new Map();
 
@@ -247,6 +250,10 @@ export class SessionInputShell implements SessionInput {
   private disposed = false;
   /** Conversation store writer for the current semantic document. */
   private persistDraft: ((draft: DraftSnapshot) => void) | undefined;
+  private persistDraftTimer: ReturnType<typeof setTimeout> | undefined;
+  private pendingPersistDraft: DraftSnapshot | undefined;
+  private removeUnloadFlush: (() => void) | undefined;
+  private deferredTriggerTrack = false;
   /** The mounted composer's file-picker opener (scoped pick-files event target). */
   private filePicker: Parameters<ComposerKeyboard["bindFilePicker"]>[0] | undefined;
   /** Default sends retained until admission settles or scope disposal releases their attachments. */
@@ -275,6 +282,9 @@ export class SessionInputShell implements SessionInput {
     this.draftEditor = new DraftEditorRuntime({
       onUpdate: () => {
         this.onEditorUpdate();
+      },
+      onCompositionEnd: () => {
+        this.onCompositionEnd();
       },
       openReference: (source, reference) =>
         this.deps.inputTriggers?.()?.openReference(source, reference) ?? false,
@@ -307,6 +317,23 @@ export class SessionInputShell implements SessionInput {
       }
       this.dispatchRun({ type: "draft-changed", draft: this.projection.clipboardText });
     }
+    if (this.draftEditor.isComposing()) {
+      this.deferredTriggerTrack = true;
+      return;
+    }
+    this.deferredTriggerTrack = false;
+    this.trackCurrentTriggers();
+  }
+
+  private onCompositionEnd(): void {
+    if (this.disposed) return;
+    this.draftEditor.refreshProjection();
+    if (!this.deferredTriggerTrack && this.projection.caret === null) return;
+    this.deferredTriggerTrack = false;
+    this.trackCurrentTriggers();
+  }
+
+  private trackCurrentTriggers(): void {
     const caret = this.projection.caret;
     if (caret !== null) {
       this.deps
@@ -347,9 +374,59 @@ export class SessionInputShell implements SessionInput {
     return value;
   }
 
-  /** Persist the latest document without changing the editor or binding a writer. */
+  /** Persist the latest document immediately without waiting for the debounce timer. */
   persistCurrentDraft(): void {
-    this.persistDraft?.(this.draftSnapshot);
+    const draft = this.draftSnapshot;
+    this.lastPublishedDraft = draft;
+    this.clearPersistTimer();
+    this.pendingPersistDraft = undefined;
+    this.persistDraft?.(draft);
+  }
+
+  /** Flush any pending debounced draft write synchronously. */
+  flushDraftPersistence(): void {
+    this.clearPersistTimer();
+    const pending = this.pendingPersistDraft;
+    if (pending === undefined) return;
+    this.pendingPersistDraft = undefined;
+    this.persistDraft?.(pending);
+  }
+
+  private scheduleDraftPersistence(draft: DraftSnapshot): void {
+    if (this.persistDraft === undefined) return;
+    this.pendingPersistDraft = draft;
+    if (this.persistDraftTimer !== undefined) clearTimeout(this.persistDraftTimer);
+    this.armUnloadFlush();
+    this.persistDraftTimer = setTimeout(() => {
+      this.persistDraftTimer = undefined;
+      this.flushDraftPersistence();
+    }, DRAFT_PERSIST_DEBOUNCE_MS);
+  }
+
+  private clearPersistTimer(): void {
+    if (this.persistDraftTimer !== undefined) {
+      clearTimeout(this.persistDraftTimer);
+      this.persistDraftTimer = undefined;
+    }
+    this.disarmUnloadFlush();
+  }
+
+  private armUnloadFlush(): void {
+    if (this.removeUnloadFlush !== undefined || typeof window === "undefined") return;
+    const flush = (): void => {
+      this.flushDraftPersistence();
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    this.removeUnloadFlush = () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }
+
+  private disarmUnloadFlush(): void {
+    this.removeUnloadFlush?.();
+    this.removeUnloadFlush = undefined;
   }
 
   /**
@@ -718,6 +795,7 @@ export class SessionInputShell implements SessionInput {
         .inputTriggers?.()
         ?.track(this.projection.detectText, 0, { tier: "frozen" }, this.rev);
     }
+    this.flushDraftPersistence();
   }
 
   /**
@@ -891,6 +969,8 @@ export class SessionInputShell implements SessionInput {
    */
   dispose(): readonly DraftAttachmentId[] {
     if (this.disposed) return [];
+    this.flushDraftPersistence();
+    this.persistDraft = undefined;
     const retained = new Set(this.attachmentIds);
     for (const record of this.detachedDrafts.values()) {
       for (const attachmentId of record.attachmentIds) retained.add(attachmentId);
@@ -924,7 +1004,9 @@ export class SessionInputShell implements SessionInput {
   bindDraftPersistence(write: (draft: DraftSnapshot) => void): () => void {
     this.persistDraft = write;
     return () => {
-      if (this.persistDraft === write) this.persistDraft = undefined;
+      if (this.persistDraft !== write) return;
+      this.flushDraftPersistence();
+      this.persistDraft = undefined;
     };
   }
 
@@ -1020,6 +1102,7 @@ export class SessionInputShell implements SessionInput {
       return null;
     });
     this.draftEditor.clearHistory();
+    this.flushDraftPersistence();
   }
 
   /**
@@ -1314,7 +1397,7 @@ export class SessionInputShell implements SessionInput {
     const draft = this.draftSnapshot;
     if (draft !== this.lastPublishedDraft) {
       this.lastPublishedDraft = draft;
-      this.persistDraft?.(draft);
+      this.scheduleDraftPersistence(draft);
     }
   }
 }

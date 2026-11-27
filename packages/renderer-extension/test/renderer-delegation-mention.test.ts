@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   filterDelegationCommands,
   filterDelegationTargets,
   findDelegationTrigger,
   harnessCommandDisplayName,
+  installRendererDelegationMention,
 } from "../src/renderer-delegation-mention.js";
+import { mutationMayAffectComposer } from "../src/renderer-binding-probe.js";
 
 describe("delegation mention trigger", () => {
   it("detects # at a word start or after CJK text before the caret", () => {
@@ -114,5 +117,150 @@ describe("Harness command display names", () => {
     expect(harnessCommandDisplayName("code_review")).toBe("Code Review");
     expect(harnessCommandDisplayName("Initialize CLAUDE.md")).toBe("Initialize CLAUDE.md");
     expect(harnessCommandDisplayName("压缩上下文")).toBe("压缩上下文");
+  });
+});
+
+describe("installRendererDelegationMention hot-path optimizations", () => {
+  const disposers: (() => void)[] = [];
+
+  afterEach(() => {
+    for (const dispose of disposers.splice(0)) dispose();
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  function setupEditor(text: string) {
+    const element = document.createElement("div");
+    element.setAttribute("contenteditable", "true");
+    element.textContent = text;
+    document.body.append(element);
+    const node = element.firstChild as Text;
+    const selection = document.getSelection();
+    if (!selection) throw new Error("Missing selection");
+    selection.setBaseAndExtent(node, text.length, node, text.length);
+    return { element, node };
+  }
+
+  it("coalesces same-frame input/selectionchange, skips DOM rebuild on sameQuery with unchanged catalog, and only scrolls on activeIndex change", () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    const rafCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    const { element } = setupEditor("#c");
+    const targets = [
+      { agent: "codex" as const, label: "Codex" },
+      { agent: "claude-code" as const, label: "Claude Code" },
+    ];
+    let currentTargets = targets;
+
+    const menu = installRendererDelegationMention(document, {
+      readTargets: () => currentTargets.map((item) => ({ ...item })),
+      isComposerEditor: () => true,
+      readLocale: () => "en",
+      anchorForEditor: () => element,
+      readCommands: () => null,
+    });
+    disposers.push(() => menu.dispose());
+
+    const listbox = document.querySelector(
+      "[data-codexhost-delegation-mention-menu] [role=listbox]",
+    );
+    if (!listbox) throw new Error("Missing listbox");
+    const replaceSpy = vi.spyOn(listbox, "replaceChildren");
+
+    // Initial input renders once; initial activeIndex stays 0 so scrollIntoView is not called.
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    // Same-frame selectionchange coalesces into the scheduled frame, and when flushed
+    // with the same query and unchanged catalog it skips rebuilding DOM completely.
+    document.dispatchEvent(new Event("selectionchange"));
+    document.dispatchEvent(new Event("selectionchange"));
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    for (const cb of rafCallbacks.splice(0)) cb(16);
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+
+    // Explicit refresh with unchanged catalog also skips render.
+    menu.refresh();
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+
+    // Catalog change with sameQuery does re-render.
+    currentTargets = [...targets, { agent: "claude-code" as const, label: "Claude Code 2" }];
+    menu.refresh();
+    expect(replaceSpy).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    // Keyboard navigation changes activeIndex -> scrollIntoView runs once.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", cancelable: true }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("mutationMayAffectComposer delegation mention filtering", () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+    document.head.replaceChildren();
+  });
+
+  it("ignores mutations inside or mounting the injected delegation mention menu and style", () => {
+    const menu = document.createElement("div");
+    menu.setAttribute("data-codexhost-delegation-mention-menu", "true");
+    const option = document.createElement("div");
+    option.setAttribute("role", "option");
+    menu.append(option);
+    document.body.append(menu);
+
+    const style = document.createElement("style");
+    style.setAttribute("data-codexhost-delegation-mention-style", "true");
+    document.head.append(style);
+
+    const makeMutation = (overrides: Partial<MutationRecord>): MutationRecord =>
+      ({
+        type: "childList",
+        target: menu,
+        addedNodes: [] as unknown as NodeList,
+        removedNodes: [] as unknown as NodeList,
+        attributeName: null,
+        ...overrides,
+      }) as MutationRecord;
+
+    expect(mutationMayAffectComposer(makeMutation({ target: menu }))).toBe(false);
+    expect(
+      mutationMayAffectComposer(
+        makeMutation({ target: option, type: "attributes", attributeName: "aria-selected" }),
+      ),
+    ).toBe(false);
+    expect(mutationMayAffectComposer(makeMutation({ target: style, type: "childList" }))).toBe(
+      false,
+    );
+    expect(
+      mutationMayAffectComposer(
+        makeMutation({
+          target: document.body,
+          addedNodes: [menu] as unknown as NodeList,
+        }),
+      ),
+    ).toBe(false);
+
+    // Unrelated DOM nodes on document.body still trigger Composer checks.
+    const unrelated = document.createElement("div");
+    expect(
+      mutationMayAffectComposer(
+        makeMutation({
+          target: document.body,
+          addedNodes: [unrelated] as unknown as NodeList,
+        }),
+      ),
+    ).toBe(true);
   });
 });

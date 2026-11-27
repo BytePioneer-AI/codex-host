@@ -41,7 +41,7 @@ export { InlineEditor } from "./InlineEditor.tsx";
 export { Menu, MenuItemButton } from "./Menu.tsx";
 export { MenuSurface } from "./MenuSurface.tsx";
 export type { MenuSurfaceProps } from "./MenuSurface.tsx";
-export { MenuGroup, observeStickyMenuGroups } from "./MenuGroup.tsx";
+export { MenuGroup, observeStickyMenuGroups, useStickyMenuGroups } from "./MenuGroup.tsx";
 export type {
   MenuItemButtonProps,
   MenuEntry,

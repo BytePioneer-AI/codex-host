@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.97.1"
 publish = false
 
+[package.metadata.tauri-winres]
+OriginalFilename = "codexhost-shell.exe"
+InternalName = "codexhost-shell"
+
 [workspace]
 
 [features]

@@ -1895,11 +1895,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             codexhost_platform::open_external_url(&url).map_err(Into::into)
         }
         Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
-        Some("desktop-screenshot") if arguments.len() == 1 => {
-            let image = codexhost_platform::capture_primary_desktop()?;
-            std::io::stdout().lock().write_all(&image)?;
-            Ok(())
-        }
+        Some("desktop-screenshot") if arguments.len() == 1 => run_desktop_screenshot(),
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
         Some("host") if is_delegation_host_command(arguments) => run_delegation_cli(arguments),
         Some("host") => host_service::run(&arguments[1..]),
@@ -1915,6 +1911,52 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             usage();
             Err("invalid launcher arguments".into())
         }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_desktop_screenshot() -> Result<(), Box<dyn Error>> {
+    let image = codexhost_platform::capture_primary_desktop()?;
+    std::io::stdout().lock().write_all(&image)?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_screenshot_helper(
+    executable: &Path,
+    resources: &InstalledResources,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let primary = resources
+        .screenshot_helper
+        .as_deref()
+        .ok_or("desktop-screenshot/unsupported")?;
+    if let Ok(path) = canonical_existing_file(primary) {
+        return Ok(path);
+    }
+    // Cargo target-triple builds place sibling binaries next to the launcher.
+    let sibling = executable.with_file_name("codexhost-screenshot.exe");
+    canonical_existing_file(&sibling).map_err(|_| "desktop-screenshot/unavailable".into())
+}
+
+#[cfg(target_os = "windows")]
+fn run_desktop_screenshot() -> Result<(), Box<dyn Error>> {
+    let executable = env::current_exe()?.canonicalize()?;
+    let resources = InstalledResources::from_executable(&executable)?;
+    let helper = resolve_windows_screenshot_helper(&executable, &resources)?;
+    let mut command = Command::new(helper);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    configure_background_command(&mut command);
+    let mut child = spawn_supervised(&mut command).map_err(|_| "desktop-screenshot/unavailable")?;
+    let status = child
+        .wait()
+        .map_err(|_| "desktop-screenshot/capture-failed")?;
+    if status.success() {
+        Ok(())
+    } else {
+        std::process::exit(status.code().unwrap_or(1));
     }
 }
 

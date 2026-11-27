@@ -2,6 +2,7 @@
 members = [
   "crates/launcher",
   "crates/platform",
+  "crates/screenshot",
   "crates/shim",
   "crates/updater",
   "tools/gate-a/native",
@@ -9,6 +10,7 @@ members = [
 default-members = [
   "crates/launcher",
   "crates/platform",
+  "crates/screenshot",
   "crates/shim",
   "crates/updater",
 ]

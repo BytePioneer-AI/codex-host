@@ -312,7 +312,10 @@ fn native_subcommand_help_succeeds_without_starting_services() {
         (&["reveal-file"], "codexhost reveal-file <absolute-path>"),
         (&["open-loopback-url"], "codexhost open-loopback-url"),
         (&["proxy-environment"], "codexhost proxy-environment"),
-        (&["web-service"], "codexhost web-service <ensure|stop|serve>"),
+        (
+            &["web-service"],
+            "codexhost web-service <ensure|stop|serve>",
+        ),
         // npm puts its runtime options ahead of the user's arguments.
         (
             &[
@@ -364,7 +367,10 @@ fn native_subcommand_help_succeeds_without_starting_services() {
                 "{arguments:?} {flag}: {stderr}"
             );
             assert!(stderr.is_empty(), "{arguments:?} {flag}: {stderr}");
-            assert!(stdout.starts_with(&format!("usage: {synopsis}")), "{stdout}");
+            assert!(
+                stdout.starts_with(&format!("usage: {synopsis}")),
+                "{stdout}"
+            );
             assert!(!wrote_data, "{arguments:?} {flag} wrote startup data");
         }
     }

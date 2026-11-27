@@ -323,10 +323,12 @@ describe("OmO autonomous engine Turns", () => {
 
   it("drains two queued engine Turns without re-routing one Turn's frames into the other", async () => {
     const fixtureSession = await createSessionFixture();
-    await fixtureSession.rpc.send("set_controls", { modelDelayMs: 250 });
+    await fixtureSession.rpc.send("set_controls", { holdModelReceipt: true });
 
     // The selection holds the foreground slot while both engine Turns start, so
-    // both wait in the pending queue (A first, then B).
+    // both wait in the pending queue (A first, then B). The held receipt makes
+    // that ordering independent of timing: each autonomous.run answer follows
+    // its turn_start frame, so awaiting the writes proves both are queued.
     const selection = fixtureSession.session.execute({
       type: "model.select",
       model: harnessModelRefSchema.parse({ id: "synthetic-provider/other-model" }),
@@ -338,6 +340,16 @@ describe("OmO autonomous engine Turns", () => {
     await fixtureSession.rpc.send("autonomous.run", {
       message: "engine work B",
       text: "result B",
+    });
+    await vi.waitFor(
+      async () => {
+        const probe = await fixtureSession.rpc.send("probe.received");
+        expect((probe.data as { setModels: unknown[] }).setModels).toHaveLength(1);
+      },
+      { timeout: 2_000, interval: 10 },
+    );
+    await expect(fixtureSession.rpc.send("release.model-receipt")).resolves.toMatchObject({
+      data: { released: true },
     });
     await expect(selection).resolves.toEqual({ ok: true, value: { completed: true } });
 

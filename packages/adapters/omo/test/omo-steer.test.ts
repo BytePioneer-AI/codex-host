@@ -544,8 +544,13 @@ describe("OmO Session steering", () => {
     await fixtureSession.queue.expectDone();
     await waitForProcessExit(child);
 
-    // The queued text was removed natively exactly once (never resent).
-    expect(fixtureSession.controlCommands()).toEqual([{ type: "clear_queue" }]);
+    // The queued text was removed natively exactly once (never resent), and
+    // the applied effect is the peer's own receipt that the queue is empty.
+    expect(fixtureSession.controlCommands()).toEqual([
+      { type: "prompt", clientTurnId: "turn-1" },
+      { type: "clear_queue" },
+      { type: "clear_queue.applied", steering: ["never joined"] },
+    ]);
     await expect(fixtureSession.session.readSnapshot()).resolves.toMatchObject({
       ok: false,
       error: { code: "invalidState" },
@@ -559,6 +564,7 @@ describe("OmO Session steering", () => {
       FAKE_OMO_STEER_MODE: "late-settle",
       FAKE_OMO_HOLD_CLEAR_QUEUE: "1",
     });
+    const child = fixtureSession.child();
     await startSteeredTurn(fixtureSession);
     await expect(
       fixtureSession.session.execute(turnSteer("turn-1", "never joined")),
@@ -594,6 +600,53 @@ describe("OmO Session steering", () => {
     const fault = await fixtureSession.queue.nextEvent();
     expect(fault).toMatchObject({ type: "session.faulted", error: { code: "invalidState" } });
     await fixtureSession.queue.expectDone();
+    await waitForProcessExit(child);
+    // The prompt was refused before it was ever written: an implementation
+    // that wrote it and only then returned invalidState would still satisfy
+    // the admission and stream assertions above. The peer has exited, so its
+    // log can no longer receive a late write.
+    expect(
+      fixtureSession
+        .controlCommands()
+        .filter((command) => command.type === "prompt" && command.clientTurnId === "turn-2"),
+    ).toEqual([]);
+  });
+
+  it("waits out a held late-steer cleanup on close so the queued text is cleared", async () => {
+    const fixtureSession = await createSteerFixture({
+      FAKE_OMO_TURN_SCRIPT: "steer-window",
+      FAKE_OMO_STEER_MODE: "late-settle",
+      FAKE_OMO_HOLD_CLEAR_QUEUE: "1",
+    });
+    const child = fixtureSession.child();
+    await startSteeredTurn(fixtureSession);
+    await expect(
+      fixtureSession.session.execute(turnSteer("turn-1", "never joined")),
+    ).rejects.toBeInstanceOf(OmoSteerTargetEndedError);
+    const { terminal } = await collectTerminal(fixtureSession.queue, "turn-1");
+    expect(terminal.outcome).toMatchObject({ status: "succeeded" });
+    await vi.waitFor(
+      () => {
+        expect(fixtureSession.controlCommands()).toContainEqual({ type: "clear_queue" });
+      },
+      { timeout: 2_000, interval: 10 },
+    );
+
+    // Close arrives while the cleanup still awaits the held clear_queue. It
+    // must let that answer land before closing the process; otherwise the
+    // write is rejected and the text stays queued for a later resume.
+    const closing = fixtureSession.session.close();
+    const released = await fixtureSession.rpc
+      .send("release.clear-queue")
+      .catch((error: unknown) => error);
+    await expect(closing).resolves.toBeUndefined();
+    expect(released).toMatchObject({ data: { released: true } });
+    expect(fixtureSession.controlCommands()).toContainEqual({
+      type: "clear_queue.applied",
+      steering: ["never joined"],
+    });
+    await fixtureSession.queue.expectDone();
+    await waitForProcessExit(child);
   });
 
   it("stops declaring steer when the tool window closes and writes nothing", async () => {
@@ -634,7 +687,11 @@ describe("OmO Session steering", () => {
     const fault = await fixtureSession.queue.nextEvent();
     expect(fault).toMatchObject({ type: "session.faulted", error: { code: "protocolError" } });
     await fixtureSession.queue.expectDone();
-    expect(fixtureSession.controlCommands()).toEqual([{ type: "clear_queue" }]);
+    expect(fixtureSession.controlCommands()).toEqual([
+      { type: "prompt", clientTurnId: "turn-1" },
+      { type: "clear_queue" },
+      { type: "clear_queue.applied", steering: ["accepted but lost"] },
+    ]);
     await fixtureSession.closeAll();
   });
 

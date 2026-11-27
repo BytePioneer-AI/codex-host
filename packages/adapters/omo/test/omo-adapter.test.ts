@@ -55,6 +55,13 @@ const protocolVersion =
       ? 2
       : 1
     : Number(process.env.FAKE_OMO_PROTOCOL_VERSION);
+// A reopened Session (started with an explicit --session) can speak a chosen
+// protocol version, so a binary swap between the two spawns is testable.
+const reportedProtocolVersion =
+  process.env.FAKE_OMO_SESSION !== undefined &&
+  process.env.FAKE_OMO_REOPEN_PROTOCOL_VERSION !== undefined
+    ? Number(process.env.FAKE_OMO_REOPEN_PROTOCOL_VERSION)
+    : protocolVersion;
 const cwd = process.cwd();
 const stateDir = path.join(cwd, ".fake-omo");
 fs.mkdirSync(stateDir, { recursive: true });
@@ -227,7 +234,7 @@ function handle(command) {
     }
     case "get_protocol_info":
       respond(command, {
-        protocolVersion,
+        protocolVersion: reportedProtocolVersion,
         serverVersion: "5.1.83",
         capabilities: ["multi_session", "session_model_scope", "effect_ledger"],
         mode: "classic",
@@ -959,6 +966,36 @@ describe("OmO Adapter open", () => {
     await expectProcessGone(pid as number);
   });
 
+  it("reaps the --fork startup copy when the engine reports an incompatible protocol", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", ["only question"]);
+    const sourceRef = derivationRef(cwd, sourceFile, "session-source");
+    const before = readFileSync(sourceFile);
+    const fixture = sessionFixture(cwd, { FAKE_OMO_PROTOCOL_VERSION: "2" });
+    const result = await fixture.adapter.open({
+      kind: "fork",
+      sourceRef,
+      checkpoint: {
+        harnessId: harnessIdSchema.parse("omo"),
+        nativeSessionId: "session-source",
+        checkpointId: "u1",
+        formatVersion: 1,
+      },
+      cwd,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "protocolError", retryable: false },
+    });
+    // start() already ran --fork, so the startup copy exists before the
+    // protocol refusal; the failed open owns it and must remove it.
+    expect(derivedSessionFiles(cwd)).toEqual([]);
+    expect(readFileSync(sourceFile)).toEqual(before);
+    const pid = fixture.sessionChildren[0]?.pid;
+    expect(pid).toBeDefined();
+    await expectProcessGone(pid as number);
+  });
+
   it("applies an explicit Model at create and publishes the confirmed effective state", async () => {
     const cwd = temporaryDirectory();
     const fixture = sessionFixture(cwd);
@@ -1363,6 +1400,33 @@ describe("OmO Adapter open", () => {
       ok: false,
       error: { code: "nativeFailure", retryable: false },
     });
+    expect(fixture.sessionChildren).toHaveLength(2);
+    const reopenedPid = fixture.sessionChildren[1]?.pid;
+    expect(reopenedPid).toBeDefined();
+    await expectProcessGone(reopenedPid as number);
+    expect(derivedSessionFiles(cwd)).toEqual([]);
+  });
+
+  it("rejects a reopened blank Session whose engine reports an incompatible protocol", async () => {
+    const cwd = temporaryDirectory();
+    const sourceFile = syntheticDerivationSource(cwd, "session-source", ["only question"]);
+    // The first spawn negotiates the supported protocol; the reopened second
+    // process reports another one, as if the binary were swapped between them.
+    const fixture = sessionFixture(cwd, {
+      FAKE_OMO_FORK_DEFER_EMPTY: "1",
+      FAKE_OMO_REOPEN_PROTOCOL_VERSION: "2",
+    });
+    const result = await fixture.adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: derivationRef(cwd, sourceFile, "session-source"),
+      cwd,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "protocolError", retryable: false },
+    });
+    if (result.ok) throw new Error("expected a refused open");
+    expect(result.error.message).toContain("protocol version 2");
     expect(fixture.sessionChildren).toHaveLength(2);
     const reopenedPid = fixture.sessionChildren[1]?.pid;
     expect(reopenedPid).toBeDefined();

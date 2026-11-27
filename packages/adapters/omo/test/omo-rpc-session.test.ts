@@ -320,6 +320,28 @@ describe("OmO RPC startup", () => {
     );
     expect(handle.rpc.stderrTail).not.toContain("sk-synthetic-secret");
   });
+
+  it("rejects startup when the final get_state success shares its chunk with a bad frame", async () => {
+    const { rpc, faults } = syntheticSession((command, peer) => {
+      if (command.type === "get_state") {
+        // One stdout chunk: the startup answer, then a line that is not JSON.
+        // The answer resolves first (FIX-3), then the bad frame faults and
+        // closes the transport; startup must not hand back a live handle.
+        peer.stdout.write(
+          `${responseLine(command, { sessionId: "synthetic-peer" })}this is not JSON\n`,
+        );
+        return;
+      }
+      answerStartup(command, peer);
+    });
+    const error = await rpc.start().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(OmoRpcFaultError);
+    expect(error).toMatchObject({ kind: "protocolError" });
+    expect((error as OmoRpcFaultError).cause).toBeInstanceOf(OmoProtocolError);
+    expect(rpc.fault).toBe(error);
+    expect(faults).toEqual([error]);
+    await expect(rpc.close()).resolves.toBeUndefined();
+  });
 });
 
 describe("OmO RPC event sink", () => {

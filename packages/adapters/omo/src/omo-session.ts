@@ -2766,6 +2766,14 @@ export class OmoHarnessSession implements HarnessSession {
         await Promise.race([active.completion, delay(this.#closeTurnTimeoutMs)]);
       }
     }
+    if (this.#drainingSteerCleanup) {
+      // A settled Turn's late-steer cleanup still owns the native queue: its
+      // `clear_queue` write is in flight. Tearing the transport down now would
+      // reject that answer and leave the text for a later resume to execute as
+      // a phantom Turn, so the cleanup gets the same bound as an active Turn's
+      // shutdown before the process closes.
+      await Promise.race([this.#waitForSteerCleanup(), delay(this.#closeTurnTimeoutMs)]);
+    }
     let closeFailure: unknown;
     try {
       await this.#rpc.close();

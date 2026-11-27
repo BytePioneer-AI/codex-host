@@ -104,7 +104,18 @@ describe.skipIf(process.env.CODEXHOST_OMO_LIVE !== "1")(
               ? locator.sessionPath
               : undefined;
           expect(typeof sessionPath).toBe("string");
-          expect(typeof sessionPath === "string" && sessionPath.startsWith(agentDir)).toBe(true);
+          // Containment through path.relative, not a prefix: a sibling such as
+          // `/tmp/agent-backup` shares the prefix but is not inside the dir.
+          const relativeToAgentDir =
+            typeof sessionPath === "string"
+              ? path.relative(path.resolve(agentDir), path.resolve(sessionPath))
+              : "";
+          expect(
+            relativeToAgentDir.length > 0 &&
+              relativeToAgentDir !== ".." &&
+              !relativeToAgentDir.startsWith(`..${path.sep}`) &&
+              !path.isAbsolute(relativeToAgentDir),
+          ).toBe(true);
 
           const snapshot = await session.readSnapshot();
           expect(snapshot.ok).toBe(true);

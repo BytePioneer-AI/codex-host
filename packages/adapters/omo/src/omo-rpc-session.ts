@@ -563,6 +563,11 @@ export class OmoRpcSession {
         { timeoutMs: this.#options.startupTimeoutMs },
       );
       await this.refreshState({ timeoutMs: this.#options.startupTimeoutMs });
+      // The last startup answer and a bad frame can share one stdout chunk:
+      // the response is delivered first, then the bad frame faults and closes
+      // the transport. The startup sequence must not hand back a handle to an
+      // instance that already failed.
+      if (this.#fault) throw this.#fault;
     } catch (error) {
       const fault = this.#fault ?? this.#startupFault(error);
       this.#fail(fault);
@@ -574,6 +579,10 @@ export class OmoRpcSession {
   /** Sends `get_state` and replaces {@link state} with its parsed answer. */
   async refreshState(options: { timeoutMs?: number } = {}): Promise<OmoRpcSessionState> {
     const response = await this.send("get_state", {}, options);
+    // A success that shares its chunk with a bad frame resolves first and
+    // faults right after; a caller refreshing the native state must observe
+    // the fault instead of the answer (direct `send` keeps its FIX-3 order).
+    if (this.#fault) throw this.#fault;
     let state: OmoRpcSessionState;
     try {
       state = parseOmoSessionState(response.data);

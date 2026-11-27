@@ -294,6 +294,14 @@ export class OmoAdapter implements HarnessAdapter {
     // Native Session files this open creates (the --fork startup copy and any
     // derived fork). A failed open removes them; success keeps them.
     const createdSessionFiles: string[] = [];
+    /** Records a created Session file; the source Session is never one. */
+    const trackCreatedSessionFile = (file: string | null): void => {
+      if (file === null) return;
+      if (sessionPath !== undefined && sameAbsolutePath(file, sessionPath)) return;
+      if (!createdSessionFiles.some((known) => sameAbsolutePath(known, file))) {
+        createdSessionFiles.push(file);
+      }
+    };
     const rejectOpen = async (error: HarnessError): Promise<HarnessResult<HarnessSession>> => {
       await rpc.close().catch(() => undefined);
       this.#liveRpcs.delete(rpc);
@@ -302,6 +310,13 @@ export class OmoAdapter implements HarnessAdapter {
     };
     try {
       await rpc.start();
+      // A Fork/Rollback startup runs `--fork`, so the engine has already
+      // written its startup copy when start() returns. Track it before any
+      // verification below can reject the open; otherwise the copy outlives
+      // the refusal.
+      if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
+        trackCreatedSessionFile(rpc.state.sessionFile);
+      }
       if (this.#closePromise) {
         return await rejectOpen(invalidState("OmO Adapter is closed"));
       }
@@ -309,13 +324,9 @@ export class OmoAdapter implements HarnessAdapter {
       // Session is published: an engine speaking another protocol cannot host
       // the Session this Adapter would drive.
       try {
-        assertCompatible(parseOmoProtocolInfo((await rpc.send("get_protocol_info")).data));
+        await negotiateOmoProtocol(rpc);
       } catch (error) {
-        return await rejectOpen(
-          error instanceof OmoProtocolError
-            ? { code: "protocolError", message: error.message, retryable: false }
-            : openError(error),
-        );
+        return await rejectOpen(openError(error));
       }
       const state = rpc.state;
       if (nativeRef !== undefined && sessionPath !== undefined) {
@@ -350,13 +361,7 @@ export class OmoAdapter implements HarnessAdapter {
           ...(this.#commandTimeoutMs === undefined
             ? {}
             : { commandTimeoutMs: this.#commandTimeoutMs }),
-          trackCreatedSessionFile: (file) => {
-            if (file === null) return;
-            if (sessionPath !== undefined && sameAbsolutePath(file, sessionPath)) return;
-            if (!createdSessionFiles.some((known) => sameAbsolutePath(known, file))) {
-              createdSessionFiles.push(file);
-            }
-          },
+          trackCreatedSessionFile,
           discardRpc: async (discarded) => {
             await discarded.close().catch(() => undefined);
             this.#liveRpcs.delete(discarded);
@@ -677,6 +682,11 @@ async function removeOmoSessionFiles(files: readonly string[]): Promise<void> {
   for (const file of new Set(files)) {
     await unlink(file).catch(() => undefined);
   }
+}
+
+/** Proves the engine behind `rpc` speaks the wire contract this Adapter drives. */
+async function negotiateOmoProtocol(rpc: OmoRpcSession): Promise<void> {
+  assertCompatible(parseOmoProtocolInfo((await rpc.send("get_protocol_info")).data));
 }
 
 interface OmoDerivationOptions {
@@ -1002,6 +1012,10 @@ async function persistBlankOmoSession(
   // handed back: a refused history read or a failed configuration restore must
   // reap it here, not leak it to the Adapter's live set until close.
   try {
+    // The reopened Session is a second spawn: the binary may differ from the
+    // one that negotiated the original startup, so it proves the protocol
+    // again. A failed negotiation reaps it through the same error path.
+    await negotiateOmoProtocol(reopened);
     const history = await readOmoHistory(reopened, commandOptions);
     if (resolveOmoLastTurnBoundary(history) !== null) {
       return rejectReopened({
@@ -1309,7 +1323,7 @@ function inspectionFailure(error: unknown, startedAt: number): HarnessInspection
 }
 
 function openError(error: unknown): HarnessError {
-  if (error instanceof OmoHistoryProtocolError) {
+  if (error instanceof OmoHistoryProtocolError || error instanceof OmoProtocolError) {
     return { code: "protocolError", message: error.message, retryable: false };
   }
   if (error instanceof OmoRpcForkCancelledError) {

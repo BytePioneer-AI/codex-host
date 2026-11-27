@@ -162,6 +162,13 @@ const sessionControls = {
   // Keeps a clear_queue command unanswered until `release.clear-queue`, so a
   // test can drive host input into the cleanup window deterministically.
   holdClearQueue: process.env.FAKE_OMO_HOLD_CLEAR_QUEUE === "1",
+  // Keeps a prompt's admission answer unanswered until `release.prompt-receipt`:
+  // the user entry is already persisted, so a test can close at that exact
+  // point without racing a timer.
+  holdPromptReceipt: process.env.FAKE_OMO_HOLD_PROMPT_RECEIPT === "1",
+  // Keeps a set_model answer unanswered until `release.model-receipt`, so a
+  // test can queue engine Turns behind an in-flight selection without a delay.
+  holdModelReceipt: process.env.FAKE_OMO_HOLD_MODEL_RECEIPT === "1",
   steerMode: process.env.FAKE_OMO_STEER_MODE ?? "queue",
   // Usage/lifecycle surface (task 13): armed `get_session_stats` answers,
   // per-message Usage records for the usage script, the interrupt answer, and
@@ -203,6 +210,8 @@ const sessionSteer = {
   idleQueue: [],
 };
 let heldClearQueueAnswer = null;
+let heldPromptReceiptAnswer = null;
+let heldModelReceiptAnswer = null;
 
 // Configuration surface: the live catalog the peer offers, mirrored to the
 // real engine's command set (get_protocol_info / get_available_models /
@@ -863,6 +872,10 @@ function handleSession(command) {
             : {}),
         });
       };
+      if (sessionControls.holdModelReceipt) {
+        heldModelReceiptAnswer = answer;
+        return true;
+      }
       if (sessionControls.modelDelayMs > 0) {
         setTimeout(answer, sessionControls.modelDelayMs).unref?.();
       } else {
@@ -1050,6 +1063,10 @@ function handleSession(command) {
         sessionControls.promptDelayMs = command.promptDelayMs;
       if ("holdClearQueue" in command)
         sessionControls.holdClearQueue = command.holdClearQueue === true;
+      if ("holdPromptReceipt" in command)
+        sessionControls.holdPromptReceipt = command.holdPromptReceipt === true;
+      if ("holdModelReceipt" in command)
+        sessionControls.holdModelReceipt = command.holdModelReceipt === true;
       respond(command, { ...sessionControls });
       return true;
     }
@@ -1066,8 +1083,13 @@ function handleSession(command) {
     case "clear_queue": {
       sessionReceived.clearQueues.push({ ...command });
       controlLog({ type: "clear_queue" });
-      const answer = () =>
-        respond(command, { steering: sessionSteer.idleQueue.splice(0), followUp: [] });
+      const answer = () => {
+        const steering = sessionSteer.idleQueue.splice(0);
+        // The applied effect, not the command receipt, proves the text can no
+        // longer run; the log survives the peer so tests can assert on it.
+        controlLog({ type: "clear_queue.applied", steering });
+        respond(command, { steering, followUp: [] });
+      };
       if (sessionControls.holdClearQueue) {
         heldClearQueueAnswer = answer;
         return true;
@@ -1084,11 +1106,28 @@ function handleSession(command) {
       release?.();
       return true;
     }
+    case "release.prompt-receipt": {
+      const release = heldPromptReceiptAnswer;
+      heldPromptReceiptAnswer = null;
+      respond(command, { released: release !== null });
+      release?.();
+      return true;
+    }
+    case "release.model-receipt": {
+      const release = heldModelReceiptAnswer;
+      heldModelReceiptAnswer = null;
+      respond(command, { released: release !== null });
+      release?.();
+      return true;
+    }
     case "prompt": {
       sessionReceived.prompts.push({
         message: command.message,
         clientTurnId: command.clientTurnId ?? null,
       });
+      // Every prompt write is visible after the peer exits, so a test can prove
+      // an input was (or was not) written even when no Turn followed.
+      controlLog({ type: "prompt", clientTurnId: command.clientTurnId ?? null });
       sessionLastClientTurnId = command.clientTurnId ?? null;
       if (sessionControls.promptError) {
         respondError(command, sessionControls.promptError);
@@ -1111,6 +1150,10 @@ function handleSession(command) {
         });
         queueMicrotask(() => runTurnScript(script, command.clientTurnId ?? null));
       };
+      if (sessionControls.holdPromptReceipt) {
+        heldPromptReceiptAnswer = start;
+        return true;
+      }
       if (sessionControls.promptDelayMs > 0) {
         setTimeout(start, sessionControls.promptDelayMs).unref?.();
       } else {

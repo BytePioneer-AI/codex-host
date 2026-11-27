@@ -1081,9 +1081,10 @@ describe("OmO Session prewarm session-file cleanup", () => {
     const sessionFile = path.join(cwd, "sessions", "alpha.jsonl");
     const fixtureSession = await createSessionFixture(
       "session",
-      // The peer persists the user entry immediately; its admission answer is
-      // still in flight when close begins, so #turnAccepted stays false.
-      { FAKE_OMO_SESSION_FILE: sessionFile, FAKE_OMO_PROMPT_DELAY_MS: "1000" },
+      // The peer persists the user entry immediately but withholds its
+      // admission answer until a release that never comes: close always begins
+      // with #turnAccepted false, and no timer decides which lands first.
+      { FAKE_OMO_SESSION_FILE: sessionFile, FAKE_OMO_HOLD_PROMPT_RECEIPT: "1" },
       { session: { prewarmSessionFile: sessionFile } },
     );
     expect(existsSync(sessionFile)).toBe(true);

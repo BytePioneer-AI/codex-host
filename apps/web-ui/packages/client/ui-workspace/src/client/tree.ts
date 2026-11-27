@@ -436,10 +436,16 @@ export function sessionActivity(
 ): Pick<SessionNode, "pendingInteraction" | "running" | "runningSubagentCount" | "completed"> {
   const status = statuses.get(summary.id);
   const pendingInteraction = visiblePendingKind(status?.pendingInteraction?.kind);
+  const running = status?.running ?? summary.running;
+  const runningSubagentCount = runningChildCount(list, summary.id, statuses);
   return {
-    running: status?.running ?? summary.running,
-    runningSubagentCount: runningChildCount(list, summary.id, statuses),
-    completed: status?.completionUnread === true,
+    running,
+    runningSubagentCount,
+    completed:
+      !running &&
+      runningSubagentCount === 0 &&
+      status?.pendingInteraction === undefined &&
+      status?.completionUnread === true,
     ...(pendingInteraction === undefined ? {} : { pendingInteraction }),
   };
 }
@@ -451,6 +457,8 @@ function sessionNode(
   pinned: ReadonlySet<SessionId>,
   archived: ReadonlySet<SessionId>,
 ): SessionNode {
+  const activity = sessionActivity(s, list, statuses);
+  const isArchived = archived.has(s.id);
   return {
     id: s.id,
     reference: threadReferenceOf(s),
@@ -458,9 +466,10 @@ function sessionNode(
     title: sessionTitle(s),
     ...(s.cwd === undefined ? {} : { cwd: s.cwd }),
     blank: s.blank,
-    ...sessionActivity(s, list, statuses),
-    pinned: !archived.has(s.id) && pinned.has(s.id),
-    archived: archived.has(s.id),
+    ...activity,
+    completed: !isArchived && activity.completed,
+    pinned: !isArchived && pinned.has(s.id),
+    archived: isArchived,
     updatedAt: s.updatedAt,
   };
 }

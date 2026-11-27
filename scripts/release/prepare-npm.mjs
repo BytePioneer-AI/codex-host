@@ -197,6 +197,7 @@ export function npmReleaseBuildCommands(
         "codexhost-shim",
         "--package",
         "codexhost-updater",
+        ...(target.hostPlatform === "win32" ? ["--package", "codexhost-screenshot"] : []),
       ],
     },
     ...(target.hostPlatform !== "linux"
@@ -289,7 +290,9 @@ export function expectedNpmPackagePaths(target) {
     "README.md",
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
-    ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
+    ...(target.hostPlatform === "win32"
+      ? ["libexec/codexhost-node-repl.exe", "libexec/codexhost-screenshot.exe"]
+      : []),
     ...(target.hostPlatform === "darwin"
       ? MACOS_SHELL_BUNDLE_PATHS
       : target.hostPlatform !== "linux"
@@ -1240,6 +1243,12 @@ export async function prepareNpmPackage({
       path.join(rustOutput, "codexhost-node-repl.exe"),
       path.join(packageRoot, "libexec", "codexhost-node-repl.exe"),
       "npm Desktop tool proxy",
+      true,
+    );
+    await copyReleaseFile(
+      path.join(rustOutput, "codexhost-screenshot.exe"),
+      path.join(packageRoot, "libexec", "codexhost-screenshot.exe"),
+      "npm Desktop screenshot helper",
       true,
     );
   }

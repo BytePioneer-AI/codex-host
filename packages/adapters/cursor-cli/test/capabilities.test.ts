@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessPermissionModeIdSchema,
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import { CursorAdapter, CursorSession } from "../src/adapter.js";
@@ -215,6 +219,116 @@ describe("Cursor parameterized Thinking", () => {
       await adapter.close();
     }
   });
+  it.each(["create", "resume"] as const)(
+    "does not buffer startup session.state.changed events during %s and still emits post-open updates",
+    async (kind) => {
+      const sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const modeOption = select("mode", "agent", ["agent", "plan", "ask"], "mode");
+      const initial: CursorSessionInfo = {
+        ...structuredClone(info),
+        configOptions: [modeOption, ...structuredClone(info.configOptions ?? [])],
+      };
+      vi.spyOn(CursorTransport.prototype, "open").mockImplementation(async function (
+        this: CursorTransport,
+      ) {
+        this.sessionId = sessionId;
+        return structuredClone(initial);
+      });
+      vi.spyOn(CursorTransport.prototype, "close").mockResolvedValue();
+      let config = structuredClone(initial.configOptions ?? []);
+      vi.spyOn(CursorTransport.prototype, "configure").mockImplementation(async (id, value) => {
+        config = config.map((entry) =>
+          entry.id === id ? ({ ...entry, currentValue: value } as SessionConfigOption) : entry,
+        );
+        return { configOptions: structuredClone(config) };
+      });
+      const lowThinking = required(
+        cursorThinking(info.configOptions).find(({ values }) =>
+          values.some(([id, value]) => id === "effort" && value === "low"),
+        ),
+      ).id;
+      // On create, request the already-selected model to also cover the no-op confirmation branch.
+      const requestedModel = cursorModelRef(
+        kind === "create" ? "alpha[context=200k]" : "alpha[context=1m]",
+      );
+      const planMode = harnessPermissionModeIdSchema.parse("plan");
+      const askMode = harnessPermissionModeIdSchema.parse("ask");
+      const adapter = new CursorAdapter();
+      try {
+        const opened = await adapter.open(
+          kind === "create"
+            ? {
+                kind,
+                cwd: process.cwd(),
+                model: requestedModel,
+                thinkingOptionId: lowThinking,
+                permissionModeId: planMode,
+              }
+            : {
+                kind,
+                cwd: process.cwd(),
+                nativeRef: nativeSessionRefSchema.parse({
+                  harnessId: "cursor-cli",
+                  nativeSessionId: sessionId,
+                  formatVersion: 1,
+                }),
+                model: requestedModel,
+                thinkingOptionId: lowThinking,
+                permissionModeId: planMode,
+              },
+        );
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        expect(session.initialState).toMatchObject({
+          effectiveModel: requestedModel,
+          effectiveThinkingOptionId: lowThinking,
+          effectivePermissionModeId: planMode,
+        });
+        const outputs: HarnessOutput[] = [];
+        const done = (async () => {
+          for await (const output of session.outputs) outputs.push(output);
+        })();
+        try {
+          expect((await session.execute({ type: "model.select", model: requestedModel })).ok).toBe(
+            true,
+          );
+          expect(
+            (await session.execute({ type: "permissionMode.select", permissionModeId: askMode }))
+              .ok,
+          ).toBe(true);
+        } finally {
+          await session.close();
+          await done;
+        }
+        expect(outputs).toEqual([
+          {
+            kind: "event",
+            event: {
+              type: "session.state.changed",
+              state: expect.objectContaining({
+                effectiveModel: requestedModel,
+                effectiveThinkingOptionId: lowThinking,
+                effectivePermissionModeId: planMode,
+              }),
+            },
+          },
+          {
+            kind: "event",
+            event: {
+              type: "session.state.changed",
+              state: expect.objectContaining({
+                effectiveModel: requestedModel,
+                effectiveThinkingOptionId: lowThinking,
+                effectivePermissionModeId: askMode,
+              }),
+            },
+          },
+        ]);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
   it("validates every legacy variant parameter before modifying native configuration", () => {
     expect(
       cursorModelSelection(info, cursorModelRef("alpha[thinking=true,context=1m,effort=low]").id),

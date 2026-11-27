@@ -33,6 +33,9 @@ function unavailable(): never {
 }
 
 export class ChAttachments {
+  private readonly viewedImages = new Map<string, { ref: ImageRef; bytes: Buffer }>();
+  private viewedImageBytes = 0;
+
   constructor(
     private readonly images: WebImages,
     private readonly files?: WebFiles,
@@ -82,6 +85,10 @@ export class ChAttachments {
     observationId?: string,
   ): ImageRef {
     const attachmentId = this.id(threadId, source, observationId);
+    if (observationId !== undefined) {
+      const captured = this.viewedImages.get(attachmentId);
+      if (captured) return captured.ref;
+    }
     const path = imagePath(source);
     const label = name ?? (path ? basename(path.replaceAll("\\", "/")) : "image");
     const fallback: ImageRef = {
@@ -94,10 +101,24 @@ export class ChAttachments {
     };
     try {
       const image = this.bytes(source);
-      return { ...image.ref, attachmentId, name: label, fingerprint: image.leaf };
+      const ref = { ...image.ref, attachmentId, name: label, fingerprint: image.leaf };
+      if (observationId !== undefined) this.rememberImageView(ref, image.bytes);
+      return ref;
     } catch {
       // Keep a placeholder so a transiently unavailable native file can be retried.
       return fallback;
+    }
+  }
+
+  /** A tool can overwrite its output before the user expands the image. Keep recent observations in memory. */
+  private rememberImageView(ref: ImageRef, bytes: Buffer): void {
+    this.viewedImages.set(ref.attachmentId, { ref, bytes });
+    this.viewedImageBytes += bytes.length;
+    for (const [id, oldest] of this.viewedImages) {
+      if (this.viewedImages.size <= 64 && this.viewedImageBytes <= WEB_IMAGE_LIMITS.maxImageBytes)
+        break;
+      this.viewedImages.delete(id);
+      this.viewedImageBytes -= oldest.bytes.length;
     }
   }
 
@@ -145,6 +166,9 @@ export class ChAttachments {
       // An imageView is an immutable snapshot of one displayed image. If its first
       // projection could not read a fingerprint, later bytes must not become readable.
       if (!expected?.fingerprint) return unavailable();
+      const captured = this.viewedImages.get(attachmentId);
+      if (captured?.ref.fingerprint === expected.fingerprint)
+        return { attachment: expected, data: captured.bytes.toString("base64") };
       return this.readSource(imageView, expected, attachmentId);
     }
     const history = this.tryReadInputs(

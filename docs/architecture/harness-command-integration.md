@@ -193,11 +193,13 @@ local Thread or draft workspace, independently of native command discovery. The
 DSH bounded path index provides recursive fuzzy matching and directory navigation;
 selection inserts canonical `@path` text without reading contents or starting a Thread.
 
-`ChHarnessCommands` forwards the public catalog unchanged
-through `codexhost/thread/commands/inspect`; execution addresses the stable command ID
-through `codexhost/thread/command/execute`. It first confirms an existing local external
-Thread and direct input eligibility. Unbound drafts, child/read-only Threads and official
-Codex/remote sources do not gain discovery. Reads never create or resume a Session.
+Web reads the native command catalog through `codexhost/thread/commands/inspect` and
+executes direct commands by stable ID through `codexhost/thread/command/execute`.
+Both local and Peer Threads can use their Harness's catalog, including official Codex.
+For a Peer Thread, catalog reads and execution go to the owning Peer's Client Channel;
+there is no Hub-local fallback. Child/read-only Threads and archived Peer Threads cannot
+use this command path. Legacy SSH and Remote Control do not have a Peer Client Channel
+and do not support direct command execution. Catalog reads never create or resume a Session.
 
 One exception: an official Codex draft has no Thread, so Web asks
 `codexhost/harness/commands/inspect { harnessId: "codex", cwd }` (the only draft-level
@@ -214,7 +216,10 @@ Invocation collisions with interface commands disable only the conflicting nativ
 
 Menu `/compact` and `argumentMode: "none"` selections execute without draft arguments,
 attachment submission, stopping or queueing. Busy/offline/in-flight requests disable direct
-execution. `accepted` means admission only; native progress and outcomes use the existing
+execution, and execution revalidates the selected ID against the current catalog. Web also
+lists the `/permission <mode>` interface command for editable Peer Threads;
+execution requires an online Peer and a selectable native mode. Unsubmitted Peer drafts do not list it.
+`accepted` means admission only; native progress and outcomes use the existing
 Thread projection. An uncertain write is never retried automatically. Other text selections
 insert an editable reference showing the native invocation, using the public
 `subagent://codexhost-command.<name>` carrier and the existing reference codec. Text, other

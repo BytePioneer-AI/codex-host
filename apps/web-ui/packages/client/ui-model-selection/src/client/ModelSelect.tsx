@@ -329,10 +329,17 @@ export function ModelSelect({
       let x = rect.right - lw;
       const y = Math.max(MARGIN, rect.top - GAP - placedHeight);
       if (lw > 0) x = Math.min(Math.max(x, MARGIN), window.innerWidth - lw - MARGIN);
-      const modelWidth = modelPanelRef.current?.offsetWidth ?? 264;
-      const leftFits = x - GAP - modelWidth >= MARGIN;
-      const rightFits = x + lw + GAP + modelWidth <= window.innerWidth - MARGIN;
-      setModelSide(leftFits ? "left" : rightFits ? "right" : "replace");
+      // Reserve a usable sibling column, then let its content grow within that space.
+      // Side selection is independent of the panel's previously constrained width.
+      const leftSpace = x - GAP - MARGIN;
+      const rightSpace = window.innerWidth - MARGIN - x - lw - GAP;
+      const side =
+        window.innerWidth <= 640 || Math.max(leftSpace, rightSpace) < 264
+          ? "replace"
+          : leftSpace >= rightSpace
+            ? "left"
+            : "right";
+      setModelSide(side);
       const panelMaxHeight = Math.max(
         0,
         Math.min(availableHeight, window.innerHeight - y - MARGIN),
@@ -340,6 +347,9 @@ export function ModelSelect({
       setMenuPos({
         left: x,
         top: y,
+        "--ch-model-panel-max-width": `${String(
+          side === "left" ? leftSpace : side === "right" ? rightSpace : lw,
+        )}px`,
         "--ch-model-menu-max-height": `${String(panelMaxHeight)}px`,
       } as CSSProperties);
     };
@@ -710,6 +720,10 @@ export function ModelSelect({
                     <IconChevronLeftOutlineRegular />
                   </button>
                   <span>{t("menu.model")}</span>
+                  <span className={css.modelCount}>
+                    ({showSearch && query.trim() !== "" ? `${visibleModels.length} / ` : ""}
+                    {choices.length})
+                  </span>
                   {refreshModels && (
                     <button
                       ref={refreshButtonRef}

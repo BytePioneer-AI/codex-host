@@ -28,3 +28,6 @@ fs2 = "0.4.3"
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 nix = { version = "0.31.3", features = ["process", "signal"] }
 signal-hook = "0.4.4"
+
+[build-dependencies]
+winresource = { version = "0.1.31", default-features = false }

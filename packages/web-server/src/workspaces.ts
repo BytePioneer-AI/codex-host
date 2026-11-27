@@ -47,7 +47,14 @@ function insertSessionId(ids: readonly string[], sessionId: string, beforeId?: s
   return rest;
 }
 
+interface ProjectSectionOverride {
+  official: string | null;
+  target: string | null;
+}
+
 interface WorkspaceState {
+  /** Web sidebar placement, tied to the official placement it supersedes. */
+  projectSectionOverrides?: Record<string, ProjectSectionOverride>;
   /** Web-created assignments keyed by the Host-qualified Web Session ID. */
   remoteProjectIds?: Record<string, string>;
   items: WorkspaceView[];
@@ -209,12 +216,12 @@ export function projectRootTitles(projects: readonly NativeProject[]): Map<strin
   return new Map(projectRoots(projects).map((root) => [root.path, root.title]));
 }
 
-/** One native Thread section and the Workspaces of the Desktop projects placed in it. */
+/** One native Thread section and its visible project Workspaces in sidebar order. */
 export interface ThreadSectionView {
   id: string;
   name: string;
   threadIds: string[];
-  /** Omitted when Desktop placed no registered project in the section. */
+  /** Omitted when the section contains no registered project. */
   workspaceIds?: string[];
 }
 
@@ -670,7 +677,10 @@ export class Workspaces {
     this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
   }
 
-  /** Read-only native Thread sections; only the app-server and Desktop persist them. */
+  /** Unmodified official snapshot and the projection delivered to Web clients. */
+  private officialThreadSections: ThreadSectionView[] | undefined;
+  /** Projects registered when each section's member list was last read successfully. */
+  private projectSectionCoverage = new Map<string, ReadonlySet<string>>();
   private referenceThreadSections: ThreadSectionView[] = [];
 
   hasThreadSection(id: string): boolean {
@@ -705,9 +715,117 @@ export class Workspaces {
       });
       return workspaceIds.length > 0 ? { ...section, workspaceIds } : { ...section };
     });
+    const saved = this.state.projectSectionOverrides;
+    const registered =
+      this.nativeWorkspaces && new Set(this.nativeWorkspaces.map((item) => item.workspaceId));
+    const coverage = new Map<string, ReadonlySet<string>>();
+    if (registered) {
+      const located = new Set(next.flatMap((section) => section.workspaceIds ?? []));
+      for (const section of next) {
+        // An absent renderer row is unknown; an observed empty row confirms that the projects left.
+        if (Object.hasOwn(sectionProjects, section.id)) {
+          coverage.set(section.id, registered);
+          continue;
+        }
+        const lastRead = this.projectSectionCoverage.get(section.id);
+        if (lastRead) coverage.set(section.id, lastRead);
+        const previous =
+          this.officialThreadSections?.find((item) => item.id === section.id)?.workspaceIds ?? [];
+        const anchors = Object.entries(saved ?? {}).flatMap(([id, placement]) =>
+          placement.official === section.id ? [id] : [],
+        );
+        const retained = [...new Set([...previous, ...anchors])].filter(
+          (id) => registered.has(id) && !located.has(id),
+        );
+        if (retained.length) {
+          section.workspaceIds = retained;
+          for (const id of retained) located.add(id);
+        }
+      }
+    }
+    if (registered && saved) {
+      const available = new Set(next.map((section) => section.id));
+      const valid = Object.fromEntries(
+        Object.entries(saved).filter(
+          ([id, placement]) =>
+            registered.has(id) &&
+            (placement.target === null || available.has(placement.target)) &&
+            this.projectSection(next, id) === placement.official,
+        ),
+      );
+      if (Object.keys(valid).length !== Object.keys(saved).length) this.saveProjectSections(valid);
+    }
+    this.officialThreadSections = next;
+    this.projectSectionCoverage = coverage;
+    this.publishProjectSections();
+  }
+
+  private projectSection(
+    sections: readonly ThreadSectionView[],
+    workspaceId: string,
+  ): string | null {
+    return sections.find((section) => section.workspaceIds?.includes(workspaceId))?.id ?? null;
+  }
+
+  private saveProjectSections(overrides: Record<string, ProjectSectionOverride>): void {
+    const state = { ...this.state };
+    if (Object.keys(overrides).length) state.projectSectionOverrides = overrides;
+    else delete state.projectSectionOverrides;
+    this.data.writeJson(FILE, state);
+    this.state = state;
+  }
+
+  private publishProjectSections(): void {
+    const official = this.officialThreadSections ?? [];
+    const overrides = this.nativeWorkspaces ? this.state.projectSectionOverrides : undefined;
+    const next = !overrides
+      ? official
+      : official.map(({ workspaceIds, ...section }) => {
+          const ids = (workspaceIds ?? []).filter((id) => !Object.hasOwn(overrides, id));
+          for (const [id, placement] of Object.entries(overrides))
+            if (placement.target === section.id) ids.push(id);
+          return ids.length ? { ...section, workspaceIds: ids } : section;
+        });
     if (JSON.stringify(next) === JSON.stringify(this.referenceThreadSections)) return;
     this.referenceThreadSections = next;
     this.broadcast({ type: "threadSections", threadSections: next });
+  }
+
+  private moveWorkspaceToSection(
+    workspaceId: unknown,
+    sectionId: unknown,
+  ): { sectionId: string | null } {
+    if (
+      typeof workspaceId !== "string" ||
+      !this.officialThreadSections ||
+      !this.nativeWorkspaces?.some((workspace) => workspace.workspaceId === workspaceId) ||
+      !(sectionId === null || (typeof sectionId === "string" && this.hasThreadSection(sectionId)))
+    )
+      throw new RpcError("workspace/section-invalid", "Unknown local project or sidebar section.");
+    const official = this.projectSection(this.officialThreadSections, workspaceId);
+    if (
+      official === null &&
+      !this.state.projectSectionOverrides?.[workspaceId] &&
+      this.officialThreadSections.some(
+        (section) => !this.projectSectionCoverage.get(section.id)?.has(workspaceId),
+      )
+    )
+      throw new RpcError(
+        "workspace/section-invalid",
+        "The project's current sidebar section is unknown. Refresh the sidebar and try again.",
+      );
+    if (this.projectSection(this.referenceThreadSections, workspaceId) !== sectionId) {
+      // Reinsert at the tail so a second move appends after earlier arrivals in its destination.
+      const overrides = Object.fromEntries(
+        Object.entries(this.state.projectSectionOverrides ?? {}).filter(
+          ([id]) => id !== workspaceId,
+        ),
+      );
+      if (sectionId !== official) overrides[workspaceId] = { official, target: sectionId };
+      this.saveProjectSections(overrides);
+      this.publishProjectSections();
+    }
+    return { sectionId };
   }
 
   /** Ephemeral Host archive projection; shared Threads never use legacy Web archive flags. */
@@ -1097,6 +1215,10 @@ export class Workspaces {
       this.state = state;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       return { deleted: true };
+    });
+    rpc.register("workspace/moveWorkspaceToSection", async (args) => {
+      const request = requestOf<{ workspaceId?: unknown; sectionId?: unknown } | null>(args);
+      return this.moveWorkspaceToSection(request?.workspaceId, request?.sectionId);
     });
     rpc.register("workspace/insertBefore", async (args) => {
       const request = requestOf<{ workspaceId: string; beforeWorkspaceId?: string }>(args);

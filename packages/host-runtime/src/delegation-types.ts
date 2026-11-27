@@ -220,7 +220,10 @@ export interface ThreadSendInput {
   hostId?: string;
   threadId: string;
   message: string;
-  /** Stop the current Turn and confirm idle before sending; preserve existing watches. */
+  /**
+   * Stop the current Turn and confirm idle before sending; preserve existing watches. The
+   * registry sends with it after the stop, so the message goes ahead of queued follow-ups.
+   */
   interrupt?: boolean;
   /** Use the existing steering operation when running; idle Threads start a Turn. */
   steer?: boolean;

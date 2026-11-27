@@ -35,6 +35,9 @@ export interface SectionHeadingProps {
   rowKey?: string;
   /** Optional inline trailing control rendered at the row's end without folding the section. */
   trailing?: ReactNode;
+  /** Drop a dragged project on this section, including while it is folded. */
+  projectDrop?:
+    { active: boolean; hover: () => void; leave: () => void; drop: () => void } | undefined;
   /** Section action rendered at the row's end. */
   action?: SectionAction;
 }
@@ -52,6 +55,7 @@ export function SectionHeading({
   rowKey,
   trailing,
   action,
+  projectDrop,
 }: SectionHeadingProps) {
   const foldable = expanded !== undefined && onToggle !== undefined && rowKey !== undefined;
   const content = (
@@ -99,6 +103,33 @@ export function SectionHeading({
       tabIndex={-1}
       data-row-key={rowKey}
       aria-label={label}
+      data-project-drop-active={projectDrop?.active || undefined}
+      onDragOver={
+        projectDrop &&
+        ((event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "move";
+          projectDrop.hover();
+        })
+      }
+      onDragLeave={
+        projectDrop &&
+        ((event) => {
+          if (!(
+            event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)
+          ))
+            projectDrop.leave();
+        })
+      }
+      onDrop={
+        projectDrop &&
+        ((event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          projectDrop.drop();
+        })
+      }
       aria-expanded={expanded}
       onClick={onToggle}
     >

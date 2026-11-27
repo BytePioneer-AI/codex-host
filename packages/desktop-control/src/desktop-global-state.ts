@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 const MAX_STATE_BYTES = 32 * 1024 * 1024;
 
-function checkStateFile(info: Stats) {
-  if (!info.isFile() || info.size > MAX_STATE_BYTES)
+function checkStateFile(info: Stats, maxBytes = MAX_STATE_BYTES) {
+  if (!info.isFile() || info.size > maxBytes)
     throw new Error("Invalid or oversized Desktop global state file");
 }
 
@@ -22,7 +22,7 @@ export async function readDesktopGlobalState(
   const file = join(codexHome, ".codex-global-state.sqlite");
   const info = await lstat(file).catch(ignoreMissingFile);
   if (info) {
-    checkStateFile(info.isSymbolicLink() ? await stat(file) : info);
+    checkStateFile(info.isSymbolicLink() ? await stat(file) : info, Infinity);
     const state = await readSqliteState(file);
     if (state !== undefined) return state;
   }
@@ -50,6 +50,15 @@ async function readSqliteState(file: string) {
     const version = db.prepare("PRAGMA user_version").get()?.user_version;
     if (version === 0) return undefined;
     if (version !== 1) throw new Error(`Unsupported global state database version: ${version}`);
+    const bytes = db
+      .prepare(
+        `SELECT COALESCE(SUM(
+          length(CAST(scope AS BLOB)) + length(CAST(key AS BLOB)) + length(CAST(value AS BLOB))
+        ), 0) AS bytes FROM settings`,
+      )
+      .get()?.bytes;
+    if (typeof bytes !== "number" || bytes > MAX_STATE_BYTES)
+      throw new Error("Desktop global state exceeds its read limit");
     rows = db.prepare("SELECT scope, key, value FROM settings").all();
   } finally {
     db.close();

@@ -391,7 +391,15 @@ describe("npm package release", () => {
     expect(rust.args).toContain("codexhost-launcher");
     expect(rust.args).toContain("codexhost-shim");
     expect(rust.args).toContain("codexhost-updater");
+    expect(rust.args).not.toContain("codexhost-screenshot");
     expect(rust.args).not.toContain("codexhost-platform");
+    const windowsRust = npmReleaseBuildCommands(
+      releaseTarget("windows-x64"),
+      "win32",
+      { npm_execpath: "C:\\node\\npm-cli.js" },
+      "C:\\node\\node.exe",
+    ).find((command) => command.label === "Rust release build");
+    expect(windowsRust.args).toContain("codexhost-screenshot");
     const shell = commands.find((command) => command.label === "Desktop shell release build");
     expect(shell.args).toContain("apps/desktop-shell/src-tauri/Cargo.toml");
     expect(shell.args).toContain("aarch64-apple-darwin");
@@ -1098,12 +1106,16 @@ describe("npm package release", () => {
         "libexec/codexhost-node-repl.exe",
       );
       expect(expectedNpmPackagePaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-screenshot.exe",
+      );
+      expect(expectedNpmPackagePaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-shell.exe",
       );
       expect(expectedNpmPackagePaths(releaseTarget("linux-x64"))).not.toContain(
         "libexec/codexhost-shell",
       );
       expect(paths).not.toContain("libexec/codexhost-node-repl");
+      expect(paths).not.toContain("libexec/codexhost-screenshot");
       expect(paths).toContain("libexec/codexhost-updater");
       expect(paths).toContain("app/codexhost-distribution.json");
       await mkdir(path.join(root, "runtime"), { recursive: true });

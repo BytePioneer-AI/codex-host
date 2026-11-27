@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  FileDiffInfo,
   ModelInfo,
   OpenCodeClient,
   OpenCodeEvent,
@@ -14,11 +17,13 @@ import {
   type HostEvent,
 } from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { hostTurnIdSchema, nativeCheckpointRefSchema } from "@codexhost/shared-contracts";
 import { encodeOpenCodeVariant } from "../src/model-catalog.js";
 import { openCodeMajor, openCodeVersion } from "../src/version.js";
-import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
+import { assistantItems, projectHistory, readHistory, readMessages } from "../src/v2/history.js";
 import { v2Catalog, v2Locator, v2Permissions, v2Ref, v2State } from "../src/v2/state.js";
+import { V2Adapter } from "../src/v2/adapter.js";
+import { V2Connection } from "../src/v2/connection.js";
 import { V2Session } from "../src/v2/session.js";
 import { v2UsageRequest } from "../src/v2/usage.js";
 import { formInteraction, replyInteraction } from "../src/v2/interactions.js";
@@ -32,11 +37,11 @@ const info: SessionInfo = {
   cost: 0,
   tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
 };
-const user = (id = "user"): SessionMessageInfo => ({
+const user = (id = "user", turnId: string | null = "host-turn"): SessionMessageInfo => ({
   id,
   type: "user",
   text: id,
-  metadata: { "codexhost.turnId": "host-turn" },
+  ...(turnId !== null ? { metadata: { "codexhost.turnId": turnId } } : {}),
   time: { created: 1 },
 });
 const assistant = (text: string): SessionMessageAssistant => ({
@@ -49,11 +54,13 @@ const assistant = (text: string): SessionMessageAssistant => ({
 });
 const idle = (
   outcome: "succeeded" | "failed" | "interrupted" = "succeeded",
-): SessionMessageInfo => ({ id: "idle", type: "idle", time: { created: 3 }, outcome });
+  id = "idle",
+): SessionMessageInfo => ({ id, type: "idle", time: { created: 3 }, outcome });
 const models = v2Catalog([], null);
 const sessions: V2Session[] = [];
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map((s) => s.close()));
+  vi.restoreAllMocks();
 });
 
 function fixture() {
@@ -66,6 +73,7 @@ function fixture() {
     messages.push(user());
     return { id: "inbox" };
   });
+  const compact = vi.fn(async () => ({ id: "compact" }));
   const interrupt = vi.fn(async () => ({ interrupted: true }));
   const client = {
     event: {
@@ -79,9 +87,10 @@ function fixture() {
       get: vi.fn(async () => structuredClone(info)),
       active: vi.fn(async () => ({})),
       prompt,
+      compact,
       interrupt,
       form: { list: vi.fn(async () => []) },
-      diff: vi.fn(async () => []),
+      diff: vi.fn(async (): Promise<FileDiffInfo[]> => []),
     },
     permission: { list: vi.fn(async (): Promise<PermissionRequest[]> => []), reply: vi.fn() },
   };
@@ -130,6 +139,7 @@ function fixture() {
     events,
     usage,
     prompt,
+    compact,
     interrupt,
     emit,
     start,
@@ -281,6 +291,114 @@ describe("OpenCode v2 native history", () => {
     expect(list.mock.calls[1]?.[0]).toEqual({ sessionID: "session", cursor: "page" });
     list.mockResolvedValue({ data: [], cursor: { next: "page" } });
     await expect(readMessages(client, "session")).rejects.toThrow("did not advance");
+  });
+  it("starts a new turn on distinct codexhost.turnId or manual compaction after an incomplete turn", () => {
+    const snapshot = projectHistory(
+      info,
+      [
+        user("u1", "turn-1"),
+        { ...assistant("cut off"), id: "a1" },
+        user("u2", "turn-2"),
+        {
+          id: "c-auto",
+          type: "compaction",
+          reason: "auto",
+          status: "completed",
+          summary: "",
+          recent: "",
+          time: { created: 2 },
+        },
+        { ...assistant("recovered"), id: "a2" },
+        idle("succeeded", "idle-2"),
+        user("native-1", null),
+        user("native-steered", null),
+        { ...assistant("native cut off"), id: "a3" },
+        {
+          id: "c-manual",
+          type: "compaction",
+          reason: "manual",
+          status: "completed",
+          summary: "",
+          recent: "",
+          time: { created: 4 },
+        },
+        idle("succeeded", "idle-4"),
+        user("native-2", null),
+        { ...assistant("native cut off 2"), id: "a4" },
+        user("u3", "turn-3"),
+        { ...assistant("host after native"), id: "a5" },
+        idle("succeeded", "idle-5"),
+      ],
+      100,
+    );
+    expect(snapshot.turns).toHaveLength(6);
+    expect(snapshot.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "u1" },
+      input: [{ text: "u1" }],
+      outcome: { status: "unknown" },
+    });
+    expect(snapshot.turns[0]?.checkpoint).toBeUndefined();
+    expect(snapshot.turns[1]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "u2" },
+      input: [{ text: "u2" }],
+      outcome: { status: "succeeded" },
+      checkpoint: { checkpointId: "idle-2" },
+    });
+    expect(snapshot.turns[1]?.items.map(({ item }) => item.type)).toEqual([
+      "contextCompaction",
+      "agentMessage",
+    ]);
+    expect(snapshot.turns[2]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "native-1" },
+      input: [{ text: "native-1" }, { text: "native-steered" }],
+      outcome: { status: "unknown" },
+    });
+    expect(snapshot.turns[3]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "c-manual" },
+      input: [],
+      outcome: { status: "succeeded" },
+      checkpoint: { checkpointId: "idle-4" },
+    });
+    expect(snapshot.turns[3]?.items.map(({ item }) => item.type)).toEqual(["contextCompaction"]);
+    expect(snapshot.turns[4]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "native-2" },
+      input: [{ text: "native-2" }],
+      outcome: { status: "unknown" },
+    });
+    expect(snapshot.turns[5]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "u3" },
+      input: [{ text: "u3" }],
+      outcome: { status: "succeeded" },
+      checkpoint: { checkpointId: "idle-5" },
+    });
+  });
+  it("skips session.diff for turns in skipDiffTurnKeys while loading diffs for other completed turns", async () => {
+    const messages: SessionMessageInfo[] = [
+      user("u1", "turn-1"),
+      { ...assistant("first"), id: "a1", snapshot: { files: ["old.ts"] } },
+      idle("succeeded", "idle-1"),
+      user("u2", "turn-2"),
+      { ...assistant("second"), id: "a2", snapshot: { files: ["new.ts"] } },
+      idle("succeeded", "idle-2"),
+    ];
+    const diff = vi.fn(async (): Promise<FileDiffInfo[]> => [
+      {
+        file: "new.ts",
+        patch: "@@ -0,0 +1 @@\n+x\n",
+        additions: 1,
+        deletions: 0,
+        status: "added",
+      },
+    ]);
+    const client = {
+      message: { list: vi.fn(async () => ({ data: messages, cursor: {} })) },
+      session: { diff },
+    } as unknown as OpenCodeClient;
+    const { snapshot } = await readHistory(client, info, 100, models.index, new Set(["u1"]));
+    expect(diff).toHaveBeenCalledTimes(1);
+    expect(diff).toHaveBeenCalledWith({ sessionID: info.id, from: "u2" });
+    expect(snapshot.turns[0]?.items.some(({ item }) => item.type === "fileChange")).toBe(false);
+    expect(snapshot.turns[1]?.items.some(({ item }) => item.type === "fileChange")).toBe(true);
   });
 });
 
@@ -856,6 +974,239 @@ describe("OpenCode v2 Session lifecycle", () => {
     f.emit("session.updated");
     await vi.waitFor(() => expect(f.client.permission.list).toHaveBeenCalled());
     expect(f.events.filter((e) => e.kind === "interaction")).toHaveLength(1);
+  });
+
+  it("continues after an incomplete turn and skips baseline diffs during start and reconciliation", async () => {
+    const f = fixture();
+    f.messages.push(
+      user("u0", "turn-0"),
+      { ...assistant("old edit"), id: "a0", snapshot: { files: ["old.ts"] } },
+      idle("succeeded", "idle-0"),
+      user("u1", "turn-1"),
+      { ...assistant("cut off"), id: "a1" },
+    );
+    f.client.session.diff.mockResolvedValue([
+      {
+        file: "new.ts",
+        patch: "@@ -0,0 +1 @@\n+ok\n",
+        additions: 1,
+        deletions: 0,
+        status: "added",
+      },
+    ]);
+    await f.start();
+    expect((await f.turn()).ok).toBe(true);
+    expect(f.client.session.diff).not.toHaveBeenCalled();
+
+    f.messages.push({ ...assistant("recovered"), id: "a2", snapshot: { files: ["new.ts"] } });
+    f.emit("session.updated");
+    await vi.waitFor(() =>
+      expect(f.events).toContainEqual(
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({ type: "item.started" }),
+        }),
+      ),
+    );
+    expect(f.client.session.diff).not.toHaveBeenCalled();
+
+    f.messages.push(idle("succeeded", "idle-2"));
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+    expect(f.completed()[0]).toMatchObject({ event: { outcome: { status: "succeeded" } } });
+    expect(f.client.session.diff).toHaveBeenCalledTimes(1);
+    expect(f.client.session.diff).toHaveBeenCalledWith({ sessionID: info.id, from: "user" });
+
+    const snapshot = await f.session.readSnapshot();
+    expect(snapshot.ok).toBe(true);
+    if (!snapshot.ok) throw new Error("Expected snapshot");
+    expect(snapshot.value.turns.map((t) => t.outcome.status)).toEqual([
+      "succeeded",
+      "unknown",
+      "succeeded",
+    ]);
+    expect(snapshot.value.turns[1]?.checkpoint).toBeUndefined();
+    expect(snapshot.value.turns[2]?.checkpoint?.checkpointId).toBe("idle-2");
+  });
+
+  it("allows manual /compact after an incomplete turn", async () => {
+    const f = fixture();
+    f.messages.push(user("u1", "turn-1"), { ...assistant("cut off"), id: "a1" });
+    f.compact.mockImplementationOnce(async () => {
+      f.messages.push({
+        id: "compact-1",
+        type: "compaction",
+        reason: "manual",
+        status: "completed",
+        summary: "",
+        recent: "",
+        time: { created: 4 },
+      });
+      return { id: "compact" };
+    });
+    await f.start();
+    const result = await f.session.commands.execute({
+      commandId: "opencode.compact",
+      turnId: hostTurnIdSchema.parse("compact-turn"),
+    });
+    expect(result).toEqual({ ok: true, value: { turnId: "compact-turn" } });
+    f.messages.push(idle("succeeded", "idle-compact"));
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+    expect(f.completed()[0]).toMatchObject({ event: { outcome: { status: "succeeded" } } });
+    const snapshot = await f.session.readSnapshot();
+    expect(snapshot.ok && snapshot.value.turns.map((t) => t.outcome.status)).toEqual([
+      "unknown",
+      "succeeded",
+    ]);
+  });
+});
+
+describe("OpenCode v2 Adapter open", () => {
+  function adapterClient(sessionInfo: SessionInfo, messages: SessionMessageInfo[]) {
+    const forkedInfo: SessionInfo = { ...sessionInfo, id: "forked" };
+    const forkedMessages: SessionMessageInfo[] = [];
+    const client = {
+      plugin: {
+        list: vi.fn(async () => ({
+          data: ["provider", "agent", "policy"].map((name) => ({
+            id: `opencode.config.${name}`,
+            state: { status: "active" },
+          })),
+        })),
+      },
+      model: {
+        list: vi.fn(async () => ({ data: [] })),
+        default: vi.fn(async () => ({ data: null })),
+      },
+      event: {
+        subscribe: ({ signal }: { signal: AbortSignal }) => {
+          const channel = new HarnessOutputChannel<OpenCodeEvent>();
+          signal.addEventListener("abort", () => channel.end(), { once: true });
+          channel.emit({ type: "server.connected", data: {} } as OpenCodeEvent);
+          return channel.outputs;
+        },
+      },
+      message: {
+        list: vi.fn(async ({ sessionID }: { sessionID: string }) => ({
+          data: structuredClone(sessionID === forkedInfo.id ? forkedMessages : messages),
+          cursor: {},
+        })),
+      },
+      session: {
+        get: vi.fn(async ({ sessionID }: { sessionID: string }) =>
+          structuredClone(sessionID === forkedInfo.id ? forkedInfo : sessionInfo),
+        ),
+        active: vi.fn(async () => ({})),
+        diff: vi.fn(async () => []),
+        fork: vi.fn(async ({ before }: { sessionID: string; before?: string }) => {
+          const cut = before ? messages.findIndex((m) => m.id === before) : messages.length;
+          forkedMessages.splice(
+            0,
+            forkedMessages.length,
+            ...structuredClone(messages.slice(0, cut)),
+          );
+          return structuredClone(forkedInfo);
+        }),
+        update: vi.fn(async () => structuredClone(forkedInfo)),
+        switchModel: vi.fn(async () => structuredClone(forkedInfo)),
+        remove: vi.fn(async () => undefined),
+      },
+      permission: { list: vi.fn(async () => []) },
+    };
+    vi.spyOn(V2Connection.prototype, "client").mockResolvedValue(
+      client as unknown as OpenCodeClient,
+    );
+    vi.spyOn(V2Connection.prototype, "close").mockResolvedValue(undefined);
+    return client;
+  }
+
+  it("resumes a session with an incomplete turn without loading diffs and still rejects staged revert", async () => {
+    const cwd = fs.realpathSync(os.tmpdir());
+    const sessionInfo: SessionInfo = { ...info, location: { directory: cwd } };
+    const client = adapterClient(sessionInfo, [
+      user("u0", "turn-0"),
+      { ...assistant("done"), id: "a0", snapshot: { files: ["a.ts"] } },
+      idle("succeeded", "idle-0"),
+      user("u1", "turn-1"),
+      { ...assistant("cut off"), id: "a1" },
+    ]);
+    const adapter = new V2Adapter({});
+    try {
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: v2Ref(sessionInfo, "default"),
+      });
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) throw new Error("Expected resume to succeed");
+      expect(client.session.diff).not.toHaveBeenCalled();
+
+      const snapshot = await resumed.value.readSnapshot();
+      expect(snapshot.ok).toBe(true);
+      if (!snapshot.ok) throw new Error("Expected snapshot");
+      expect(snapshot.value.turns.map((t) => t.outcome.status)).toEqual(["succeeded", "unknown"]);
+      await resumed.value.close();
+
+      sessionInfo.revert = { messageID: "u1" };
+      const reverted = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: v2Ref(sessionInfo, "default"),
+      });
+      expect(reverted).toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("staged OpenCode v2 revert") },
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("rejects rollbackLastTurn and fork when source history contains an incomplete turn", async () => {
+    const cwd = fs.realpathSync(os.tmpdir());
+    const sessionInfo: SessionInfo = { ...info, location: { directory: cwd } };
+    const client = adapterClient(sessionInfo, [
+      user("u0", "turn-0"),
+      { ...assistant("done"), id: "a0" },
+      idle("succeeded", "idle-0"),
+      user("u1", "turn-1"),
+      { ...assistant("cut off"), id: "a1" },
+    ]);
+    const sourceRef = v2Ref(sessionInfo, "default");
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: sessionInfo.id,
+      checkpointId: "idle-0",
+      locator: { protocol: 2, userMessageID: "u0" },
+      formatVersion: 1,
+    });
+    const adapter = new V2Adapter({});
+    try {
+      const rolled = await adapter.open({
+        kind: "rollbackLastTurn",
+        cwd,
+        sourceRef,
+      });
+      expect(rolled).toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("incomplete execution") },
+      });
+
+      const forked = await adapter.open({
+        kind: "fork",
+        cwd,
+        sourceRef,
+        checkpoint,
+      });
+      expect(forked).toMatchObject({
+        ok: false,
+        error: { message: expect.stringContaining("incomplete execution") },
+      });
+      expect(client.session.fork).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
   });
 });
 

@@ -32,6 +32,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import qrcode from "qrcode-terminal";
+import { serveWorkspaceVideo } from "./workspace-video.ts";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 import { createWebServer } from "./http-server.ts";
 import { compressResponse } from "./compression.ts";
@@ -675,6 +676,15 @@ const server = createWebServer((request, response) => {
         (id) => sessions.fileWorkspaceRoot(id),
         undefined,
         remoteWorkspaceFiles,
+      );
+      return;
+    }
+    if (
+      pathname === "/api/workspace-file/video" &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      await serveWorkspaceVideo(request, response, new URL(url, "http://localhost"), (id) =>
+        sessions.fileWorkspaceRoot(id),
       );
       return;
     }

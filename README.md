@@ -25,8 +25,8 @@
 <h2>Run every coding agent, as one workspace.</h2>
 
 <p>
-  Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents in one lightweight desktop app —<br />
-  works out of the box without official Codex Desktop (optional enhancement supported), synced live with Web &amp; Mobile across machines.
+  Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents in one workbench —<br />
+  ships with a standalone desktop app (no official Codex Desktop required), optionally enhances the official client, and syncs live across Web, Mobile, and remote machines.
 </p>
 
 <p>

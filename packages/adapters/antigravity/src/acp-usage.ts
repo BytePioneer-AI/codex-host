@@ -12,10 +12,12 @@ import {
 } from "@codexhost/harness-adapter";
 
 import type { AntigravityPromptUsage } from "./acp-types.js";
+import { readFileFingerprint, readNativeDbFingerprint } from "./native-db-fingerprint.js";
 import {
   readAntigravityRequestMetadata,
   type AntigravityRequestMetadata,
 } from "./native-request-timing.js";
+import { nativeConversationDbPath } from "./native-turn-boundaries.js";
 
 export interface AntigravitySessionUsageTrackerOptions {
   nativeSessionId: string;
@@ -150,6 +152,11 @@ function usageMatches(actual: HostUsage, expected: HostUsage, exact: boolean): b
   );
 }
 
+interface ParsedTranscript {
+  steps: Map<number, HostUsageRequest | null>;
+  toolCallSteps: Set<number>;
+  fileComplete: boolean;
+}
 interface TranscriptRequests {
   steps: Map<number, HostUsageRequest | null>;
   toolCallSteps: Set<number>;
@@ -167,6 +174,7 @@ type RequestTiming = HostUsageRequestTiming & { turnId?: HostTurnId };
 
 export class AntigravitySessionUsageTracker {
   readonly #file: string;
+  readonly #dbPath: string;
   readonly #nativeSessionId: string;
   readonly #home: string;
   #timingTurn: TimingTurn = { startedAtMs: 0 };
@@ -187,12 +195,18 @@ export class AntigravitySessionUsageTracker {
   readonly #turnCollectionSteps = new Set<number>();
   readonly #awaitingTiming = new Map<number, TimingTurn>();
   readonly #awaitingContextWindow = new Map<number, string>();
+  #transcriptFingerprint: string | null = null;
+  #cachedTranscript: ParsedTranscript | null = null;
+  #metadataFingerprint: string | null = null;
+  #metadataNeededKey: string | null = null;
+  #cachedMetadata: Map<number, AntigravityRequestMetadata> | null = null;
 
   constructor(options: AntigravitySessionUsageTrackerOptions) {
     this.#nativeSessionId = options.nativeSessionId;
     this.#home = options.homedir;
     this.#expectedInitialTurns = options.expectedInitialTurns ?? 0;
     this.#activeModel = normalizeAntigravityUsageModel(options.activeModel).model;
+    this.#dbPath = nativeConversationDbPath(options.nativeSessionId, options.homedir);
     this.#file = path.join(
       options.homedir,
       ".gemini",
@@ -578,15 +592,24 @@ export class AntigravitySessionUsageTracker {
     });
   }
 
-  async #read(signal?: AbortSignal): Promise<TranscriptRequests> {
+  async #readTranscript(signal?: AbortSignal): Promise<ParsedTranscript> {
     signal?.throwIfAborted();
+    const fingerprint = await readFileFingerprint(this.#file);
+    signal?.throwIfAborted();
+    if (
+      fingerprint !== null &&
+      fingerprint === this.#transcriptFingerprint &&
+      this.#cachedTranscript !== null &&
+      this.#cachedTranscript.fileComplete
+    ) {
+      return this.#cachedTranscript;
+    }
     const stream = createReadStream(this.#file, { encoding: "utf8", signal });
     const lines = createInterface({ input: stream, crlfDelay: Infinity });
-    const result: TranscriptRequests = {
+    const parsed: ParsedTranscript = {
       steps: new Map(),
       toolCallSteps: new Set(),
-      complete: true,
-      metadata: null,
+      fileComplete: true,
     };
     try {
       for await (const line of lines) {
@@ -597,12 +620,12 @@ export class AntigravitySessionUsageTracker {
           record = JSON.parse(line);
           if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error();
         } catch {
-          result.complete = false;
+          parsed.fileComplete = false;
           continue;
         }
         if (record.type !== "PLANNER_RESPONSE") continue;
         if (!count(record.step_index)) {
-          result.complete = false;
+          parsed.fileComplete = false;
           continue;
         }
         let request: HostUsageRequest | null = null;
@@ -630,37 +653,69 @@ export class AntigravitySessionUsageTracker {
         } catch {
           // The latest version of a step is authoritative, even when it lacks usage.
         }
-        result.steps.set(record.step_index, request);
+        parsed.steps.set(record.step_index, request);
         if (
           record.tool_calls !== undefined &&
           (!Array.isArray(record.tool_calls) || record.tool_calls.length > 0)
         )
-          result.toolCallSteps.add(record.step_index);
-        else result.toolCallSteps.delete(record.step_index);
+          parsed.toolCallSteps.add(record.step_index);
+        else parsed.toolCallSteps.delete(record.step_index);
       }
     } catch (error) {
       signal?.throwIfAborted();
       if ((error as NodeJS.ErrnoException).code !== "ENOENT" || this.#expectedInitialTurns > 0)
-        result.complete = false;
+        parsed.fileComplete = false;
     } finally {
       lines.close();
       stream.destroy();
     }
-    result.complete &&=
-      [...result.steps.values()].every((request) => request !== null) &&
-      [...this.#consumed.keys()].every((step) => result.steps.has(step));
+    if (fingerprint !== null) {
+      this.#transcriptFingerprint = fingerprint;
+      this.#cachedTranscript = parsed;
+    }
+    return parsed;
+  }
+
+  async #read(signal?: AbortSignal): Promise<TranscriptRequests> {
+    const parsed = await this.#readTranscript(signal);
+    const result: TranscriptRequests = {
+      steps: parsed.steps,
+      toolCallSteps: parsed.toolCallSteps,
+      complete:
+        parsed.fileComplete &&
+        [...parsed.steps.values()].every((request) => request !== null) &&
+        [...this.#consumed.keys()].every((step) => parsed.steps.has(step)),
+      metadata: null,
+    };
     const needed = new Set(this.#awaitingTiming.keys());
     for (const step of this.#awaitingContextWindow.keys()) {
       if (result.steps.has(step)) needed.add(step);
     }
     for (const step of result.steps.keys()) if (!this.#consumed.has(step)) needed.add(step);
-    if (needed.size > 0)
-      result.metadata = await readAntigravityRequestMetadata(
-        this.#nativeSessionId,
-        this.#home,
-        result.steps,
-        needed,
-      );
+    if (needed.size > 0) {
+      const neededKey = [...needed].sort((left, right) => left - right).join(",");
+      const dbFingerprint = await readNativeDbFingerprint(this.#dbPath);
+      signal?.throwIfAborted();
+      if (
+        dbFingerprint !== null &&
+        dbFingerprint === this.#metadataFingerprint &&
+        neededKey === this.#metadataNeededKey
+      ) {
+        result.metadata = this.#cachedMetadata;
+      } else {
+        result.metadata = await readAntigravityRequestMetadata(
+          this.#nativeSessionId,
+          this.#home,
+          result.steps,
+          needed,
+        );
+        if (dbFingerprint !== null) {
+          this.#metadataFingerprint = dbFingerprint;
+          this.#metadataNeededKey = neededKey;
+          this.#cachedMetadata = result.metadata;
+        }
+      }
+    }
     signal?.throwIfAborted();
     return result;
   }

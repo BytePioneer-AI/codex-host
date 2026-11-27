@@ -117,6 +117,7 @@ import {
   type AntigravityQuotaReading,
   type AntigravityQuotaSnapshot,
 } from "./quota.js";
+import { readNativeDbFingerprint } from "./native-db-fingerprint.js";
 import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { AntigravitySessionImport } from "./session-import.js";
 import * as skillDiscovery from "./skill-discovery.js";
@@ -127,7 +128,8 @@ import { antigravityHome, createAntigravityUsageStatistics } from "./usage-stati
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
-const QUOTA_REFRESH_COOLDOWN_MS = 60_000;
+export const QUOTA_REFRESH_COOLDOWN_MS = 600_000;
+const COMPACTION_SYNC_DEBOUNCE_MS = 120;
 
 export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   configuration: {
@@ -230,6 +232,8 @@ function runQuotaCli(
     const finish = (done: () => void) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       done();
     };
     const onAbort = () => {
@@ -243,8 +247,6 @@ function runQuotaCli(
     timer.unref?.();
     signal.addEventListener("abort", onAbort, { once: true });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
       finish(() => reject(error));
     });
     child.stdout.setEncoding("utf8");
@@ -253,8 +255,6 @@ function runQuotaCli(
       stdout += chunk;
       if (Buffer.byteLength(stdout, "utf8") > maxBytes) {
         child.kill("SIGKILL");
-        clearTimeout(timer);
-        signal.removeEventListener("abort", onAbort);
         finish(() => reject(new Error("Antigravity quota output exceeded 4 MiB")));
         return;
       }
@@ -269,8 +269,6 @@ function runQuotaCli(
       }
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
       if (code === 0) finish(() => resolve(stdout));
       else finish(() => reject(new Error(`Antigravity quota exited with code ${code ?? "null"}`)));
     });
@@ -293,7 +291,7 @@ interface SessionOptions extends RequestedConfiguration {
 /** The Adapter's account-wide quota cache, projected for one Session's Model. */
 interface SessionQuota {
   read(modelId: string | undefined): AntigravityQuotaSnapshot | null;
-  refresh(): void;
+  refresh(options?: { activeTurn?: boolean }): void;
 }
 interface ActiveTurn {
   turnId: HostTurnId;
@@ -311,6 +309,12 @@ interface ActiveTurn {
   hasToolCalls?: boolean;
   dbPath?: string;
   compactionAfterStep?: number;
+  compactionDbFingerprint?: string | undefined;
+  compactionWork?: Promise<void> | undefined;
+  compactionDirty?: boolean | undefined;
+  compactionForce?: boolean | undefined;
+  compactionTimer?: ReturnType<typeof setTimeout> | undefined;
+  compactionLastSyncAtMs?: number | undefined;
   readonly emittedCompactions: Set<number>;
   tracker?: AntigravityToolTracker;
   detachedToolCallIds: Set<string>;
@@ -373,6 +377,9 @@ export class AntigravitySession implements HarnessSession {
   #usageDirty = false;
   #usageRetry: ReturnType<typeof setTimeout> | undefined;
   #usageTurnId: HostTurnId | undefined;
+  #lastUsageKey: string | undefined;
+  #lastUsageComplete: boolean | undefined;
+  #lastUsageTurnId: HostTurnId | undefined;
   #abort = new AbortController();
   #closed = false;
   #faulted = false;
@@ -507,10 +514,13 @@ export class AntigravitySession implements HarnessSession {
     this.#titleReadWork = work;
     await work;
   }
+  get hasActiveTurn(): boolean {
+    return this.#active !== undefined;
+  }
   /** Leads with the quota group that bills this Session's current Model. */
   readAccountCredits(): Promise<AntigravityQuotaSnapshot | null> {
     if (this.#closed) return Promise.resolve(null);
-    this.#options.quota.refresh();
+    this.#options.quota.refresh({ activeTurn: this.#active !== undefined });
     return Promise.resolve(this.#options.quota.read(this.#creditsModelId));
   }
 
@@ -878,7 +888,7 @@ export class AntigravitySession implements HarnessSession {
         if (usage) this.#emit({ type: "session.usage.changed", usage });
         if (this.#active?.promptPhase === "submitted") {
           void this.refreshUsage();
-          void this.#syncTurnCompactions(this.#active);
+          this.#scheduleTurnCompactionSync(this.#active);
           this.#scheduleUsageRetry();
         }
         break;
@@ -895,10 +905,16 @@ export class AntigravitySession implements HarnessSession {
       const history = await tracker.replayHistoricalRequests(this.#abort.signal);
       if (this.#closed || this.#faulted) return;
       for (const request of history.requests) this.#emit({ type: "usage.request", request });
+      this.#lastUsageComplete = history.complete;
+      this.#lastUsageKey = JSON.stringify(history.usage);
+      this.#lastUsageTurnId = undefined;
       this.#emit({ type: "usage.history", complete: history.complete });
       this.#emit({ type: "session.usage.changed", usage: history.usage });
     } catch {
-      if (!this.#closed && !this.#faulted) this.#emit({ type: "usage.history", complete: false });
+      if (!this.#closed && !this.#faulted) {
+        this.#lastUsageComplete = false;
+        this.#emit({ type: "usage.history", complete: false });
+      }
     }
   }
   async refreshUsage(): Promise<void> {
@@ -956,16 +972,32 @@ export class AntigravitySession implements HarnessSession {
       const recorded = final ? tracker.recordTurnPromptUsage(final) : update;
       if (this.#closed || this.#faulted) return;
       for (const request of update.requests) this.#emit({ type: "usage.request", request });
-      this.#emit({ type: "usage.history", complete: recorded.complete });
-      this.#emit({
-        type: "session.usage.changed",
-        usage: recorded.usage,
-        ...(this.#usageTurnId && { observedForTurnId: this.#usageTurnId }),
-      });
+      const usageKey = JSON.stringify(recorded.usage);
+      const changed =
+        final !== undefined ||
+        update.requests.length > 0 ||
+        update.timings.length > 0 ||
+        this.#lastUsageComplete !== recorded.complete ||
+        this.#lastUsageKey !== usageKey ||
+        this.#lastUsageTurnId !== this.#usageTurnId;
+      if (changed) {
+        this.#lastUsageComplete = recorded.complete;
+        this.#lastUsageKey = usageKey;
+        this.#lastUsageTurnId = this.#usageTurnId;
+        this.#emit({ type: "usage.history", complete: recorded.complete });
+        this.#emit({
+          type: "session.usage.changed",
+          usage: recorded.usage,
+          ...(this.#usageTurnId && { observedForTurnId: this.#usageTurnId }),
+        });
+      }
       for (const { turnId, ...timing } of update.timings)
         if (turnId) this.#emit({ type: "usage.request.timing", turnId, timing });
     } catch {
-      if (!this.#closed && !this.#faulted) this.#emit({ type: "usage.history", complete: false });
+      if (!this.#closed && !this.#faulted) {
+        this.#lastUsageComplete = false;
+        this.#emit({ type: "usage.history", complete: false });
+      }
     }
   }
   #notifyCommandsChanged(): void {
@@ -1578,7 +1610,7 @@ export class AntigravitySession implements HarnessSession {
           }),
         ),
       );
-      await this.#syncTurnCompactions(turn);
+      await this.#syncTurnCompactions(turn, true);
       this.#scheduleUsageRetry();
     } catch (error) {
       if (
@@ -1658,7 +1690,52 @@ export class AntigravitySession implements HarnessSession {
     });
     turn.textItem = undefined;
   }
-  async #syncTurnCompactions(turn: ActiveTurn): Promise<void> {
+  #scheduleTurnCompactionSync(turn: ActiveTurn): void {
+    if (!this.#isCurrent(turn) || turn.cancelled || this.#abort.signal.aborted) return;
+    if (turn.compactionTimer) return;
+    const elapsed = Date.now() - (turn.compactionLastSyncAtMs ?? 0);
+    if (!turn.compactionWork && elapsed >= COMPACTION_SYNC_DEBOUNCE_MS) {
+      void this.#syncTurnCompactions(turn);
+      return;
+    }
+    const delay = turn.compactionWork
+      ? COMPACTION_SYNC_DEBOUNCE_MS
+      : Math.max(1, COMPACTION_SYNC_DEBOUNCE_MS - elapsed);
+    turn.compactionTimer = setTimeout(() => {
+      turn.compactionTimer = undefined;
+      void this.#syncTurnCompactions(turn);
+    }, delay);
+    turn.compactionTimer.unref();
+  }
+  async #syncTurnCompactions(turn: ActiveTurn, force = false): Promise<void> {
+    if (force && turn.compactionTimer) {
+      clearTimeout(turn.compactionTimer);
+      turn.compactionTimer = undefined;
+    }
+    if (turn.compactionWork) {
+      turn.compactionDirty = true;
+      if (force) turn.compactionForce = true;
+      await turn.compactionWork;
+      return;
+    }
+    const drain = async () => {
+      try {
+        await this.#runTurnCompactionSync(turn, force);
+        while (turn.compactionWork === tracked && turn.compactionDirty) {
+          const rerunForce = turn.compactionForce === true;
+          turn.compactionDirty = false;
+          turn.compactionForce = false;
+          await this.#runTurnCompactionSync(turn, rerunForce);
+        }
+      } finally {
+        if (turn.compactionWork === tracked) turn.compactionWork = undefined;
+      }
+    };
+    const tracked = drain();
+    turn.compactionWork = tracked;
+    await tracked;
+  }
+  async #runTurnCompactionSync(turn: ActiveTurn, force: boolean): Promise<void> {
     if (
       !this.#isCurrent(turn) ||
       turn.cancelled ||
@@ -1666,6 +1743,10 @@ export class AntigravitySession implements HarnessSession {
       turn.compactionAfterStep === undefined
     )
       return;
+    turn.compactionLastSyncAtMs = Date.now();
+    const fingerprint = await readNativeDbFingerprint(turn.dbPath);
+    if (!this.#isCurrent(turn) || turn.cancelled) return;
+    if (!force && fingerprint !== null && fingerprint === turn.compactionDbFingerprint) return;
     const compactions = await readNativeTurnCompactions(
       turn.dbPath,
       turn.compactionAfterStep,
@@ -1676,6 +1757,7 @@ export class AntigravitySession implements HarnessSession {
         (turn.returnedAtMs === undefined || createdAtMs <= turn.returnedAtMs),
     );
     if (!this.#isCurrent(turn) || turn.cancelled) return;
+    if (fingerprint !== null) turn.compactionDbFingerprint = fingerprint;
     for (const compaction of compactions) {
       if (turn.emittedCompactions.has(compaction.stepIndex)) continue;
       turn.emittedCompactions.add(compaction.stepIndex);
@@ -1694,6 +1776,10 @@ export class AntigravitySession implements HarnessSession {
   }
   #finish(turn: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (!this.#isCurrent(turn)) return;
+    if (turn.compactionTimer) {
+      clearTimeout(turn.compactionTimer);
+      turn.compactionTimer = undefined;
+    }
     this.#completeText(turn, outcome);
     const pendingToolCallIds = new Set(
       [...this.#pending.values()]
@@ -2202,7 +2288,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       adapter: this.options,
       quota: {
         read: (modelId) => (this.#quota ? projectAntigravityQuota(this.#quota, modelId) : null),
-        refresh: () => void this.#refreshQuota().catch(() => undefined),
+        refresh: (options) => void this.#refreshQuota(false, options).catch(() => undefined),
       },
       onClosed: (closed) => this.#sessions.delete(closed),
     });
@@ -2279,17 +2365,22 @@ export class AntigravityAdapter implements HarnessAdapter {
     return this.#quota ? projectAntigravityQuota(this.#quota) : null;
   }
   async refreshCredits(): Promise<AntigravityQuotaSnapshot | null> {
-    const quota = await this.#refreshQuota();
+    const activeTurn = [...this.#sessions].some((session) => session.hasActiveTurn);
+    const quota = await this.#refreshQuota(false, { activeTurn });
     return quota ? projectAntigravityQuota(quota) : null;
   }
-  #refreshQuota(force = false): Promise<AntigravityQuotaReading | null> {
+  #refreshQuota(
+    force = false,
+    options?: { activeTurn?: boolean },
+  ): Promise<AntigravityQuotaReading | null> {
     if (this.#closed) return Promise.resolve(null);
-    if (
-      !force &&
-      !this.#quotaRefresh &&
-      Date.now() - this.#quotaFetchedAt < QUOTA_REFRESH_COOLDOWN_MS
-    ) {
-      return Promise.resolve(this.#quota);
+    if (!force && !this.#quotaRefresh) {
+      if (options?.activeTurn && this.#quotaFetchedAt !== Number.NEGATIVE_INFINITY) {
+        return Promise.resolve(this.#quota);
+      }
+      if (Date.now() - this.#quotaFetchedAt < QUOTA_REFRESH_COOLDOWN_MS) {
+        return Promise.resolve(this.#quota);
+      }
     }
     return (this.#quotaRefresh ??= (async () => {
       const command = resolveAntigravityExecutable({

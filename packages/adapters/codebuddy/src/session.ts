@@ -284,36 +284,44 @@ export class CodeBuddySession implements HarnessSession {
         ? record(record(this.input.nativeRef.locator).configuration)
         : {};
     if (this.input.kind === "resume") this.#ref = this.input.nativeRef;
-    const opened = await this.#openClient();
-    this.#ref = nativeSessionRefSchema.parse({
-      harnessId: this.profile.harnessId,
-      nativeSessionId: opened.sessionId,
-      formatVersion: 1,
-      ...(this.#ref?.locator || this.capabilities.history.fork
-        ? {
-            locator: {
-              ...record(this.#ref?.locator),
-              ...(this.capabilities.history.fork
-                ? { boundCwd: codeBuddyCanonicalCwd(this.input.cwd) }
-                : {}),
-            },
-          }
-        : {}),
-    });
-    this.#apply(configuration(opened.configOptions, this.profile), false);
-    if (this.input.kind === "create" && this.input.executionPolicy === "unattended-full-access") {
-      // Unlike bypassPermissions, the native fullAccess option also covers HIGH/CRITICAL actions.
-      await this.#configure("mode", "fullAccess");
-    } else if (this.input.permissionModeId || text(saved.mode))
-      await this.#configure("mode", this.input.permissionModeId ?? text(saved.mode));
-    if (this.input.model || text(saved.model))
-      await this.#configure("model", this.input.model?.id ?? text(saved.model));
-    if (this.input.thinkingOptionId || text(saved.thinking))
-      await this.#configure("thought_level", this.input.thinkingOptionId ?? text(saved.thinking));
-    if (this.#fault || this.#closed)
-      throw new CodeBuddyError("invalidState", "Native Session failed while opening");
-    this.initialState = { ...this.#state };
-    this.initialUsage = this.#usage;
+    const replay: SessionReplay = {};
+    this.#replay = replay;
+    const generation = this.#generation;
+    try {
+      const opened = await this.#openClient();
+      this.#ref = nativeSessionRefSchema.parse({
+        harnessId: this.profile.harnessId,
+        nativeSessionId: opened.sessionId,
+        formatVersion: 1,
+        ...(this.#ref?.locator || this.capabilities.history.fork
+          ? {
+              locator: {
+                ...record(this.#ref?.locator),
+                ...(this.capabilities.history.fork
+                  ? { boundCwd: codeBuddyCanonicalCwd(this.input.cwd) }
+                  : {}),
+              },
+            }
+          : {}),
+      });
+      this.#apply(configuration(opened.configOptions, this.profile), false);
+      if (this.input.kind === "create" && this.input.executionPolicy === "unattended-full-access") {
+        // Unlike bypassPermissions, the native fullAccess option also covers HIGH/CRITICAL actions.
+        await this.#configure("mode", "fullAccess");
+      } else if (this.input.permissionModeId || text(saved.mode))
+        await this.#configure("mode", this.input.permissionModeId ?? text(saved.mode));
+      if (this.input.model || text(saved.model))
+        await this.#configure("model", this.input.model?.id ?? text(saved.model));
+      if (this.input.thinkingOptionId || text(saved.thinking))
+        await this.#configure("thought_level", this.input.thinkingOptionId ?? text(saved.thinking));
+      this.#assertClient(generation);
+      if (!this.profile.staticCommandCatalog && replay.commands) this.#commands = replay.commands;
+      this.initialState = { ...this.#state };
+      this.initialUsage = this.#usage;
+    } finally {
+      this.#replay = undefined;
+    }
+    this.#flushAutonomous();
   }
 
   #emit(event: HostEvent) {
@@ -631,7 +639,7 @@ export class CodeBuddySession implements HarnessSession {
   async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
-    if (this.#busy || this.#active)
+    if (this.#busy || (this.#active && !this.#active.autonomous))
       return failure("sessionBusy", "Session is executing an operation", this.profile);
     this.#busy = true;
     try {
@@ -779,8 +787,19 @@ export class CodeBuddySession implements HarnessSession {
         }
         // Reading history also yields to native notifications, so a drain announced during
         // admission is visible before the Host prompt would reach the native process.
-        const drainBefore = this.#autonomous.announcements;
-        const snapshot = await this.#snapshot();
+        // If a drain starts and finishes before prompt admission, re-read the baseline so
+        // only drains overlapping the foreground prompt disable single-Turn fallback.
+        let drainBefore = this.#autonomous.announcements;
+        let snapshot = await this.#snapshot();
+        while (
+          !this.#closed &&
+          !this.#fault &&
+          !this.#active &&
+          this.#autonomous.announcements !== drainBefore
+        ) {
+          drainBefore = this.#autonomous.announcements;
+          snapshot = await this.#snapshot();
+        }
         if (this.#closed || this.#fault)
           return failure("invalidState", "Session closed before Turn start", this.profile);
         if (this.#active)

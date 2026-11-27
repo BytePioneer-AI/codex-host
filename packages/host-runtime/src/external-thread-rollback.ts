@@ -230,7 +230,7 @@ export async function executeExternalThreadRollback(input: {
   environment?: NodeJS.ProcessEnv;
 }): Promise<ExternalThreadRollbackResult> {
   const { derived, rollback, adapters, repository, runtime, expectedLastTurnId } = input;
-  if (derived.running) {
+  if (derived.running || derived.admittingTurnId !== null) {
     return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
   }
   // Native history may have split a steered Turn that Desktop still shows whole. Only the undone

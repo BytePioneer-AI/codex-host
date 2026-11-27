@@ -1016,6 +1016,110 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     }
     expect(f.events().filter((e) => e.type === "turn.completed")).toHaveLength(1);
   });
+
+  it("allows initial readSnapshot on resume when an unfinished autonomous drain is announced during session/load", async () => {
+    const native = fixture();
+    persist(native, "prior");
+    const adapter = new CodeBuddyAdapter({
+      ...native,
+      clientFactory: (options) => {
+        const client = native.clientFactory(options);
+        const open = client.open.bind(client);
+        client.open = async (cwd, sessionId) => {
+          const result = await open(cwd, sessionId);
+          announce(client, "load-drain");
+          text(client, "live-during-load", "load-drain");
+          return result;
+        };
+        return client;
+      },
+    });
+    adapters.push(adapter);
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: process.cwd(),
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "codebuddy",
+        nativeSessionId: "native-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw Error(opened.error.message);
+    const session = opened.value;
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({ ok: true });
+
+    const outputs: HarnessOutput[] = [];
+    const closed = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const client = required(native.clients[0]);
+    end(client, "load-drain");
+    await vi.waitFor(() =>
+      expect(
+        outputs.filter((o) => o.kind === "event" && o.event.type === "turn.completed"),
+      ).toHaveLength(1),
+    );
+    expect(
+      outputs.some((o) => o.kind === "event" && o.event.type === "turn.autonomous.started"),
+    ).toBe(true);
+    await session.close();
+    await closed;
+  });
+
+  it("does not treat a drain that finished during admission snapshot read as overlapping the foreground prompt", async () => {
+    let gate!: ReturnType<typeof gateHistory>;
+    const f = await setup((native) => {
+      gate = gateHistory(native, 1);
+      return {
+        readHistory: gate.readHistory,
+        clientFactory: (options) => {
+          const client = native.clientFactory(options);
+          client.prompt = async (_sessionId, promptText) => {
+            native.history.push({
+              type: "message",
+              role: "user",
+              id: "fg-user-1",
+              parentId: native.history.at(-1)?.id,
+              content: [{ type: "input_text", text: promptText }],
+            });
+            native.history.push({
+              type: "message",
+              role: "assistant",
+              id: "fg-answer-1",
+              parentId: "fg-user-1",
+              status: "completed",
+              content: [{ type: "output_text", text: "ok" }],
+            });
+            // Omit userMessageId to exercise the single-Turn fallback path.
+            return { stopReason: "end_turn" };
+          };
+          return client;
+        },
+      };
+    });
+
+    const starting = f.session.execute(host("fg-after-drain", "hello"));
+    await gate.entered;
+    announce(f.client, "pre-prompt-drain");
+    text(f.client, "quick-drain", "pre-prompt-drain");
+    end(f.client, "pre-prompt-drain");
+    gate.release();
+
+    await expect(starting).resolves.toMatchObject({
+      ok: true,
+      value: { turnId: "fg-after-drain" },
+    });
+    const completed = await f.completed(2);
+    expect(completed).toContainEqual(
+      expect.objectContaining({
+        turnId: "fg-after-drain",
+        outcome: expect.objectContaining({ status: "succeeded" }),
+        nativeTurnRef: expect.objectContaining({ nativeTurnKey: "fg-user-1" }),
+      }),
+    );
+  });
 });
 
 describe("aggregate autonomous buffering", () => {

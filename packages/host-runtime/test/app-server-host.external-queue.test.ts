@@ -4,6 +4,7 @@ import type {
   TurnStartAccepted,
   TurnStartCommand,
 } from "@codexhost/harness-adapter";
+import { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
 
 import {
@@ -814,6 +815,68 @@ describe("External Thread follow-up queue", () => {
           ([command]) => (command as { type: string }).type === "turn.start",
         ),
       ).toHaveLength(1);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not leave a Thread permanently busy when outputs end before turn.start resolves ok", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const firstTurnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", firstTurnId),
+      );
+      const releaseStart = Promise.withResolvers<HarnessResult<TurnStartAccepted>>();
+      const entered = Promise.withResolvers<undefined>();
+      vi.spyOn(session, "execute").mockImplementationOnce((command) => {
+        if (command.type === "turn.start") {
+          entered.resolve(undefined);
+          return releaseStart.promise;
+        }
+        return Promise.resolve({
+          ok: false,
+          error: { code: "unsupported", message: "unexpected", retryable: false },
+        });
+      });
+
+      writeRequest(fixture.desktopInput, {
+        id: 30,
+        method: "turn/start",
+        params: { threadId, input: text("race with eof") },
+      });
+      await entered.promise;
+      await session.close();
+      releaseStart.resolve({
+        ok: true,
+        value: { turnId: "ignored" as TurnStartCommand["turnId"] },
+      });
+
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 30)),
+      ).resolves.toMatchObject({ error: { code: -32073 } });
+
+      // Thread must recover on a fresh Session rather than staying stuck as busy.
+      const replacement = new FakeHarnessSession(
+        fixture.adapter.harnessId,
+        fixture.adapter.catalog,
+        session.state.effectiveModel,
+        session.initialState.nativeRef,
+        session.persistedSnapshot(),
+      );
+      vi.spyOn(fixture.adapter, "open").mockResolvedValueOnce({ ok: true, value: replacement });
+      writeRequest(fixture.desktopInput, {
+        id: 31,
+        method: "turn/start",
+        params: { threadId, input: text("after eof recovery") },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 31)),
+      ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
     } finally {
       await stopFixture(fixture);
     }

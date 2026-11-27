@@ -696,6 +696,14 @@ export class OfficialRuntimeOwner {
       (statusType === "idle" || statusType === "notLoaded" || statusType === "systemError") &&
       snapshotActiveIds.size === 0
     ) {
+      // Snapshot start ordinal matches the latest start, so every tracked Turn has ended.
+      // Remember them so an older out-of-order active snapshot cannot resurrect them.
+      const cleared = this.#activeTurns.get(threadId);
+      if (cleared) {
+        for (const existingId of cleared.keys()) {
+          if (existingId !== null) this.#rememberCompletedTurn(threadId, existingId);
+        }
+      }
       this.#activeTurns.delete(threadId);
       return;
     }

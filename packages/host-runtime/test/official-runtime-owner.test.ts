@@ -2045,4 +2045,73 @@ describe("single official runtime owner", () => {
       b.client.close();
     }
   });
+
+  it("does not let an out-of-order older active snapshot resurrect a Turn cleared by an idle snapshot", async () => {
+    const f = fixture();
+    const a = f.attach();
+    const b = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      await b.client.initialize(initialization);
+      f.gate.initialized();
+
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: {
+          threadId: "thread-out-of-order",
+          turn: { id: "turn-old", status: "inProgress" },
+        },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-out-of-order")).toBe(true));
+      a.client.close();
+
+      // Queue two concurrent thread/read responses sharing the same start ordinal.
+      const readIds: Array<string | number> = [];
+      f.connection(0, 1).setResponse((request) => {
+        if (request.method === "thread/read" && request.id !== undefined) {
+          readIds.push(request.id);
+          return undefined;
+        }
+        return { id: request.id ?? null, result: {} };
+      });
+
+      const firstActiveRead = b.client.request("thread/read", {
+        threadId: "thread-out-of-order",
+        includeTurns: true,
+      });
+      const secondIdleRead = b.client.request("thread/read", {
+        threadId: "thread-out-of-order",
+        includeTurns: false,
+      });
+      await vi.waitFor(() => expect(readIds).toHaveLength(2));
+
+      // Deliver the newer idle snapshot first, then the older active snapshot.
+      f.connection(0, 1).emit({
+        id: readIds[1],
+        result: {
+          thread: { id: "thread-out-of-order", status: { type: "idle" }, turns: [] },
+        },
+      });
+      await secondIdleRead;
+      expect(f.owner.hasActiveTurn("thread-out-of-order")).toBe(false);
+
+      f.connection(0, 1).emit({
+        id: readIds[0],
+        result: {
+          thread: {
+            id: "thread-out-of-order",
+            status: { type: "active" },
+            turns: [{ id: "turn-old", status: "inProgress" }],
+          },
+        },
+      });
+      await firstActiveRead;
+      expect(f.owner.hasActiveTurn("thread-out-of-order")).toBe(false);
+      expect(f.owner.isTurnCompleted("thread-out-of-order", "turn-old")).toBe(true);
+    } finally {
+      await f.owner.stop();
+      b.client.close();
+    }
+  });
 });

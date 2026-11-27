@@ -95,6 +95,12 @@ export interface SessionRowOwnerProps {
   threadTreeChild?: boolean;
 }
 
+/** Owner share of one Session row menu occurrence. */
+export interface SessionMenuOwnerProps extends SessionRowOwnerProps {
+  /** Mark all loaded display-tree descendants read when any descendant is unread. */
+  markChildThreadsRead?: () => void;
+}
+
 /** The row menu's open state as its owner holds it: the `useState` pair. */
 export type MenuOpenState = readonly [open: boolean, setOpen: (open: boolean) => void];
 
@@ -208,7 +214,7 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     "sidebar.workspaces.session.menu.item": {
       kind: "list";
       scope: "root";
-      owner: SessionRowOwnerProps;
+      owner: SessionMenuOwnerProps;
       hookContext: MenuOpenState;
       inject: {
         hooks: {
@@ -473,6 +479,12 @@ export interface SessionDraftReference extends HostObservable<boolean> {
 export interface ReferenceSessionInjected {
   /** Product-owned eligibility and structured insertion; must not navigate or acquire history. */
   prepareDraftReference(sessionId: SessionId): SessionDraftReference | undefined;
+}
+
+/** Manual unread action for an unarchived Session outside the main view. */
+export interface MarkSessionUnreadInjected {
+  hooks: { archived: HostObservable<ReadonlySet<SessionId>> };
+  markCompletionUnread: (sessionId: SessionId) => void;
 }
 
 /** Fork action share. */

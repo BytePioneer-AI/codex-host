@@ -53,6 +53,18 @@ export async function readNativeWorkspaceSnapshot(
       projects.flatMap((id) => projectId(id) ?? []),
     ]),
   );
+  const rawPinnedProjects = state["pinned-project-ids"];
+  const pinnedProjects = Array.isArray(rawPinnedProjects)
+    ? [
+        ...new Set(
+          rawPinnedProjects.flatMap((id) => {
+            if (typeof id !== "string" || id === "") return [];
+            const resolved = projectId(id);
+            return resolved ? [resolved] : [];
+          }),
+        ),
+      ]
+    : undefined;
   return clientWorkspaceSnapshotSchema.parse({
     projects: nativeProjects ?? desktopProjectDefinitions(state, scope),
     ...(nativeProjects ? { nativeProjects: true } : {}),
@@ -67,6 +79,7 @@ export async function readNativeWorkspaceSnapshot(
     projectless: state["projectless-thread-ids"] ?? [],
     pinned: [],
     ...(Object.keys(sectionProjects).length > 0 ? { sectionProjects } : {}),
+    ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
   });
 }
 

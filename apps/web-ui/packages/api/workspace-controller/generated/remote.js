@@ -82,6 +82,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
   'items': z.array(workspaceView()).readonly(),
   'archivedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+  'pinnedWorkspaceIds': z.array(z.intersection(z.string(), z.unknown())).optional().readonly(),
   'threadSections': threadSections().optional().readonly(),
 }).readonly(),
 }), z.object({
@@ -99,6 +100,9 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
 }), z.object({
   'type': z.literal("pinned").readonly(),
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+}), z.object({
+  'type': z.literal("pinnedWorkspaces").readonly(),
+  'pinnedWorkspaceIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
 }), z.object({
   'type': z.literal("threadSections").readonly(),
   'threadSections': threadSections(),
@@ -171,6 +175,13 @@ const workspaceMoveProjectSectionRequest = () => z.object({
 })
 const workspaceMoveSectionResult = () => z.object({
   'sectionId': z.union([z.string(), z.null()]).readonly(),
+})
+const workspaceSetPinnedRequest = () => z.object({
+  'workspaceId': z.intersection(z.string(), z.unknown()).readonly(),
+  'pinned': z.boolean().readonly(),
+})
+const workspaceSetPinnedResult = () => z.object({
+  'pinnedWorkspaceIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
 })
 
 export const TYPERT_REMOTE = {
@@ -505,6 +516,28 @@ export const TYPERT_REMOTE = {
         create: _deepseek_ai_dsh_api_workspace_controller_workspace_rename_result$schema,
       },
       sourceLocation: {"file":"packages/api/workspace-controller/src/index.ts","line":115,"column":3},
+    },
+    {
+      id: '@deepseek-ai/dsh-api-workspace-controller#workspace/setWorkspacePinned',
+      service: 'workspaceController',
+      namespace: 'workspace',
+      method: 'setWorkspacePinned',
+      invocation: { kind: 'direct' },
+      parameters: [{
+        name: 'request',
+        wire: 'request',
+        source: 'json',
+        codec: {
+          mode: 'strict',
+          typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceSetPinnedRequest',
+          create: workspaceSetPinnedRequest,
+        },
+      }],
+      result: {
+        mode: 'strict',
+        typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspacePinnedWorkspacesValue',
+        create: workspaceSetPinnedResult,
+      },
     },
     {
       id: '@deepseek-ai/dsh-api-workspace-controller#workspace/unarchiveSession',

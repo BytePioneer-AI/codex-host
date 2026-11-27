@@ -431,7 +431,12 @@ export class ChSessions {
     const assignments = await timing.measure("projects", () =>
       this.host.projects([...rows.keys()]),
     );
-    const projects = { ...assignments, projects: definitions.projects };
+    const pinnedProjects = assignments.pinnedProjects ?? definitions.pinnedProjects;
+    const projects = {
+      ...assignments,
+      projects: definitions.projects,
+      ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
+    };
     if (this.closed) return;
     // A Host-confirmed move supersedes project metadata from this in-flight read.
     for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {
@@ -494,6 +499,7 @@ export class ChSessions {
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
         this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
+        this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
         return;
       }
       if (this.workspaces.usesNativeProjects) return;
@@ -528,6 +534,7 @@ export class ChSessions {
       }
       timing.count("workspaceReferences", references.length);
       this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
+      this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
     });
   }
   private archiveForkParent(row: ChThread): string | null {

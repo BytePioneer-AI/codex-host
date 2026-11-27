@@ -73,11 +73,11 @@
 
 <td width="25%" valign="top">
 
-### 독립 데스크톱 & 실시간 동기화
+### 경량 멀티클라이언트 · 실시간 동기화
 
-공식 Codex Desktop 없이 바로 쓰는 자체 데스크톱 앱을 제공합니다.
+공식 앱 없이 바로 쓰는 경량 **CodexHost 독립 클라이언트**를 제공하며, 공식 Codex 클라이언트 확장도 지원합니다.
 
-Web·모바일(및 선택적 공식 데스크톱 모드)과 하나의 로컬 Host를 공유합니다.
+경량 CH 클라이언트, 공식 Codex 클라이언트, Web, 모바일이 하나의 로컬 Host로 세션을 실시간 동기화합니다.
 
 </td>
 
@@ -93,21 +93,21 @@ Web·모바일(및 선택적 공식 데스크톱 모드)과 하나의 로컬 Hos
 
 <td width="25%" valign="top">
 
-### 멀티 호스트 & 모바일
+### 다중 머신 연동 · 노드 협업
 
-Mac, Linux 개발 서버, Windows PC를 하나의 사이드바에 통합합니다.
+Mac, Linux, Windows 여러 머신을 한 사이드바에 연결해 머신 간 세션이 서로 호출하고 여러 노드가 하나의 작업을 함께 완수합니다.
 
-자리를 비워도 휴대폰에서 바로 승인하고 답장하세요.
+자리를 비워도 휴대폰에서 바로 승인하고 이어서 지시하세요.
 
 </td>
 
 <td width="25%" valign="top">
 
-### 네이티브 · 로컬 우선
+### 네이티브 능력 일급 시민
 
-공식 SDK / RPC / ACP로 직접 연결하며 기존 로컬 로그인을 그대로 사용합니다.
+각 Agent의 공식 **SDK / RPC** 직결을 우선하며, **ACP**로 연동할 때도 네이티브 API와 CLI로 기능을 빈틈없이 보완합니다.
 
-계정 불필요, 제3자 프록시 없음.
+로컬 구독과 인증을 재사용하며 계정 장벽·제3자 프록시가 없습니다.
 
 </td>
 
@@ -120,25 +120,27 @@ Mac, Linux 개발 서버, Windows PC를 하나의 사이드바에 통합합니�
 
 ## 다운로드 및 설치
 
-CodexHost는 무료 오픈소스입니다. 로컬 및 LAN 환경의 모든 기능은 **계정 등록 없이**, **공식 Codex Desktop 미설치 상태에서도** 바로 사용할 수 있습니다.
+CodexHost는 **macOS / Windows / Linux / Android / iOS (PWA)**를 지원하는 무료 오픈소스입니다. 로컬 및 LAN 환경의 모든 기능은 **계정 등록 없이**, **공식 Codex Desktop 미설치 상태에서도** 바로 사용할 수 있습니다.
 
-| 플랫폼 | 패키지 및 안내 | 다운로드 |
-| :--- | :--- | :--- |
-| **macOS** | Apple Silicon & Intel · 독립 데스크톱 `.dmg` _(공식 Codex Desktop 설치 시 확장 모드 전환 가능)_ | [**공식 사이트 다운로드**](https://chost.dev/en/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
-| **Windows** | x64 & ARM64 · `.exe` 설치 프로그램 / WinGet _(포터블 Codex Desktop 지원)_ | [**공식 사이트 다운로드**](https://chost.dev/en/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
-| **Linux** | x64 & ARM64 · 독립 `.tar.gz` 아카이브 _(데스크톱 앱 & 헤드리스 Web 데몬)_ | [**공식 사이트 다운로드**](https://chost.dev/en/download) · [Linux 안내](../platforms/linux/linux.md) |
-| **Android** | 경량 네이티브 `.apk` · 푸시 알림, QR 페어링, 다중 호스트 전환 | [**공식 사이트 다운로드**](https://chost.dev/en/download#mobile) · [Android 안내](../../apps/android-shell/README.md) |
-| **iPhone & iPad** | Safari 「홈 화면에 추가」 PWA · LAN / Tailscale / 암호화 Relay 연결 | [**모바일 설정 안내**](https://chost.dev/en/download#mobile) |
-| **CLI** | Node.js 22.19+ / 24 또는 Windows WinGet | `npm install -g @codexhost/cli` · `winget install --id BytePioneer-AI.CodexHost --exact` |
-
-<details>
-<summary><b>주요 CLI 명령어 (데스크톱 / Web / 업그레이드 / 종료)</b></summary>
-
-<br />
+- **설치 파일 다운로드**: [**공식 사이트 다운로드 (권장)**](https://chost.dev/en/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest) _(데스크톱 앱, Android APK, 모바일 안내 포함 · [Linux 안내](../platforms/linux/linux.md))_
+- **npm / WinGet 설치**:
 
 ```bash
-codexhost          # 독립 데스크톱 또는 공식 Codex Desktop 확장 모드 실행
-codexhost app      # 경량 독립 데스크톱 바로 실행
+npm install -g @codexhost/cli
+# Windows WinGet: winget install --id BytePioneer-AI.CodexHost --exact
+```
+
+> [!IMPORTANT]
+> **macOS 최초 실행 시 「확인할 수 없는 앱」 경고가 표시될 때** 터미널에서 아래 명령어를 실행하세요:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/codexhost.app
+> ```
+
+### 주요 CLI 명령어
+
+```bash
+codexhost          # 경량 독립 클라이언트 또는 공식 Codex Desktop 확장 모드 실행
+codexhost app      # 경량 CodexHost 독립 클라이언트 바로 실행
 codexhost web      # 로컬 Web UI 시작 후 브라우저에서 열기
 codexhost status   # 백그라운드 Host 및 서비스 상태 확인
 codexhost update   # 최신 버전으로 업그레이드
@@ -147,18 +149,12 @@ codexhost stop     # 모든 백그라운드 서비스 종료 (npm 재설치 전 
 
 > **보안 주의**: 원격 접속용 Access Token, 로그인 링크, 페어링 QR 코드는 컴퓨터 전체 제어 권한과 동일하므로 절대 외부에 공유하지 마세요.
 
-</details>
-
 <details>
-<summary><b>설치 문제 해결 (macOS 보안 허용 / Windows 포터블 / 콘솔)</b></summary>
+<summary><b>추가 문제 해결 (로컬 콘솔 / Windows 포터블 Codex Desktop)</b></summary>
 
 <br />
 
 - **실행 실패 또는 확장 기능이 로드되지 않을 때**: `codexhost console`을 실행해 `http://127.0.0.1:4399/` 로컬 콘솔에서 로그와 버전을 확인하세요.
-- **macOS 최초 실행 시 「확인할 수 없는 앱」 경고**:
-  ```bash
-  xattr -dr com.apple.quarantine /Applications/codexhost.app
-  ```
 - **Windows 포터블 Codex Desktop 사용 시**: 사용자 환경 변수 `CODEXHOST_INSTALL_ROOT`를 압축 해제 경로로 지정한 뒤 프로세스를 모두 종료하고 다시 실행하세요:
   ```powershell
   [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
@@ -175,11 +171,11 @@ codexhost stop     # 모든 백그라운드 서비스 종료 (npm 재설치 전 
 
 <td width="33%" valign="top">
 
-### 독립 데스크톱
+### 경량 독립 클라이언트
 
 **바로 실행, 더 가벼운 메모리.**
 
-Tauri 기반 네이티브 데스크톱 셸로 공식 Codex Desktop 없이도 macOS / Windows / Linux에서 동일하게 동작합니다.
+Tauri 기반 경량 CodexHost 네이티브 앱으로 공식 Codex Desktop 없이도 macOS / Windows / Linux에서 동일하게 동작합니다.
 
 </td>
 
@@ -206,17 +202,30 @@ Tauri 기반 네이티브 데스크톱 셸로 공식 Codex Desktop 없이도 mac
 </tr>
 </table>
 
-```text
-    독립 데스크톱 (Tauri)       공식 Codex Desktop       Web / PWA & Android
-             │                          │                         │
-             └──────────────────────────┼─────────────────────────┘
-                                        ▼
-                            공유 로컬 Host (단일 진실 공급원)
-                  세션 · 대기열 · 승인 · Worktree · 사용량 · 확장
-                                        │
-               ┌────────────────────────┼────────────────────────┐
-               ▼                        ▼                        ▼
-       네이티브 Codex 런타임    19+ 외부 Agent 어댑터      원격 Peer Hub / Relay
+```mermaid
+flowchart TB
+  subgraph Clients["멀티 클라이언트 · 실시간 세션 동기화"]
+    direction LR
+    CH["경량 CH 독립 클라이언트 (Tauri)"]
+    CD["공식 Codex Desktop"]
+    WM["Web / PWA & Android"]
+  end
+
+  HOST["공유 로컬 Host · 세션 / 대기열 / 승인 / Worktree / 사용량 / 확장"]
+
+  subgraph Engines["실행 및 다중 머신 연동"]
+    direction LR
+    CODEX["네이티브 Codex 런타임"]
+    EXT["19+ 외부 Agent 네이티브 어댑터"]
+    MESH["다중 머신 연동 & 암호화 Relay"]
+  end
+
+  CH --> HOST
+  CD --> HOST
+  WM --> HOST
+  HOST --> CODEX
+  HOST --> EXT
+  HOST --> MESH
 ```
 
 ---
@@ -225,17 +234,20 @@ Tauri 기반 네이티브 데스크톱 셸로 공식 Codex Desktop 없이도 mac
 
 입력창에서 `#`을 입력해 다른 Agent에게 독립적인 네이티브 하위 세션을 병렬로 맡기고, 완료 결과를 원래 세션으로 자동 회수합니다. 대화 중 **[크로스 Agent 무손실 인계(Handoff)](../architecture/cross-harness-handoff.md)**로 전체 맥락을 그대로 넘길 수도 있습니다.
 
-```text
-                     메인 세션 (예: Codex / Claude Code)
-                                    │
-                ┌───────────────────┼───────────────────┐
-                ▼                   ▼                   ▼
-          #claude-code             #pi                #agy
-      독립 Worktree 코드 리뷰   간헐적 테스트 디버깅   프론트엔드 및 문서 작성
-                │                   │                   │
-                └───────────────────┴───────────────────┘
-                                    ▼
-                     결과 자동 회수 · 언제든 무손실 컨텍스트 인계
+```mermaid
+flowchart TB
+  MAIN["메인 세션 (예: Codex / Claude Code)"]
+  A1["#claude-code · 독립 Worktree 코드 리뷰"]
+  A2["#grok · 동시성 및 예외 케이스 점검"]
+  A3["#antigravity · 프론트엔드 및 문서 작성"]
+  MERGE["결과 자동 회수 · 언제든 크로스 Agent 무손실 인계"]
+
+  MAIN --> A1
+  MAIN --> A2
+  MAIN --> A3
+  A1 --> MERGE
+  A2 --> MERGE
+  A3 --> MERGE
 ```
 
 <table>
@@ -255,13 +267,26 @@ Tauri 기반 네이티브 데스크톱 셸로 공식 Codex Desktop 없이도 mac
 
 ## 자리를 비워도 모든 머신이 손안에
 
-```text
-  MacBook Pro (로컬)  ──┐
-  Linux 개발 서버(Peer) ┼──► 통합 사이드바 (Peer Hub) ──► LAN / Tailscale / 암호화 Relay ──► 휴대폰 / 모든 브라우저
-  Windows PC (Peer)   ──┘
+```mermaid
+flowchart LR
+  subgraph Nodes["다중 머신 연동 · 노드 간 상호 호출 협업"]
+    direction TB
+    M1["MacBook Pro (로컬)"]
+    M2["Linux 개발 서버 (빌드 / 연산 노드)"]
+    M3["Windows PC (테스트 노드)"]
+    M1 <--> M2
+    M2 <--> M3
+    M1 <--> M3
+  end
+
+  HUB["통합 사이드바 오케스트레이션"]
+  NET["LAN / Tailscale / 암호화 Relay"]
+  MOBILE["휴대폰 / 모든 브라우저"]
+
+  Nodes --> HUB --> NET --> MOBILE
 ```
 
-- **[멀티 호스트 Peer Hub](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 한 사이드바에 모아 원격 위임과 파일 미리보기를 지원합니다.
+- **[다중 머신 연동 및 노드 협업](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 하나의 사이드바에 연결해 서로 다른 머신의 세션이 호출하고 협업하며 하나의 작업을 함께 완료합니다.
 - **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 LAN, Tailscale 또는 암호화 Relay로 접속하며, 사내 규정 준수를 위한 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.
 - **로컬 우선 프라이버시**: 코드, 대화 기록, 자격 증명은 모두 내 컴퓨터에 머물며 공식 서비스에 직접 연결됩니다.
 

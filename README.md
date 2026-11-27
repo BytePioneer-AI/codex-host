@@ -73,11 +73,11 @@
 
 <td width="25%" valign="top">
 
-### Own Desktop, Live Sync
+### Lightweight App, Live Sync
 
-Ships with its own standalone desktop app — no official Codex Desktop required.
+Ships with the lightweight **CodexHost standalone app** — no official Codex Desktop required, while also enhancing it if installed.
 
-Shares one local Host with Web, Mobile, and optional Codex Desktop mode.
+The standalone CH client, official Codex client, Web, and Mobile share one local Host with real-time session sync.
 
 </td>
 
@@ -93,21 +93,21 @@ Hand off full context across agents mid-task.
 
 <td width="25%" valign="top">
 
-### Multi-Host & Mobile
+### Multi-Machine Mesh & Mobile
 
-Pull Macs, Linux dev boxes, and Windows rigs into one sidebar.
+Connect Mac, Linux, and Windows machines into one sidebar — sessions across machines call each other so multiple nodes finish one task together.
 
-Approve, inspect, and reply from your phone anywhere.
+Step away and keep approving or steering from your phone.
 
 </td>
 
 <td width="25%" valign="top">
 
-### Native & Local-First
+### Native First-Class
 
-Connects over official SDKs, RPC, and ACP using your existing local logins.
+Connects over each agent's native **SDK / RPC** whenever possible; even over **ACP**, native APIs and CLIs fill every capability gap.
 
-No account required. Zero third-party proxy.
+Reuses your local logins and subscriptions — no account wall, zero third-party proxy.
 
 </td>
 
@@ -120,25 +120,27 @@ No account required. Zero third-party proxy.
 
 ## Download & Install
 
-CodexHost is free and open source. Local and LAN features work **without an account** and **do not require official Codex Desktop**.
+CodexHost is free and open source for **macOS / Windows / Linux / Android / iOS (PWA)**. Local and LAN features work **without an account** and **do not require official Codex Desktop**.
 
-| Platform | Package & Notes | Download |
-| :--- | :--- | :--- |
-| **macOS** | Apple Silicon & Intel · Standalone `.dmg` _(also enhances official Codex Desktop if installed)_ | [**Download from Website**](https://chost.dev/en/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
-| **Windows** | x64 & ARM64 · `.exe` installer / WinGet _(supports portable Codex Desktop too)_ | [**Download from Website**](https://chost.dev/en/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
-| **Linux** | x64 & ARM64 · Self-contained `.tar.gz` _(Desktop app & headless Web daemon)_ | [**Download from Website**](https://chost.dev/en/download) · [Linux Guide](docs/platforms/linux/linux.md) |
-| **Android** | Lightweight native `.apk` · Push alerts, QR pairing & multi-host switching | [**Download from Website**](https://chost.dev/en/download#mobile) · [Android Notes](apps/android-shell/README.md) |
-| **iPhone & iPad** | Safari "Add to Home Screen" PWA · Direct LAN, Tailscale, or encrypted Relay | [**Mobile Setup Guide**](https://chost.dev/en/download#mobile) |
-| **CLI** | Node.js 22.19+ / 24 or Windows WinGet | `npm install -g @codexhost/cli` · `winget install --id BytePioneer-AI.CodexHost --exact` |
-
-<details>
-<summary><b>Common CLI commands (Desktop / Web / Upgrade / Stop)</b></summary>
-
-<br />
+- **Installers & Apps**: [**Download from Website (Recommended)**](https://chost.dev/en/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest) _(Desktop installers, Android APK, and mobile setup; see also [Linux Guide](docs/platforms/linux/linux.md))_
+- **npm / WinGet**:
 
 ```bash
-codexhost          # Launch standalone Desktop or enhanced official Codex Desktop
-codexhost app      # Open lightweight standalone Desktop directly
+npm install -g @codexhost/cli
+# Windows WinGet: winget install --id BytePioneer-AI.CodexHost --exact
+```
+
+> [!IMPORTANT]
+> **macOS: "App can't be verified" on first launch** — run this in Terminal to clear quarantine:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/codexhost.app
+> ```
+
+### Common CLI Commands
+
+```bash
+codexhost          # Launch standalone CH Desktop or enhanced official Codex Desktop
+codexhost app      # Open the lightweight CodexHost standalone app directly
 codexhost web      # Start local Web UI and open in your browser
 codexhost status   # Inspect background Host and service status
 codexhost update   # Upgrade to the latest release
@@ -147,18 +149,12 @@ codexhost stop     # Stop all background services (run before npm reinstall)
 
 > **Keep Web access private:** access tokens, login links, and pairing QR codes grant full control of your machine. Never share them publicly.
 
-</details>
-
 <details>
-<summary><b>Installation troubleshooting (macOS Gatekeeper / Windows portable / Console)</b></summary>
+<summary><b>More troubleshooting (Local Console / Windows portable Codex Desktop)</b></summary>
 
 <br />
 
 - **Launch failed or official Codex Desktop opened without CodexHost**: run `codexhost console` (Windows: Start Menu → `codexhost console`) to open `http://127.0.0.1:4399/` for logs, version detection, and updates.
-- **macOS: "App can't be verified" on first launch**:
-  ```bash
-  xattr -dr com.apple.quarantine /Applications/codexhost.app
-  ```
 - **Windows: portable unpacked Codex Desktop**: set `CODEXHOST_INSTALL_ROOT` to your unpacked directory, exit all running processes, reopen your terminal, and run `codexhost`:
   ```powershell
   [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
@@ -177,11 +173,11 @@ A single local Host keeps sessions, approvals, queues, and extensions as one sou
 
 <td width="33%" valign="top">
 
-### Standalone Desktop
+### Lightweight Standalone App
 
 **Ready out of the box, lighter footprint.**
 
-Native Tauri desktop shell that works on macOS, Windows, and Linux without requiring official Codex Desktop.
+Native Tauri desktop client that works on macOS, Windows, and Linux without requiring official Codex Desktop.
 
 </td>
 
@@ -208,17 +204,30 @@ Full responsive Web UI paired with the native Android APK and iOS PWA to inspect
 </tr>
 </table>
 
-```text
-    Standalone Desktop (Tauri)    Official Codex Desktop       Web / PWA & Android
-                │                           │                           │
-                └───────────────────────────┼───────────────────────────┘
-                                            ▼
-                             Shared Local Host (Single Source)
-                  Threads · Queues · Approvals · Worktrees · Usage · Extensions
-                                            │
-                  ┌─────────────────────────┼─────────────────────────┐
-                  ▼                         ▼                         ▼
-         Native Codex Runtime      19+ External Agent Adapters    Remote Peer Hub / Relay
+```mermaid
+flowchart TB
+  subgraph Clients["Clients · Real-Time Session Sync"]
+    direction LR
+    CH["Lightweight CH App (Tauri)"]
+    CD["Official Codex Desktop"]
+    WM["Web / PWA & Android"]
+  end
+
+  HOST["Shared Local Host · Threads / Queues / Approvals / Worktrees / Usage / Extensions"]
+
+  subgraph Engines["Execution & Multi-Machine Mesh"]
+    direction LR
+    CODEX["Native Codex Runtime"]
+    EXT["19+ Native Agent Adapters"]
+    MESH["Multi-Machine Mesh & Encrypted Relay"]
+  end
+
+  CH --> HOST
+  CD --> HOST
+  WM --> HOST
+  HOST --> CODEX
+  HOST --> EXT
+  HOST --> MESH
 ```
 
 ---
@@ -227,22 +236,25 @@ Full responsive Web UI paired with the native Android APK and iOS PWA to inspect
 
 When one agent isn't enough—or different tasks fit different models—type `#` in the composer to spin up isolated native child sessions in parallel, or use **[Cross-Harness Handoff](docs/architecture/cross-harness-handoff.md)** to transfer full conversation context cleanly to another agent mid-thread.
 
-```text
-                     Main Thread (e.g. Codex / Claude Code)
-                                    │
-                ┌───────────────────┼───────────────────┐
-                ▼                   ▼                   ▼
-          #claude-code             #pi                #agy
-      Worktree code review    Debug flaky tests    Frontend & docs
-                │                   │                   │
-                └───────────────────┴───────────────────┘
-                                    ▼
-                 Results flow back automatically · Lossless Handoff anytime
+```mermaid
+flowchart TB
+  MAIN["Main Thread (e.g. Codex / Claude Code)"]
+  A1["#claude-code · Isolated Worktree Review"]
+  A2["#grok · Concurrency & Edge-Case Audit"]
+  A3["#antigravity · Frontend UI & Docs"]
+  MERGE["Results flow back automatically · Lossless Handoff anytime"]
+
+  MAIN --> A1
+  MAIN --> A2
+  MAIN --> A3
+  A1 --> MERGE
+  A2 --> MERGE
+  A3 --> MERGE
 ```
 
 > Ask `#claude-code` to review this diff independently and call out compatibility risks.  
-> Ask `#pi` to investigate why this integration test flakes.  
-> Ask `#agy` to build the frontend view and update the docs.
+> Ask `#grok` to audit concurrency and edge-case risks in this module.  
+> Ask `#antigravity` to build the frontend view and update the docs.
 
 <table>
   <tr>
@@ -261,13 +273,26 @@ When one agent isn't enough—or different tasks fit different models—type `#`
 
 ## Step Away. Every Machine Stays Within Reach.
 
-```text
-  MacBook Pro (Local) ──┐
-  Linux Dev Box (Peer) ─┼──► Unified Sidebar (Peer Hub) ──► LAN / Tailscale / Encrypted Relay ──► Phone / Any Browser
-  Windows Rig (Peer)  ──┘
+```mermaid
+flowchart LR
+  subgraph Nodes["Multi-Machine Mesh · Cross-Node Collaboration"]
+    direction TB
+    M1["MacBook Pro (Local)"]
+    M2["Linux Dev Box (Build / Compute)"]
+    M3["Windows Rig (Test Node)"]
+    M1 <--> M2
+    M2 <--> M3
+    M1 <--> M3
+  end
+
+  HUB["Unified Sidebar Orchestration"]
+  NET["LAN / Tailscale / Encrypted Relay"]
+  MOBILE["Phone / Any Browser"]
+
+  Nodes --> HUB --> NET --> MOBILE
 ```
 
-- **[Multi-Host Peer Hub](docs/product/multi-remote-peers.md)**: Aggregate Macs, Linux servers, and Windows workstations into one sidebar with cross-host delegation and remote file previews.
+- **[Multi-Machine Interconnection & Cross-Node Collaboration](docs/product/multi-remote-peers.md)**: Link Macs, Linux servers, and Windows workstations into one unified sidebar—sessions on different machines can invoke each other so multiple nodes collaborate to finish one task together.
 - **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever compliance requires it.
 - **Local-First Privacy**: Your code, threads, and agent credentials stay on your own machines and connect directly to official providers—never proxied through third-party servers.
 

@@ -73,11 +73,11 @@
 
 <td width="25%" valign="top">
 
-### 独立桌面，多端同步
+### 轻量多端，实时同步
 
-自带独立桌面端，无需依赖官方 Codex Desktop，与 Web、手机实时同步。
+自带轻量 **CodexHost 客户端**，无需依赖官方桌面端，也兼容增强官方 Codex 客户端。
 
-共用同一本地 Host，也可选兼容增强官方客户端。
+轻量 CH 客户端、官方 Codex 客户端、Web 端与手机端共用同一本地 Host，会话实时同步。
 
 </td>
 
@@ -93,21 +93,21 @@
 
 <td width="25%" valign="top">
 
-### 多机与手机掌控
+### 多机互联，节点协作
 
-Mac、Linux、Windows 收进同一侧栏。
+Mac、Linux、Windows 多机互联进同一侧栏，多机会话可互相调用、多个节点联手完成同一任务。
 
-Peer Hub 跨机调度，离开电脑用手机随时审批回复。
+离开电脑，用手机同样随时审批与接力。
 
 </td>
 
 <td width="25%" valign="top">
 
-### 原生协议，本地优先
+### 原生能力是一等公民
 
-直连各家官方 SDK / RPC / ACP，复用本机订阅与凭据。
+优先直连各家原生 **SDK / RPC**；即便走 **ACP**，也通过原生接口与 CLI 补全完整能力。
 
-无账号门槛，无第三方代理。
+复用本机订阅与凭据，无账号门槛、无第三方代理。
 
 </td>
 
@@ -120,26 +120,28 @@ Peer Hub 跨机调度，离开电脑用手机随时审批回复。
 
 ## 下载与安装
 
-CodexHost 开源免费。本机与局域网内的全部功能**无需注册账号**，也**不要求预先安装官方 Codex Desktop**。
+CodexHost 开源免费，支持 **macOS / Windows / Linux / Android / iOS (PWA)**。本机与局域网内的全部功能**无需注册账号**，也**不要求预先安装官方 Codex Desktop**。
 
-| 平台 | 形态与环境说明 | 获取方式 |
-| :--- | :--- | :--- |
-| **macOS** | Apple 芯片 & Intel · 独立桌面端 `.dmg`（已装官方 Codex Desktop 时可随时切换增强模式） | [**前往官网下载**](https://chost.dev/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
-| **Windows** | x64 & ARM64 · `.exe` 安装包 / WinGet（同时支持绿色便携版 Codex Desktop） | [**前往官网下载**](https://chost.dev/download) · [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases/latest) |
-| **Linux** | x64 & ARM64 · 独立 `.tar.gz` 压缩包（桌面端 & 无头服务器 Web 守护进程） | [**前往官网下载**](https://chost.dev/download) · [Linux 说明](../platforms/linux/linux.zh-CN.md) |
-| **Android** | 轻量原生 APK · 支持后台通知、扫码配对与多主机切换 | [**前往官网下载**](https://chost.dev/download#mobile) · [Android 说明](../../apps/android-shell/README.md) |
-| **iPhone & iPad** | Safari「添加到主屏幕」全屏 PWA · 局域网 / Tailscale / 加密 Relay 直连 | [**查看手机端指引**](https://chost.dev/download#mobile) |
-| **CLI 命令行** | Node.js 22.19+ / 24 或 Windows WinGet | `npm install -g @codexhost/cli` · `winget install --id BytePioneer-AI.CodexHost --exact` |
-
-<details>
-<summary><b>常用 CLI 命令（桌面端 / Web / 升级 / 停止）</b></summary>
-
-<br />
+- **客户端下载**：[**官网下载（推荐）**](https://chost.dev/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest)（含桌面端、Android APK 与手机端指引；另见 [Linux 说明](../platforms/linux/linux.zh-CN.md)）
+- **npm / WinGet 安装**：
 
 ```bash
-codexhost          # 自动启动独立桌面端或官方 Codex Desktop 增强模式
-codexhost app      # 直接打开轻量独立桌面端
-codexhost web      # 启动本地 Web 并在浏览器打开
+npm install -g @codexhost/cli
+# Windows WinGet: winget install --id BytePioneer-AI.CodexHost --exact
+```
+
+> [!IMPORTANT]
+> **macOS 首次打开提示「应用无法验证」**，在终端执行以下命令放行即可：
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/codexhost.app
+> ```
+
+### 常用 CLI 命令
+
+```bash
+codexhost          # 自动启动轻量独立客户端或官方 Codex Desktop 增强模式
+codexhost app      # 直接打开轻量 CodexHost 独立客户端
+codexhost web      # 启动本地 Web 端并在浏览器打开
 codexhost status   # 查看后台 Host 与服务状态
 codexhost update   # 升级到最新版本
 codexhost stop     # 停止全部后台服务（npm 覆盖安装前请先执行）
@@ -147,18 +149,12 @@ codexhost stop     # 停止全部后台服务（npm 覆盖安装前请先执行�
 
 > **安全提醒**：远程访问的 Access Token、登录链接和配对二维码等同于本机操作权限，请勿公开分享。
 
-</details>
-
 <details>
-<summary><b>安装与启动问题排查（macOS 放行 / Windows 绿色版 / 本地控制台）</b></summary>
+<summary><b>更多排查（本地控制台 / Windows 绿色版 Codex Desktop）</b></summary>
 
 <br />
 
 - **启动失败或官方 Codex Desktop 未加载功能**：运行 `codexhost console`（Windows：开始菜单 → `codexhost console`）打开本地控制台 `http://127.0.0.1:4399/` 查看日志与版本状态。
-- **macOS 首次打开提示「应用无法验证」**：
-  ```bash
-  xattr -dr com.apple.quarantine /Applications/codexhost.app
-  ```
 - **Windows 使用绿色解压版 Codex Desktop**：设置用户环境变量 `CODEXHOST_INSTALL_ROOT` 指向解压目录，完全退出进程后重开终端运行 `codexhost`：
   ```powershell
   [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
@@ -177,11 +173,11 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
 
 <td width="33%" valign="top">
 
-### 独立桌面端
+### 轻量独立客户端
 
 **开箱即用，更低内存。**
 
-基于 Tauri 的轻量原生桌面壳，无需安装官方 Codex Desktop，macOS / Windows / Linux 体验一致。
+基于 Tauri 的轻量 CodexHost 原生桌面端，无需安装官方 Codex Desktop，macOS / Windows / Linux 体验一致。
 
 </td>
 
@@ -208,17 +204,30 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
 </tr>
 </table>
 
-```text
-    独立桌面端 (Tauri)       官方 Codex Desktop       Web / PWA & Android
-            │                        │                        │
-            └────────────────────────┼────────────────────────┘
-                                     ▼
-                         本地共享 Host（唯一真相源）
-               会话目录 · 队列 · 审批 · Worktree · 用量 · 扩展
-                                     │
-               ┌─────────────────────┼─────────────────────┐
-               ▼                     ▼                     ▼
-        原生 Codex 运行时     19+ 外部 Agent 适配器     远端 Peer Hub / Relay
+```mermaid
+flowchart TB
+  subgraph Clients["多端入口 · 会话实时同步"]
+    direction LR
+    CH["轻量 CH 独立客户端 (Tauri)"]
+    CD["官方 Codex Desktop"]
+    WM["Web / PWA & Android"]
+  end
+
+  HOST["本地共享 Host · 会话 / 队列 / 审批 / Worktree / 用量 / 扩展"]
+
+  subgraph Engines["执行与多机互联"]
+    direction LR
+    CODEX["原生 Codex 运行时"]
+    EXT["19+ 外部 Agent 原生适配器"]
+    MESH["多机互联 & 加密 Relay"]
+  end
+
+  CH --> HOST
+  CD --> HOST
+  WM --> HOST
+  HOST --> CODEX
+  HOST --> EXT
+  HOST --> MESH
 ```
 
 ---
@@ -227,22 +236,25 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
 
 一个 Agent 忙不过来，或者不同任务适合不同模型——在输入框打 `#` 选择目标 Agent，即可拆出独立原生子会话并行执行；聊到一半也能用 **[跨 Agent 无损交接（Handoff）](../architecture/cross-harness-handoff.md)** 把完整上下文无缝交给另一款 Agent 接着干。
 
-```text
-                     主会话（例如 Codex / Claude Code）
-                                    │
-                ┌───────────────────┼───────────────────┐
-                ▼                   ▼                   ▼
-          #claude-code             #pi                #agy
-        独立 Worktree 审查      排查偶发单测        编写前端与文档
-                │                   │                   │
-                └───────────────────┴───────────────────┘
-                                    ▼
-                      结果自动回流主会话 · 支持随时无损交接
+```mermaid
+flowchart TB
+  MAIN["主会话 (如 Codex / Claude Code)"]
+  A1["#claude-code · 独立 Worktree 审查"]
+  A2["#grok · 排查并发与边界隐患"]
+  A3["#antigravity · 编写前端页面与文档"]
+  MERGE["结果自动回流主会话 · 支持随时跨 Agent 无损交接"]
+
+  MAIN --> A1
+  MAIN --> A2
+  MAIN --> A3
+  A1 --> MERGE
+  A2 --> MERGE
+  A3 --> MERGE
 ```
 
 > 让 `#claude-code` 独立审查这次修改并指出兼容性风险。  
-> 让 `#pi` 排查这个测试为什么偶发失败。  
-> 让 `#agy` 补齐前端页面与使用文档。
+> 让 `#grok` 排查这个模块的并发与边界隐患。  
+> 让 `#antigravity` 补齐前端页面与使用文档。
 
 <table>
   <tr>
@@ -261,13 +273,26 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
 
 ## 离开电脑，多台机器照样在手边
 
-```text
-  MacBook Pro (本机)  ──┐
-  Linux 开发机 (Peer) ──┼──► 同一侧栏 (Peer Hub) ──► 局域网 / Tailscale / 加密 Relay ──► 手机 / 任意电脑
-  Windows 主机 (Peer) ──┘
+```mermaid
+flowchart LR
+  subgraph Nodes["多机互联 · 跨节点互相调用协作"]
+    direction TB
+    M1["MacBook Pro (本机)"]
+    M2["Linux 开发机 (算力/构建节点)"]
+    M3["Windows 主机 (环境测试节点)"]
+    M1 <--> M2
+    M2 <--> M3
+    M1 <--> M3
+  end
+
+  HUB["同一侧栏统一调度"]
+  NET["局域网 / Tailscale / 加密 Relay"]
+  MOBILE["手机 / 任意电脑随时审批与接力"]
+
+  Nodes --> HUB --> NET --> MOBILE
 ```
 
-- **[多远端主机聚合（Peer Hub）](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 开发机聚合进同一侧栏，支持跨主机委派任务与远端文件预览。
+- **[多机互联与跨节点协作](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 开发机连成一张协作网络，收进同一侧栏；不同机器上的会话可以互相委派调用，多个节点联手完成同一项任务。
 - **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，支持局域网、Tailscale 与加密中转连接；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。
 - **本地优先与隐私边界**：代码、对话历史与各家 Agent 凭据全部留在你自己的机器上，直连官方模型服务，不经任何第三方代理。
 

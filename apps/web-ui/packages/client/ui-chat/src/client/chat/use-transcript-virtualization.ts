@@ -92,6 +92,8 @@ export interface TranscriptVirtualizationInput {
   readonly findLeaseMaxDurationMs?: number;
   /** Override IntersectionObserver rootMargin (defaults to 1.5x `root.clientHeight` in px). */
   readonly overscanMargin?: string;
+  /** Invoked synchronously after commit when virtualization while tail-following clamps `scrollTop`. */
+  readonly onTailScrollClamp?: () => void;
 }
 
 /** Per-render virtualization handle consumed by `ChatView` and `ChatNodeList`. */
@@ -432,6 +434,14 @@ interface PendingScrollCompensation {
   readonly prevScrollTop: number;
 }
 
+function mountedSetChanged(prev: ReadonlySet<string>, next: ReadonlySet<string>): boolean {
+  if (prev.size !== next.size) return true;
+  for (const key of prev) {
+    if (!next.has(key)) return true;
+  }
+  return false;
+}
+
 /**
  * Virtualize offscreen top-level transcript row contents while keeping outer row
  * shells, heights, selection spans, focus/editing, jump targets, tail streaming,
@@ -450,6 +460,7 @@ export function useTranscriptVirtualization({
   findLeaseTimeoutMs = FIND_LEASE_TIMEOUT_MS,
   findLeaseMaxDurationMs = FIND_LEASE_MAX_DURATION_MS,
   overscanMargin,
+  onTailScrollClamp,
 }: TranscriptVirtualizationInput): TranscriptVirtualization {
   const hasIntersectionObserver = typeof IntersectionObserver !== "undefined";
   const enabled = entries.length > VIRTUALIZE_THRESHOLD && hasIntersectionObserver;
@@ -466,6 +477,9 @@ export function useTranscriptVirtualization({
   const findLeaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const findLeaseStartedAtRef = useRef<number | null>(null);
   const pendingScrollCompensationRef = useRef<PendingScrollCompensation | null>(null);
+  const pendingTailRestoreRef = useRef<HTMLElement | null>(null);
+  const onTailScrollClampRef = useRef(onTailScrollClamp);
+  onTailScrollClampRef.current = onTailScrollClamp;
 
   if (sessionRef.current !== sessionId) {
     sessionRef.current = sessionId;
@@ -475,6 +489,7 @@ export function useTranscriptVirtualization({
     ioSettledRef.current = false;
     findLeaseStartedAtRef.current = null;
     pendingScrollCompensationRef.current = null;
+    pendingTailRestoreRef.current = null;
   }
 
   const [visibleState, setVisibleState] = useState<{
@@ -927,18 +942,28 @@ export function useTranscriptVirtualization({
 
   // Capture a viewport anchor before commit when rows above the viewport mount from
   // placeholder shells, compensating height growth on engines without CSS overflow-anchor.
+  // Also mark tail-following virtualization commits so any engine scroll clamp is restored.
   pendingScrollCompensationRef.current = null;
+  pendingTailRestoreRef.current = null;
   if (enabled && mountedKeysRef.current.size > 0) {
     const prevMounted = mountedKeysRef.current;
     const list = listRef.current;
     const scroller = list?.closest<HTMLElement>("[data-conversation-scroll]") ?? list ?? null;
     if (scroller !== null && scroller.isConnected) {
       const floor = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const followingTailAttr = list?.closest("[data-chat-following-tail]") !== null;
       const followingTail =
-        floor <= 0 ||
-        floor - scroller.scrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX ||
-        list?.closest("[data-chat-following-tail]") !== null;
-      if (!followingTail) {
+        floor <= 0 || floor - scroller.scrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX || followingTailAttr;
+      if (followingTail) {
+        if (
+          followingTailAttr &&
+          floor > 0 &&
+          floor - scroller.scrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX &&
+          mountedSetChanged(prevMounted, currentMountedKeys)
+        ) {
+          pendingTailRestoreRef.current = scroller;
+        }
+      } else {
         const scrollerTop = scroller.getBoundingClientRect().top;
         const elements = rowElementsRef.current;
         let hasAboveViewportMount = false;
@@ -999,6 +1024,22 @@ export function useTranscriptVirtualization({
   useLayoutEffect(() => {
     const prevMounted = mountedKeysRef.current;
     mountedKeysRef.current = currentMountedKeys;
+
+    const pendingTailRestore = pendingTailRestoreRef.current;
+    pendingTailRestoreRef.current = null;
+    if (pendingTailRestore !== null && pendingTailRestore.isConnected) {
+      const nextFloor = Math.max(
+        0,
+        pendingTailRestore.scrollHeight - pendingTailRestore.clientHeight,
+      );
+      if (nextFloor > 0 && nextFloor - pendingTailRestore.scrollTop > 0.5) {
+        if (onTailScrollClampRef.current !== undefined) {
+          onTailScrollClampRef.current();
+        } else {
+          pendingTailRestore.scrollTop = nextFloor;
+        }
+      }
+    }
 
     const pendingCompensation = pendingScrollCompensationRef.current;
     pendingScrollCompensationRef.current = null;

@@ -557,6 +557,7 @@ export function ChatView({
     revealTargetFlowKey,
     savedAnchorFlowKey,
     busyTurn: scroll.busyTurn,
+    onTailScrollClamp: scroll.reconcileTail,
   });
   const [pendingTurnJump, setPendingTurnJump] = useState<{
     readonly sessionId: string;

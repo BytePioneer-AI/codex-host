@@ -2,6 +2,7 @@ import { open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { HarnessInstallationState } from "@codexhost/shared-contracts";
+import { resolveDesktopBuiltinProviderConfig } from "./builtin-provider-config.js";
 import { ZcodeError } from "./errors.js";
 
 const DEFAULT_DARWIN_APP = "/Applications/ZCode.app";
@@ -14,6 +15,10 @@ export interface ZcodeInstallation {
   /** The App version from app.asar package.json, reported to ZCode's client configuration service. */
   version: string;
   cli: string;
+  /**
+   * The builtin Provider config given to the CLI: the environment's file, ZCode Desktop's newer
+   * copy for this App version, or the file bundled in the App.
+   */
   builtinProviderConfig: string;
   personalProviderConfig: string;
   /** `{ZCODE_DATA_BASE_DIR || home}/.zcode/v2`, shared with ZCode Desktop. */
@@ -137,18 +142,20 @@ export async function resolveInstallation(
   }
 
   const cli = path.join(resources, "glm", "zcode.cjs");
-  const builtinProviderConfig =
-    environment.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE ||
-    path.join(resources, "config", "provider", "zcode-builtin.json");
-
-  if (!(await isFile(runtime)) || !(await isFile(cli)) || !(await isFile(builtinProviderConfig)))
-    throw missing();
-
   const dataRoot = path.join(
     environment.ZCODE_DATA_BASE_DIR?.trim() || environment.HOME || homedir(),
     ".zcode",
     "v2",
   );
+  const bundledProviderConfig = path.join(resources, "config", "provider", "zcode-builtin.json");
+  const builtinProviderConfig =
+    environment.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE ||
+    (await resolveDesktopBuiltinProviderConfig(dataRoot, pkg.version, bundledProviderConfig)) ||
+    bundledProviderConfig;
+
+  if (!(await isFile(runtime)) || !(await isFile(cli)) || !(await isFile(builtinProviderConfig)))
+    throw missing();
+
   return {
     runtime,
     version: pkg.version,

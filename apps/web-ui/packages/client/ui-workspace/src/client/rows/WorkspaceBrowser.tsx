@@ -734,7 +734,12 @@ function SessionTree({
     [list, rowState, statuses, forestRoots],
   );
   const projectSessionIds = new Set<string>(
-    allWorkspaces.flatMap((workspace) => workspace.sessionIds),
+    allWorkspaces.flatMap((workspace) => {
+      const linked = linkedRoots.get(workspace.workspaceId);
+      return linked === undefined || linked.size === 0
+        ? workspace.sessionIds
+        : workspace.sessionIds.filter((id) => !linked.has(id));
+    }),
   );
   const rowKeys: string[] = [];
   if (pinnedRows.length > 0) {

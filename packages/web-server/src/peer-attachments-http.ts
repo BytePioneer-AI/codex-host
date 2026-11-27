@@ -6,6 +6,11 @@ import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import * as c from "@codexhost/shared-contracts";
 import type { ChSessions } from "./ch-sessions.ts";
 import { compressResponse } from "./compression.ts";
+import {
+  matchesImageETag,
+  PEER_IMAGE_SECURITY_HEADERS,
+  peerImageCacheHeaders,
+} from "./peer-image-http.ts";
 import { RpcError, type RpcRegistry } from "./transport.ts";
 import type { WebFiles } from "./web-files.ts";
 import { inspectImage, WEB_IMAGE_LIMITS, type WebImages } from "./web-images.ts";
@@ -56,8 +61,7 @@ function sendPlain(
     .writeHead(status, {
       "content-type": "text/plain; charset=utf-8",
       "cache-control": "private, no-store",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "sandbox; default-src 'none'",
+      ...PEER_IMAGE_SECURITY_HEADERS,
     })
     .end(isHead ? undefined : message);
 }
@@ -545,12 +549,16 @@ async function handleFile(
     sendPlain(response, 404, "image unavailable", isHead);
     return;
   }
+  const etag = `"${image.leaf}"`;
+  const headers = peerImageCacheHeaders(etag);
+  if (matchesImageETag(request.headers["if-none-match"], etag)) {
+    response.writeHead(304, headers).end();
+    return;
+  }
   response.writeHead(200, {
+    ...headers,
     "Content-Type": image.ref.mediaType,
     "Content-Length": String(image.bytes.length),
-    "Cache-Control": "private, no-store",
-    "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "sandbox; default-src 'none'",
   });
   response.end(isHead ? undefined : image.bytes);
 }

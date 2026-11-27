@@ -255,8 +255,9 @@ export class SessionManager {
     if (session !== expected) return Promise.resolve();
     const view = session.captureView();
     if (view) {
-      const evicted = this.recentViews.remember(sessionId, view);
-      if (evicted) this.projectionStores.get(evicted)?.discard(WEB_FOLLOW_PROJECTION_KEYS);
+      for (const evicted of this.recentViews.remember(sessionId, view)) {
+        this.projectionStores.get(evicted)?.discard(WEB_FOLLOW_PROJECTION_KEYS);
+      }
     }
     this.sessions.delete(sessionId);
     this.addresses.delete(sessionId);
@@ -591,7 +592,7 @@ export class SessionManager {
           } else {
             for (const id of received) this.workspaceOnlyIds.delete(id);
             if (cursor !== undefined || this.nextCursor === undefined) this.nextCursor = nextCursor;
-            if (cursor === undefined && this.workspaceStartCursor === undefined)
+            if (cursor === undefined && this.workspaceStartCursor == null)
               this.workspaceStartCursor = nextCursor;
           }
           // Partial pages cannot remove already-loaded identities, including hidden archives.

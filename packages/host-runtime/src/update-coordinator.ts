@@ -14,6 +14,7 @@ import {
   discoverRecentCompletedUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
+  fetchLatestNpmRelease,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
   readRuntimeMetadata,
@@ -92,6 +93,23 @@ export function createHostUpdateCoordinator(
       });
       return authenticated ?? fetchLatestGitHubRelease({ signal: requestSignal });
     });
+  /**
+   * The stable version the npm registry advertises, when GitHub Release version
+   * discovery is unavailable (e.g. anonymous API rate limiting). Only npm
+   * installations can proceed without the Release; native ones still need it.
+   */
+  const npmFallbackRelease = async (
+    context: InstalledUpdateContext,
+    error: unknown,
+    signal?: AbortSignal,
+  ): Promise<CodexhostLatestRelease> => {
+    if (signal?.aborted) throw error;
+    if (context.installation.kind !== "npm") throw error;
+    const npm = context.installation.options;
+    const fallback = await fetchLatestNpmRelease(npm.nodePath, npm.npmCliPath);
+    if (!fallback) throw error;
+    return fallback;
+  };
   let candidate: CodexhostLatestRelease | null = null;
 
   let currentStatusPath: string | null = null;
@@ -169,7 +187,9 @@ export function createHostUpdateCoordinator(
       }
       const status = await latestStatus(context);
       try {
-        const release = await fetchLatest(signal);
+        const release = await fetchLatest(signal).catch((error) =>
+          npmFallbackRelease(context, error, signal),
+        );
         candidate = release;
         const updateAvailable =
           compareSemanticVersions(context.metadata.version, release.version) < 0;
@@ -229,7 +249,7 @@ export function createHostUpdateCoordinator(
       });
 
       try {
-        const release = await fetchLatest();
+        const release = await fetchLatest().catch((error) => npmFallbackRelease(context, error));
         if (
           compareSemanticVersions(context.metadata.version, release.version) >= 0 ||
           (candidate && candidate.version !== release.version)

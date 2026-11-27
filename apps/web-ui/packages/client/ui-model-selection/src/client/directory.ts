@@ -7,6 +7,7 @@
 import type { TrackProductEvent } from "@deepseek-ai/dsh-client-product-analytics/client";
 import type {
   ModelCatalogFailure,
+  ModelCatalogNotInstalled,
   ModelProviderGroup,
   ModelSelection,
   ModelSelectionProjection,
@@ -34,7 +35,10 @@ export interface ModelDirectoryState {
   boundHarnessId: string | null;
   /** Provider-local failures from the last load; usable groups stay usable. */
   failures: readonly ModelCatalogFailure[];
+  /** Supported Harness plugins that are not currently installed on the Host. */
+  notInstalled: readonly ModelCatalogNotInstalled[];
   harnessOrder?: readonly string[];
+  moreHarnesses?: readonly string[];
   rememberedSelections?: Readonly<Record<string, ModelSelection>>;
   modelFavorites?: Readonly<Record<string, readonly string[]>>;
   preferencesAvailable?: boolean;
@@ -56,6 +60,7 @@ export class ModelDirectory {
     harnesses: [],
     boundHarnessId: null,
     failures: [],
+    notInstalled: [],
     status: "idle",
     pending: null,
     error: null,
@@ -221,7 +226,9 @@ export class ModelDirectory {
         harnesses,
         boundHarnessId,
         failures: catalog.value?.failures ?? [],
+        notInstalled: catalog.value?.notInstalled ?? [],
         harnessOrder: catalog.value?.harnessOrder ?? [],
+        moreHarnesses: catalog.value?.moreHarnesses ?? [],
         rememberedSelections: catalog.value?.rememberedSelections ?? {},
         modelFavorites: catalog.value?.modelFavorites ?? {},
         preferencesAvailable: catalog.value?.preferencesAvailable ?? false,
@@ -249,7 +256,9 @@ export class ModelDirectory {
       harnesses,
       boundHarnessId,
       failures: catalog.value.failures,
+      notInstalled: catalog.value.notInstalled ?? [],
       harnessOrder: catalog.value.harnessOrder ?? [],
+      moreHarnesses: catalog.value.moreHarnesses ?? [],
       rememberedSelections: catalog.value.rememberedSelections ?? {},
       modelFavorites: catalog.value.modelFavorites ?? {},
       preferencesAvailable: catalog.value.preferencesAvailable ?? false,

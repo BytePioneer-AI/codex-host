@@ -160,6 +160,7 @@ import {
   THREAD_STEER_STRICT_TARGET_PARAM,
   REASONING_TRANSCRIPT_COMMAND,
   permissionModeFixedAtCreate,
+  sameHarnessModelRef,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -207,6 +208,7 @@ import {
   ExternalThreadRuntime,
   persistedThreadUsage,
   type ExternalThread,
+  type ExternalThreadColdRead,
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
@@ -915,7 +917,13 @@ const COLD_HISTORY_CAPABILITIES = {
 } as const;
 
 function isPassiveThreadInspectMethod(method: string): boolean {
-  return method === "codexhost/thread/inspect" || method === "codexhost/thread/usage/inspect";
+  return (
+    method === "codexhost/thread/inspect" ||
+    method === "codexhost/thread/usage/inspect" ||
+    method === "thread/read" ||
+    method === "thread/turns/list" ||
+    method === "thread/items/list"
+  );
 }
 
 function isPassiveTelemetryOutput(output: HarnessOutput): boolean {
@@ -1028,6 +1036,7 @@ export class AppServerHost {
   #pendingExternalCommandRequests = new Set<string>();
   /** External Threads with a pending or successful `thread/started` write. */
   readonly #announcedExternalThreadIds = new Set<string>();
+  readonly #activeConfigurationSelects = new Map<string, number>();
   readonly #externalQueue = new ExternalThreadQueue();
   readonly #queuedTurnStarts = new Map<
     string,
@@ -1121,6 +1130,12 @@ export class AppServerHost {
       listSectionPlacements: () => this.#repository.listSectionPlacements(),
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
+      readColdExternalThread: (threadId) =>
+        this.#externalRuntime.idleRelease.runOperation(
+          threadId,
+          () => this.#readColdExternalThread(threadId),
+          { touch: false },
+        ),
       clientHistoryTurns: (thread) => this.#externalHistoryTurns(thread, true),
       queueSnapshot: (threadId) => this.#externalQueue.snapshot(threadId),
       readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
@@ -1506,6 +1521,7 @@ export class AppServerHost {
       pendingOfficialTurnStarts: this.#pendingOfficialTurnStarts,
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       resolveExternalThread: (threadId) => this.#resolveExternalThread(threadId),
+      readColdExternalThread: (threadId) => this.#readColdExternalThread(threadId),
       writeResolutionError: (request, resolution) =>
         this.#writeResolutionError(request, resolution),
       forwardOfficialRequest: (request, frame) => this.#forwardOfficialRequest(request, frame),
@@ -1547,6 +1563,8 @@ export class AppServerHost {
         this.#rollbackExternalThread(request, derived, rollback),
       listExternalHistory: (request, thread, params, historyFresh) =>
         this.#listExternalHistory(request, thread, params, historyFresh),
+      listColdExternalHistory: (request, cold, params) =>
+        this.#listColdExternalHistory(request, cold, params),
       startExternalTurn: (request, thread) => this.#startExternalTurn(request, thread),
       steerExternalTurn: (request, thread) => this.#steerExternalTurn(request, thread),
       interruptExternalTurn: (request, thread, requestedTurnId) =>
@@ -1555,6 +1573,8 @@ export class AppServerHost {
         this.#readExternalThreadMetadata(request, location),
       readExternalThread: (request, thread, includeTurns, historyFresh) =>
         this.#readExternalThread(request, thread, includeTurns, historyFresh),
+      readColdExternalThreadReply: (request, cold) =>
+        this.#readColdExternalThreadReply(request, cold),
       resumeExternalThread: (request, thread, params, historyFresh) =>
         this.#resumeExternalThread(request, thread, params, historyFresh),
       setExternalThreadName: (request, location, name) =>
@@ -4324,7 +4344,8 @@ export class AppServerHost {
       const effectiveModel =
         thread.stateObserver.state.effectiveModel ?? thread.requestedModel ?? saved?.model;
       const effectiveThinkingOptionId =
-        thread.stateObserver.state.effectiveThinkingOptionId ?? saved?.thinkingOptionId;
+        thread.stateObserver.state.effectiveThinkingOptionId ??
+        (sameHarnessModelRef(effectiveModel, saved?.model) ? saved?.thinkingOptionId : undefined);
       const effectivePermissionModeId =
         thread.stateObserver.state.effectivePermissionModeId ?? saved?.permissionModeId;
       const inspection = threadInspectionSchema.parse({
@@ -5019,88 +5040,96 @@ export class AppServerHost {
       );
       return;
     }
-    const beforeRevision = thread.stateObserver.revision;
-    const result = await thread.session.execute({
-      type: "model.select",
-      model: params.data.model,
-    });
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
-      return;
-    }
-    try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
-      const projected = harnessModelSelectionStateSchema.parse({
-        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
-        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
-        ...(state.effectiveThinkingOptionId
-          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
-          : {}),
-        ...(state.availableThinkingOptions
-          ? { availableThinkingOptions: state.availableThinkingOptions }
-          : {}),
-        ...(state.effectivePermissionModeId
-          ? { effectivePermissionModeId: state.effectivePermissionModeId }
-          : {}),
+    await this.#withConfigurationSelect(thread.id, async () => {
+      const beforeRevision = thread.stateObserver.revision;
+      const result = await thread.session.execute({
+        type: "model.select",
+        model: params.data.model,
       });
-      if (!projected.effectiveModel) {
-        throw new Error("Harness Session did not report an effective Model");
-      }
-      // Resume and Fork read the saved selection, so keep it on the confirmed Model
-      // and update or clear Thinking so incompatible options are not replayed on Resume.
-      const nextSelection = {
-        ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
-        model: projected.effectiveModel,
-      };
-      if (projected.effectiveThinkingOptionId) {
-        nextSelection.thinkingOptionId = projected.effectiveThinkingOptionId;
-      } else {
-        delete nextSelection.thinkingOptionId;
-      }
-      const transportModelId = encodeExternalTransportSelection(thread.harnessId, nextSelection);
-      thread.transportModelId = transportModelId;
-      thread.requestedModel = projected.effectiveModel;
-      if (projected.effectiveThinkingOptionId) {
-        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
-      } else {
-        delete thread.requestedThinkingOptionId;
-      }
-      thread.thread = externalThreadValue({
-        record: { ...thread.record, transportModelId },
-        turns: thread.turns,
-        sessionId: thread.sessionId,
-        running: thread.running,
-      });
-      // Resume restores the saved selection, so an unsaved change must not
-      // be reported as a completed selection.
-      try {
-        thread.record = await this.#repository.setTransportModelId(
-          thread.record.hostThreadId,
-          transportModelId,
-        );
-      } catch (error) {
-        this.#diagnose(error);
-        await this.#writer.json(
-          rpcError(
-            request,
-            -32078,
-            `Model was applied but could not be saved: ${errorMessage(error)}`,
-          ),
-        );
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32078, result.error.message));
         return;
       }
-      thread.thread = externalThreadValue({
-        record: thread.record,
-        turns: thread.turns,
-        sessionId: thread.sessionId,
-        running: thread.running,
-      });
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32078, `Model state was not confirmed: ${errorMessage(error)}`),
-      );
-    }
+      try {
+        const state = await thread.stateObserver.waitForChange(beforeRevision);
+        const projected = harnessModelSelectionStateSchema.parse({
+          ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+          ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
+          ...(state.effectiveThinkingOptionId
+            ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+            : {}),
+          ...(state.availableThinkingOptions
+            ? { availableThinkingOptions: state.availableThinkingOptions }
+            : {}),
+          ...(state.effectivePermissionModeId
+            ? { effectivePermissionModeId: state.effectivePermissionModeId }
+            : {}),
+        });
+        if (!projected.effectiveModel) {
+          throw new Error("Harness Session did not report an effective Model");
+        }
+        // Resume and Fork read the saved selection, so keep it on the confirmed Model
+        // and update or clear Thinking so incompatible options are not replayed on Resume.
+        const nextSelection = {
+          ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
+          model: projected.effectiveModel,
+          ...(projected.effectivePermissionModeId
+            ? { permissionModeId: projected.effectivePermissionModeId }
+            : {}),
+        };
+        if (projected.effectiveThinkingOptionId) {
+          nextSelection.thinkingOptionId = projected.effectiveThinkingOptionId;
+        } else {
+          delete nextSelection.thinkingOptionId;
+        }
+        const transportModelId = encodeExternalTransportSelection(thread.harnessId, nextSelection);
+        thread.transportModelId = transportModelId;
+        thread.requestedModel = projected.effectiveModel;
+        if (projected.effectiveThinkingOptionId) {
+          thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+        } else {
+          delete thread.requestedThinkingOptionId;
+        }
+        if (projected.effectivePermissionModeId) {
+          thread.requestedPermissionModeId = projected.effectivePermissionModeId;
+        }
+        thread.thread = externalThreadValue({
+          record: { ...thread.record, transportModelId },
+          turns: thread.turns,
+          sessionId: thread.sessionId,
+          running: thread.running,
+        });
+        // Resume restores the saved selection, so an unsaved change must not
+        // be reported as a completed selection.
+        try {
+          thread.record = await this.#repository.setTransportModelId(
+            thread.record.hostThreadId,
+            transportModelId,
+          );
+        } catch (error) {
+          this.#diagnose(error);
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32078,
+              `Model was applied but could not be saved: ${errorMessage(error)}`,
+            ),
+          );
+          return;
+        }
+        thread.thread = externalThreadValue({
+          record: thread.record,
+          turns: thread.turns,
+          sessionId: thread.sessionId,
+          running: thread.running,
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+      } catch (error) {
+        await this.#writer.json(
+          rpcError(request, -32078, `Model state was not confirmed: ${errorMessage(error)}`),
+        );
+      }
+    });
   }
 
   async #selectThreadThinking(request: JsonRpcRequest): Promise<void> {
@@ -5129,78 +5158,86 @@ export class AppServerHost {
       );
       return;
     }
-    const beforeRevision = thread.stateObserver.revision;
-    const result = await thread.session.execute({
-      type: "thinking.select",
-      thinkingOptionId: params.data.thinkingOptionId,
-    });
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
-      return;
-    }
-    try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
-      const projected = harnessModelSelectionStateSchema.parse({
-        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
-        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
-        ...(state.effectiveThinkingOptionId
-          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
-          : {}),
-        ...(state.availableThinkingOptions
-          ? { availableThinkingOptions: state.availableThinkingOptions }
-          : {}),
-        ...(state.effectivePermissionModeId
-          ? { effectivePermissionModeId: state.effectivePermissionModeId }
-          : {}),
+    await this.#withConfigurationSelect(thread.id, async () => {
+      const beforeRevision = thread.stateObserver.revision;
+      const result = await thread.session.execute({
+        type: "thinking.select",
+        thinkingOptionId: params.data.thinkingOptionId,
       });
-      if (!projected.effectiveThinkingOptionId) {
-        throw new Error("Harness Session did not report effective Thinking");
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32078, result.error.message));
+        return;
       }
-      thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
-      const previousSelection = decodeExternalTransportSelection(
-        thread.harnessId,
-        thread.transportModelId,
-      );
-      const effectiveModel =
-        projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
-      if (effectiveModel) {
-        const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
-          ...(previousSelection ?? {}),
-          model: effectiveModel,
-          thinkingOptionId: projected.effectiveThinkingOptionId,
+      try {
+        const state = await thread.stateObserver.waitForChange(beforeRevision);
+        const projected = harnessModelSelectionStateSchema.parse({
+          ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+          ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
+          ...(state.effectiveThinkingOptionId
+            ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+            : {}),
+          ...(state.availableThinkingOptions
+            ? { availableThinkingOptions: state.availableThinkingOptions }
+            : {}),
+          ...(state.effectivePermissionModeId
+            ? { effectivePermissionModeId: state.effectivePermissionModeId }
+            : {}),
         });
-        thread.transportModelId = transportModelId;
-        thread.requestedModel = effectiveModel;
-        try {
-          thread.record = await this.#repository.setTransportModelId(
-            thread.record.hostThreadId,
-            transportModelId,
-          );
-        } catch (error) {
-          this.#diagnose(error);
-          await this.#writer.json(
-            rpcError(
-              request,
-              -32078,
-              `Thinking was applied but could not be saved: ${errorMessage(error)}`,
-            ),
-          );
-          return;
-        } finally {
-          thread.thread = externalThreadValue({
-            record: { ...thread.record, transportModelId },
-            turns: thread.turns,
-            sessionId: thread.sessionId,
-            running: thread.running,
-          });
+        if (!projected.effectiveThinkingOptionId) {
+          throw new Error("Harness Session did not report effective Thinking");
         }
+        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+        if (projected.effectivePermissionModeId) {
+          thread.requestedPermissionModeId = projected.effectivePermissionModeId;
+        }
+        const previousSelection = decodeExternalTransportSelection(
+          thread.harnessId,
+          thread.transportModelId,
+        );
+        const effectiveModel =
+          projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
+        if (effectiveModel) {
+          const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+            ...(previousSelection ?? {}),
+            model: effectiveModel,
+            thinkingOptionId: projected.effectiveThinkingOptionId,
+            ...(projected.effectivePermissionModeId
+              ? { permissionModeId: projected.effectivePermissionModeId }
+              : {}),
+          });
+          thread.transportModelId = transportModelId;
+          thread.requestedModel = effectiveModel;
+          try {
+            thread.record = await this.#repository.setTransportModelId(
+              thread.record.hostThreadId,
+              transportModelId,
+            );
+          } catch (error) {
+            this.#diagnose(error);
+            await this.#writer.json(
+              rpcError(
+                request,
+                -32078,
+                `Thinking was applied but could not be saved: ${errorMessage(error)}`,
+              ),
+            );
+            return;
+          } finally {
+            thread.thread = externalThreadValue({
+              record: { ...thread.record, transportModelId },
+              turns: thread.turns,
+              sessionId: thread.sessionId,
+              running: thread.running,
+            });
+          }
+        }
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+      } catch (error) {
+        await this.#writer.json(
+          rpcError(request, -32078, `Thinking state was not confirmed: ${errorMessage(error)}`),
+        );
       }
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32078, `Thinking state was not confirmed: ${errorMessage(error)}`),
-      );
-    }
+    });
   }
 
   async #selectThreadPermissionMode(request: JsonRpcRequest): Promise<void> {
@@ -5235,83 +5272,162 @@ export class AppServerHost {
       );
       return;
     }
-    const beforeRevision = thread.stateObserver.revision;
-    const result = await thread.session.execute({
-      type: "permissionMode.select",
-      permissionModeId: params.data.permissionModeId,
+    await this.#withConfigurationSelect(thread.id, async () => {
+      const beforeRevision = thread.stateObserver.revision;
+      const result = await thread.session.execute({
+        type: "permissionMode.select",
+        permissionModeId: params.data.permissionModeId,
+      });
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32078, result.error.message));
+        return;
+      }
+      try {
+        const state = await thread.stateObserver.waitForChange(beforeRevision);
+        const projected = harnessConfigurationStateSchema.parse({
+          ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+          ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
+          ...(state.effectiveThinkingOptionId
+            ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+            : {}),
+          ...(state.availableThinkingOptions
+            ? { availableThinkingOptions: state.availableThinkingOptions }
+            : {}),
+          ...(state.effectivePermissionModeId
+            ? { effectivePermissionModeId: state.effectivePermissionModeId }
+            : {}),
+        });
+        if (!projected.effectivePermissionModeId) {
+          throw new Error("Harness Session did not report its current Permission Mode");
+        }
+        thread.requestedPermissionModeId = projected.effectivePermissionModeId;
+        const previousSelection = decodeExternalTransportSelection(
+          thread.harnessId,
+          thread.transportModelId,
+        );
+        const effectiveModel =
+          projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
+        if (effectiveModel) {
+          const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+            ...(previousSelection ?? {}),
+            model: effectiveModel,
+            permissionModeId: projected.effectivePermissionModeId,
+          });
+          thread.transportModelId = transportModelId;
+          thread.requestedModel = effectiveModel;
+          thread.thread = externalThreadValue({
+            record: { ...thread.record, transportModelId },
+            turns: thread.turns,
+            sessionId: thread.sessionId,
+            running: thread.running,
+          });
+          // Resume restores the saved selection, so an unsaved change must not
+          // be reported as a completed selection.
+          try {
+            thread.record = await this.#repository.setTransportModelId(
+              thread.record.hostThreadId,
+              transportModelId,
+            );
+          } catch (error) {
+            this.#diagnose(error);
+            await this.#writer.json(
+              rpcError(
+                request,
+                -32078,
+                `Permission Mode was applied but could not be saved: ${errorMessage(error)}`,
+              ),
+            );
+            return;
+          }
+        }
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+      } catch (error) {
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32078,
+            `Permission Mode state was not confirmed: ${errorMessage(error)}`,
+          ),
+        );
+      }
     });
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
+  }
+
+  async #withConfigurationSelect<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+    this.#activeConfigurationSelects.set(
+      threadId,
+      (this.#activeConfigurationSelects.get(threadId) ?? 0) + 1,
+    );
+    try {
+      return await operation();
+    } finally {
+      const remaining = (this.#activeConfigurationSelects.get(threadId) ?? 1) - 1;
+      if (remaining > 0) this.#activeConfigurationSelects.set(threadId, remaining);
+      else this.#activeConfigurationSelects.delete(threadId);
+    }
+  }
+
+  async #persistObservedConfiguration(
+    thread: ExternalThread,
+    state: ExternalThread["stateObserver"]["state"],
+  ): Promise<void> {
+    const previousSelection = decodeExternalTransportSelection(
+      thread.harnessId,
+      thread.transportModelId,
+    );
+    const effectiveModel =
+      state.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
+    if (!effectiveModel) return;
+    const nextSelection = {
+      ...(previousSelection ?? {}),
+      model: effectiveModel,
+      ...(state.effectiveThinkingOptionId
+        ? { thinkingOptionId: state.effectiveThinkingOptionId }
+        : {}),
+      ...(state.effectivePermissionModeId
+        ? { permissionModeId: state.effectivePermissionModeId }
+        : {}),
+    };
+    if (
+      !sameHarnessModelRef(effectiveModel, previousSelection?.model) &&
+      !state.effectiveThinkingOptionId
+    ) {
+      delete nextSelection.thinkingOptionId;
+    }
+    const previousTransportModelId = thread.transportModelId;
+    const transportModelId = encodeExternalTransportSelection(thread.harnessId, nextSelection);
+    if (transportModelId === previousTransportModelId) return;
+    try {
+      const record = await this.#repository.setTransportModelId(
+        thread.record.hostThreadId,
+        transportModelId,
+      );
+      if (
+        this.#externalRuntime.get(thread.id) !== thread ||
+        thread.transportModelId !== previousTransportModelId
+      )
+        return;
+      thread.record = record;
+    } catch (error) {
+      this.#diagnose(error);
       return;
     }
-    try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
-      const projected = harnessConfigurationStateSchema.parse({
-        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
-        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
-        ...(state.effectiveThinkingOptionId
-          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
-          : {}),
-        ...(state.availableThinkingOptions
-          ? { availableThinkingOptions: state.availableThinkingOptions }
-          : {}),
-        ...(state.effectivePermissionModeId
-          ? { effectivePermissionModeId: state.effectivePermissionModeId }
-          : {}),
-      });
-      if (!projected.effectivePermissionModeId) {
-        throw new Error("Harness Session did not report its current Permission Mode");
-      }
-      thread.requestedPermissionModeId = projected.effectivePermissionModeId;
-      const previousSelection = decodeExternalTransportSelection(
-        thread.harnessId,
-        thread.transportModelId,
-      );
-      const effectiveModel =
-        projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
-      if (effectiveModel) {
-        const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
-          ...(previousSelection ?? {}),
-          model: effectiveModel,
-          permissionModeId: projected.effectivePermissionModeId,
-        });
-        thread.transportModelId = transportModelId;
-        thread.requestedModel = effectiveModel;
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
-        // Resume restores the saved selection, so an unsaved change must not
-        // be reported as a completed selection.
-        try {
-          thread.record = await this.#repository.setTransportModelId(
-            thread.record.hostThreadId,
-            transportModelId,
-          );
-        } catch (error) {
-          this.#diagnose(error);
-          await this.#writer.json(
-            rpcError(
-              request,
-              -32078,
-              `Permission Mode was applied but could not be saved: ${errorMessage(error)}`,
-            ),
-          );
-          return;
-        }
-      }
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(
-          request,
-          -32078,
-          `Permission Mode state was not confirmed: ${errorMessage(error)}`,
-        ),
-      );
+    thread.transportModelId = transportModelId;
+    thread.requestedModel = effectiveModel;
+    if (nextSelection.thinkingOptionId) {
+      thread.requestedThinkingOptionId = nextSelection.thinkingOptionId;
+    } else {
+      delete thread.requestedThinkingOptionId;
     }
+    if (nextSelection.permissionModeId) {
+      thread.requestedPermissionModeId = nextSelection.permissionModeId;
+    }
+    thread.thread = externalThreadValue({
+      record: thread.record,
+      turns: thread.turns,
+      sessionId: thread.sessionId,
+      running: thread.running,
+    });
   }
 
   async #startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void> {
@@ -5528,9 +5644,16 @@ export class AppServerHost {
     return this.#externalRuntime.resolve(threadId);
   }
 
+  async #readColdExternalThread(threadId: string): Promise<ExternalThreadColdRead> {
+    const location = await this.#locateExternalThread(threadId);
+    if (location.kind !== "external") return location;
+    await this.#waitForPlugins();
+    return this.#externalRuntime.readCold(threadId);
+  }
+
   async #writeResolutionError(
     request: JsonRpcRequest,
-    resolution: ExternalThreadLocation | ExternalThreadResolution,
+    resolution: ExternalThreadLocation | ExternalThreadResolution | ExternalThreadColdRead,
   ): Promise<boolean> {
     if (resolution.kind !== "error") return false;
     await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
@@ -5910,6 +6033,63 @@ export class AppServerHost {
       await this.#replayExternalPlan(thread);
     }
     await this.#replayExternalUsage(thread);
+  }
+
+  async #readColdExternalThreadReply(
+    request: JsonRpcRequest,
+    cold: Extract<ExternalThreadColdRead, { kind: "cold" }>,
+  ): Promise<void> {
+    if (cold.record.historyMode === "paginated") {
+      await this.#writer.json(
+        rpcError(request, -32602, "Paginated External Threads require thread/turns/list"),
+      );
+      return;
+    }
+    const readTurns = ownTurns(cold.record, cold.turns);
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: {
+          thread: {
+            ...cold.thread,
+            ...(await this.#externalSectionFields(cold.record.hostThreadId)),
+            turns: readTurns,
+          },
+        },
+      }),
+    );
+    if (cold.persistentPlan) {
+      const update = historicalPlanUpdate(
+        cold.record.hostThreadId,
+        readTurns,
+        cold.historicalPlans,
+      );
+      if (update) await this.#writer.json(update);
+    }
+  }
+
+  async #listColdExternalHistory(
+    request: JsonRpcRequest,
+    cold: Extract<ExternalThreadColdRead, { kind: "cold" }>,
+    params: JsonObject,
+  ): Promise<void> {
+    try {
+      const turns = ownTurns(cold.record, cold.turns);
+      const result =
+        request.method === "thread/turns/list"
+          ? listExternalTurns(turns, params)
+          : listExternalItems(turns, params);
+      await this.#writer.json(rpcEnvelope(request, { result }));
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalHistoryRequestError ? -32602 : -32076,
+          error instanceof ExternalHistoryRequestError
+            ? error.message
+            : "External Thread history projection failed",
+        ),
+      );
+    }
   }
 
   async #listExternalHistory(
@@ -7314,6 +7494,9 @@ export class AppServerHost {
           }
         }
         thread.stateObserver.update(event.state);
+        if (!thread.unsubmittedPrewarm && !this.#activeConfigurationSelects.has(thread.id)) {
+          await this.#persistObservedConfiguration(thread, event.state);
+        }
         this.clientEvents.changed(thread.id, "codexhost/thread/configuration/updated");
       } catch (error) {
         thread.persistenceError = error instanceof Error ? error : new Error(errorMessage(error));

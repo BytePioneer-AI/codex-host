@@ -1,6 +1,10 @@
 /** Thin client for the CodexHost server's `codexhost/*` RPC methods. */
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
+  DELEGATION_HOST_HARNESSES_METHOD,
+  DELEGATION_REMOTE_HOSTS_METHOD,
+  delegationHostHarnessesResultSchema,
+  delegationRemoteHostsResultSchema,
   harnessSessionImportResultSchema,
   RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
   RELEASE_ANNOUNCEMENT_GET_METHOD,
@@ -11,6 +15,7 @@ import {
   remotePeerCreateDirResultSchema,
   remotePeerListDirsResultSchema,
   remotePeerListResultSchema,
+  remotePeerPairingReportSchema,
   remotePeerRemoveResultSchema,
   remotePeerSummarySchema,
   remotePeerTestResultSchema,
@@ -31,8 +36,10 @@ import {
   type RemotePeerAddParams,
   type RemotePeerCreateWorkspaceParams,
   type RemotePeerDeleteWorkspaceParams,
+  type RemotePeerPairingReport,
   type RemotePeerRenameWorkspaceParams,
   type RemotePeerSummary,
+  type RemotePeerSyncMeshParams,
   type RemotePeerTestParams,
   type RemotePeerUpdateParams,
   type ThreadCommandExecuteResult,
@@ -440,11 +447,25 @@ function parseRemotePeerResult(value: unknown): { peer: RemotePeerSummary } {
   return { peer: remotePeerSummarySchema.parse(candidate) };
 }
 
+function parseRemotePeerAddResult(value: unknown): {
+  peer: RemotePeerSummary;
+  pairing?: RemotePeerPairingReport;
+} {
+  const { peer } = parseRemotePeerResult(value);
+  const rawPairing =
+    value !== null && typeof value === "object" && "pairing" in value
+      ? (value as { pairing?: unknown }).pairing
+      : undefined;
+  return rawPairing === undefined
+    ? { peer }
+    : { peer, pairing: remotePeerPairingReportSchema.parse(rawPairing) };
+}
+
 export const remotePeersApi = {
   list: async () =>
     remotePeerListResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.list, {})),
   add: async (input: RemotePeerAddParams) =>
-    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.add, input)),
+    parseRemotePeerAddResult(await call<unknown>(REMOTE_PEERS_METHODS.add, input)),
   update: async (input: RemotePeerUpdateParams) =>
     parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.update, input)),
   remove: async (peerId: string) =>
@@ -455,6 +476,8 @@ export const remotePeersApi = {
     parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.reconnect, { peerId })),
   test: async (input: RemotePeerTestParams) =>
     remotePeerTestResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.test, input)),
+  syncMesh: async (input: RemotePeerSyncMeshParams) =>
+    remotePeerPairingReportSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.syncMesh, input)),
   listDirs: async (peerId: string, path?: string) =>
     remotePeerListDirsResultSchema.parse(
       await call<unknown>(
@@ -477,5 +500,20 @@ export const remotePeersApi = {
   deleteWorkspace: async (input: RemotePeerDeleteWorkspaceParams) =>
     remotePeerWorkspaceMutationResultSchema.parse(
       await call<unknown>(REMOTE_PEERS_METHODS.deleteWorkspace, input),
+    ),
+};
+
+export const remoteDelegationApi = {
+  remoteHosts: async (sessionHostId?: string) =>
+    delegationRemoteHostsResultSchema.parse(
+      await call<unknown>(DELEGATION_REMOTE_HOSTS_METHOD, {
+        request: sessionHostId ? { sessionHostId } : {},
+      }),
+    ),
+  hostHarnesses: async (hostId: string) =>
+    delegationHostHarnessesResultSchema.parse(
+      await call<unknown>(DELEGATION_HOST_HARNESSES_METHOD, {
+        request: { hostId },
+      }),
     ),
 };

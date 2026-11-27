@@ -1,8 +1,17 @@
-import { Fragment, useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { CSSProperties, ReactNode, Ref } from "react";
 import clsx from "clsx";
 import { writeClipboard } from "../clipboard.ts";
 import { CodeToolbar, type CodeToolbarLabels } from "../CodeToolbar.tsx";
+import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } from "../icons/index.tsx";
 import {
   StreamingHighlightSession,
   grammarLoadCount,
@@ -10,8 +19,32 @@ import {
   subscribeGrammarLoaded,
 } from "./highlight.ts";
 import type { HighlightSpan, StreamingHighlightFrame } from "./highlight.ts";
+import { useCodeBlockFoldMemory } from "./MarkdownDelegate.tsx";
 import { useViewportHighlighting } from "./useViewportHighlighting.ts";
 import css from "./CodeBlock.module.css";
+
+/** Settled collapsible blocks with more than this many lines start folded. */
+export const FOLD_LINE_THRESHOLD = 20;
+/** Number of leading lines rendered and highlighted while a block is folded. */
+export const FOLD_PREVIEW_LINES = 8;
+
+const defaultExpandCodeLabel = (totalLines: number): string => `Expand all (${totalLines} lines)`;
+const DEFAULT_COLLAPSE_CODE_LABEL = "Collapse code";
+
+function inspectCodeLines(
+  text: string,
+  previewLines: number,
+): { readonly totalLines: number; readonly previewEnd: number } {
+  let totalLines = 1;
+  let previewEnd = text.length;
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    if (totalLines === previewLines) {
+      previewEnd = text[index - 1] === "\r" ? index - 1 : index;
+    }
+    totalLines += 1;
+  }
+  return { totalLines, previewEnd };
+}
 
 export interface CodeBlockProps {
   /** The source text, rendered verbatim (trailing newline trimmed for display). */
@@ -27,6 +60,14 @@ export interface CodeBlockProps {
    * tree when it settles. Cold settled callers get shiki's HTML.
    */
   streaming?: boolean | undefined;
+  /** Fold settled code blocks taller than {@link FOLD_LINE_THRESHOLD} lines by default. */
+  collapsible?: boolean | undefined;
+  /** Stable identifier within the enclosing row so expanded state survives virtualized remounts. */
+  foldKey?: string | undefined;
+  /** Label for expanding a folded block (receives total line count); defaults to English. */
+  expandCodeLabel?: ((totalLines: number) => string) | undefined;
+  /** Label for collapsing an expanded foldable block; defaults to English. */
+  collapseCodeLabel?: string | undefined;
   /** Extra class merged onto the wrapper (callers position; this component draws). */
   className?: string | undefined;
   /** Ref for the stable source-content wrapper, for owners that use it as a scrollport. */
@@ -79,6 +120,10 @@ export function CodeBlock({
   code,
   lang,
   streaming,
+  collapsible = false,
+  foldKey,
+  expandCodeLabel = defaultExpandCodeLabel,
+  collapseCodeLabel = DEFAULT_COLLAPSE_CODE_LABEL,
   className,
   contentRef,
   lineNumbers = false,
@@ -89,7 +134,34 @@ export function CodeBlock({
   wrap,
 }: CodeBlockProps) {
   const trimmed = code.endsWith("\n") ? code.slice(0, -1) : code;
-  const sourceLines = lineNumbers ? trimmed.split("\n") : undefined;
+  const foldMemory = useCodeBlockFoldMemory();
+  const memoryKey =
+    foldKey === undefined
+      ? undefined
+      : `${foldKey}\0${lang ?? ""}\0${trimmed.length}\0${trimmed.slice(0, 64)}`;
+  // Blocks that mount while streaming or were previously expanded in this row
+  // stay expanded; only untouched settled historical blocks start collapsed.
+  const [expanded, setExpanded] = useState(
+    () => streaming === true || (memoryKey !== undefined && foldMemory?.get(memoryKey) === true),
+  );
+  useEffect(() => {
+    if (streaming === true) setExpanded(true);
+  }, [streaming]);
+  const lineMetrics = useMemo(
+    () => (collapsible ? inspectCodeLines(trimmed, FOLD_PREVIEW_LINES) : undefined),
+    [collapsible, trimmed],
+  );
+  const totalLines = lineMetrics?.totalLines ?? 0;
+  const canFold = collapsible && streaming !== true && totalLines > FOLD_LINE_THRESHOLD;
+  useEffect(() => {
+    if (canFold && expanded && memoryKey !== undefined && foldMemory !== undefined) {
+      if (foldMemory.get(memoryKey) !== true) foldMemory.set(memoryKey, true);
+    }
+  }, [canFold, expanded, foldMemory, memoryKey]);
+  const folded = canFold && !expanded;
+  const displayCode =
+    folded && lineMetrics !== undefined ? trimmed.slice(0, lineMetrics.previewEnd) : trimmed;
+  const sourceLines = lineNumbers ? displayCode.split("\n") : undefined;
   const rootRef = useRef<HTMLDivElement>(null);
   const highlighting = useViewportHighlighting(rootRef, lang);
   // Re-render when a lazy grammar finishes loading, so a fence that showed plain
@@ -120,7 +192,7 @@ export function CodeBlock({
     }
     if (streaming !== true) {
       const previous = lineCacheRef.current;
-      if (previous !== null && previous.code === trimmed && previous.lang === lang) {
+      if (previous !== null && previous.code === displayCode && previous.lang === lang) {
         settledRef.current = true;
         return previous.body;
       }
@@ -135,13 +207,13 @@ export function CodeBlock({
       settledRef.current = false;
     }
     sessionRef.current ??= new StreamingHighlightSession();
-    const frame = sessionRef.current.updateFrame(trimmed, lang);
+    const frame = sessionRef.current.updateFrame(displayCode, lang);
     if (frame === undefined) {
       lineCacheRef.current = null;
       return undefined;
     }
     const previous = lineCacheRef.current;
-    if (previous?.frame === frame && previous.code === trimmed && previous.lang === lang) {
+    if (previous?.frame === frame && previous.code === displayCode && previous.lang === lang) {
       return previous.body;
     }
     const sameGeneration = previous?.generation === frame.generation;
@@ -167,7 +239,7 @@ export function CodeBlock({
       </pre>
     );
     lineCacheRef.current = {
-      code: trimmed,
+      code: displayCode,
       lang,
       generation: frame.generation,
       frame,
@@ -177,13 +249,13 @@ export function CodeBlock({
       body,
     };
     return body;
-  }, [streaming, highlighting, trimmed, lang, loaded]);
+  }, [streaming, highlighting, displayCode, lang, loaded]);
   const html = useMemo(
     () =>
       highlighting && streaming !== true && streamedBody === undefined
-        ? highlightToHtml(trimmed, lang)
+        ? highlightToHtml(displayCode, lang)
         : undefined,
-    [streaming, highlighting, streamedBody, trimmed, lang, loaded],
+    [streaming, highlighting, streamedBody, displayCode, lang, loaded],
   );
   const [copied, setCopied] = useState(false);
   const [localWrapped, setWrapped] = useState(true);
@@ -191,10 +263,8 @@ export function CodeBlock({
 
   const onCopy = useCallback(() => {
     if (copied) return;
-    /* v8 ignore next -- both arms always mount a <pre>; trimmed is the
-       typed fallback if the DOM shape ever diverges. */
-    const text = rootRef.current?.querySelector("pre")?.textContent ?? trimmed;
-    void writeClipboard(text).then((ok) => {
+    // Always copy the complete trimmed source regardless of folded preview state.
+    void writeClipboard(trimmed).then((ok) => {
       if (!ok) return;
       setCopied(true);
       window.setTimeout(() => {
@@ -202,6 +272,14 @@ export function CodeBlock({
       }, 1000);
     });
   }, [copied, trimmed]);
+
+  const onToggleFold = useCallback(() => {
+    setExpanded((value) => {
+      const next = !value;
+      if (memoryKey !== undefined) foldMemory?.set(memoryKey, next);
+      return next;
+    });
+  }, [foldMemory, memoryKey]);
 
   // shiki's HTML output is a static span tree it generated from `code` (no
   // user HTML passes through), the sanctioned innerHTML consumption path per
@@ -213,7 +291,7 @@ export function CodeBlock({
       <pre className={css.plain}>
         <code>
           {sourceLines === undefined
-            ? trimmed
+            ? displayCode
             : sourceLines.map((line, index) => (
                 <Fragment key={index}>
                   {index > 0 && "\n"}
@@ -234,10 +312,12 @@ export function CodeBlock({
         "md-code-block",
         lineNumbers && css.numbered,
         toolbarLabels !== undefined && css.card,
+        canFold && css.foldable,
         className,
       )}
       data-line-numbers={lineNumbers || undefined}
       data-code-wrap={toolbarLabels === undefined ? undefined : wrapped}
+      data-code-folded={canFold ? folded : undefined}
       style={
         sourceLines === undefined
           ? undefined
@@ -281,6 +361,24 @@ export function CodeBlock({
       <div ref={contentRef} className={css.content} data-code-block-content>
         {body}
       </div>
+      {canFold && (
+        <div className={clsx(css.foldBar, folded && css.foldFade)} data-code-block-controls>
+          <button
+            type="button"
+            className={css.foldButton}
+            aria-expanded={!folded}
+            data-code-fold-toggle
+            onClick={onToggleFold}
+          >
+            <span>{folded ? expandCodeLabel(totalLines) : collapseCodeLabel}</span>
+            {folded ? (
+              <IconChevronDownOutlineRegular size={12} className={css.foldIcon} />
+            ) : (
+              <IconChevronUpOutlineRegular size={12} className={css.foldIcon} />
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

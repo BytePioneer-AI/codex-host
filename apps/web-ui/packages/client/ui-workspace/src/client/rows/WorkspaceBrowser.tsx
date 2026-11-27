@@ -610,7 +610,7 @@ function SessionTree({
     return result;
   }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless, forestRoots]);
   const now = Date.now();
-  const sessionWindow = (group: GroupNode) =>
+  const sessionWindow = (group: GroupNode, excludedIds?: ReadonlySet<string>) =>
     sidebarWindow(
       group.sessions,
       group.workspaceId !== undefined && !group.remote
@@ -618,6 +618,7 @@ function SessionTree({
         : (sessionLimits[group.key] ?? GROUP_INITIAL_ROWS),
       current,
       revealSessionId,
+      excludedIds,
     );
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;
@@ -741,6 +742,7 @@ function SessionTree({
     [list, rowState, statuses, forestRoots],
   );
   const rowKeys: string[] = [];
+  const shownProjectIds = new Set<string>();
   if (pinnedRows.length > 0) {
     rowKeys.push(`section:${PINNED_SECTION_KEY}`);
     if (pinnedSectionExpanded)
@@ -767,7 +769,7 @@ function SessionTree({
         sectionOf,
         parents: reorderParents,
       });
-    const visible = sessionWindow(group);
+    const visible = sessionWindow(group, workspaceId === undefined ? shownProjectIds : undefined);
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
     // A folded project hides its Threads and, in the tree view, its nested Workspaces.
@@ -788,7 +790,10 @@ function SessionTree({
         : linkedRows.has(id)
           ? `linked:${group.key}:${id}`
           : `session:${id}`;
-    for (const node of sessions) rowKeys.push(rowKeyOf(node.id));
+    for (const node of sessions) {
+      rowKeys.push(rowKeyOf(node.id));
+      if (workspaceId !== undefined) shownProjectIds.add(node.id);
+    }
     const history = localWorkspace
       ? (list.workspaceHistory?.[workspaceId] ??
         (list.canSearchWorkspaceHistory ? "search" : "done"))

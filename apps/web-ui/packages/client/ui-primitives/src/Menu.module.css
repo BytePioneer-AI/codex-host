@@ -298,6 +298,7 @@
   padding: 0 12px;
   border-radius: 0;
   background: transparent;
+  -webkit-backdrop-filter: none;
   backdrop-filter: none;
   box-shadow: none;
 }

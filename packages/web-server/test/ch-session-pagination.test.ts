@@ -371,6 +371,30 @@ it("keeps cross-project ancestors in the scoped reply and publishes section disc
   );
 });
 
+it("finds native project history using equivalent Windows and WSL root keys", async (t) => {
+  const f = fixture(t);
+  f.host.projectSnapshot.nativeProjects = true;
+  f.host.projectSnapshot.projects.push({
+    id: "windows",
+    name: "Windows project",
+    rootPaths: ["C:/Repo"],
+  });
+  const old = f.host.threads.get("native-23");
+  assert.ok(old);
+  old.cwd = "/mnt/c/repo";
+  f.host.projectSnapshot.projectless = f.host.projectSnapshot.projectless.filter(
+    (id) => id !== old.id,
+  );
+  const { nextCursor } = await f.list();
+  const workspace = f.workspaces.list().find((item) => item.projectId === "windows");
+  assert.ok(workspace);
+  const result = await f.list({ cursor: nextCursor, workspaceId: workspace.workspaceId });
+  assert.deepEqual(
+    result.items.map((row) => row.sessionId),
+    [old.id],
+  );
+});
+
 it("ends a deleted native project's continuation without reading the global catalog", async (t) => {
   const f = fixture(t);
   f.host.projectSnapshot.nativeProjects = true;

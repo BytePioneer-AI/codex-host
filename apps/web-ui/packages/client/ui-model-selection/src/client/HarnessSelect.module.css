@@ -2,7 +2,9 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 
 .trigger {
@@ -48,16 +50,80 @@
   min-width: min(236px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
   max-height: min(420px, calc(100dvh - 48px));
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
-.handoffLabel {
+.menu [role="presentation"] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+}
+
+.rowButton {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  width: 100%;
   min-width: 0;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 34px 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font:
+    500 13px/20px system-ui,
+    sans-serif;
+  letter-spacing: 0;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.rowButton:hover:not(:disabled),
+.rowButton:focus-visible:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
+}
+
+.rowButton[data-current],
+.rowButton[data-current]:hover:not(:disabled),
+.rowButton[data-current]:focus-visible {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.rowButton:disabled {
+  cursor: not-allowed;
+}
+
+.rowButton:disabled:not([data-current]) {
+  opacity: 0.5;
+}
+
+.rowIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.rowIcon svg {
+  width: 20px;
+  height: 20px;
 }
 
 .harnessName {
@@ -68,52 +134,185 @@
   white-space: nowrap;
 }
 
+.actionSlot {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+}
+
+.checkIcon {
+  width: 14px;
+  height: 14px;
+  color: var(--dsw-alias-label-primary);
+}
+
 .handoffIcon {
   width: 14px;
   height: 14px;
-  flex: none;
   color: var(--dsw-alias-label-tertiary);
   transition: color 120ms ease;
 }
 
-.menu [role="menuitem"]:hover:not(:disabled) .handoffIcon,
-.menu [role="menuitem"]:focus-visible:not(:disabled) .handoffIcon {
+.row:hover .handoffIcon,
+.row:focus-within .handoffIcon {
   color: var(--dsw-alias-label-secondary);
 }
 
-.menu [role="menuitem"] {
-  box-sizing: border-box;
-  min-height: 36px;
-  gap: 8px;
-  padding: 6px 8px;
+.rowActionButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
   border-radius: 4px;
-  font:
-    500 13px/20px system-ui,
-    sans-serif;
-  letter-spacing: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  pointer-events: auto;
   touch-action: manipulation;
 }
 
-.menu [role="menuitem"] > span:first-child,
-.menu [role="menuitem"] > span:first-child svg {
-  width: 20px;
-  height: 20px;
+.rowActionButton:hover,
+.rowActionButton:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
 }
 
-.menu [role="menuitem"]:has([data-current]),
-.menu [role="menuitem"]:has([data-current]):hover:not(:disabled),
-.menu [role="menuitem"]:has([data-current]):focus-visible {
-  background: var(--dsw-alias-interactive-bg-active);
+.installButton {
+  font:
+    600 18px/1 system-ui,
+    sans-serif;
+  opacity: 0.72;
 }
 
-.menu [role="menuitem"]:focus-visible:not(:disabled) {
-  outline: 2px solid var(--dsw-focus-ring-color);
-  outline-offset: -2px;
+.installButton:hover,
+.installButton:focus-visible {
+  opacity: 1;
 }
 
-.menu [role="presentation"] {
-  white-space: normal;
-  overflow-wrap: anywhere;
+.errorButton {
+  color: #f87171;
+  font:
+    800 13px/1 system-ui,
+    sans-serif;
+}
+
+.separator {
+  height: 0.5px;
+  margin: 4px 2px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.sectionLabel {
+  padding: 5px 8px 4px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.moreToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  margin-top: 2px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font:
+    500 12px/1 system-ui,
+    sans-serif;
+  opacity: 0.72;
+  cursor: pointer;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+.moreToggle:hover,
+.moreToggle:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  opacity: 0.92;
+  outline: none;
+}
+
+.moreArrow {
+  width: 12px;
+  flex: none;
+  text-align: center;
+}
+
+.morePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 8px;
+}
+
+.manageLink {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 28px;
+  margin-top: 2px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-link, #6d9fff);
+  font:
+    500 11px/1 system-ui,
+    sans-serif;
+  cursor: pointer;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+.manageLink:hover,
+.manageLink:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
+}
+
+.hideUnusedCta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  margin-top: 2px;
+  padding: 0 8px;
+  border: 0;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 0 0 4px 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font:
+    500 12px/1 system-ui,
+    sans-serif;
+  opacity: 0.72;
+  cursor: pointer;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+.hideUnusedCta:hover,
+.hideUnusedCta:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  opacity: 0.92;
+  outline: none;
 }
 
 @media (max-width: 600px), (pointer: coarse) {
@@ -122,8 +321,17 @@
     height: 44px;
   }
 
-  .menu [role="menuitem"] {
+  .rowButton {
     min-height: 44px;
     padding-block: 10px;
+  }
+
+  .moreToggle,
+  .hideUnusedCta {
+    min-height: 40px;
+  }
+
+  .manageLink {
+    min-height: 36px;
   }
 }

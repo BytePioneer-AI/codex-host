@@ -1066,6 +1066,7 @@ export class FakeHarnessSession implements HarnessSession {
 }
 
 export class FakeHarnessAdapter implements HarnessAdapter {
+  readSnapshot?: NonNullable<HarnessAdapter["readSnapshot"]>;
   readonly harnessId: HarnessId;
   readonly catalog: HarnessModelCatalog;
   readonly permissionModes: HarnessPermissionModeCatalog | undefined;

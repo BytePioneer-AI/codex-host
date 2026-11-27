@@ -30,6 +30,7 @@ export {
 export { parseReleaseAnnouncementMarkdown } from "./release-announcement.js";
 export {
   createNpmReleaseAvailability,
+  fetchLatestNpmRelease,
   prefetchNpmRelease,
   type NpmCommandRunner,
   type NpmReleaseAvailability,

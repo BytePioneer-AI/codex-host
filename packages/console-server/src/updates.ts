@@ -19,6 +19,7 @@ import {
   createNpmReleaseAvailability,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
+  fetchLatestNpmRelease,
   recoverUpdateOperationLock,
   selectInstallerReleaseArtifact,
   readRuntimeMetadata,
@@ -136,6 +137,24 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     });
   let candidate: CodexhostLatestRelease | null = null;
   let handedOff = false;
+
+  /**
+   * The stable version the npm registry advertises, when GitHub Release version
+   * discovery is unavailable (e.g. anonymous API rate limiting). Only npm
+   * installations can proceed without the Release; native ones still need it.
+   */
+  const npmFallbackRelease = async (
+    metadata: DistributionMetadata,
+    error: unknown,
+  ): Promise<CodexhostLatestRelease> => {
+    if (!metadata || installationKind(metadata) !== "npm") throw error;
+    const fallback = await fetchLatestNpmRelease(
+      absoluteEnvironmentPath(environment, "CODEXHOST_NPM_NODE_PATH"),
+      absoluteEnvironmentPath(environment, "CODEXHOST_NPM_CLI_PATH"),
+    );
+    if (!fallback) throw error;
+    return fallback;
+  };
 
   let currentStatusPath: string | null = null;
 
@@ -263,7 +282,9 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         await recoverUpdateOperationLock(stateDirectory());
         await cleanupTerminalUpdateState(stateDirectory());
         status = await latestStatus();
-        const release = await fetchLatest(signal);
+        const release = await fetchLatest(signal).catch((error) =>
+          npmFallbackRelease(metadata, error),
+        );
         candidate = release;
         const updateAvailable = compareSemanticVersions(metadata.version, release.version) < 0;
         const { available: installationAvailable, error } = updateAvailable
@@ -312,7 +333,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       }
       currentStatusPath = null;
       try {
-        const release = await fetchLatest();
+        const release = await fetchLatest().catch((error) => npmFallbackRelease(metadata, error));
         if (
           compareSemanticVersions(metadata.version, release.version) >= 0 ||
           (candidate && candidate.version !== release.version)

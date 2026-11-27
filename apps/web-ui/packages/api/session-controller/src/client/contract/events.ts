@@ -2,6 +2,7 @@
 import { notifySubscribers, type ObservableSnapshot } from "@deepseek-ai/dsh-client-store";
 import type { LlmAttemptId, StreamChunk } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent } from "@deepseek-ai/dsh-session/types";
+import { estimateEventEntriesBytes, estimateEventEntryBytes } from "../memory-budget.ts";
 
 /** Client-only live chunk presentation between durable Session events. */
 export interface AssistantLiveChunkEvent {
@@ -126,10 +127,16 @@ export type SessionEventSource = ObservableSnapshot<SessionEventWindow>;
 export class MutableSessionEventSource implements SessionEventSource {
   private readonly listeners = new Set<() => void>();
   private window: EventWindowNode = leaf([]);
+  private estimatedEntryBytes = 0;
   private snapshot: SessionEventWindow = windowSnapshot(this.window, false, 0, {
     kind: "replace",
     entries: [],
   });
+
+  /** Incrementally maintained byte estimate of the current event window. */
+  get estimatedBytes(): number {
+    return this.estimatedEntryBytes;
+  }
 
   /** @returns the cached event-window snapshot. */
   getSnapshot(): SessionEventWindow {
@@ -155,6 +162,7 @@ export class MutableSessionEventSource implements SessionEventSource {
    */
   replace(entries: readonly SessionEventLikeEntry[], hasMore: boolean): void {
     this.window = leaf(entries);
+    this.estimatedEntryBytes = estimateEventEntriesBytes(entries);
     this.publish(hasMore, { kind: "replace", entries });
   }
 
@@ -165,6 +173,7 @@ export class MutableSessionEventSource implements SessionEventSource {
    */
   prepend(entries: readonly SessionEventLikeEntry[], hasMore: boolean): void {
     this.window = concat(leaf(entries), this.window);
+    this.estimatedEntryBytes += estimateEventEntriesBytes(entries);
     this.publish(hasMore, { kind: "prepend", entries });
   }
 
@@ -175,6 +184,7 @@ export class MutableSessionEventSource implements SessionEventSource {
   append(entry: SessionEventLikeEntry): void {
     const entries = [entry];
     this.window = concat(this.window, leaf(entries));
+    this.estimatedEntryBytes += 8 + estimateEventEntryBytes(entry);
     this.publish(this.snapshot.hasMore, {
       kind: "append",
       entries,
@@ -196,6 +206,7 @@ export class MutableSessionEventSource implements SessionEventSource {
       else entries.splice(index, 0, entry);
     }
     this.window = leaf(entries);
+    this.estimatedEntryBytes = estimateEventEntriesBytes(entries);
     this.publish(this.snapshot.hasMore, {
       kind: "settle-assistant",
       attemptId,

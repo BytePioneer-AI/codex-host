@@ -13,9 +13,9 @@ import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js"
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
 import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
 import {
-  DESKTOP_TOOL_CONTEXT_ENV,
+  DESKTOP_CONTEXT_ENV,
   desktopBrowserMcpArguments,
-  withoutDesktopToolContext,
+  withoutDesktopContext,
 } from "./desktop-context-environment.js";
 import {
   assertCodexRuntimeFilesPresent,
@@ -33,18 +33,18 @@ interface NativeStartup {
 export interface PreparedLocalCodex {
   officialRuntimeScope: OfficialRuntimeScope;
   accountControl: CodexAccountControl;
-  /** Record Desktop's invocation and scope tool access to its live attachment. */
+  /** Record Desktop's invocation and scope runtime context to its live attachment. */
   configureStartup(input: NativeStartup, attachment: AbortSignal): Promise<void>;
   close(): Promise<void>;
 }
 
-function desktopToolContextChanged(current: NativeStartup, next: NativeStartup): boolean {
-  return DESKTOP_TOOL_CONTEXT_ENV.some((key) => current.environment[key] !== next.environment[key]);
+function desktopContextChanged(current: NativeStartup, next: NativeStartup): boolean {
+  return DESKTOP_CONTEXT_ENV.some((key) => current.environment[key] !== next.environment[key]);
 }
 
-function withDesktopTools(startup: NativeStartup, desktop: NodeJS.ProcessEnv): NativeStartup {
-  const environment = withoutDesktopToolContext(startup.environment);
-  for (const key of DESKTOP_TOOL_CONTEXT_ENV) {
+function withDesktopContext(startup: NativeStartup, desktop: NodeJS.ProcessEnv): NativeStartup {
+  const environment = withoutDesktopContext(startup.environment);
+  for (const key of DESKTOP_CONTEXT_ENV) {
     const value = desktop[key];
     if (value !== undefined) environment[key] = value;
   }
@@ -87,9 +87,7 @@ export async function prepareLocalCodex(input: {
     arguments: sharedDesktop
       ? ["-c", "features.code_mode_host=true", "app-server"]
       : [...input.arguments],
-    environment: input.deferStart
-      ? withoutDesktopToolContext(input.environment)
-      : input.environment,
+    environment: input.deferStart ? withoutDesktopContext(input.environment) : input.environment,
   };
   if (startupFile) {
     try {
@@ -127,7 +125,7 @@ export async function prepareLocalCodex(input: {
     recovery: {},
     shouldReplaceIdleBackend: () =>
       running !== undefined &&
-      ((input.deferStart && desktopToolContextChanged(running, nextStartup())) ||
+      ((input.deferStart && desktopContextChanged(running, nextStartup())) ||
         codexRuntimeFilesChanged(backendFiles)),
     createBackend: () => {
       try {
@@ -135,7 +133,7 @@ export async function prepareLocalCodex(input: {
         // An older attachment can outlive a failed first launch and its subsequent recovery.
         const configuration =
           input.remoteControl && next !== startup
-            ? withDesktopTools(startup, next.environment)
+            ? withDesktopContext(startup, next.environment)
             : next;
         if (!configuration.stockCodexPath) throw new Error("Official Codex is unavailable");
         backendFiles = captureCodexRuntimeFiles(configuration.stockCodexPath);
@@ -208,8 +206,8 @@ export async function prepareLocalCodex(input: {
       }
     }
     if (input.remoteControl) {
-      // The listener pins the native invocation. Tool endpoints belong to each attached Desktop.
-      next = withDesktopTools(next, configuration.environment);
+      // The listener pins the native invocation; runtime context belongs to each attached Desktop.
+      next = withDesktopContext(next, configuration.environment);
       startupConfigured = true;
     }
     if (startupFile) {
@@ -234,9 +232,9 @@ export async function prepareLocalCodex(input: {
     const changed =
       current.stockCodexPath !== next.stockCodexPath ||
       JSON.stringify(current.arguments) !== JSON.stringify(next.arguments) ||
-      desktopToolContextChanged(current, next) ||
+      desktopContextChanged(current, next) ||
       (scope.owner.running && codexRuntimeFilesChanged(backendFiles));
-    startup = { ...next, environment: withoutDesktopToolContext(next.environment) };
+    startup = { ...next, environment: withoutDesktopContext(next.environment) };
     if (desktopStartups.has(attachment)) desktopStartups.delete(attachment);
     else {
       attachment.addEventListener("abort", () => desktopStartups.delete(attachment), {

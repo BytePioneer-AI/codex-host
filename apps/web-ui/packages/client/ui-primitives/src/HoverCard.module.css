@@ -92,6 +92,7 @@
   border: 0;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-specific-menu);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
   box-shadow: var(--dsw-elevation-panel);
 }

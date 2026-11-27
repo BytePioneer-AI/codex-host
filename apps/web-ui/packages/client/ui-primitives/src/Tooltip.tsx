@@ -40,16 +40,33 @@ export const TooltipSuppression = createContext<((suppressed: boolean) => void) 
 interface AnchorProps {
   "aria-describedby"?: string | undefined;
   ref?: Ref<HTMLElement> | undefined;
-  onMouseEnter?: MouseEventHandler | undefined;
-  onMouseLeave?: MouseEventHandler | undefined;
   onPointerEnter?: PointerEventHandler | undefined;
   onPointerLeave?: PointerEventHandler | undefined;
+  onPointerDown?: PointerEventHandler | undefined;
   onClick?: MouseEventHandler | undefined;
   onFocus?: FocusEventHandler | undefined;
   onBlur?: FocusEventHandler | undefined;
 }
 
 type TooltipLabel = string | (() => string);
+
+/** True on coarse-pointer or hover-incapable devices where hover tooltips should not open. */
+function isCoarseOrNoHover(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(hover: none), (pointer: coarse)").matches
+  );
+}
+
+/** True when the anchor currently matches `:focus-visible` (fallback true if unsupported). */
+function matchesFocusVisible(el: HTMLElement): boolean {
+  try {
+    return el.matches(":focus-visible");
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Attach a hover/focus tooltip to an anchor element.
@@ -123,7 +140,12 @@ export function Tooltip({
   );
   // The anchor's edges rather than final coordinates: a vertical flip has to
   // re-derive the bubble's own top from the opposite edge.
-  const [pos, setPos] = useState<{ x: number; top: number; bottom: number } | null>(null);
+  const [pos, setPos] = useState<{
+    x: number;
+    top: number;
+    bottom: number;
+    focus: boolean;
+  } | null>(null);
   const bubble = useRef<HTMLSpanElement | null>(null);
   const resolvedLabel = pos === null ? null : typeof label === "function" ? label() : label;
   const y =
@@ -229,6 +251,7 @@ export function Tooltip({
       x: side === "right" ? r.right + 10 : align === "end" ? r.right : r.left + r.width / 2,
       top: r.top,
       bottom: r.bottom,
+      focus: triggers.current.focus,
     });
     announce(true);
   };
@@ -282,6 +305,7 @@ export function Tooltip({
       data-side={side}
       data-portal={portal || undefined}
       data-pinned={pinned || undefined}
+      data-focus={pos.focus || undefined}
       data-align={align}
       data-has-shortcut={hasShortcut || undefined}
       style={{
@@ -314,36 +338,30 @@ export function Tooltip({
             : children.props["aria-describedby"],
         onPointerEnter: (e) => {
           children.props.onPointerEnter?.(e);
-          if (!phone || e.pointerType === "touch") return;
+          if (e.pointerType === "touch" || isCoarseOrNoHover()) return;
           triggers.current.hover = true;
           showAfterDelay(delayMs);
         },
         onPointerLeave: (e) => {
           children.props.onPointerLeave?.(e);
-          if (!phone) return;
           triggers.current.hover = false;
           cancelShow();
           if (!pinned) withdraw();
         },
-        onMouseEnter: (e) => {
-          children.props.onMouseEnter?.(e);
-          // Phone touch compatibility mouse events must not open a hover tooltip.
-          if (phone) return;
-          triggers.current.hover = true;
-          showAfterDelay(delayMs);
-        },
-        onMouseLeave: (e) => {
-          children.props.onMouseLeave?.(e);
-          triggers.current.hover = false;
-          cancelShow();
-          if (!pinned) withdraw();
+        onPointerDown: (e) => {
+          children.props.onPointerDown?.(e);
+          if (!openOnClick) {
+            triggers.current = { hover: false, focus: false };
+            cancelShow();
+            withdraw();
+          }
         },
         // Activating an ordinary action dismisses the bubble: it often changes
         // what the anchor now does (pin → unpin), and the click leaves the
         // anchor focused, which would otherwise pin the relabelled bubble up.
         onClick: (e) => {
           children.props.onClick?.(e);
-          triggers.current.focus = false;
+          triggers.current = { hover: false, focus: false };
           cancelShow();
           if (openOnClick && !disabled && !pinned) {
             setPinned(true);
@@ -354,7 +372,8 @@ export function Tooltip({
           children.props.onFocus?.(e);
           if (
             pointerModality() ||
-            (phone && e.currentTarget.hasAttribute("data-dsh-automatic-focus"))
+            e.currentTarget.hasAttribute("data-dsh-automatic-focus") ||
+            !matchesFocusVisible(e.currentTarget)
           )
             return;
           triggers.current.focus = true;

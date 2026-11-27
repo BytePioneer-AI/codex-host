@@ -509,7 +509,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
           aria-labelledby={peersTabId}
           className={css.tabPanel}
         >
-          <RemotePeersPanel t={t} />
+          <RemotePeersPanel t={t} onOpenShareTab={() => setConnectDevicesTab("share")} />
         </div>
       )}
     </div>

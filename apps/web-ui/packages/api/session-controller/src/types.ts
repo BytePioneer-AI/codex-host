@@ -169,19 +169,29 @@ export interface ModelCatalogFailure {
   readonly credentialAccessRequired?: true;
 }
 
+/** One supported Harness plugin that is currently not installed on the Host. */
+export interface ModelCatalogNotInstalled {
+  readonly id: string;
+  readonly name: string;
+  readonly installUrl?: string;
+}
+
 /** Host-generation model catalog and the default used by unconfigured Sessions. */
 export interface ModelCatalog {
   /** Available new-Session selection resolved from each Harness's saved preference. */
   readonly rememberedSelections?: Readonly<Record<string, ModelSelection>>;
   readonly modelFavorites?: Readonly<Record<string, readonly string[]>>;
   readonly preferencesAvailable?: boolean;
-  /** Presentation only, shared with Desktop; includes unavailable Harness rows. */
+  /** Presentation only, shared with Desktop; includes unavailable and uninstalled Harness rows. */
   readonly harnessOrder?: readonly string[];
+  /** Harness ids folded into the collapsible "More" section by Desktop/Host display settings. */
+  readonly moreHarnesses?: readonly string[];
   readonly default?: ModelSelection;
   /** Provider routes with at least one currently available catalog model. */
   readonly routableProviders: readonly string[];
   readonly groups: readonly ModelProviderGroup[];
   readonly failures: readonly ModelCatalogFailure[];
+  readonly notInstalled?: readonly ModelCatalogNotInstalled[];
 }
 
 /** One client-requested mutation of a still-pending queue item. */

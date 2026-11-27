@@ -133,7 +133,11 @@ export function capText(text: string, limit = MAX_TOOL_TEXT): string {
   if (text.length <= limit) return text;
   const head = Math.floor(limit * 0.7);
   const tail = limit - head;
-  return `${text.slice(0, head)}\n\n[… ${String(text.length - limit)} characters truncated …]\n\n${text.slice(-tail)}`;
+  const capped = `${text.slice(0, head)}\n\n[… ${String(text.length - limit)} characters truncated …]\n\n${text.slice(-tail)}`;
+  // Detach from V8 SlicedString/ConsString parent references so multi-MB source text can be GC'd.
+  return capped.isWellFormed()
+    ? Buffer.from(capped, "utf8").toString("utf8")
+    : Buffer.from(capped, "utf16le").toString("utf16le");
 }
 
 /** Convert one unified diff into the before/after texts DSH diff cards draw. */

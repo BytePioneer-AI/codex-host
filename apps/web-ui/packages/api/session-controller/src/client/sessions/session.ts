@@ -7,6 +7,7 @@ import {
   type WebToolOutputReference,
 } from "@codexhost/shared-contracts";
 import { ToolOutputCache } from "../tool-output.ts";
+import { estimateJournalBytes, estimateUnknownBytes } from "../memory-budget.ts";
 import type { InboxState, InboxTarget } from "@deepseek-ai/dsh-agent/types";
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import type {
@@ -199,6 +200,8 @@ export class Session implements SessionFace {
 
   /** Contiguous history and live tail consumed by Conversation assembly. */
   readonly eventSource = new MutableSessionEventSource();
+  private cachedProjectionBytesRevision = -1;
+  private cachedProjectionBytes = 0;
   private snapshotCache: SessionSnapshot;
   private readonly notifier: Notifier;
   /**
@@ -730,13 +733,27 @@ export class Session implements SessionFace {
     return this.snapshotCache;
   }
 
+  /** Approximate in-memory footprint of this Session's event window, tool outputs, and projections. */
+  estimatedBytes(): number {
+    const projectionRevision = this.projections.revision;
+    if (this.cachedProjectionBytesRevision !== projectionRevision) {
+      this.cachedProjectionBytes = estimateUnknownBytes(this.projections.values());
+      this.cachedProjectionBytesRevision = projectionRevision;
+    }
+    const eventBytes =
+      this.eventSource.estimatedBytes > 0
+        ? this.eventSource.estimatedBytes
+        : estimateJournalBytes(this.cachedJournal);
+    return eventBytes + this.toolOutputs.estimatedBytes + this.cachedProjectionBytes;
+  }
+
   /** Capture only display data before releasing the runtime and its transport. */
   captureView(): SessionViewData | undefined {
     if (this.lastSyncedAt === undefined || this.removed) return;
     const journal = this.events?.capture() ?? this.cachedJournal;
     return {
       ...(journal === undefined ? {} : { journal }),
-      toolOutputs: this.toolOutputs.values,
+      toolOutputs: new Map(this.toolOutputs.values),
       entries: this.eventSource.getSnapshot().entries,
       baseSeq: this.baseSeq,
       hasMore: this.hasMore,
@@ -880,6 +897,7 @@ export class Session implements SessionFace {
     try {
       await events.open(HISTORY_PAGE_OPTIONS);
       if (generation !== this.openGeneration || this.events !== events) return;
+      this.cachedJournal = undefined;
       this.openState = "open";
     } catch (error) {
       if (generation !== this.openGeneration || this.events !== events) return;

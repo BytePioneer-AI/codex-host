@@ -35,6 +35,7 @@ import {
   type HarnessBrokerRequest,
 } from "./protocol.js";
 import {
+  adapterReadSnapshotSchema,
   brokerCommandInvocationSchema,
   brokerHostCommandSchema,
   brokerInspectInputSchema,
@@ -607,6 +608,31 @@ export async function startHarnessBrokerServer(input: {
           };
         }
         return { ok: true, value: source.data };
+      }
+      if (request.method === "adapter.readSnapshot") {
+        const readSnapshot = input.adapter.readSnapshot;
+        if (!readSnapshot) {
+          return {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "Harness cold history read is unavailable",
+              retryable: false,
+            },
+          };
+        }
+        const params = adapterReadSnapshotSchema.parse(request.params);
+        if (params.nativeRef.harnessId !== input.adapter.harnessId) {
+          return {
+            ok: false,
+            error: protocolError("Native Session belongs to another Harness"),
+          };
+        }
+        return readSnapshot.call(input.adapter, {
+          nativeRef: params.nativeRef,
+          cwd: params.cwd,
+          ...(params.environment ? { environment: params.environment } : {}),
+        });
       }
       if (request.method === "adapter.subagent.readSnapshot") {
         const subagents = input.adapter.subagents;

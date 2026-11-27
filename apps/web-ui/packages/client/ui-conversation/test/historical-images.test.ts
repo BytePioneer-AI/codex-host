@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Context } from "@deepseek-ai/cordis";
+import { Context } from "@deepseek-ai/cordis";
 import type { AttachmentId, ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
-import type { ISessions, SessionBinding } from "@deepseek-ai/dsh-api-session-controller/client";
+import type {
+  BeginSubmissionInput,
+  ISessions,
+  SessionBinding,
+  SessionFace,
+} from "@deepseek-ai/dsh-api-session-controller/client";
+import type { SessionRequestId } from "@deepseek-ai/dsh-api-session-controller/types";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import type { ComposerBlocks } from "../src/client/contract/composer-blocks.ts";
+import type { SessionInputResolver } from "../src/client/contract/input.ts";
 import { HistoricalImageCache } from "../src/client/conversation/historical-images.ts";
+import { ConversationController } from "../src/client/service.ts";
 
 function makeRef(
   attachmentId: string,
@@ -325,5 +334,277 @@ describe("HistoricalImageCache", () => {
     });
     const retryRef = makeRef("peer-image:retry", { name: "retry.webp", bytes: 0 });
     expect(harness.cache.peek("sess-ambig" as SessionId, retryRef)).toBe("blob:test-4");
+  });
+
+  it("aliases remote peer uploaded image on observation before retirement frame so first durable render never re-downloads", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    let nextBlobId = 0;
+    const createdUrls: string[] = [];
+    const revokedUrls: string[] = [];
+    URL.createObjectURL = vi.fn(() => {
+      const url = `blob:peer-test-${++nextBlobId}`;
+      createdUrls.push(url);
+      return url;
+    });
+    URL.revokeObjectURL = vi.fn((url: string) => {
+      revokedUrls.push(url);
+    });
+
+    const ctx = new Context();
+    const sessionId = "sess-remote-peer" as SessionId;
+    const uploadedAttachmentId = `web-image:${"a".repeat(64)}.webp` as AttachmentId;
+    const peerRef: ImageAttachmentRef = {
+      attachmentId: `peer-image:${"b".repeat(64)}` as AttachmentId,
+      name: "image-1.webp",
+      mediaType: "image/png",
+      bytes: 0,
+      width: 64,
+      height: 64,
+    };
+
+    const readAttachment = vi.fn(async () => ({
+      ok: true as const,
+      value: { attachment: peerRef, data: new Uint8Array(1024) },
+    }));
+    const bindings = new Map<SessionId, SessionBinding>();
+    const sessions = {
+      binding: (id: SessionId) => bindings.get(id),
+      retain: () => ({ release: vi.fn() }),
+    } as unknown as ISessions;
+    const cache = new HistoricalImageCache(ctx, sessions);
+    const seedImageUrl = vi.fn(
+      (id: SessionId, attachment: ImageAttachmentRef, url: string, bytes?: number) =>
+        cache.seed(id, attachment, url, bytes),
+    );
+    const aliasUploadedImage = vi.fn(
+      (id: SessionId, uploadedId: string, target: ImageAttachmentRef) =>
+        cache.aliasUploaded(id, uploadedId, target),
+    );
+    const uiConversation = {
+      cacheUploadedImage: (
+        id: SessionId,
+        uploaded: Parameters<HistoricalImageCache["cacheUploaded"]>[1],
+      ) => cache.cacheUploaded(id, uploaded),
+      aliasUploadedImage,
+      clearPendingUploadedImage: (id: SessionId, uploadedId: string) => {
+        cache.clearPendingUploaded(id, uploadedId);
+      },
+      seedImageUrl,
+    };
+    const upload = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        receiptId: "receipt-peer-1",
+        file: {
+          attachmentId: uploadedAttachmentId,
+          name: "large-2600x1600.webp",
+          bytes: 1_500_000,
+        },
+      },
+    }));
+
+    ctx.provide("sessions", sessions);
+    ctx.provide("uiConversation", uiConversation as never);
+    ctx.provide("fileUpload", { upload } as never);
+    ctx.provide("locale", { bind: () => (key: string) => key } as never);
+
+    const controller = new ConversationController(ctx, {
+      input: {} as SessionInputResolver,
+      blocks: {} as ComposerBlocks,
+      maxConcurrentFileUploads: 2,
+    });
+
+    let capturedObserved: BeginSubmissionInput["onObserved"];
+    let capturedRetire: BeginSubmissionInput["onRetire"];
+    const scheduledFrames: Array<() => void> = [];
+
+    const session = {
+      sessionId,
+      getSnapshot: () => ({ subagent: null }),
+      beginSubmission: (input: BeginSubmissionInput) => {
+        capturedObserved = input.onObserved;
+        capturedRetire = input.onRetire;
+        return {
+          requestId: "req-peer-1" as SessionRequestId,
+          abandon: vi.fn(),
+        };
+      },
+      prompt: vi.fn(async () => ({ ok: true as const, value: { accepted: true } })),
+      readAttachment,
+    } as unknown as SessionFace;
+
+    bindings.set(sessionId, { sessionId, session } as unknown as SessionBinding);
+
+    cleanups.push(() => {
+      void ctx.fiber.dispose();
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    });
+
+    const imageFile = new File([new Uint8Array(2048)], "large-2600x1600.webp", {
+      type: "image/webp",
+    });
+    const [draft] = controller.createDrafts(sessionId, [imageFile]);
+    expect(draft?.kind).toBe("image");
+    if (draft === undefined || draft.kind !== "image") throw new Error("expected image draft");
+
+    await vi.waitFor(() => {
+      expect(controller.fileUploads.getSnapshot()[draft.id]?.status).toBe("ready");
+    });
+    // blob:peer-test-1 is the draft previewUrl; blob:peer-test-2 is HistoricalImageCache's uploaded blob URL.
+    expect(createdUrls).toEqual(["blob:peer-test-1", "blob:peer-test-2"]);
+
+    const sendPromise = controller.sendSession(session, "inspect image", [draft.id], "queue");
+    await vi.waitFor(() => {
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+    });
+
+    // Durable user/message arrives with renamed remote peer placeholder:
+    // onObserved runs synchronously, while onRetire is deferred to the next animation frame.
+    capturedObserved?.([peerRef]);
+    scheduledFrames.push(() => {
+      capturedRetire?.({ reason: "observed", attachments: [peerRef] });
+    });
+
+    // BEFORE the retirement frame runs, the durable node's first render must hit the cached
+    // blob URL directly with 0 readAttachment RPCs, and the echo's previewUrl must stay live.
+    expect(cache.peek(sessionId, peerRef)).toBe("blob:peer-test-2");
+    expect(await cache.resolve(sessionId, peerRef)).toBe("blob:peer-test-2");
+    expect(readAttachment).not.toHaveBeenCalled();
+    expect(revokedUrls).toEqual([]);
+    expect(controller.resolveDraftAttachments([draft.id])).toHaveLength(1);
+
+    // Triggering the retirement frame cleans up draft state and revokes only the echo previewUrl,
+    // without creating a new ObjectURL or calling seedImageUrl.
+    for (const frame of scheduledFrames) frame();
+    await expect(sendPromise).resolves.toEqual({ kind: "success" });
+
+    expect(controller.resolveDraftAttachments([draft.id])).toEqual([]);
+    expect(controller.fileUploads.getSnapshot()).toEqual({});
+    expect(revokedUrls).toEqual(["blob:peer-test-1"]);
+    expect(createdUrls).toEqual(["blob:peer-test-1", "blob:peer-test-2"]);
+    expect(seedImageUrl).not.toHaveBeenCalled();
+    expect(cache.peek(sessionId, peerRef)).toBe("blob:peer-test-2");
+    expect(readAttachment).not.toHaveBeenCalled();
+  });
+
+  it("keeps previewUrl intact until onRetire when pre-cached uploaded entry is absent", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    let nextBlobId = 0;
+    const revokedUrls: string[] = [];
+    URL.createObjectURL = vi.fn(() => `blob:fallback-test-${++nextBlobId}`);
+    URL.revokeObjectURL = vi.fn((url: string) => {
+      revokedUrls.push(url);
+    });
+
+    const ctx = new Context();
+    const sessionId = "sess-remote-fallback" as SessionId;
+    const uploadedAttachmentId = `web-image:${"c".repeat(64)}.webp` as AttachmentId;
+    const peerRef: ImageAttachmentRef = {
+      attachmentId: `peer-image:${"d".repeat(64)}` as AttachmentId,
+      name: "image-1.webp",
+      mediaType: "image/png",
+      bytes: 0,
+      width: 64,
+      height: 64,
+    };
+
+    const bindings = new Map<SessionId, SessionBinding>();
+    const sessions = {
+      binding: (id: SessionId) => bindings.get(id),
+      retain: () => ({ release: vi.fn() }),
+    } as unknown as ISessions;
+    const cache = new HistoricalImageCache(ctx, sessions);
+    const seedImageUrl = vi.fn(
+      (id: SessionId, attachment: ImageAttachmentRef, url: string, bytes?: number) =>
+        cache.seed(id, attachment, url, bytes),
+    );
+    const uiConversation = {
+      // Simulate pre-caching unavailable / evicted before observation.
+      cacheUploadedImage: vi.fn(() => false),
+      aliasUploadedImage: (id: SessionId, uploadedId: string, target: ImageAttachmentRef) =>
+        cache.aliasUploaded(id, uploadedId, target),
+      clearPendingUploadedImage: (id: SessionId, uploadedId: string) => {
+        cache.clearPendingUploaded(id, uploadedId);
+      },
+      seedImageUrl,
+    };
+    const upload = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        receiptId: "receipt-peer-2",
+        file: {
+          attachmentId: uploadedAttachmentId,
+          name: "large-2600x1600.webp",
+          bytes: 1_500_000,
+        },
+      },
+    }));
+
+    ctx.provide("sessions", sessions);
+    ctx.provide("uiConversation", uiConversation as never);
+    ctx.provide("fileUpload", { upload } as never);
+    ctx.provide("locale", { bind: () => (key: string) => key } as never);
+
+    const controller = new ConversationController(ctx, {
+      input: {} as SessionInputResolver,
+      blocks: {} as ComposerBlocks,
+      maxConcurrentFileUploads: 2,
+    });
+
+    let capturedObserved: BeginSubmissionInput["onObserved"];
+    let capturedRetire: BeginSubmissionInput["onRetire"];
+
+    const session = {
+      sessionId,
+      getSnapshot: () => ({ subagent: null }),
+      beginSubmission: (input: BeginSubmissionInput) => {
+        capturedObserved = input.onObserved;
+        capturedRetire = input.onRetire;
+        return {
+          requestId: "req-peer-2" as SessionRequestId,
+          abandon: vi.fn(),
+        };
+      },
+      prompt: vi.fn(async () => ({ ok: true as const, value: { accepted: true } })),
+      readAttachment: vi.fn(),
+    } as unknown as SessionFace;
+
+    bindings.set(sessionId, { sessionId, session } as unknown as SessionBinding);
+
+    cleanups.push(() => {
+      void ctx.fiber.dispose();
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    });
+
+    const imageFile = new File([new Uint8Array(2048)], "large-2600x1600.webp", {
+      type: "image/webp",
+    });
+    const [draft] = controller.createDrafts(sessionId, [imageFile]);
+    if (draft === undefined || draft.kind !== "image") throw new Error("expected image draft");
+
+    await vi.waitFor(() => {
+      expect(controller.fileUploads.getSnapshot()[draft.id]?.status).toBe("ready");
+    });
+
+    const sendPromise = controller.sendSession(session, "fallback image", [draft.id], "queue");
+    await vi.waitFor(() => {
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+    });
+
+    // During observation without a pre-cached entry, previewUrl is neither seeded nor revoked.
+    capturedObserved?.([peerRef]);
+    expect(seedImageUrl).not.toHaveBeenCalled();
+    expect(revokedUrls).toEqual([]);
+
+    // On retirement frame, seedImageUrl safely adopts previewUrl without revoking it.
+    capturedRetire?.({ reason: "observed", attachments: [peerRef] });
+    await expect(sendPromise).resolves.toEqual({ kind: "success" });
+    expect(seedImageUrl).toHaveBeenCalledTimes(1);
+    expect(revokedUrls).toEqual([]);
+    expect(cache.peek(sessionId, peerRef)).toBe("blob:fallback-test-1");
   });
 });

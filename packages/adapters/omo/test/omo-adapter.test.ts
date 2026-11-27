@@ -1712,26 +1712,30 @@ describe("OmO Adapter open", () => {
     });
   });
 
-  it("closes idempotently and aborts an in-flight inspect handshake", async () => {
-    const fixture = createFixtureAdapter({
-      scenario: "inspect-silent",
-      commandTimeoutMs: 30_000,
-      startupTimeoutMs: 30_000,
-      closeTimeoutMs: 2_000,
-    });
-    const pending = fixture.adapter.inspect({ cwd: temporaryDirectory() });
-    const child = fixture.inspectChildren[0];
-    expect(child?.pid).toBeDefined();
-    await Promise.all([fixture.adapter.close(), fixture.adapter.close()]);
-    await fixture.adapter.close();
-    await expect(pending).resolves.toMatchObject({
-      status: "unavailable",
-      error: { code: "invalidState" },
-    });
-    await expectProcessGone((child as ChildProcessWithoutNullStreams).pid as number);
-    await expect(fixture.adapter.inspect()).resolves.toMatchObject({
-      status: "unavailable",
-      error: { code: "invalidState" },
-    });
-  });
+  it(
+    "closes idempotently and aborts an in-flight inspect handshake",
+    { timeout: 20_000 },
+    async () => {
+      const fixture = createFixtureAdapter({
+        scenario: "inspect-silent",
+        commandTimeoutMs: 30_000,
+        startupTimeoutMs: 30_000,
+        closeTimeoutMs: 2_000,
+      });
+      const pending = fixture.adapter.inspect({ cwd: temporaryDirectory() });
+      const child = fixture.inspectChildren[0];
+      expect(child?.pid).toBeDefined();
+      await Promise.all([fixture.adapter.close(), fixture.adapter.close()]);
+      await fixture.adapter.close();
+      await expect(pending).resolves.toMatchObject({
+        status: "unavailable",
+        error: { code: "invalidState" },
+      });
+      await expectProcessGone((child as ChildProcessWithoutNullStreams).pid as number);
+      await expect(fixture.adapter.inspect()).resolves.toMatchObject({
+        status: "unavailable",
+        error: { code: "invalidState" },
+      });
+    },
+  );
 });

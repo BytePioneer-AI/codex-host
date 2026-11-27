@@ -5,7 +5,7 @@
   "version": "0.0.0",
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
-  "icon": "./assets/icon.png",
+  "icon": "./assets/icon.svg",
   "links": {
     "website": "https://opencode.ai/",
     "installation": "https://opencode.ai/docs/#install"
@@ -24,6 +24,27 @@
     "after": {
       "en": "After installation, run opencode to complete login or setup.",
       "zh-CN": "安装后运行 opencode，完成登录或配置。"
+    }
+  },
+  "iconStyle": {
+    "vector": {
+      "viewBox": "0 0 74 74",
+      "color": "#FFFFFF",
+      "paths": [
+        {
+          "d": "M5 5H69V69H5Z",
+          "fill": "#131010"
+        },
+        {
+          "d": "M21 17H53V57H21ZM29 25V49H45V25Z",
+          "fillRule": "evenodd",
+          "fill": "#FFFFFF"
+        },
+        {
+          "d": "M29 33H45V49H29Z",
+          "fill": "#5A5858"
+        }
+      ]
     }
   }
 }

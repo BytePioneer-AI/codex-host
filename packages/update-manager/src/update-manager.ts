@@ -68,6 +68,7 @@ export interface NpmUpdateOptions extends CommonUpdateOptions {
   npmLauncherPath: string;
   packageRoot: string;
   target?: ReleaseTarget;
+  npmConfigSha256?: string;
 }
 
 export interface WindowsInstallerUpdateOptions extends CommonUpdateOptions {
@@ -527,12 +528,13 @@ export function createBackgroundUpdateManager(
         const configuration = dependencies.prefetchNpm
           ? undefined
           : await resolveNpmConfiguration(target);
+        const expectedConfigSha256 = options.npmConfigSha256 ?? configuration?.digest;
         const staged = await readStagedUpdate(common.stateDirectory);
         const alreadyStaged =
           staged?.distribution === "npm" &&
           staged.version === common.version &&
           (!options.target || staged.target === options.target) &&
-          (!configuration || staged.npmConfigSha256 === configuration.digest);
+          (!expectedConfigSha256 || staged.npmConfigSha256 === expectedConfigSha256);
         if (!alreadyStaged) {
           // The Updater installs from this cache after the services stop, so a registry that is
           // unreachable or lacks the release fails here while everything keeps running.

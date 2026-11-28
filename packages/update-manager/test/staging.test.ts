@@ -408,4 +408,160 @@ describe("update staging storage and reuse", () => {
       ),
     ).toBe(false);
   });
+
+  it("removes empty staged version directories on failed download and cleans orphaned directories without staged-v1.json", async () => {
+    const root = await temporaryDirectory();
+    const stateDirectory = path.join(root, "state");
+    const bytes = Buffer.from("unreachable-installer");
+
+    await expect(
+      stageArtifact({
+        stateDirectory,
+        version: "1.2.3",
+        target: "macos-arm64",
+        assetName: "codexhost-1.2.3-macos-arm64.dmg",
+        source: {
+          url: "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-macos-arm64.dmg",
+          sha256: sha256(bytes),
+          size: bytes.length,
+        },
+        download: async (_source, destination) => {
+          await writeFile(destination, "partial");
+          throw new Error("update artifact download failed with HTTP 503");
+        },
+      }),
+    ).rejects.toThrow("HTTP 503");
+
+    // Failed download must not leave an empty staged/update-1.2.3/ or empty staged/ directory behind.
+    await expect(readdir(path.join(stateDirectory, "staged"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    // Orphaned directories without staged-v1.json: obsolete versions are cleaned, newer ones preserved.
+    await mkdir(path.join(stateDirectory, "staged", "update-1.2.2"), { recursive: true });
+    await mkdir(path.join(stateDirectory, "staged", "update-1.2.3"), { recursive: true });
+    await mkdir(path.join(stateDirectory, "staged", "update-1.2.4"), { recursive: true });
+
+    await cleanupStagedUpdates(stateDirectory, { currentVersion: "1.2.3" });
+    await expect(readdir(path.join(stateDirectory, "staged"))).resolves.toEqual(["update-1.2.4"]);
+
+    // Once currentVersion reaches 1.2.4, the last orphaned directory and staged/ itself are removed.
+    await cleanupStagedUpdates(stateDirectory, { currentVersion: "1.2.4" });
+    await expect(readdir(path.join(stateDirectory, "staged"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("binds npm staged cache to npmConfigSha256 and invalidates when config drifts or digest is missing", async () => {
+    const root = await temporaryDirectory();
+    const common = await commonOptions(root, "1.2.3");
+    const npmFiles = {
+      nodePath: path.join(root, "node", "node"),
+      npmCliPath: path.join(root, "node", "npm-cli.js"),
+      npmLauncherPath: path.join(root, "npm", "bin", "codexhost.js"),
+    };
+    for (const filePath of Object.values(npmFiles)) {
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, "fixture\n");
+    }
+    const packageRoot = path.join(root, "npm", "@codexhost", "cli-darwin-arm64");
+    const configHashA = "a".repeat(64);
+    const configHashB = "b".repeat(64);
+
+    // 1. Stage without npmConfigSha256 (legacy metadata): prepareNpm with digest must not reuse it.
+    const stagePrefetch = vi.fn(async () => undefined);
+    await stageNpm({
+      stateDirectory: common.stateDirectory,
+      version: "1.2.3",
+      target: "macos-arm64",
+      npmTarget: {
+        nodePath: npmFiles.nodePath,
+        npmCliPath: npmFiles.npmCliPath,
+        packageRoot,
+        version: "1.2.3",
+      },
+      prefetchNpm: stagePrefetch,
+    });
+    expect(stagePrefetch).toHaveBeenCalledTimes(1);
+
+    const interactivePrefetch = vi.fn(async () => undefined);
+    await createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "npm-missing-digest",
+      prefetchNpm: interactivePrefetch,
+    }).prepareNpm({
+      ...common,
+      ...npmFiles,
+      packageRoot,
+      target: "macos-arm64",
+      npmConfigSha256: configHashA,
+    });
+    expect(interactivePrefetch).toHaveBeenCalledTimes(1);
+
+    // 2. Stage with configHashA: stageNpm re-prefetches and records npmConfigSha256.
+    const stagedA = await stageNpm({
+      stateDirectory: common.stateDirectory,
+      version: "1.2.3",
+      target: "macos-arm64",
+      npmConfigSha256: configHashA,
+      npmTarget: {
+        nodePath: npmFiles.nodePath,
+        npmCliPath: npmFiles.npmCliPath,
+        packageRoot,
+        version: "1.2.3",
+      },
+      prefetchNpm: stagePrefetch,
+    });
+    expect(stagePrefetch).toHaveBeenCalledTimes(2);
+    expect(stagedA.npmConfigSha256).toBe(configHashA);
+
+    // Matching npmConfigSha256 skips prefetch.
+    await createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "npm-match-digest",
+      prefetchNpm: interactivePrefetch,
+    }).prepareNpm({
+      ...common,
+      ...npmFiles,
+      packageRoot,
+      target: "macos-arm64",
+      npmConfigSha256: configHashA,
+    });
+    expect(interactivePrefetch).toHaveBeenCalledTimes(1);
+
+    // Drifted ~/.npmrc (configHashB) invalidates staged cache and re-runs prefetchNpm.
+    await createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "npm-drift-digest",
+      prefetchNpm: interactivePrefetch,
+    }).prepareNpm({
+      ...common,
+      ...npmFiles,
+      packageRoot,
+      target: "macos-arm64",
+      npmConfigSha256: configHashB,
+    });
+    expect(interactivePrefetch).toHaveBeenCalledTimes(2);
+
+    // Re-staging with configHashB refreshes staged-v1.json to the new digest.
+    const stagedB = await stageNpm({
+      stateDirectory: common.stateDirectory,
+      version: "1.2.3",
+      target: "macos-arm64",
+      npmConfigSha256: configHashB,
+      npmTarget: {
+        nodePath: npmFiles.nodePath,
+        npmCliPath: npmFiles.npmCliPath,
+        packageRoot,
+        version: "1.2.3",
+      },
+      prefetchNpm: stagePrefetch,
+    });
+    expect(stagePrefetch).toHaveBeenCalledTimes(3);
+    expect(stagedB.npmConfigSha256).toBe(configHashB);
+    await expect(readStagedUpdate(common.stateDirectory)).resolves.toMatchObject({
+      version: "1.2.3",
+      npmConfigSha256: configHashB,
+    });
+  });
 });

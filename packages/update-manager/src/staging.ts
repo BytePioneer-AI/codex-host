@@ -9,6 +9,7 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
@@ -29,7 +30,7 @@ import {
   type NpmDownloadProgress,
   type NpmReleaseTarget,
 } from "./npm-registry.js";
-import { requireSemanticVersion } from "./status.js";
+import { requireSemanticVersion, SEMVER_PATTERN } from "./status.js";
 
 const STAGING_SCHEMA_VERSION = 1;
 const STAGING_LOCK_FILE = "staging-v1.lock";
@@ -54,6 +55,7 @@ export interface StagedUpdateRecord {
   distribution: "npm" | "installer";
   target: ReleaseTarget;
   stagedAt: number;
+  npmConfigSha256?: string;
   assetName?: string;
   artifactPath?: string;
   sha256?: string;
@@ -76,6 +78,7 @@ export interface StageNpmOptions {
   version: string;
   target: ReleaseTarget;
   npmTarget: NpmReleaseTarget;
+  npmConfigSha256?: string;
   prefetchNpm?: (
     target: NpmReleaseTarget,
     onProgress?: (progress: NpmDownloadProgress) => void | Promise<void>,
@@ -311,6 +314,7 @@ export function parseStagedUpdateRecord(value: unknown): StagedUpdateRecord {
     "distribution",
     "target",
     "stagedAt",
+    "npmConfigSha256",
     "assetName",
     "artifactPath",
     "sha256",
@@ -341,13 +345,23 @@ export function parseStagedUpdateRecord(value: unknown): StagedUpdateRecord {
     ) {
       throw new Error("staged npm metadata must not include installer fields");
     }
+    if (
+      record.npmConfigSha256 !== undefined &&
+      (typeof record.npmConfigSha256 !== "string" || !SHA256_PATTERN.test(record.npmConfigSha256))
+    ) {
+      throw new Error("staged npm metadata has an invalid npmConfigSha256");
+    }
     return {
       schemaVersion: 1,
       version,
       distribution: "npm",
       target: record.target as ReleaseTarget,
       stagedAt: record.stagedAt,
+      ...(record.npmConfigSha256 !== undefined ? { npmConfigSha256: record.npmConfigSha256 } : {}),
     };
+  }
+  if (record.npmConfigSha256 !== undefined) {
+    throw new Error("staged installer metadata must not include npmConfigSha256");
   }
   if (
     typeof record.assetName !== "string" ||
@@ -473,8 +487,32 @@ export async function cleanupStagedUpdates(
     if (options.currentVersion !== undefined) {
       const currentVersion = requireSemanticVersion(options.currentVersion);
       const staged = await readStagedUpdate(root);
-      if (staged && compareSemanticVersions(currentVersion, staged.version) >= 0) {
-        await rm(stagedRoot, { recursive: true, force: true });
+      if (staged) {
+        if (compareSemanticVersions(currentVersion, staged.version) >= 0) {
+          await rm(stagedRoot, { recursive: true, force: true });
+        }
+        return;
+      }
+      let entries;
+      try {
+        entries = await readdir(stagedRoot, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink() || !entry.name.startsWith("update-")) {
+          continue;
+        }
+        const candidateVersion = entry.name.slice("update-".length);
+        if (!SEMVER_PATTERN.test(candidateVersion)) continue;
+        if (compareSemanticVersions(currentVersion, candidateVersion) >= 0) {
+          await rm(path.join(stagedRoot, entry.name), { recursive: true, force: true });
+        }
+      }
+      const remaining = await readdir(stagedRoot).catch(() => null);
+      if (remaining !== null && remaining.length === 0) {
+        await rmdir(stagedRoot).catch(() => undefined);
       }
       return;
     }
@@ -546,6 +584,8 @@ export async function stageArtifact(options: StageArtifactOptions): Promise<Stag
     return record;
   } catch (error) {
     await rm(temporaryPath, { force: true });
+    await rmdir(versionDirectory).catch(() => undefined);
+    await rmdir(stagedDirectoryPath(root)).catch(() => undefined);
     throw error;
   } finally {
     await lock.release();
@@ -555,6 +595,9 @@ export async function stageArtifact(options: StageArtifactOptions): Promise<Stag
 export async function stageNpm(options: StageNpmOptions): Promise<StagedUpdateRecord> {
   const root = requireAbsoluteDirectory(options.stateDirectory);
   const version = requireSemanticVersion(options.version);
+  if (options.npmConfigSha256 !== undefined && !SHA256_PATTERN.test(options.npmConfigSha256)) {
+    throw new Error("npmConfigSha256 must be lowercase hexadecimal");
+  }
   const now = options.now ?? Date.now;
   const prefetch =
     options.prefetchNpm ??
@@ -573,7 +616,8 @@ export async function stageNpm(options: StageNpmOptions): Promise<StagedUpdateRe
       existing &&
       existing.distribution === "npm" &&
       existing.version === version &&
-      existing.target === options.target
+      existing.target === options.target &&
+      existing.npmConfigSha256 === options.npmConfigSha256
     ) {
       return existing;
     }
@@ -586,6 +630,7 @@ export async function stageNpm(options: StageNpmOptions): Promise<StagedUpdateRe
       distribution: "npm",
       target: options.target,
       stagedAt: Math.floor(now() / 1000),
+      ...(options.npmConfigSha256 ? { npmConfigSha256: options.npmConfigSha256 } : {}),
     };
     await writeStagedMetadata(root, record);
     return record;

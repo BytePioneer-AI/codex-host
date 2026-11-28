@@ -613,6 +613,12 @@
   overflow-x: clip;
   overflow-y: visible;
   text-overflow: clip;
+  /* A long title's max-content text is wider than a phone screen, and iPhone
+     text autosizing enlarges it wherever no fixed-height row contains it
+     (collapsed phone Thread rows, search results). 100% keeps browser zoom
+     and the user's font preference intact. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 .sessionRow .title {

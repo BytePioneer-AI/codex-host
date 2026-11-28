@@ -141,4 +141,68 @@ describe("Host Runtime composition", () => {
       ),
     ).toBe(true);
   });
+
+  it.runIf(process.platform === "win32").each([
+    ["ordinary drive path", "C:\\npm\\platform", "C:\\npm\\platform\\app\\host-runtime.mjs", true],
+    [
+      "drive and directory case",
+      "c:\\npm\\PLATFORM",
+      "C:\\npm\\platform\\app\\host-runtime.mjs",
+      true,
+    ],
+    ["sibling directory", "C:\\npm\\platform", "C:\\npm\\other\\app\\host-runtime.mjs", false],
+  ])("checks launcher ownership for a Windows %s", (_name, root, runtime, expected) => {
+    expect(
+      hasLauncherManagedUpdateRuntime(
+        {
+          CODEXHOST_LAUNCHER_PID: "4321",
+          CODEXHOST_NPM_PACKAGE_ROOT: root,
+        },
+        runtime,
+      ),
+    ).toBe(expected);
+  });
+
+  it.each([
+    [
+      "extended npm root",
+      "\\\\?\\C:\\npm\\platform",
+      "c:\\npm\\platform\\app\\host-runtime.mjs",
+      true,
+    ],
+    [
+      "extended Host runtime",
+      "C:\\npm\\platform",
+      "\\\\?\\c:\\npm\\platform\\app\\host-runtime.mjs",
+      true,
+    ],
+    [
+      "extended UNC root",
+      "\\\\?\\UNC\\Server\\share\\platform",
+      "\\\\server\\share\\platform\\app\\host-runtime.mjs",
+      true,
+    ],
+    [
+      "different UNC share",
+      "\\\\?\\UNC\\server\\share\\platform",
+      "\\\\server\\other\\platform\\app\\host-runtime.mjs",
+      false,
+    ],
+    [
+      "relative npm root",
+      "npm\\platform",
+      "\\\\?\\C:\\npm\\platform\\app\\host-runtime.mjs",
+      false,
+    ],
+  ])("checks launcher ownership for an %s", (_name, root, runtime, expected) => {
+    expect(
+      hasLauncherManagedUpdateRuntime(
+        {
+          CODEXHOST_LAUNCHER_PID: "4321",
+          CODEXHOST_NPM_PACKAGE_ROOT: root,
+        },
+        runtime,
+      ),
+    ).toBe(expected);
+  });
 });

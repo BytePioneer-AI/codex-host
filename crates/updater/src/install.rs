@@ -184,7 +184,7 @@ fn install_npm(
     run_checked(&mut command, "npm update")
         .map_err(|error| format!("{error}{}", crate::diagnostics::log_details(&log, true)))?;
     // A nested payload can move to a global sibling when npm installs it explicitly.
-    npm.npm_package_root = layout.resolved_platform_root().to_path_buf();
+    npm.npm_package_root = layout.resolved_platform_root();
     let package_root = &npm.npm_package_root;
     verify_distribution(
         &package_root.join("app").join(DISTRIBUTION_FILE),

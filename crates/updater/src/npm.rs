@@ -1,4 +1,5 @@
 //! The npm packages that replace a global npm installation of codexhost in place.
+use std::borrow::Cow;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -90,13 +91,14 @@ impl GlobalInstallation {
         ]
     }
 
-    pub(crate) fn resolved_platform_root(&self) -> &Path {
+    pub(crate) fn resolved_platform_root(&self) -> PathBuf {
         // The npm launcher resolves its own node_modules before the global sibling.
-        if self.nested_platform_root.join("package.json").is_file() {
+        let root = if self.nested_platform_root.join("package.json").is_file() {
             &self.nested_platform_root
         } else {
             &self.global_platform_root
-        }
+        };
+        ordinary_npm_path(root).into_owned()
     }
 
     /// The headless updater stops the previous Host after npm finishes. Preserve the payload
@@ -104,6 +106,31 @@ impl GlobalInstallation {
     pub(crate) fn uses_nested_platform(&self, package_root: &Path) -> bool {
         canonical(package_root.to_path_buf()) == self.nested_platform_root
     }
+}
+
+/// npm restart paths cross into Node, which distinguishes extended paths from ordinary paths.
+pub(crate) fn ordinary_npm_path(path: &Path) -> Cow<'_, Path> {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use std::path::{Component, Prefix};
+
+        if let Some(Component::Prefix(prefix)) = path.components().next() {
+            let (skip, replacement): (usize, &[u16]) = match prefix.kind() {
+                Prefix::VerbatimDisk(_) => (4, &[]),
+                Prefix::VerbatimUNC(..) => (8, &[b'\\' as u16, b'\\' as u16]),
+                _ => return Cow::Borrowed(path),
+            };
+            let wide: Vec<_> = replacement
+                .iter()
+                .copied()
+                .chain(path.as_os_str().encode_wide().skip(skip))
+                .collect();
+            return Cow::Owned(PathBuf::from(OsString::from_wide(&wide)));
+        }
+    }
+    Cow::Borrowed(path)
 }
 
 pub(crate) fn npm_command(node: &Path, npm_cli: &Path) -> Command {
@@ -190,5 +217,26 @@ fn platform_package_name(package_root: &Path) -> Result<String, Box<dyn Error>> 
             Ok(format!("@codexhost/{name}"))
         }
         _ => Err(format!("Unknown platform package path: {}", package_root.display()).into()),
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npm_paths_use_ordinary_drive_and_unc_prefixes() {
+        for (input, expected) in [
+            (r"\\?\C:\npm\包", r"C:\npm\包"),
+            (r"\\?\UNC\server\share\npm", r"\\server\share\npm"),
+            (r"C:\npm", r"C:\npm"),
+            (r"\\server\share\npm", r"\\server\share\npm"),
+            (r"\\?\Volume{example}\npm", r"\\?\Volume{example}\npm"),
+        ] {
+            assert_eq!(
+                ordinary_npm_path(Path::new(input)).as_ref(),
+                Path::new(expected)
+            );
+        }
     }
 }

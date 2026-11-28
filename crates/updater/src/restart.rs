@@ -236,10 +236,22 @@ fn apply_restart_environment(command: &mut Command, request: &UpdateRequest) {
     }
     if let Installation::Npm(npm) = &request.installation {
         command
-            .env("CODEXHOST_NPM_NODE_PATH", &npm.node_path)
-            .env("CODEXHOST_NPM_CLI_PATH", &npm.npm_cli_path)
-            .env("CODEXHOST_NPM_LAUNCHER_PATH", &npm.npm_launcher_path)
-            .env("CODEXHOST_NPM_PACKAGE_ROOT", &npm.npm_package_root);
+            .env(
+                "CODEXHOST_NPM_NODE_PATH",
+                crate::npm::ordinary_npm_path(&npm.node_path).as_os_str(),
+            )
+            .env(
+                "CODEXHOST_NPM_CLI_PATH",
+                crate::npm::ordinary_npm_path(&npm.npm_cli_path).as_os_str(),
+            )
+            .env(
+                "CODEXHOST_NPM_LAUNCHER_PATH",
+                crate::npm::ordinary_npm_path(&npm.npm_launcher_path).as_os_str(),
+            )
+            .env(
+                "CODEXHOST_NPM_PACKAGE_ROOT",
+                crate::npm::ordinary_npm_path(&npm.npm_package_root).as_os_str(),
+            );
     }
     command
         .stdin(Stdio::null())
@@ -553,6 +565,44 @@ mod tests {
             legacy.get_args().collect::<Vec<_>>(),
             [root.join("wrapper.js").as_os_str()]
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn npm_restart_environment_uses_ordinary_windows_paths() {
+        let request: UpdateRequest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "version": "1.2.3", "wait_pid": 1,
+            "wait_executable": r"C:\test\node.exe",
+            "runtime_descriptor_path": r"C:\test\desktop.json",
+            "status_path": r"C:\test\status.json",
+            "installation": {
+                "kind": "npm",
+                "node_path": r"\\?\C:\test\node.exe",
+                "npm_cli_path": r"\\?\C:\test\npm-cli.js",
+                "npm_launcher_path": r"\\?\UNC\server\share\bin\codexhost.js",
+                "npm_package_root": r"\\?\UNC\server\share\cli-win32-x64",
+            },
+        }))
+        .unwrap();
+        let command = desktop_shell_command(&request);
+        let env: std::collections::HashMap<_, _> = command.get_envs().collect();
+        for (name, expected) in [
+            ("CODEXHOST_NPM_NODE_PATH", r"C:\test\node.exe"),
+            ("CODEXHOST_NPM_CLI_PATH", r"C:\test\npm-cli.js"),
+            (
+                "CODEXHOST_NPM_LAUNCHER_PATH",
+                r"\\server\share\bin\codexhost.js",
+            ),
+            (
+                "CODEXHOST_NPM_PACKAGE_ROOT",
+                r"\\server\share\cli-win32-x64",
+            ),
+        ] {
+            assert_eq!(
+                env.get(std::ffi::OsStr::new(name)),
+                Some(&Some(std::ffi::OsStr::new(expected)))
+            );
+        }
     }
 
     #[test]

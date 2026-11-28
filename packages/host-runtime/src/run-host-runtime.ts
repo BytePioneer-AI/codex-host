@@ -110,9 +110,21 @@ export function hasLauncherManagedUpdateRuntime(
   if (!environment[UPDATE_RUNTIME_ENV.launcherPid]) return false;
   const npmPackageRoot = environment[UPDATE_RUNTIME_ENV.npmPackageRoot];
   if (!npmPackageRoot || !hostRuntimePath) return true;
-  if (!path.isAbsolute(npmPackageRoot) || !path.isAbsolute(hostRuntimePath)) return false;
-  const runtimePackageRoot = path.dirname(path.dirname(path.normalize(hostRuntimePath)));
-  return path.relative(path.normalize(npmPackageRoot), runtimePackageRoot) === "";
+  const extendedPrefix = "\\\\?\\";
+  const windows =
+    process.platform === "win32" ||
+    npmPackageRoot.startsWith(extendedPrefix) ||
+    hostRuntimePath.startsWith(extendedPrefix);
+  const paths = windows ? path.win32 : path;
+  const packageRoot = windows ? ordinaryWindowsUpdatePath(npmPackageRoot) : npmPackageRoot;
+  const runtime = windows ? ordinaryWindowsUpdatePath(hostRuntimePath) : hostRuntimePath;
+  if (!paths.isAbsolute(packageRoot) || !paths.isAbsolute(runtime)) return false;
+  const runtimePackageRoot = paths.dirname(paths.dirname(paths.normalize(runtime)));
+  return paths.relative(packageRoot, runtimePackageRoot) === "";
+}
+
+function ordinaryWindowsUpdatePath(value: string): string {
+  return value.replace(/^\\\\\?\\UNC\\/iu, "\\\\").replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, "");
 }
 
 /**

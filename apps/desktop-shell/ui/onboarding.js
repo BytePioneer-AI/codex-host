@@ -541,7 +541,6 @@
     ui.setHidden(els.webOpenSpinner, !opening);
     ui.setHidden(els.webOpenArrow, opening);
 
-
     if (els.webCopyBtn) {
       els.webCopyBtn.disabled = webDisabled;
       setText(els.webCopyLabel, copying ? t.webCopying : state.webCopied ? t.webCopied : t.webCopy);

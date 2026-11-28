@@ -468,7 +468,10 @@ describe("Renderer Composer DOM behavior", () => {
   it("restarts bounded usage retries only when a notification has usable Thread usage", () => {
     expect(hasExternalThreadUsageEvidence({ usage: null })).toBe(false);
     expect(
-      hasExternalThreadUsageEvidence({ usage: null, accountCredits: { usedPercent: 33 } }),
+      hasExternalThreadUsageEvidence({
+        usage: null,
+        accountCredits: { usedPercent: 33, periodType: "five_hour" },
+      }),
     ).toBe(false);
     expect(
       hasExternalThreadUsageEvidence({

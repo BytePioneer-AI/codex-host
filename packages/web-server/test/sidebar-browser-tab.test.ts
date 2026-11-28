@@ -307,7 +307,7 @@ it("backs off ACKs and skips duplicate frames on static pages, and keeps base pa
 
   // Consecutive identical small PNG frames are skipped for delivery and back off 100 -> 200 -> 400 -> 500ms.
   for (const [index, expectedGap] of [100, 200, 400, 500].entries()) {
-    const beforeAcks = acks.length;
+    const beforeAcks: number = acks.length;
     await paint(2, 20 * 1024, 0, 10 + index);
     await advance(expectedGap - 1);
     assert.equal(acks.length, beforeAcks);

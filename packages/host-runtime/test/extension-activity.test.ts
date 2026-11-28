@@ -28,7 +28,7 @@ const snapshot = (
     activeTurnId: active ? "turn-2" : null,
     turnsPage: { data: [{ id: "turn-1", status }] },
     interactions: waiting ? [{ requestId: 42, kind: "approval" }] : [],
-  }) as ClientThreadSnapshot;
+  }) as unknown as ClientThreadSnapshot;
 
 it("tracks canonical running, waiting and terminal state without replaying history", async () => {
   const events = new ClientChannelEvents();

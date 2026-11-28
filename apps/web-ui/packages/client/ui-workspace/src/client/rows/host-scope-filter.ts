@@ -64,6 +64,21 @@ export function hasRemoteWorkspaces(workspaces: readonly WorkspaceView[]): boole
   return workspaces.some((workspace) => workspace.remote !== undefined);
 }
 
+/**
+ * Whether a workspace or derived group is the synthetic per-host fallback bucket
+ * for remote sessions outside any registered remote project (or a host placeholder
+ * when a remote host has zero projects).
+ */
+export function isRemoteFallbackWorkspace(workspace: {
+  readonly remote?: unknown;
+  readonly path?: string | undefined;
+  readonly cwd?: string | undefined;
+}): boolean {
+  if (workspace.remote === undefined) return false;
+  const dir = workspace.path ?? workspace.cwd;
+  return dir === undefined || dir.trim() === "";
+}
+
 /** Whether any workspace belongs to a peer-hub remote host (`remote-peer:*`). */
 export function hasRemotePeerWorkspaces(workspaces: readonly WorkspaceView[]): boolean {
   return workspaces.some(

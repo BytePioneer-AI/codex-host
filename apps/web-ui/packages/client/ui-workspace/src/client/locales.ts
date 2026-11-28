@@ -67,6 +67,7 @@ export const zh = {
   "recent.clearAllHint": "关闭所有标签，不删除会话或停止任务",
   "recent.cache.error": "无法读取或保存会话标签。仍可在本页切换会话，刷新后标签可能丢失。",
   "group.ungrouped": "最近",
+  "group.remoteOtherSessions": "未归类",
   "session.new": "新会话",
   "session.untitled": "未命名",
   "session.backToList": "返回会话列表",
@@ -311,6 +312,7 @@ export const en = {
   "recent.cache.error":
     "Could not read or save session tabs. Switching still works in this page; tabs may be lost on reload.",
   "group.ungrouped": "Recents",
+  "group.remoteOtherSessions": "Uncategorized",
   "session.new": "New Session",
   "session.untitled": "Untitled",
   "session.backToList": "Back to session list",

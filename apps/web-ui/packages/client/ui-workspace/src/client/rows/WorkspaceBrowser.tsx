@@ -109,6 +109,7 @@ import {
   hasRemotePeerWorkspaces,
   hasRemoteWorkspaces,
   isHostScopeFiltered,
+  isRemoteFallbackWorkspace,
   loadHostScopeFilter,
   pruneUnavailableHostScopeFilter,
   reconcileHostScopeFilter,
@@ -1764,16 +1765,19 @@ function WorkspaceBrowserContent({
   const list = useSessions((state) => state);
   const storedWorkspaces = useWorkspaces((state) => state.items);
   const canStartProjectless = useWorkspaces((state) => state.canStartProjectless === true);
-  // The resolved name, not `t`, is the memo dependency: the bound seat keeps
+  // The resolved names, not `t`, are the memo dependencies: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t("workspace.defaultName");
+  const remoteOtherSessionsLabel = t("group.remoteOtherSessions");
   const workspaces = useMemo(
     () =>
       storedWorkspaces.map((workspace) => ({
         ...workspace,
-        title: workspaceDisplayTitle(workspace.title, defaultWorkspaceName),
+        title: isRemoteFallbackWorkspace(workspace)
+          ? remoteOtherSessionsLabel
+          : workspaceDisplayTitle(workspace.title, defaultWorkspaceName),
       })),
-    [storedWorkspaces, defaultWorkspaceName],
+    [storedWorkspaces, defaultWorkspaceName, remoteOtherSessionsLabel],
   );
   const workspacePhase = useWorkspaces((state) => state.phase);
   const workspaceStreamState = useWorkspaces((state) => state.state);

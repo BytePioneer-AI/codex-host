@@ -10,6 +10,7 @@ import {
   parseConfiguredRemotePeers,
   workspaceParentHint,
 } from "../src/client/hero-picker-model.ts";
+import { isRemoteFallbackWorkspace } from "../src/client/rows/host-scope-filter.ts";
 
 function makeWorkspace(overrides: Partial<WorkspaceView> & { workspaceId: string }): WorkspaceView {
   return {
@@ -111,6 +112,74 @@ describe("hero-picker-model", () => {
     assert.deepEqual(
       filterHeroProjects(workspaces, "projects", (w) => w.title).map((w) => w.workspaceId),
       ["w2"],
+    );
+  });
+
+  it("identifies remote fallback workspaces and excludes them from selectable hero projects while keeping 0-project hosts", () => {
+    const localWs = makeWorkspace({
+      workspaceId: "ws-local",
+      title: "codex-host",
+      path: "/Users/me/Code/codex-host",
+    });
+    const localEmptyPath = makeWorkspace({
+      workspaceId: "ws-local-empty",
+      title: "local-empty",
+      path: "",
+    });
+    const remoteReal = makeWorkspace({
+      workspaceId: "ws-c-proj",
+      title: "web-app",
+      path: "/srv/web-app",
+      remote: { hostId: "remote-peer:c", displayName: "C", state: "connected" },
+    });
+    const remoteFallbackWithReal = makeWorkspace({
+      workspaceId: "ws-c-fallback",
+      title: "C",
+      path: "",
+      remote: { hostId: "remote-peer:c", displayName: "C", state: "connected" },
+    });
+    const remoteZeroProjectPlaceholder = makeWorkspace({
+      workspaceId: "ws-d-fallback",
+      title: "D",
+      path: "",
+      remote: { hostId: "remote-peer:d", displayName: "D", state: "disconnected" },
+    });
+
+    assert.equal(isRemoteFallbackWorkspace(localWs), false);
+    assert.equal(isRemoteFallbackWorkspace(localEmptyPath), false);
+    assert.equal(isRemoteFallbackWorkspace(remoteReal), false);
+    assert.equal(isRemoteFallbackWorkspace(remoteFallbackWithReal), true);
+    assert.equal(isRemoteFallbackWorkspace(remoteZeroProjectPlaceholder), true);
+    assert.equal(isRemoteFallbackWorkspace({ remote: remoteReal.remote, cwd: "   " }), true);
+
+    const locations = buildHeroLocationOptions(
+      [localWs, remoteReal, remoteFallbackWithReal, remoteZeroProjectPlaceholder],
+      [],
+    );
+    assert.deepEqual(
+      locations.map((item) => ({
+        key: item.key,
+        name: item.displayName,
+        workspaceIds: item.workspaces.map((w) => w.workspaceId),
+      })),
+      [
+        { key: "local", name: undefined, workspaceIds: ["ws-local"] },
+        { key: "remote-peer:c", name: "C", workspaceIds: ["ws-c-proj"] },
+        { key: "remote-peer:d", name: "D", workspaceIds: [] },
+      ],
+    );
+
+    assert.deepEqual(
+      filterHeroProjects([remoteReal, remoteFallbackWithReal], "", (w) => w.title).map(
+        (w) => w.workspaceId,
+      ),
+      ["ws-c-proj"],
+    );
+    assert.deepEqual(
+      filterHeroProjects([remoteReal, remoteFallbackWithReal], "c", (w) => w.title).map(
+        (w) => w.workspaceId,
+      ),
+      [],
     );
   });
 

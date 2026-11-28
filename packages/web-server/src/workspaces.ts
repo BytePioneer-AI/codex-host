@@ -4,7 +4,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
-import type { ThreadCatalogReadParams } from "@codexhost/shared-contracts";
+import {
+  THREAD_SECTION_CAPABILITY,
+  type ClientThreadSectionAppearance,
+  type ThreadCatalogReadParams,
+} from "@codexhost/shared-contracts";
 
 import { type DataDir, requestOf } from "./store.ts";
 import { RpcError, type RpcRegistry, type StreamRegistry, type StreamSink } from "./transport.ts";
@@ -229,6 +233,7 @@ export interface ThreadSectionView {
   id: string;
   name: string;
   threadIds: string[];
+  appearance?: ClientThreadSectionAppearance;
   /** Omitted when the section contains no registered project. */
   workspaceIds?: string[];
 }
@@ -306,7 +311,7 @@ export class Workspaces {
   private nativeRoots = new Map<string, string[]>();
   private nativeRootOwners: ReadonlyMap<string, { path: string; projectId: string }> = new Map();
   private legacyAssignments: Readonly<Record<string, string>> = {};
-  private readonly followers = new Set<StreamSink>();
+  private readonly followers = new Map<StreamSink, boolean>();
   private referenceGroups: Map<string, string | undefined> | undefined;
   private referenceProjectless: ReadonlySet<string> = new Set();
   private referencePins: string[] | undefined;
@@ -403,8 +408,9 @@ export class Workspaces {
     return this.state.remoteProjectIds?.[sessionId];
   }
 
-  private broadcast(frame: unknown): void {
-    for (const sink of this.followers) sink.push(frame);
+  private broadcast(frame: unknown, sectionCapability?: boolean): void {
+    for (const [sink, capable] of this.followers)
+      if (sectionCapability === undefined || capable === sectionCapability) sink.push(frame);
   }
 
   private touch(workspace: WorkspaceView): void {
@@ -719,10 +725,18 @@ export class Workspaces {
   private officialThreadSections: ThreadSectionView[] | undefined;
   /** Projects registered when each section's member list was last read successfully. */
   private projectSectionCoverage = new Map<string, ReadonlySet<string>>();
+  private officialThreadSectionsV1: true | undefined;
   private referenceThreadSections: ThreadSectionView[] = [];
+  private legacyThreadSections: ThreadSectionView[] = [];
+  private referenceThreadSectionsV1: true | undefined;
+  private referenceSectionWorkspaceIdsDirty = false;
 
   hasThreadSection(id: string): boolean {
     return this.referenceThreadSections.some((section) => section.id === id);
+  }
+
+  sectionMemberIds(): Set<string> {
+    return new Set(this.referenceThreadSections.flatMap(({ threadIds }) => threadIds));
   }
 
   /**
@@ -730,27 +744,33 @@ export class Workspaces {
    * folders, so call this after the project roots are synced into Workspaces.
    */
   setReferenceThreadSections(
-    sections: ReadonlyArray<{ id: string; name: string; threadIds: string[] }>,
+    sections: ReadonlyArray<Omit<ThreadSectionView, "workspaceIds">> | undefined,
     projects: readonly { id: string; rootPaths: readonly string[] }[] = [],
     sectionProjects: Readonly<Record<string, readonly string[]>> = {},
+    threadSectionsV1?: true,
   ): void {
-    const paths = sectionRootPaths(
-      projects,
-      sectionProjects,
-      sections.map((section) => section.id),
-    );
+    if (!sections) {
+      this.officialThreadSectionsV1 = undefined;
+      this.publishProjectSections();
+      return;
+    }
+    const paths = this.nativeWorkspaces
+      ? undefined
+      : sectionRootPaths(
+          projects,
+          sectionProjects,
+          sections.map((section) => section.id),
+        );
     const next = sections.map((section): ThreadSectionView => {
-      if (this.nativeWorkspaces) {
-        const workspaceIds = (sectionProjects[section.id] ?? []).flatMap((id) => {
-          const workspace = this.nativeWorkspaces?.find((item) => item.projectId === id);
-          return workspace ? [workspace.workspaceId] : [];
-        });
-        return workspaceIds.length > 0 ? { ...section, workspaceIds } : { ...section };
-      }
-      const workspaceIds = (paths.get(section.id) ?? []).flatMap((path) => {
-        const workspace = this.byPath(path);
-        return workspace ? [workspace.workspaceId] : [];
-      });
+      const workspaceIds = this.nativeWorkspaces
+        ? (sectionProjects[section.id] ?? []).flatMap((id) => {
+            const workspace = this.nativeWorkspaces?.find((item) => item.projectId === id);
+            return workspace ? [workspace.workspaceId] : [];
+          })
+        : (paths?.get(section.id) ?? []).flatMap((path) => {
+            const workspace = this.byPath(path);
+            return workspace ? [workspace.workspaceId] : [];
+          });
       return workspaceIds.length > 0 ? { ...section, workspaceIds } : { ...section };
     });
     const saved = this.state.projectSectionOverrides;
@@ -794,6 +814,8 @@ export class Workspaces {
       if (Object.keys(valid).length !== Object.keys(saved).length) this.saveProjectSections(valid);
     }
     this.officialThreadSections = next;
+    this.referenceSectionWorkspaceIdsDirty = false;
+    this.officialThreadSectionsV1 = threadSectionsV1;
     this.projectSectionCoverage = coverage;
     this.publishProjectSections();
   }
@@ -813,6 +835,50 @@ export class Workspaces {
     this.state = state;
   }
 
+  /** A move cannot change definitions or project membership. */
+  applyThreadSectionMove(
+    sections: ReadonlyArray<Omit<ThreadSectionView, "workspaceIds">>,
+    threadSectionsV1: true | undefined,
+    movedId?: string,
+  ): boolean {
+    const current = this.officialThreadSections ?? [];
+    if (
+      this.referenceSectionWorkspaceIdsDirty ||
+      threadSectionsV1 !== this.officialThreadSectionsV1 ||
+      sections.length !== current.length ||
+      !sections.every((section, i) => {
+        const previous = current[i];
+        return (
+          previous?.id === section.id &&
+          previous.name === section.name &&
+          JSON.stringify(previous.appearance) === JSON.stringify(section.appearance)
+        );
+      })
+    )
+      return false;
+
+    const remaining = new Set<string>();
+    if (movedId !== undefined) {
+      for (const { threadIds } of current)
+        for (const id of threadIds) if (id !== movedId) remaining.add(id);
+    }
+    const seen = new Set<string>();
+    for (const { threadIds } of sections) {
+      for (const id of threadIds) {
+        if (seen.has(id) || (movedId !== undefined && id !== movedId && !remaining.delete(id)))
+          return false;
+        seen.add(id);
+      }
+    }
+    if (remaining.size !== 0) return false;
+    this.officialThreadSections = sections.map((section, i) => {
+      const workspaceIds = current[i]?.workspaceIds;
+      return workspaceIds === undefined ? section : { ...section, workspaceIds };
+    });
+    this.publishProjectSections();
+    return true;
+  }
+
   private publishProjectSections(): void {
     const official = this.officialThreadSections ?? [];
     const overrides = this.nativeWorkspaces ? this.state.projectSectionOverrides : undefined;
@@ -824,9 +890,33 @@ export class Workspaces {
             if (placement.target === section.id) ids.push(id);
           return ids.length ? { ...section, workspaceIds: ids } : section;
         });
-    if (JSON.stringify(next) === JSON.stringify(this.referenceThreadSections)) return;
-    this.referenceThreadSections = next;
-    this.broadcast({ type: "threadSections", threadSections: next });
+    const threadSectionsV1 = this.officialThreadSectionsV1;
+    const legacy = next.some((section) => section.appearance !== undefined)
+      ? next.map((section) => {
+          const legacySection = { ...section };
+          delete legacySection.appearance;
+          return legacySection;
+        })
+      : next;
+    const projected = threadSectionsV1 ? next : legacy;
+    if (
+      threadSectionsV1 === this.referenceThreadSectionsV1 &&
+      JSON.stringify(projected) === JSON.stringify(this.referenceThreadSections)
+    )
+      return;
+    const legacyChanged = JSON.stringify(legacy) !== JSON.stringify(this.legacyThreadSections);
+    this.referenceThreadSections = projected;
+    this.referenceThreadSectionsV1 = threadSectionsV1;
+    this.legacyThreadSections = legacy;
+    this.broadcast(
+      {
+        type: "threadSections",
+        threadSections: projected,
+        ...(threadSectionsV1 ? { [THREAD_SECTION_CAPABILITY]: true } : {}),
+      },
+      true,
+    );
+    if (legacyChanged) this.broadcast({ type: "threadSections", threadSections: legacy }, false);
   }
 
   private moveWorkspaceToSection(
@@ -1167,6 +1257,7 @@ export class Workspaces {
     };
     this.data.writeJson(FILE, state);
     this.state = state;
+    if (this.referenceProjectRoots.has(absolute)) this.referenceSectionWorkspaceIdsDirty = true;
     this.broadcast({ type: "upsert", workspace });
     this.broadcast({
       type: "order",
@@ -1439,6 +1530,19 @@ export class Workspaces {
       this.state = state;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       this.publishPinnedWorkspaces();
+      if (
+        this.officialThreadSections?.some(({ workspaceIds }) =>
+          workspaceIds?.includes(workspace.workspaceId),
+        )
+      ) {
+        this.officialThreadSections = this.officialThreadSections.map((section) => {
+          if (!section.workspaceIds?.includes(workspace.workspaceId)) return section;
+          const { workspaceIds, ...rest } = section;
+          const remaining = workspaceIds.filter((id) => id !== workspace.workspaceId);
+          return remaining.length ? { ...rest, workspaceIds: remaining } : rest;
+        });
+        this.publishProjectSections();
+      }
       return { deleted: true };
     });
     rpc.register("workspace/moveWorkspaceToSection", async (args) => {
@@ -1506,8 +1610,10 @@ export class Workspaces {
     );
     rpc.register("workspace/pinSession", setMembership("pinnedSessionIds", "pinned", true));
     rpc.register("workspace/unpinSession", setMembership("pinnedSessionIds", "pinned", false));
-    streams.register("workspace/follow", (_args, sink) => {
-      this.followers.add(sink);
+    streams.register("workspace/follow", (args, sink) => {
+      const capable =
+        Object.hasOwn(args, THREAD_SECTION_CAPABILITY) && args[THREAD_SECTION_CAPABILITY] === true;
+      this.followers.set(sink, capable);
       sink.onClose(() => this.followers.delete(sink));
       sink.push({
         type: "baseline",
@@ -1515,7 +1621,10 @@ export class Workspaces {
           items: this.list(),
           pinnedSessionIds: this.pinnedSessionIds(),
           pinnedWorkspaceIds: this.pinnedWorkspaceIds(),
-          threadSections: this.referenceThreadSections,
+          threadSections: capable ? this.referenceThreadSections : this.legacyThreadSections,
+          ...(capable && this.referenceThreadSectionsV1
+            ? { [THREAD_SECTION_CAPABILITY]: true }
+            : {}),
           archivedSessionIds: this.archivedSessionIds(),
           ...(this.referenceOnlyDefault ? { canStartProjectless: true } : {}),
         },

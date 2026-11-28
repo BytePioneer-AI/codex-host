@@ -68,6 +68,11 @@ it("keeps project and pin synchronization without rescanning the event catalog e
 
 it("refreshes on lifecycle notifications and reconnect instead of waiting for the fallback", async (t) => {
   const host = new FakeChChannel();
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({ sections: [] } as T)
+      : request<T>(method, params);
   const b = await setup(t, host);
   for (const method of [
     "turn/started",
@@ -82,6 +87,26 @@ it("refreshes on lifecycle notifications and reconnect instead of waiting for th
     await b.tick(100);
     assert.equal(b.directoryReads().length, 1, method);
   }
+  host.add("new-unsectioned", b.root);
+  host.changed("new-unsectioned", "thread/started");
+  for (const listener of host.listeners) {
+    listener({
+      type: "sections-changed",
+      cursor: { epoch: host.epoch, sequence: ++host.sequence },
+    });
+  }
+  await b.tick(100);
+  assert.ok(b.workspaces.ownerOf("new-unsectioned"));
+  const projectPath = join(b.root, "moved-project");
+  host.projectSnapshot.projects.push({ id: "moved", name: "Moved", rootPaths: [projectPath] });
+  host.projectSnapshot.assignments.thread = "moved";
+  for (const type of ["projects-changed", "sections-changed"] as const) {
+    for (const listener of host.listeners) {
+      listener({ type, cursor: { epoch: host.epoch, sequence: ++host.sequence } });
+    }
+  }
+  await b.tick(100);
+  assert.equal(b.workspaces.ownerOf("thread")?.path, projectPath);
   host.connection(false);
   await b.tick(60_000);
   host.requests.length = 0;

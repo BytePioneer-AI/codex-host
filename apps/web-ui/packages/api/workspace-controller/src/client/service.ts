@@ -2,9 +2,15 @@
 
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
-import type { RemoteFailure } from "@deepseek-ai/dsh-typert-protocol";
+import type { RemoteFailure, RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
-import type { WorkspaceView } from "../types.ts";
+import type {
+  WorkspaceCreateThreadSectionValue,
+  WorkspaceDeleteThreadSectionValue,
+  WorkspaceThreadSectionMutationValue,
+  WorkspaceUpdateThreadSectionValue,
+  WorkspaceView,
+} from "../types.ts";
 import type { ClientWorkspaceModel, WorkspaceSnapshot } from "./model.ts";
 
 /** Structured create failure for callers that distinguish Host business errors. */
@@ -107,7 +113,18 @@ export interface IWorkspaces {
   setWorkspacePinned?(workspaceId: WorkspaceId, pinned: boolean): Promise<void>;
   /** Place a local project in a sidebar section, or return it to Workspaces. */
   moveWorkspaceToSection?(workspaceId: WorkspaceId, sectionId: string | null): Promise<void>;
-  moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
+  moveSessionToSection?(
+    sessionId: SessionId,
+    sectionId: string | null,
+    beforeSessionId?: SessionId | null,
+    expectedSourceSectionId?: string,
+  ): Promise<void | { status: "unknown" }>;
+  /** Create a custom Thread section with a non-empty name. */
+  createThreadSection?(name: string): Promise<WorkspaceCreateThreadSectionValue>;
+  /** Rename a custom Thread section while omitting appearance to preserve existing styling. */
+  updateThreadSection?(sectionId: string, name: string): Promise<WorkspaceUpdateThreadSectionValue>;
+  /** Delete a custom Thread section without deleting or archiving its Threads. */
+  deleteThreadSection?(sectionId: string): Promise<WorkspaceDeleteThreadSectionValue>;
   /**
    * Move a Session within one Workspace account.
    * @param workspaceId - owning Workspace.
@@ -184,9 +201,34 @@ export class WorkspaceController extends Service implements IWorkspaces {
     if (!result.ok) throw commandError("session pin", result.error);
   }
 
-  async moveSessionToSection(sessionId: SessionId, sectionId: string | null): Promise<void> {
-    const result = await this.model.moveSessionToSection({ sessionId, sectionId });
-    if (!result.ok) throw commandError("move to section", result.error);
+  async moveSessionToSection(
+    sessionId: SessionId,
+    sectionId: string | null,
+    beforeSessionId?: SessionId | null,
+    expectedSourceSectionId?: string,
+  ): Promise<void | { status: "unknown" }> {
+    const result = await this.model.moveSessionToSection({
+      sessionId,
+      sectionId,
+      ...(beforeSessionId === undefined ? {} : { beforeSessionId }),
+      ...(expectedSourceSectionId === undefined ? {} : { expectedSourceSectionId }),
+    });
+    if (!result.ok) {
+      // The Web gateway also forwards Host codes that aren't declared in this client package.
+      const code: string = result.error.code;
+      const details = result.error.details;
+      const hostCode = "hostCode" in details ? details.hostCode : undefined;
+      if (
+        code === "gateway/internal" ||
+        code === "gateway/cancelled" ||
+        code === "host/disconnected" ||
+        code === "host/resync" ||
+        code === "remote/offline" ||
+        (code === "host/rejected" && (hostCode === -32093 || hostCode === -32094))
+      )
+        return { status: "unknown" };
+      throw commandError("move to section", result.error);
+    }
     if (result.value.sectionId !== sectionId)
       throw new Error("The requested section change was not confirmed.");
   }
@@ -196,6 +238,30 @@ export class WorkspaceController extends Service implements IWorkspaces {
     if (!result.ok) throw commandError("move project to section", result.error);
     if (result.value.sectionId !== sectionId)
       throw new Error("The requested section change was not confirmed.");
+  }
+
+  async createThreadSection(name: string): Promise<WorkspaceCreateThreadSectionValue> {
+    return sectionMutationValue(
+      "create thread section",
+      await this.model.createThreadSection({ name }),
+    );
+  }
+
+  async updateThreadSection(
+    sectionId: string,
+    name: string,
+  ): Promise<WorkspaceUpdateThreadSectionValue> {
+    return sectionMutationValue(
+      "update thread section",
+      await this.model.updateThreadSection({ sectionId, name }),
+    );
+  }
+
+  async deleteThreadSection(sectionId: string): Promise<WorkspaceDeleteThreadSectionValue> {
+    return sectionMutationValue(
+      "delete thread section",
+      await this.model.deleteThreadSection({ sectionId }),
+    );
   }
 
   async unpinSession(sessionId: SessionId): Promise<void> {
@@ -217,6 +283,16 @@ export class WorkspaceController extends Service implements IWorkspaces {
     if (!result.ok) throw commandError("move", result.error);
     return result.value.workspace;
   }
+}
+
+function sectionMutationValue(
+  operation: string,
+  result: RemoteResult<WorkspaceThreadSectionMutationValue>,
+): WorkspaceThreadSectionMutationValue {
+  if (result.ok) return result.value;
+  if (result.error.code === "gateway/internal" || result.error.code === "gateway/cancelled")
+    return { status: "unknown" };
+  throw commandError(operation, result.error);
 }
 
 function commandError(operation: string, failure: RemoteFailure): Error {

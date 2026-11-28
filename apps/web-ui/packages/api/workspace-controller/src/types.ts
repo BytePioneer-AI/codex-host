@@ -179,6 +179,14 @@ export interface WorkspacePinnedWorkspacesValue {
 export interface WorkspaceMoveSessionToSectionRequest {
   readonly sessionId: SessionId;
   readonly sectionId: string | null;
+  /**
+   * Optional positioning anchor within `sectionId`.
+   * Omit for legacy behavior, pass `null` to append to the end, or pass a target
+   * member `SessionId` to insert before it (rejected when `sectionId === null`).
+   */
+  readonly beforeSessionId?: SessionId | null;
+  /** Compare the current section at the Owner before a drag removes the Thread. */
+  readonly expectedSourceSectionId?: string;
 }
 
 export interface WorkspaceMoveWorkspaceToSectionRequest {
@@ -192,10 +200,55 @@ export interface WorkspaceMoveToSectionValue {
 
 export type WorkspaceMoveSessionToSectionValue = WorkspaceMoveToSectionValue;
 
+/** Native section appearance supplied by Codex Desktop / official app-server. */
+export interface WorkspaceThreadSectionAppearance {
+  readonly icon: string | null;
+  readonly color: string | null;
+}
+
+/** Definition of one custom Thread section returned by management RPCs. */
+export interface WorkspaceThreadSectionDefinition {
+  readonly id: string;
+  readonly name: string;
+  readonly appearance: WorkspaceThreadSectionAppearance | null;
+}
+
+/** Result of create/update/delete custom Thread section RPCs. */
+export type WorkspaceThreadSectionMutationValue =
+  | { readonly status: "unknown" }
+  | {
+      readonly status: "confirmed";
+      readonly sectionId: string;
+      readonly section: WorkspaceThreadSectionDefinition | null;
+      readonly syncPending: boolean;
+    };
+
+export interface WorkspaceCreateThreadSectionRequest {
+  readonly name: string;
+}
+
+export type WorkspaceCreateThreadSectionValue = WorkspaceThreadSectionMutationValue;
+
+export interface WorkspaceUpdateThreadSectionRequest {
+  readonly sectionId: string;
+  readonly name: string;
+  /** Omit to preserve existing appearance; pass null to clear. */
+  readonly appearance?: WorkspaceThreadSectionAppearance | null;
+}
+
+export type WorkspaceUpdateThreadSectionValue = WorkspaceThreadSectionMutationValue;
+
+export interface WorkspaceDeleteThreadSectionRequest {
+  readonly sectionId: string;
+}
+
+export type WorkspaceDeleteThreadSectionValue = WorkspaceThreadSectionMutationValue;
+
 /** Groups supplied by the native Codex app-server. */
 export interface WorkspaceThreadSection {
   readonly id: string;
   readonly name: string;
+  readonly appearance?: WorkspaceThreadSectionAppearance | null;
   readonly threadIds: readonly SessionId[];
   /** Workspaces of the Desktop projects placed in this section, in Desktop order. */
   readonly workspaceIds?: readonly WorkspaceId[];
@@ -212,6 +265,7 @@ export interface WorkspaceBaseline {
   /** Registry-global pinned Workspaces, recent Web pins first then Desktop order. */
   readonly pinnedWorkspaceIds?: readonly WorkspaceId[];
   readonly threadSections?: readonly WorkspaceThreadSection[];
+  readonly threadSectionsV1?: true;
 }
 
 /** One ordered Workspace change after a generation's baseline. */
@@ -222,7 +276,11 @@ export type WorkspaceFollowIncrement =
   | { readonly type: "archived"; readonly archivedSessionIds: readonly SessionId[] }
   | { readonly type: "pinned"; readonly pinnedSessionIds: readonly SessionId[] }
   | { readonly type: "pinnedWorkspaces"; readonly pinnedWorkspaceIds: readonly WorkspaceId[] }
-  | { readonly type: "threadSections"; readonly threadSections: readonly WorkspaceThreadSection[] };
+  | {
+      readonly type: "threadSections";
+      readonly threadSections: readonly WorkspaceThreadSection[];
+      readonly threadSectionsV1?: true;
+    };
 
 /** Workspace state stream; every generation starts with exactly one baseline. */
 export type WorkspaceFollowFrame =

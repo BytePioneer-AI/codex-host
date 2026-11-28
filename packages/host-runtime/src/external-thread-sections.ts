@@ -23,6 +23,10 @@ import {
 const MAX_OFFICIAL_PAGES = 256;
 const OFFICIAL_PAGE_SIZE = 100;
 
+export const SHARED_SECTIONS_WATCH_METHOD = "codexhost/shared-threads/sections/watch";
+export const SHARED_SECTIONS_CHANGED_METHOD = "codexhost/shared-threads/sections/changed";
+export const SHARED_SECTIONS_RECONCILE_METHOD = "codexhost/shared-threads/sections/reconcile";
+
 export class ThreadSectionError extends Error {
   constructor(message: string) {
     super(message);
@@ -136,18 +140,58 @@ type OfficialRequest = (method: string, params: JsonObject) => Promise<JsonObjec
 export async function listAllOfficialRows(
   requestOfficial: OfficialRequest,
   params: JsonObject,
+  requireComplete = false,
 ): Promise<JsonObject[]> {
   const rows: JsonObject[] = [];
+  const seen = requireComplete ? new Set<string>() : undefined;
   let cursor: string | null = null;
   for (let page = 0; page < MAX_OFFICIAL_PAGES; page += 1) {
-    const result = officialThreadListPageFromResponse(
-      await requestOfficial("thread/list", { ...params, cursor, limit: OFFICIAL_PAGE_SIZE }),
-    );
+    const response = await requestOfficial("thread/list", {
+      ...params,
+      cursor,
+      limit: OFFICIAL_PAGE_SIZE,
+    });
+    const result = officialThreadListPageFromResponse(response);
+    if (seen && (!object(response.result) || response.result.nextCursor === undefined)) {
+      throw new ThreadSectionError("Incomplete official section order");
+    }
     rows.push(...result.data);
-    if (result.nextCursor === null || result.nextCursor === cursor) return rows;
-    cursor = result.nextCursor;
+    const next = result.nextCursor;
+    if (next === null) return rows;
+    if (seen) {
+      if (!next || seen.has(next))
+        throw new ThreadSectionError("Incomplete official section order");
+      seen.add(next);
+    } else if (next === cursor) return rows;
+    cursor = next;
   }
   throw new Error("Official thread/list pagination exceeded its request bound");
+}
+
+async function officialSectionOrder(input: {
+  sectionId: string;
+  requestOfficial: OfficialRequest;
+  requireComplete?: boolean;
+}): Promise<string[]> {
+  const rows = await listAllOfficialRows(
+    input.requestOfficial,
+    {
+      sectionId: input.sectionId,
+      sortKey: "section_position",
+      modelProviders: [],
+      useStateDbOnly: true,
+      ...(input.requireComplete ? { sortDirection: "asc" } : {}),
+    },
+    input.requireComplete,
+  );
+  const officialIds = rows.map((row) => String(row.id));
+  if (
+    input.requireComplete &&
+    (rows.some((row) => typeof row.id !== "string" || !row.id) ||
+      new Set(officialIds).size !== officialIds.length)
+  )
+    throw new ThreadSectionError("Invalid official section members");
+  return officialIds;
 }
 
 /** Current merged order of one section, as Codex Desktop lists it. */
@@ -155,16 +199,108 @@ export async function sectionOrder(input: {
   sectionId: string;
   placements: readonly StoredSectionPlacementV1[];
   requestOfficial: OfficialRequest;
+  requireComplete?: boolean;
 }): Promise<string[]> {
-  const rows = await listAllOfficialRows(input.requestOfficial, {
-    sectionId: input.sectionId,
-    sortKey: "section_position",
-    modelProviders: [],
-    useStateDbOnly: true,
-  });
   return mergeSectionOrder(
-    rows.map((row) => String(row.id)),
+    await officialSectionOrder(input),
     input.placements.filter((placement) => placement.section.id === input.sectionId),
+  );
+}
+
+function object(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function officialSectionDefinition(value: unknown): StoredThreadSection | null {
+  if (
+    !object(value) ||
+    typeof value.id !== "string" ||
+    !value.id ||
+    typeof value.name !== "string" ||
+    !value.name.trim()
+  )
+    return null;
+  const appearance = value.appearance;
+  if (appearance != null && !object(appearance)) return null;
+  const icon = appearance?.icon ?? null;
+  const color = appearance?.color ?? null;
+  if ((icon !== null && typeof icon !== "string") || (color !== null && typeof color !== "string"))
+    return null;
+  return {
+    id: value.id,
+    name: value.name,
+    appearance: appearance ? { icon, color } : null,
+  };
+}
+
+/** The last complete definition set, with a confirmed write layered over it until refreshed. */
+export class SectionDefinitions {
+  #complete: ReadonlyMap<string, StoredThreadSection> | undefined;
+  readonly #confirmed = new Map<string, StoredThreadSection | null>();
+
+  constructor(private readonly pinnedSectionId: string) {}
+
+  replace(definitions: ReadonlyMap<string, StoredThreadSection>): void {
+    this.#complete = definitions;
+    this.#confirmed.clear();
+  }
+
+  confirm(sectionId: string, section: StoredThreadSection | null): void {
+    this.#confirmed.set(sectionId, section);
+  }
+
+  project(
+    placements: StoredSectionPlacementV1[],
+    complete = this.#complete,
+  ): StoredSectionPlacementV1[] {
+    let next: StoredSectionPlacementV1[] | undefined;
+    for (const [index, placement] of placements.entries()) {
+      const { section } = placement;
+      const confirmed = complete === this.#complete ? this.#confirmed.get(section.id) : undefined;
+      const current = confirmed !== undefined ? confirmed : complete?.get(section.id);
+      if (
+        section.id !== this.pinnedSectionId &&
+        (current === null || (current === undefined && complete))
+      ) {
+        next ??= placements.slice(0, index);
+      } else if (current && !sameSectionDefinition(section, current)) {
+        next ??= placements.slice(0, index);
+        next.push({ ...placement, section: current });
+      } else {
+        next?.push(placement);
+      }
+    }
+    return next ?? placements;
+  }
+}
+
+function sameSectionDefinition(left: StoredThreadSection, right: StoredThreadSection): boolean {
+  return (
+    left.name === right.name &&
+    (left.appearance === null) === (right.appearance === null) &&
+    left.appearance?.icon === right.appearance?.icon &&
+    left.appearance?.color === right.appearance?.color
+  );
+}
+
+/** Both projections use the same current placements, so only section fields can differ. */
+export function sameProjectedSections(
+  before: readonly StoredSectionPlacementV1[],
+  after: readonly StoredSectionPlacementV1[],
+): boolean {
+  return (
+    before === after ||
+    (before.length === after.length &&
+      before.every((placement, index) => {
+        const next = after[index];
+        return (
+          next !== undefined &&
+          (placement === next ||
+            (placement.hostThreadId === next.hostThreadId &&
+              placement.section.id === next.section.id &&
+              sameSectionDefinition(placement.section, next.section)))
+        );
+      }))
   );
 }
 
@@ -174,37 +310,35 @@ export async function* officialThreadSections(
 ): AsyncGenerator<StoredThreadSection> {
   let cursor: string | null = null;
   const seen = new Set<string>();
+  const cursors = new Set<string>();
   for (let page = 0; page < MAX_OFFICIAL_PAGES; page += 1) {
     const response = await requestOfficial("threadSection/list", {
       cursor,
       limit: OFFICIAL_PAGE_SIZE,
     });
     const result = response.result;
-    if (typeof result !== "object" || result === null || Array.isArray(result)) {
-      throw new Error("Official threadSection/list failed");
+    if (
+      !object(result) ||
+      !Array.isArray(result.data) ||
+      (result.nextCursor !== null && typeof result.nextCursor !== "string")
+    ) {
+      throw new Error("Invalid official threadSection/list response");
     }
-    const data = Array.isArray(result.data) ? result.data : [];
-    for (const entry of data) {
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-      if (typeof entry.id !== "string" || !entry.id || seen.has(entry.id)) continue;
-      seen.add(entry.id);
-      const appearance = entry.appearance;
-      yield {
-        id: entry.id,
-        name: typeof entry.name === "string" ? entry.name : "",
-        appearance:
-          typeof appearance === "object" && appearance !== null && !Array.isArray(appearance)
-            ? {
-                icon: typeof appearance.icon === "string" ? appearance.icon : null,
-                color: typeof appearance.color === "string" ? appearance.color : null,
-              }
-            : null,
-      };
+    for (const entry of result.data) {
+      const section = officialSectionDefinition(entry);
+      if (!section || seen.has(section.id))
+        throw new Error("Invalid or duplicate official Thread section");
+      seen.add(section.id);
+      yield section;
     }
-    const next = typeof result.nextCursor === "string" ? result.nextCursor : null;
-    if (next === null || next === cursor) break;
+    const next = result.nextCursor;
+    if (next === null) return;
+    if (!next || cursors.has(next))
+      throw new Error("Official Thread section pagination did not advance");
+    cursors.add(next);
     cursor = next;
   }
+  throw new Error("Official Thread section pagination exceeded its request bound");
 }
 
 /** The official definition of a section, which External placements copy. */
@@ -272,9 +406,17 @@ export async function listSectionThreads(input: {
 }
 
 export type SectionMoveOutcome =
-  | { kind: "forward" }
-  /** `persistError`: the official move applied but External anchors could not be saved. */
+  | { kind: "forward"; confirm(): Promise<boolean> }
+  | { kind: "unchanged" }
+  /** Legacy native moves report native success even if External anchors could not be saved. */
   | { kind: "moved"; persistError?: unknown }
+  | {
+      kind: "needs-readback";
+      nativeConfirmed: boolean;
+      cause: unknown;
+      /** Under the owner's section lock, verify native order before saving any anchors. */
+      recover(loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>): Promise<boolean>;
+    }
   | { kind: "error"; error: JsonObject };
 
 function officialError(response: JsonObject): JsonObject | null {
@@ -282,12 +424,95 @@ function officialError(response: JsonObject): JsonObject | null {
   return typeof error === "object" && error !== null && !Array.isArray(error) ? error : null;
 }
 
+function sameSectionAnchors(
+  actual: readonly StoredSectionPlacementV1[],
+  expected: readonly StoredSectionPlacementV1[],
+): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every((placement, index) => {
+      const original = expected[index];
+      return (
+        original !== undefined &&
+        placement.hostThreadId === original.hostThreadId &&
+        placement.section.id === original.section.id &&
+        placement.enteredAt === original.enteredAt &&
+        placement.beforeThreadId === original.beforeThreadId
+      );
+    })
+  );
+}
+
+async function officialThreadIsUnsectioned(
+  requestOfficial: OfficialRequest,
+  threadId: string,
+): Promise<boolean> {
+  const response = await requestOfficial("thread/read", { threadId, includeTurns: false });
+  const thread = object(response.result) ? response.result.thread : undefined;
+  if (officialError(response) || !object(thread) || thread.id !== threadId) {
+    throw new ThreadSectionError("Could not confirm the moved Thread's section");
+  }
+  return thread.section === null;
+}
+
+function sectionAnchorRecovery(input: {
+  expectedNativeOrders: ReadonlyMap<string, readonly string[]>;
+  unsectionedThreadId: string | null;
+  previous: readonly StoredSectionPlacementV1[];
+  planned: readonly StoredSectionPlacementV1[];
+  requestOfficial: OfficialRequest;
+  savePlacements(placements: StoredSectionPlacementV1[]): Promise<unknown>;
+}): (loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>) => Promise<boolean> {
+  const { expectedNativeOrders, unsectionedThreadId, requestOfficial, savePlacements } = input;
+  const affected = (placement: StoredSectionPlacementV1) =>
+    expectedNativeOrders.has(placement.section.id);
+  const previous = input.previous.filter(affected);
+  const planned = input.planned.filter(affected);
+  return async (loadPlacements) => {
+    for (const [sectionId, expected] of expectedNativeOrders) {
+      const actual = await officialSectionOrder({
+        sectionId,
+        requestOfficial,
+        requireComplete: true,
+      });
+      if (actual.length !== expected.length || actual.some((id, index) => id !== expected[index])) {
+        return false;
+      }
+    }
+    if (
+      unsectionedThreadId !== null &&
+      !(await officialThreadIsUnsectioned(requestOfficial, unsectionedThreadId))
+    )
+      return false;
+    const placements = await loadPlacements();
+    const current = placements.filter(affected);
+    const alreadyApplied = sameSectionAnchors(current, planned);
+    if (!alreadyApplied && !sameSectionAnchors(current, previous)) return false;
+    if (alreadyApplied) return true;
+    const anchors = new Map(
+      planned.map((placement) => [placement.hostThreadId, placement.beforeThreadId]),
+    );
+    const next: StoredSectionPlacementV1[] = [];
+    for (const placement of placements) {
+      if (!affected(placement)) {
+        next.push(placement);
+        continue;
+      }
+      const beforeThreadId = anchors.get(placement.hostThreadId);
+      if (beforeThreadId !== undefined) next.push({ ...placement, beforeThreadId });
+    }
+    await savePlacements(next);
+    return true;
+  };
+}
+
 /**
  * Applies one `thread/section/move`. An official move that touches no External placement is
- * forwarded unchanged; otherwise the official order and the External anchors change together.
+ * forwarded unchanged. An exact custom move may only need to save External anchors.
  */
 export async function moveThreadSection(input: {
   move: DecodedThreadSectionMoveRequest;
+  custom?: { currentSectionId: string | null; destination?: StoredThreadSection };
   movingExternal: boolean;
   externalThreadIds: ReadonlySet<string>;
   placements: readonly StoredSectionPlacementV1[];
@@ -295,19 +520,39 @@ export async function moveThreadSection(input: {
   savePlacements(placements: StoredSectionPlacementV1[]): Promise<unknown>;
   now: Date;
 }): Promise<SectionMoveOutcome> {
-  const { move, requestOfficial } = input;
+  const { move, requestOfficial, custom } = input;
   const isExternal = (threadId: string) => input.externalThreadIds.has(threadId);
   if (
+    !custom &&
     !input.movingExternal &&
     input.placements.length === 0 &&
     !(move.beforeThreadId !== null && isExternal(move.beforeThreadId))
   ) {
-    return { kind: "forward" };
+    return {
+      kind: "forward",
+      async confirm() {
+        const { threadId, sectionId, beforeThreadId } = move;
+        if (sectionId === null)
+          return beforeThreadId === null && officialThreadIsUnsectioned(requestOfficial, threadId);
+        const order = await officialSectionOrder({
+          sectionId,
+          requestOfficial,
+          requireComplete: true,
+        });
+        const index = order.indexOf(threadId);
+        return index >= 0 && (order[index + 1] ?? null) === beforeThreadId;
+      },
+    };
   }
   try {
     let currentSectionId: string | null;
     let destination: StoredThreadSection | null = null;
-    if (input.movingExternal) {
+    if (custom) {
+      currentSectionId = custom.currentSectionId;
+      if (move.sectionId !== null)
+        destination =
+          custom.destination ?? (await findOfficialSection(requestOfficial, move.sectionId));
+    } else if (input.movingExternal) {
       currentSectionId =
         input.placements.find((placement) => placement.hostThreadId === move.threadId)?.section
           .id ?? null;
@@ -325,12 +570,35 @@ export async function moveThreadSection(input: {
       if (move.sectionId !== null) destination = { id: move.sectionId, name: "", appearance: null };
     }
     const orders = new Map<string, string[]>();
+    const nativeOrders = input.movingExternal ? null : new Map<string, string[]>();
     for (const sectionId of new Set([currentSectionId, move.sectionId])) {
       if (sectionId === null) continue;
+      const native = await officialSectionOrder({
+        sectionId,
+        requestOfficial,
+        requireComplete: custom !== undefined || nativeOrders !== null,
+      });
+      nativeOrders?.set(sectionId, native);
       orders.set(
         sectionId,
-        await sectionOrder({ sectionId, placements: input.placements, requestOfficial }),
+        mergeSectionOrder(
+          native,
+          input.placements.filter((placement) => placement.section.id === sectionId),
+        ),
       );
+    }
+    if (custom && currentSectionId !== null) {
+      const order = orders.get(currentSectionId) ?? [];
+      const index = order.indexOf(move.threadId);
+      if (index < 0) throw new ThreadSectionError("Moved Thread is missing from the section order");
+      if (currentSectionId === move.sectionId) {
+        if (move.beforeThreadId !== null && !order.includes(move.beforeThreadId)) {
+          throw new ThreadSectionError(
+            `before thread ${move.beforeThreadId} is not in section ${move.sectionId}`,
+          );
+        }
+        if ((order[index + 1] ?? null) === move.beforeThreadId) return { kind: "unchanged" };
+      }
     }
     const plan = planSectionMove({
       move,
@@ -342,24 +610,65 @@ export async function moveThreadSection(input: {
       isExternal,
       now: input.now,
     });
-    if (!input.movingExternal) {
-      const response = await requestOfficial("thread/section/move", {
-        threadId: move.threadId,
-        sectionId: move.sectionId,
-        beforeThreadId: plan.officialBeforeThreadId,
-      });
-      const error = officialError(response);
-      if (error) return { kind: "error", error };
-      // The official Thread moved; failing now would misreport it. Stale anchors only
-      // shift External Threads within the section until the next move re-anchors them.
-      try {
-        await input.savePlacements(plan.placements);
-      } catch (persistError) {
-        return { kind: "moved", persistError };
-      }
+    if (!nativeOrders) {
+      await input.savePlacements(plan.placements);
       return { kind: "moved" };
     }
-    await input.savePlacements(plan.placements);
+    const currentNativeOrder =
+      currentSectionId === null ? undefined : nativeOrders.get(currentSectionId);
+    const currentIndex = currentNativeOrder?.indexOf(move.threadId) ?? -1;
+    const nativeMove =
+      !custom ||
+      currentSectionId !== move.sectionId ||
+      (currentSectionId !== null &&
+        (currentIndex < 0 ||
+          (currentNativeOrder?.[currentIndex + 1] ?? null) !== plan.officialBeforeThreadId));
+    const readBack = (nativeConfirmed: boolean, cause: unknown): SectionMoveOutcome => {
+      for (const [sectionId, order] of nativeOrders) {
+        const current = order.indexOf(move.threadId);
+        if (current >= 0) order.splice(current, 1);
+        if (sectionId === move.sectionId) {
+          const before = plan.officialBeforeThreadId;
+          order.splice(before === null ? order.length : order.indexOf(before), 0, move.threadId);
+        }
+      }
+      return {
+        kind: "needs-readback",
+        nativeConfirmed,
+        cause,
+        recover: sectionAnchorRecovery({
+          expectedNativeOrders: nativeOrders,
+          unsectionedThreadId: move.sectionId === null ? move.threadId : null,
+          previous: input.placements,
+          planned: plan.placements,
+          requestOfficial,
+          savePlacements: input.savePlacements,
+        }),
+      };
+    };
+    if (nativeMove) {
+      try {
+        const response = await requestOfficial("thread/section/move", {
+          threadId: move.threadId,
+          sectionId: move.sectionId,
+          beforeThreadId: plan.officialBeforeThreadId,
+        });
+        const error = officialError(response);
+        if (error) return { kind: "error", error };
+      } catch (error) {
+        return readBack(false, error);
+      }
+    }
+    if (custom && sameSectionAnchors(input.placements, plan.placements)) {
+      return { kind: nativeMove ? "moved" : "unchanged" };
+    }
+    try {
+      await input.savePlacements(plan.placements);
+    } catch (persistError) {
+      if (!nativeMove) throw persistError;
+      if (!custom) return { kind: "moved", persistError };
+      return readBack(true, persistError);
+    }
     return { kind: "moved" };
   } catch (error) {
     if (error instanceof ThreadSectionError)

@@ -31,9 +31,10 @@ export class ChRealtime {
   private urgent = new Set<string>();
   private running = new Set<string>();
   private timers = new Map<string, { handle: ReturnType<typeof setTimeout>; fireAt: number }>();
-  private catalogReason: "hello" | "changed" = "changed";
+  private catalogReason: "hello" | "changed" | undefined;
   private readonly threadDebounceMs: number;
   private closed = false;
+  private sectionsDirty = false;
   private online = false;
   private readonly unsubscribe: () => void;
   constructor(
@@ -41,7 +42,8 @@ export class ChRealtime {
     private readonly callbacks: {
       thread: (id: string) => Promise<unknown>;
       usage: (id: string) => void;
-      catalog: (reason?: "hello" | "changed") => Promise<void>;
+      catalog: (reason: "hello" | "changed", requireSections: boolean) => Promise<void>;
+      sections?: () => Promise<void>;
       archived?: (id: string, archived: boolean) => void;
       connection: (online: boolean) => void;
       /** `full` is the hello's `reset`: the cursor could not be replayed. */
@@ -82,9 +84,13 @@ export class ChRealtime {
     if (event.type === "hello") {
       this.callbacks.reset(event.cursor.epoch, event.reset);
       for (const id of this.watched.keys()) this.schedule(id, DEFAULT_DEBOUNCE_MS);
-      if (!this.dirty.has("")) this.catalogReason = "hello";
+      this.catalogReason ??= "hello";
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "projects-changed") {
+      this.catalogReason = "changed";
+      this.schedule("", DEFAULT_DEBOUNCE_MS);
+    } else if (event.type === "sections-changed" && this.callbacks.sections) {
+      this.sectionsDirty = true;
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "changed") {
       if (
@@ -138,17 +144,19 @@ export class ChRealtime {
     if (this.closed || !this.online || (id && !this.watched.has(id))) return;
     this.running.add(id);
     const catalogReason = id ? undefined : this.catalogReason;
-    if (!id) this.catalogReason = "changed";
+    if (!id) this.catalogReason = undefined;
+    const sections = !id && this.sectionsDirty ? this.callbacks.sections : undefined;
+    if (sections) this.sectionsDirty = false;
     let retryDelay: number | undefined;
     try {
       if (id) await this.callbacks.thread(id);
-      else await this.callbacks.catalog(catalogReason);
+      else if (catalogReason) await this.callbacks.catalog(catalogReason, Boolean(sections));
+      else if (sections) await sections();
     } catch (error) {
+      if (sections) this.sectionsDirty = true;
       this.callbacks.error(id, error);
       this.dirty.add(id);
-      if (!id && catalogReason === "hello" && this.catalogReason === "changed") {
-        this.catalogReason = "hello";
-      }
+      if (catalogReason) this.catalogReason ??= catalogReason;
       retryDelay = 1000;
     } finally {
       this.running.delete(id);

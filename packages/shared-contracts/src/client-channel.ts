@@ -16,6 +16,56 @@ export const CLIENT_CHANNEL_VERSION = 1;
 export const CLIENT_REQUEST_LIMIT_BYTES = 128 * 1024 * 1024;
 /** Permit an external Host to start an input admitted to its empty, idle queue. */
 export const THREAD_QUEUE_START_IF_EMPTY_PARAM = "codexhostQueueStartIfEmpty";
+export const THREAD_SECTION_CAPABILITY = "threadSectionsV1";
+const threadSectionName = z.string().trim().min(1);
+const threadSectionId = z.string().min(1);
+const clientThreadSectionAppearanceSchema = z
+  .object({ icon: z.string().nullable(), color: z.string().nullable() })
+  .strict()
+  .nullable();
+export type ClientThreadSectionAppearance = z.infer<typeof clientThreadSectionAppearanceSchema>;
+export const CLIENT_THREAD_SECTION_MUTATIONS = {
+  create: {
+    method: "codexhost/thread/sections/create",
+    params: z.object({ name: threadSectionName }).strict(),
+  },
+  update: {
+    method: "codexhost/thread/sections/update",
+    params: z
+      .object({
+        sectionId: threadSectionId,
+        name: threadSectionName,
+        appearance: clientThreadSectionAppearanceSchema.optional(),
+      })
+      .strict(),
+  },
+  delete: {
+    method: "codexhost/thread/sections/delete",
+    params: z.object({ sectionId: threadSectionId }).strict(),
+  },
+} as const;
+export const clientThreadSectionMutationResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("unknown") }).strict(),
+  z
+    .object({
+      status: z.literal("confirmed"),
+      sectionId: threadSectionId,
+      section: z
+        .object({
+          id: threadSectionId,
+          name: z.string().min(1),
+          appearance: clientThreadSectionAppearanceSchema,
+        })
+        .strict()
+        .nullable(),
+      syncPending: z.boolean(),
+    })
+    .strict(),
+]);
+export type ClientThreadSectionMutationResult = z.infer<
+  typeof clientThreadSectionMutationResultSchema
+>;
+
 export const CLIENT_CHANNEL_METHODS = [
   "codexhost/skills/list",
   "codexhost/voice/status",
@@ -59,6 +109,9 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",
   "codexhost/thread/sections/move",
+  CLIENT_THREAD_SECTION_MUTATIONS.create.method,
+  CLIENT_THREAD_SECTION_MUTATIONS.update.method,
+  CLIENT_THREAD_SECTION_MUTATIONS.delete.method,
   "codexhost/thread/pins/set",
   "codexhost/harness/plugins/list",
   "codexhost/harness/inspect",
@@ -105,11 +158,14 @@ export const CLIENT_CHANNEL_METHODS = [
 /** Native custom sections in the order returned by the official app-server. */
 export const clientThreadSectionsSchema = z
   .object({
+    [THREAD_SECTION_CAPABILITY]: z.literal(true).optional(),
+    complete: z.literal(false).optional(),
     sections: z.array(
       z
         .object({
           id: z.string().min(1),
           name: z.string().min(1),
+          appearance: clientThreadSectionAppearanceSchema.optional(),
           threads: z.array(jsonObjectSchema),
         })
         .strict(),
@@ -121,8 +177,11 @@ export const clientThreadSectionMoveSchema = z
   .object({
     threadId: z.string().min(1).max(1_024),
     sectionId: z.string().min(1).max(1_024).nullable(),
+    beforeThreadId: z.string().min(1).max(1_024).nullable().optional(),
+    expectedSourceSectionId: z.string().min(1).max(1_024).optional(),
   })
-  .strict();
+  .strict()
+  .refine((move) => move.expectedSourceSectionId === undefined || move.sectionId === null);
 
 /** Canonical external pin membership, shared with native Thread sections. */
 export const clientThreadPinsSchema = z.object({ threadIds: z.array(z.string().min(1)) }).strict();
@@ -187,6 +246,7 @@ export const clientChannelEventSchema = z.discriminatedUnion("type", [
     harnessId: z.string().min(1),
   }),
   z.object({ type: z.literal("display-settings-changed"), cursor: clientChannelCursorSchema }),
+  z.object({ type: z.literal("sections-changed"), cursor: clientChannelCursorSchema }),
   z.object({
     type: z.literal("preferences-changed"),
     cursor: clientChannelCursorSchema,

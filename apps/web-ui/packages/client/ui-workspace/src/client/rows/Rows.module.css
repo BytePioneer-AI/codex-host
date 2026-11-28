@@ -747,6 +747,26 @@
   color: var(--dsw-alias-label-caption);
 }
 
+/* Honest in-flight section-move feedback: keeps the row at its authoritative
+   position while signaling pending submission without optimistic reordering. */
+.sessionRow.sectionMoving {
+  cursor: progress;
+}
+
+.sessionRow.sectionMoving .sessionMain {
+  opacity: 0.62;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sessionRow.sectionMoving .sessionMain {
+    transition: opacity 120ms var(--ds-ease-in-out);
+  }
+}
+
+.sectionMovingSpinner {
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .dot {
   flex: none;
 }

@@ -71,6 +71,24 @@ Desktop 的原生预热池按工作目录匹配。每次创建使用独立的消
 - `thread/queue/*`：官方 Thread 原样转发；外部 Thread 的 list/add/update/delete/reorder/start 由 Host 管理真实队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)。不支持的外部队列方法返回 `-32076`。
 - 其他带外部 `threadId` 的 `thread/*` 请求返回 `-32076`。例外是 `thread/attachment/list`、`thread/settings/update`：不带 codexhost 渲染扩展的官方客户端（如 SSH 连接的 ChatGPT iOS app）打开 Thread 或发送前会调用它们，因此按官方结构返回空结果。`thread/settings/update` 只确认、不应用，权限仍由 Harness 自己的权限模式决定。
 
+Web 的 `workspace/moveSessionToSection.beforeSessionId` 对应 `codexhost/thread/sections/move.beforeThreadId`。
+
+| 目标     | 省略锚点   | 显式 `null` | 会话 ID          |
+| -------- | ---------- | ----------- | ---------------- |
+| 同一分区 | 保持原位   | 移到末尾    | 插到目标成员之前 |
+| 其他分区 | 追加到末尾 | 追加到末尾  | 插到目标成员之前 |
+| 无分区   | 解除归属   | 解除归属    | 拒绝             |
+
+拖出自定义分区时，Web 额外传递 `expectedSourceSectionId`。Owner 在串行移动中读回当前归属并与该分区比较；不一致时不写入。匹配同一来源的部分写入恢复仍需验证顺序和外部锚点。
+
+锚点必须是目标分区内的其他成员。Host 按完整的官方与外部成员顺序规划移动，无法确认同一 owner 的完整顺序时拒绝写入。移动确认后，Web 优先读取 Host 的分区快照并通过 `workspace/follow` 发布，保留项目归属；遇到未知成员或定义变化时刷新目录。
+
+Desktop 的原生分区移动和置顶写入由实际 Owner 串行处理。共享连接只承接其拥有的 Thread；共用官方 Runtime 和 Mapping Store 的连接由同一 Owner 串行处理原生及外部 Thread。只有在未向共享 Owner 提交写入、且本地官方 app-server 确认目标及显式锚点归属时，才走本地原生路径。共享写入明确拒绝或回执丢失时不转发第二次。
+
+原生写入丢失回执时，Host 先读回官方分区顺序（解除归属时确认 Thread 已无分区）。混合排序时，只有受影响的官方顺序与计划一致且外部锚点未被其他写入改动，才补齐外部顺序。不能确认时返回结果未知，不重放原生写入。
+
+原生 Thread 移入或移出分区后，若外部锚点未能保存，Host 在当前进程保留恢复计划。重试同一目标且未指定不同锚点时，即使 Thread 已到达目标，也先校验官方顺序和外部锚点；补写确认后才返回成功，不再次提交原生移动。
+
 ## 官方自动导入的镜像 Thread
 
 官方 Codex 开启 `external-agent-import-sync-enabled` 时，会把 `~/.claude/projects` 等位置的 Harness 原生会话导入为一个新的官方 Thread，登记在 `$CODEX_HOME/external_agent_session_imports.json`。这个 Thread 与 codexhost 已列出的外部 Thread 指向同一份原生会话，却是不同的 ID，没有父子关系，会作为多余的顶层会话出现，委派产生的子 Thread 尤其明显。

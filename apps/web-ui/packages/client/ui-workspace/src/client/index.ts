@@ -72,11 +72,20 @@ import { ArchiveChildrenDialog } from "./session-actions/ArchiveChildrenDialog.t
 import { derive } from "./session-actions/derived.ts";
 import {
   MoveThreadSectionDialog,
+  MoveThreadSectionDownMenuItem,
   MoveThreadSectionMenuItem,
+  MoveThreadSectionUpMenuItem,
+  RemoveFromThreadSectionMenuItem,
   type ThreadSectionMenuInjected,
   type ThreadSectionMoveInjected,
   type ThreadSectionMoveRequest,
 } from "./session-actions/MoveThreadSection.tsx";
+import { createSectionMoveCoordinator } from "./rows/section-dnd.ts";
+import {
+  ManageThreadSectionDialog,
+  type ThreadSectionManageInjected,
+  type ThreadSectionManageRequest,
+} from "./session-actions/ManageThreadSection.tsx";
 import { ForkSessionMenuItem } from "./session-actions/ForkSession.tsx";
 import {
   MarkChildThreadsReadMenuItem,
@@ -273,24 +282,74 @@ export function apply(ctx: Context): void {
               !row.blank &&
               row.origin !== "subagent" &&
               !row.projectionValues?.remoteHost &&
-              row.projectionValues?.harnessIdentity?.id === "codex",
+              Boolean(row.projectionValues?.harnessIdentity?.id),
           )
           .map((row) => row.id),
       ),
   );
   const threadSectionMove = createSnapshotStore<ThreadSectionMoveRequest | null>(null);
-  const threadSectionMenu = (): ThreadSectionMenuInjected => ({
-    hooks: { nativeThreads: nativeThreadIds, sectionWorkspace: workspaces.list },
-    requestMove: (request) => threadSectionMove.set(request),
-  });
-  const threadSectionDialog = (): ThreadSectionMoveInjected => ({
-    hooks: { threadSectionMove },
-    dismiss: () => threadSectionMove.set(null),
-    move: (sessionId, sectionId) => {
+  const scopedSessionIdsStore = createSnapshotStore<ReadonlySet<SessionId> | null>(null);
+  const archivedFilterSource = derive(
+    viewInstance,
+    (snapshot) => snapshot.archivedFilter ?? "default",
+  );
+  const sectionMoveCoordinator = createSectionMoveCoordinator({
+    execute: (sessionId, sectionId, beforeSessionId, expectedSourceSectionId) => {
       if (!workspaces.moveSessionToSection)
         return Promise.reject(new Error("Section moves are unavailable"));
-      return workspaces.moveSessionToSection(sessionId, sectionId);
+      return workspaces.moveSessionToSection(
+        sessionId,
+        sectionId,
+        beforeSessionId,
+        expectedSourceSectionId,
+      );
     },
+    onError: (reason) => {
+      notify({
+        kind: "sectionMoveFailed",
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
+    },
+    onUnknown: () => notify({ kind: "sectionMoveUnknown" }),
+  });
+  const threadSectionMenu = (): ThreadSectionMenuInjected => ({
+    hooks: {
+      nativeThreads: nativeThreadIds,
+      sectionWorkspace: workspaces.list,
+      sectionSessions: sessions.list,
+      scopedSessionIds: scopedSessionIdsStore,
+      archivedFilter: archivedFilterSource,
+      movingSectionSessions: sectionMoveCoordinator.movingSessionIds,
+    },
+    requestMove: (request) => threadSectionMove.set(request),
+    moveSession: (payload) => sectionMoveCoordinator.move(payload),
+  });
+  const threadSectionDialog = (): ThreadSectionMoveInjected => ({
+    hooks: {
+      threadSectionMove,
+      sectionWorkspace: workspaces.list,
+      movingSectionSessions: sectionMoveCoordinator.movingSessionIds,
+    },
+    dismiss: () => threadSectionMove.set(null),
+    move: (payload) => sectionMoveCoordinator.move(payload, { notifyOnError: false }),
+  });
+  const threadSectionManage = createSnapshotStore<ThreadSectionManageRequest | null>(null);
+  const threadSectionManageDialog = (): ThreadSectionManageInjected => ({
+    hooks: { threadSectionManage },
+    dismiss: () => threadSectionManage.set(null),
+    createSection: async (name) => {
+      if (!workspaces.createThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.createThreadSection(name);
+    },
+    updateSection: async (sectionId, name) => {
+      if (!workspaces.updateThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.updateThreadSection(sectionId, name);
+    },
+    deleteSection: async (sectionId) => {
+      if (!workspaces.deleteThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.deleteThreadSection(sectionId);
+    },
+    notifySyncPending: () => notify({ kind: "sectionSyncPending" }),
   });
   const pinInjected = (): PinSessionInjected => ({
     hooks: { pinned: pinnedSet, archived: archivedSet },
@@ -488,6 +547,18 @@ export function apply(ctx: Context): void {
       await uiWorkspace.unarchiveSession(sessionId);
     },
     createWorkspace: (input) => workspaces.create(input),
+    requestManageThreadSection:
+      workspaces.createThreadSection &&
+      workspaces.updateThreadSection &&
+      workspaces.deleteThreadSection
+        ? (request) => threadSectionManage.set(request)
+        : undefined,
+    moveSessionToSection: workspaces.moveSessionToSection
+      ? (payload) => sectionMoveCoordinator.move(payload)
+      : undefined,
+    setScopedSessionIds: (ids) => {
+      scopedSessionIdsStore.set(ids);
+    },
     requestSearch: shortcutControls.search,
     requestAddWorkspace: shortcutControls.add,
     closeAddWorkspace: shortcutControls.closeAdd,
@@ -501,6 +572,8 @@ export function apply(ctx: Context): void {
       hostInfo,
       workspaceShortcuts: shortcutControls.state,
       shortcuts: ctx.shortcuts.catalog,
+      nativeThreads: nativeThreadIds,
+      movingSectionSessions: sectionMoveCoordinator.movingSessionIds,
     },
   });
   const pickerInjected = (): WorkspacePickerInjected => ({
@@ -561,6 +634,36 @@ export function apply(ctx: Context): void {
         inject: threadSectionMenu,
       },
       MoveThreadSectionMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "remove-from-section",
+        order: 155,
+        locale: NS,
+        inject: threadSectionMenu,
+      },
+      RemoveFromThreadSectionMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "move-section-up",
+        order: 160,
+        locale: NS,
+        inject: threadSectionMenu,
+      },
+      MoveThreadSectionUpMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "move-section-down",
+        order: 165,
+        locale: NS,
+        inject: threadSectionMenu,
+      },
+      MoveThreadSectionDownMenuItem,
     );
     yield ctx.slots.register(
       {
@@ -655,6 +758,15 @@ export function apply(ctx: Context): void {
         inject: threadSectionDialog,
       },
       MoveThreadSectionDialog,
+    );
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "workspace.manage-thread-section",
+        locale: NS,
+        inject: threadSectionManageDialog,
+      },
+      ManageThreadSectionDialog,
     );
     yield ctx.slots.register(
       {

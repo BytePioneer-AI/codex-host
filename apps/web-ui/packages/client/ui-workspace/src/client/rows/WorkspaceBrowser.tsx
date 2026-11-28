@@ -45,6 +45,7 @@ import {
   IconFolderCloseRegular,
   IconGlobeOutlineRegular,
   IconNewChatOutlineRegular,
+  IconPlusOutlineRegular,
   IconProjectAddOutlineRegular,
   IconQueueOutlineRegular,
   IconSearchOutlineRegular,
@@ -67,6 +68,10 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
+import {
+  ThreadSectionActions,
+  type ThreadSectionManageRequest,
+} from "../session-actions/ManageThreadSection.tsx";
 import type {
   ArchivedFilter,
   GroupNode,
@@ -95,12 +100,25 @@ import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx"
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
-import { PinnedSection } from "./PinnedSection.tsx";
+import { PinnedSection, type SectionDragInteraction } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading, type SectionHeadingProps } from "./SectionHeading.tsx";
 import { MoveSectionForm } from "./MoveSectionForm.tsx";
 import { HostScopeTabBar } from "./HostScopeFilter.tsx";
+import {
+  canCommitSectionDrop,
+  FINE_POINTER_MEDIA_QUERY,
+  isFinePointerDevice,
+  localReorderGapTarget,
+  isManageableCustomSection,
+  isSectionMovableSession,
+  resolveSectionDropMove,
+  type SectionDragState,
+  type SectionDropTarget,
+  type SectionMoveOutcome,
+  type SectionMovePayload,
+} from "./section-dnd.ts";
 import {
   APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
@@ -158,6 +176,220 @@ function sanitizeSearchQuery(value: string): string {
   const next = withoutNul.charCodeAt(end);
   if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
   return withoutNul.slice(0, end);
+}
+
+function useFinePointer(): boolean {
+  const [fine, setFine] = useState<boolean>(isFinePointerDevice);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(FINE_POINTER_MEDIA_QUERY);
+    setFine(media.matches);
+    const onChange = (event: MediaQueryListEvent): void => {
+      setFine(event.matches);
+    };
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", onChange);
+      return () => {
+        media.removeEventListener("change", onChange);
+      };
+    }
+  }, []);
+  return fine;
+}
+
+function useSectionDrag({
+  enabled,
+  nativeSections,
+  visibleSectionRows,
+  nativeThreadIds,
+  pinnedSessionIds,
+  archivedSessionIds,
+  moveSessionToSection,
+  onCancelLocalDrag,
+}: {
+  enabled: boolean;
+  nativeSections: readonly WorkspaceThreadSection[];
+  visibleSectionRows: ReadonlyMap<string, readonly SessionId[]>;
+  nativeThreadIds: ReadonlySet<SessionId>;
+  pinnedSessionIds: readonly SessionId[];
+  archivedSessionIds: readonly SessionId[];
+  moveSessionToSection?: (payload: SectionMovePayload) => Promise<SectionMoveOutcome>;
+  onCancelLocalDrag: () => void;
+}) {
+  const [sectionDrag, setSectionDrag] = useState<SectionDragState | null>(null);
+  const stateRef = useRef<SectionDragState | null>(null);
+  const committedRef = useRef(false);
+  const cancelledRef = useRef(false);
+  const cancelLocalRef = useRef(onCancelLocalDrag);
+
+  const setState = (next: SectionDragState | null): void => {
+    stateRef.current = next;
+    setSectionDrag(next);
+  };
+
+  const active = enabled && sectionDrag !== null;
+
+  useLayoutEffect(() => {
+    cancelLocalRef.current = onCancelLocalDrag;
+    if (enabled || stateRef.current === null) return;
+    cancelledRef.current = true;
+    stateRef.current = null;
+    setSectionDrag(null);
+    cancelLocalRef.current();
+  }, [enabled, onCancelLocalDrag]);
+
+  useEffect(() => {
+    if (!active) return;
+    const cancel = (): void => {
+      cancelledRef.current = true;
+      setState(null);
+      cancelLocalRef.current();
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") cancel();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", cancel);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", cancel);
+    };
+  }, [active]);
+
+  const canDragRow = (node: SessionNode, remote = false): boolean =>
+    enabled &&
+    isSectionMovableSession({
+      sessionId: node.id,
+      nativeThreadIds,
+      pinnedSessionIds,
+      archivedSessionIds,
+      blank: node.blank,
+      archived: node.archived,
+      pinned: node.pinned,
+      remote: remote || Boolean(node.remote),
+      depth: node.tree?.depth ?? 0,
+    });
+
+  const start = (sessionId: SessionId, sourceSectionId: string | null): void => {
+    if (!enabled) return;
+    committedRef.current = false;
+    cancelledRef.current = false;
+    setState({ source: { sessionId, sourceSectionId }, over: null });
+  };
+
+  const hover = (target: SectionDropTarget): void => {
+    const current = stateRef.current;
+    if (current === null || cancelledRef.current) return;
+    if (target.kind === "unsectioned" && current.source.sourceSectionId === null) return;
+    const prev = current.over;
+    if (
+      prev !== null &&
+      prev.kind === target.kind &&
+      (target.kind === "unsectioned" ||
+        (target.kind === "section-end" &&
+          prev.kind === "section-end" &&
+          prev.sectionId === target.sectionId) ||
+        (target.kind === "section-row" &&
+          prev.kind === "section-row" &&
+          prev.sectionId === target.sectionId &&
+          prev.targetSessionId === target.targetSessionId &&
+          prev.half === target.half))
+    ) {
+      return;
+    }
+    setState({ ...current, over: target });
+  };
+
+  const clearHover = (): void => {
+    const current = stateRef.current;
+    if (current === null || current.over === null) return;
+    setState({ ...current, over: null });
+  };
+
+  const commitDrop = (target: SectionDropTarget, dropEffect?: string | null): void => {
+    const current = stateRef.current;
+    if (
+      !enabled ||
+      current === null ||
+      !canCommitSectionDrop({
+        committed: committedRef.current,
+        cancelled: cancelledRef.current,
+        dropEffect,
+      })
+    ) {
+      return;
+    }
+    committedRef.current = true;
+    setState(null);
+    cancelLocalRef.current();
+    const payload = resolveSectionDropMove(
+      current.source,
+      target,
+      nativeSections,
+      visibleSectionRows,
+    );
+    if (payload !== null && moveSessionToSection !== undefined) {
+      void moveSessionToSection(payload);
+    }
+  };
+
+  const end = (): void => {
+    setState(null);
+    committedRef.current = false;
+    cancelledRef.current = false;
+  };
+
+  const interaction: SectionDragInteraction | undefined = enabled
+    ? {
+        active,
+        draggedSessionId: sectionDrag?.source.sessionId ?? null,
+        over: sectionDrag?.over ?? null,
+        canDragRow: (node) => canDragRow(node),
+        startFromSection: (sessionId, sectionId) => {
+          start(sessionId, sectionId);
+        },
+        hoverSectionEnd: (sectionId) => {
+          hover({ kind: "section-end", sectionId });
+        },
+        hoverSectionRow: (sectionId, targetSessionId, half) => {
+          hover({ kind: "section-row", sectionId, targetSessionId, half });
+        },
+        dropSectionEnd: (sectionId, dropEffect) => {
+          commitDrop({ kind: "section-end", sectionId }, dropEffect);
+        },
+        dropSectionRow: (sectionId, targetSessionId, half, dropEffect) => {
+          commitDrop({ kind: "section-row", sectionId, targetSessionId, half }, dropEffect);
+        },
+        clearHover,
+        end,
+      }
+    : undefined;
+
+  return {
+    active,
+    hasSectionTarget: active && sectionDrag.over !== null,
+    canFinishLocalDrop: (copied?: boolean) =>
+      canCommitSectionDrop({
+        committed: committedRef.current,
+        cancelled: cancelledRef.current,
+        dropEffect: copied ? "copy" : null,
+      }),
+    canDropToUnsectioned: active && sectionDrag.source.sourceSectionId !== null,
+    isUnsectionedTarget: active && sectionDrag.over?.kind === "unsectioned",
+    canDragRow,
+    startFromUnsectioned: (sessionId: SessionId) => {
+      start(sessionId, null);
+    },
+    hoverUnsectioned: () => {
+      hover({ kind: "unsectioned" });
+    },
+    dropUnsectioned: (dropEffect?: string | null) => {
+      commitDrop({ kind: "unsectioned" }, dropEffect);
+    },
+    clearHover,
+    end,
+    interaction,
+  };
 }
 
 /**
@@ -367,6 +599,7 @@ function workspaceGroupHalf(e: {
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
   | "useSessionStatus"
+  | "useMovingSectionSessions"
   | "startSession"
   | "open"
   | "insertWorkspaceBefore"
@@ -417,6 +650,10 @@ type SessionTreeProps = Pick<
     /** Registry-global pin and archive sets plus the archived-visibility choice. */
     rowState: SessionRowState;
     nativeSections: readonly WorkspaceThreadSection[];
+    nativeThreadIds: ReadonlySet<SessionId>;
+    moveSessionToSection?: (payload: SectionMovePayload) => Promise<SectionMoveOutcome>;
+    finePointer: boolean;
+    manageThreadSection?: (request: ThreadSectionManageRequest) => void;
     /** Switch the archived filter back to the default hide-archived view. */
     onLeaveArchivedOnly: () => void;
     /** Open the browser-owned rename dialog for a real Workspace group. */
@@ -480,6 +717,11 @@ function SessionTree({
   ungroupedSessionIds,
   rowState,
   nativeSections,
+  nativeThreadIds,
+  useMovingSectionSessions,
+  moveSessionToSection,
+  finePointer,
+  manageThreadSection,
   onLeaveArchivedOnly,
   workspaceReady,
   canStartProjectless,
@@ -551,8 +793,40 @@ function SessionTree({
     const entry = row ?? tree?.querySelector<HTMLElement>('[data-row-key][tabindex="0"]');
     entry?.focus();
   }, [pinnedWorkspaceIds]);
-  const nativeDragActive = drag !== null || workspaceDrag !== null;
-  useNativeDragAcceptance(nativeDragActive);
+  const forestRoots = useMemo(
+    () => new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node])),
+    [list, rowState, statuses],
+  );
+  const nativeLayout = useMemo(
+    () =>
+      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
+    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
+  );
+  const visibleSectionRows = useMemo(
+    () =>
+      new Map<string, readonly SessionId[]>(
+        nativeLayout.map((entry) => [
+          entry.id,
+          entry.rows.filter((row) => !row.archived && !row.pinned).map((row) => row.id),
+        ]),
+      ),
+    [nativeLayout],
+  );
+  const sectionDrag = useSectionDrag({
+    enabled: finePointer && moveSessionToSection !== undefined && nativeSections.length > 0,
+    nativeSections,
+    visibleSectionRows,
+    nativeThreadIds,
+    pinnedSessionIds: rowState.pinnedSessionIds,
+    archivedSessionIds: rowState.archivedSessionIds,
+    moveSessionToSection,
+    onCancelLocalDrag: () => {
+      sessionDropCommitted.current = true;
+      setDrag(null);
+    },
+  });
+  const nativeDragActive = drag !== null || workspaceDrag !== null || sectionDrag.active;
+  useNativeDragAcceptance(workspaceDrag !== null || drag !== null);
   const currentGroup =
     current === undefined || !workspaceReady
       ? undefined
@@ -629,10 +903,6 @@ function SessionTree({
       (key) => groupExpansion[key] ?? (key === UNGROUPED_KEY || ancestorKeys.has(key)),
     );
   }, [groupExpansion, parents, workspaces]);
-  const forestRoots = useMemo(
-    () => new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node])),
-    [list, rowState, statuses],
-  );
   const groups = useMemo(() => {
     const result = deriveGroups(
       list,
@@ -777,11 +1047,6 @@ function SessionTree({
     setGroupExpanded,
     setSectionExpanded,
   ]);
-  const nativeLayout = useMemo(
-    () =>
-      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
-    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
-  );
   const workspacesSectionExpanded = sectionExpanded(sectionExpansion, WORKSPACES_SECTION_KEY);
 
   // Groups with a presentation window reopen at the default limit.
@@ -859,7 +1124,7 @@ function SessionTree({
     if (canExpand) rowKeys.push(`overflow:${group.key}`);
     const workspaceMarker =
       workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
-        ? workspaceDrag.over.half
+        ? (workspaceDrag?.over?.half ?? null)
         : null;
     const canMoveToSection = workspaceId !== undefined && sectionProjects.has(workspaceId);
     const workspaceDragProps =
@@ -1016,6 +1281,33 @@ function SessionTree({
                 "--dsh-workspace-indent": `${workspaceId === undefined ? 0 : depth * 12 + 22}px`,
               } as CSSProperties
             }
+            onDragOver={
+              drag !== null && drag.accountKey === group.key
+                ? (event) => {
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
+                    sectionDrag.clearHover();
+                    if (drag.over?.id !== over.id || drag.over.half !== over.half)
+                      setDrag({ ...drag, over });
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.dataTransfer.dropEffect = "move";
+                  }
+                : undefined
+            }
+            onDrop={
+              drag !== null && drag.accountKey === group.key
+                ? (event) => {
+                    if (event.dataTransfer.dropEffect === "copy") return;
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    sectionDrag.end();
+                    commitSessionDrag(drag, over);
+                  }
+                : undefined
+            }
           >
             <ThreadTreeRows roots={visible.rows}>
               {(node) => {
@@ -1025,41 +1317,68 @@ function SessionTree({
                 const compatibleTarget = sameGroupDrag && drag.pinned === node.pinned;
                 const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
                   node.blank ? "after" : half;
-                const dragProps = {
-                  start: () => {
-                    sessionDropCommitted.current = false;
-                    setDrag({
-                      accountKey: group.key,
-                      sessionId: node.id,
-                      pinned: node.pinned,
-                      over: null,
-                    });
-                  },
-                  active: compatibleTarget,
-                  marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
-                  hover: (half: "before" | "after") => {
-                    /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
-                    setDrag((d) =>
-                      d === null
-                        ? d
-                        : {
-                            ...d,
-                            over: { id: node.id, half: normalizeHalf(half) },
-                          },
-                    );
-                  },
-                  drop: (half: "before" | "after") => {
-                    /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
-                    if (drag === null) return;
-                    commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) });
-                  },
-                  end: (copied?: boolean) => {
-                    if (!copied && drag?.over !== null && drag?.over !== undefined)
-                      commitSessionDrag(drag, drag.over);
-                    else setDrag(null);
-                    sessionDropCommitted.current = false;
-                  },
-                };
+                const canLocalReorder =
+                  workspaceId !== undefined && !group.remote && (node.tree?.depth ?? 0) === 0;
+                const canSectionDragRow = sectionDrag.canDragRow(node, Boolean(group.remote));
+                const dragProps = canLocalReorder
+                  ? {
+                      start: () => {
+                        sessionDropCommitted.current = false;
+                        setDrag({
+                          accountKey: group.key,
+                          sessionId: node.id,
+                          pinned: node.pinned,
+                          over: null,
+                        });
+                        if (canSectionDragRow) sectionDrag.startFromUnsectioned(node.id);
+                        else sectionDrag.end();
+                      },
+                      active: compatibleTarget,
+                      marker:
+                        !sectionDrag.hasSectionTarget && sameGroupDrag && drag.over?.id === node.id
+                          ? drag.over.half
+                          : null,
+                      hover: (half: "before" | "after") => {
+                        sectionDrag.clearHover();
+                        /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
+                        setDrag((d) =>
+                          d === null
+                            ? d
+                            : {
+                                ...d,
+                                over: { id: node.id, half: normalizeHalf(half) },
+                              },
+                        );
+                      },
+                      drop: (half: "before" | "after") => {
+                        /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
+                        sectionDrag.end();
+                        if (drag === null) return;
+                        commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) });
+                      },
+                      end: (copied?: boolean) => {
+                        const canFinish = sectionDrag.canFinishLocalDrop(copied);
+                        sectionDrag.end();
+                        if (canFinish && drag?.over) commitSessionDrag(drag, drag.over);
+                        else setDrag(null);
+                        sessionDropCommitted.current = false;
+                      },
+                    }
+                  : canSectionDragRow
+                    ? {
+                        canDrag: true,
+                        start: () => {
+                          sectionDrag.startFromUnsectioned(node.id);
+                        },
+                        active: false,
+                        marker: null,
+                        hover: () => {},
+                        drop: () => {},
+                        end: () => {
+                          sectionDrag.end();
+                        },
+                      }
+                    : undefined;
                 return (
                   <SessionNodeItem
                     key={node.id}
@@ -1080,11 +1399,8 @@ function SessionTree({
                           }
                         : undefined
                     }
-                    drag={
-                      workspaceId === undefined || group.remote || (node.tree?.depth ?? 0) > 0
-                        ? undefined
-                        : dragProps
-                    }
+                    drag={dragProps}
+                    useMovingSectionSessions={useMovingSectionSessions}
                     t={t}
                   />
                 );
@@ -1162,7 +1478,7 @@ function SessionTree({
     !workspaceListHasLeadingChrome &&
     shownWorkspaceRoots[0]?.workspaceId !== undefined &&
     workspaceDrag?.over?.id === shownWorkspaceRoots[0].workspaceId &&
-    workspaceDrag.over.half === "before";
+    workspaceDrag?.over?.half === "before";
   const groupRows: ReactNode[] = [];
   if (showWorkspacesSection) rowKeys.push(`section:${WORKSPACES_SECTION_KEY}`);
   if (workspacesSectionExpanded) {
@@ -1200,7 +1516,22 @@ function SessionTree({
   const recentRoot = rootGroups.find((group) => group.key === UNGROUPED_KEY);
   if (recentRoot !== undefined) groupRows.push(renderGroup(recentRoot, 0));
   return (
-    <div ref={treeBody} className={clsx(css.treeBody, css.wide)}>
+    <div
+      ref={treeBody}
+      className={clsx(css.treeBody, css.wide)}
+      onDragOver={sectionDrag.active ? sectionDrag.clearHover : undefined}
+      onDragLeave={
+        sectionDrag.active
+          ? (event) => {
+              if (
+                !(event.relatedTarget instanceof Node) ||
+                !event.currentTarget.contains(event.relatedTarget)
+              )
+                sectionDrag.clearHover();
+            }
+          : undefined
+      }
+    >
       {workspaceDropAtListStart && <span className={css.listTopDropIndicator} aria-hidden="true" />}
       <AnimatedRows
         className={clsx(css.list, workspaceDropAtListStart && css.listTopDropActive)}
@@ -1218,11 +1549,13 @@ function SessionTree({
         <PinnedSection
           rows={pinnedRows}
           hasWorkspaces={pinnedGroups.length > 0}
+          sectionDrag={sectionDrag.interaction}
           currentId={current}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
+          useMovingSectionSessions={useMovingSectionSessions}
           revealSessionId={revealSessionId}
           onSessionRevealed={onSessionRevealed}
           expanded={pinnedSectionExpanded}
@@ -1237,11 +1570,14 @@ function SessionTree({
           sections={nativeLayout}
           groupRows={sectionGroupRows}
           projectSectionDrop={projectSectionDrop}
+          manageThreadSection={manageThreadSection}
+          sectionDrag={sectionDrag.interaction}
           currentId={current}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
+          useMovingSectionSessions={useMovingSectionSessions}
           revealSessionId={revealSessionId}
           onSessionRevealed={onSessionRevealed}
           setSectionExpanded={setSectionExpanded}
@@ -1258,19 +1594,54 @@ function SessionTree({
               t={t}
             />
           )}
-        {showWorkspacesSection && (
-          <SectionHeading
-            label={t("section.workspaces")}
-            projectDrop={defaultSectionDrop}
-            expanded={workspacesSectionExpanded}
-            onToggle={() => {
-              if (workspacesSectionExpanded) setAllWorkspacesShown(false);
-              setSectionExpanded(WORKSPACES_SECTION_KEY, !workspacesSectionExpanded);
-            }}
-            rowKey={`section:${WORKSPACES_SECTION_KEY}`}
-          />
+        {(showWorkspacesSection || groupRows.length > 0 || sectionDrag.canDropToUnsectioned) && (
+          <div
+            className={clsx(
+              css.unsectionedZone,
+              sectionDrag.isUnsectionedTarget && css.unsectionedDropTarget,
+            )}
+            data-section-drop-unsectioned=""
+            onDragOver={
+              sectionDrag.canDropToUnsectioned
+                ? (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.dataTransfer.dropEffect = "move";
+                    sectionDrag.hoverUnsectioned();
+                  }
+                : undefined
+            }
+            onDrop={
+              sectionDrag.canDropToUnsectioned
+                ? (event) => {
+                    if (event.dataTransfer.dropEffect === "copy") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    sectionDrag.dropUnsectioned(event.dataTransfer.dropEffect);
+                  }
+                : undefined
+            }
+          >
+            {showWorkspacesSection && (
+              <SectionHeading
+                label={t("section.workspaces")}
+                projectDrop={defaultSectionDrop}
+                expanded={workspacesSectionExpanded}
+                onToggle={() => {
+                  if (workspacesSectionExpanded) setAllWorkspacesShown(false);
+                  setSectionExpanded(WORKSPACES_SECTION_KEY, !workspacesSectionExpanded);
+                }}
+                rowKey={`section:${WORKSPACES_SECTION_KEY}`}
+              />
+            )}
+            {groupRows}
+            {!showWorkspacesSection &&
+              groupRows.length === 0 &&
+              sectionDrag.canDropToUnsectioned && (
+                <div className={css.unsectionedDropHint}>{t("section.unsectioned")}</div>
+              )}
+          </div>
         )}
-        {groupRows}
       </AnimatedRows>
       <span className={css.fade} />
       {sectionMoveId && sectionProjects.has(sectionMoveId) && moveWorkspaceToSection && (
@@ -1309,7 +1680,8 @@ function nativeSectionLayout(
     precomputedRoots ??
     new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const placed = new Set<SessionId>();
-  return sections.map(({ id, name, threadIds }) => {
+  return sections.map((section) => {
+    const { id, threadIds } = section;
     const key = `native-section:${id}`;
     const rows = threadIds.flatMap((threadId) => {
       const row = roots.get(threadId);
@@ -1317,7 +1689,7 @@ function nativeSectionLayout(
       placed.add(threadId);
       return [row];
     });
-    return { id, key, name, rows, expanded: sectionExpanded(expansion, key) };
+    return { id, section, key, rows, expanded: sectionExpanded(expansion, key) };
   });
 }
 
@@ -1335,24 +1707,32 @@ function NativeSections({
   sections,
   groupRows,
   projectSectionDrop,
+  manageThreadSection,
   setSectionExpanded,
   ...rowProps
 }: Omit<
   ComponentProps<typeof PinnedSection>,
-  "rows" | "expanded" | "onToggle" | "customSection" | "children"
+  "rows" | "expanded" | "onToggle" | "customSection" | "headingActions" | "children"
 > & {
   sections: ReturnType<typeof nativeSectionLayout>;
+  manageThreadSection?: SessionTreeProps["manageThreadSection"];
   /** Rendered Workspace groups of each expanded section, keyed by section layout key. */
   groupRows?: ReadonlyMap<string, ReactNode[]>;
   projectSectionDrop?: (sectionId: string) => SectionHeadingProps["projectDrop"];
   setSectionExpanded: SessionTreeProps["setSectionExpanded"];
 }) {
-  return sections.map(({ id, key, name, rows, expanded }) => (
+  return sections.map(({ key, section, rows, expanded }) => (
     <PinnedSection
       key={key}
       {...rowProps}
       rows={rows}
-      customSection={{ key, name, projectDrop: projectSectionDrop?.(id) }}
+      customSection={{ key, section, projectDrop: projectSectionDrop?.(section.id) }}
+      headingActions={
+        manageThreadSection &&
+        isManageableCustomSection(section) && (
+          <ThreadSectionActions section={section} request={manageThreadSection} t={rowProps.t} />
+        )
+      }
       expanded={expanded}
       onToggle={() => setSectionExpanded(key, !expanded)}
     >
@@ -1366,6 +1746,11 @@ function FlatList({
   sessionIds,
   rowState,
   nativeSections,
+  nativeThreadIds,
+  useMovingSectionSessions,
+  moveSessionToSection,
+  finePointer,
+  manageThreadSection,
   onLeaveArchivedOnly,
   useSessionStatus,
   open,
@@ -1400,6 +1785,11 @@ function FlatList({
   | "onSessionRevealed"
   | "rowState"
   | "nativeSections"
+  | "nativeThreadIds"
+  | "useMovingSectionSessions"
+  | "moveSessionToSection"
+  | "finePointer"
+  | "manageThreadSection"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
   | "hostScopeFiltered"
@@ -1434,6 +1824,35 @@ function FlatList({
   const [drag, setDrag] = useState<DragState | null>(null);
   const dropCommitted = useRef(false);
   const [limit, setLimit] = useState(SIDEBAR_PAGE_ROWS);
+  const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
+  const nativeLayout = useMemo(
+    () =>
+      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
+    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
+  );
+  const visibleSectionRows = useMemo(
+    () =>
+      new Map<string, readonly SessionId[]>(
+        nativeLayout.map((entry) => [
+          entry.id,
+          entry.rows.filter((row) => !row.archived && !row.pinned).map((row) => row.id),
+        ]),
+      ),
+    [nativeLayout],
+  );
+  const sectionDrag = useSectionDrag({
+    enabled: finePointer && moveSessionToSection !== undefined && nativeSections.length > 0,
+    nativeSections,
+    visibleSectionRows,
+    nativeThreadIds,
+    pinnedSessionIds: rowState.pinnedSessionIds,
+    archivedSessionIds: rowState.archivedSessionIds,
+    moveSessionToSection,
+    onCancelLocalDrag: () => {
+      dropCommitted.current = true;
+      setDrag(null);
+    },
+  });
   useNativeDragAcceptance(drag !== null);
   const currentId = panelActive
     ? undefined
@@ -1449,14 +1868,22 @@ function FlatList({
     if (nextOrder !== undefined) setSessionOrder(FLAT_SESSION_ORDER_KEY, nextOrder);
   };
   const now = Date.now();
-  const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
-  const nativeLayout = useMemo(
-    () =>
-      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
-    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
-  );
   return (
-    <div className={clsx(css.treeBody, css.wide)}>
+    <div
+      className={clsx(css.treeBody, css.wide)}
+      onDragOver={sectionDrag.active ? sectionDrag.clearHover : undefined}
+      onDragLeave={
+        sectionDrag.active
+          ? (event) => {
+              if (
+                !(event.relatedTarget instanceof Node) ||
+                !event.currentTarget.contains(event.relatedTarget)
+              )
+                sectionDrag.clearHover();
+            }
+          : undefined
+      }
+    >
       <AnimatedRows
         className={clsx(css.list, css.flatList)}
         label={t("section.sessions")}
@@ -1472,16 +1899,18 @@ function FlatList({
           ...threadView.rows(visible.rows).map((row) => `session:${row.id}`),
           ...(hasOverflow || list.hasMore ? ["overflow:flat"] : []),
         ]}
-        ready={list.phase === "ready" && workspaceReady && drag === null}
+        ready={list.phase === "ready" && workspaceReady && drag === null && !sectionDrag.active}
         resetKey={`${animationResetKey}/${limit}/${String(pinnedSectionExpanded)}`}
       >
         <PinnedSection
           rows={pinnedRows}
+          sectionDrag={sectionDrag.interaction}
           currentId={currentId}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
+          useMovingSectionSessions={useMovingSectionSessions}
           revealSessionId={revealSessionId}
           onSessionRevealed={onSessionRevealed}
           expanded={pinnedSectionExpanded}
@@ -1492,109 +1921,183 @@ function FlatList({
         />
         <NativeSections
           sections={nativeLayout}
+          manageThreadSection={manageThreadSection}
+          sectionDrag={sectionDrag.interaction}
           currentId={currentId}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
+          useMovingSectionSessions={useMovingSectionSessions}
           revealSessionId={revealSessionId}
           onSessionRevealed={onSessionRevealed}
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
-        {(pinnedRows.length > 0 || nativeSections.length > 0) && (
-          <SectionHeading label={t("section.sessions")} />
-        )}
-        {rows.length === 0 &&
-          pinnedRows.length === 0 &&
-          nativeSections.length === 0 &&
-          (hostScopeFiltered ? (
-            <div className={css.filterEmptyHint} data-row-key="empty:host-scope">
-              <span>{t("hostScope.emptySessions")}</span>
-              {onResetHostScope !== undefined && (
-                <button type="button" className={css.emptyAction} onClick={onResetHostScope}>
-                  {t("hostScope.showAll")}
-                </button>
-              )}
-            </div>
-          ) : (
-            <EmptySessions
-              rowState={rowState}
-              onLeaveArchivedOnly={onLeaveArchivedOnly}
-              partial={list.hasMore}
-              t={t}
-            />
-          ))}
-        <ThreadTreeRows roots={visible.rows}>
-          {(node) => {
-            const active = drag !== null && drag.pinned === node.pinned;
-            const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
-              node.blank ? "after" : half;
-            return (
-              <SessionNodeItem
-                key={node.id}
-                node={node}
-                showHost={!singleRemoteHostScoped}
-                currentId={currentId}
-                now={now}
-                onOpen={open}
-                onRenameRequest={onSessionRenameRequest}
-                renderSlot={renderSlot}
-                onReveal={
-                  node.id === revealSessionId
-                    ? () => {
-                        onSessionRevealed(node.id);
-                      }
-                    : undefined
+        <div
+          className={clsx(
+            css.unsectionedZone,
+            css.flatUnsectioned,
+            sectionDrag.isUnsectionedTarget && css.unsectionedDropTarget,
+          )}
+          data-section-drop-unsectioned=""
+          onDragOver={
+            sectionDrag.canDropToUnsectioned
+              ? (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = "move";
+                  sectionDrag.hoverUnsectioned();
                 }
-                drag={{
-                  start: () => {
-                    dropCommitted.current = false;
-                    setDrag({
-                      accountKey: FLAT_SESSION_ORDER_KEY,
-                      sessionId: node.id,
-                      pinned: node.pinned,
-                      over: null,
-                    });
-                  },
-                  active,
-                  marker: active && drag.over?.id === node.id ? drag.over.half : null,
-                  hover: (half) => {
-                    setDrag((current) =>
-                      current === null
-                        ? current
-                        : {
-                            ...current,
-                            over: { id: node.id, half: normalizeHalf(half) },
-                          },
-                    );
-                  },
-                  drop: (half) => {
-                    if (drag !== null) commitDrag(drag, { id: node.id, half: normalizeHalf(half) });
-                  },
-                  end: (copied?: boolean) => {
-                    if (!copied && drag?.over !== null && drag?.over !== undefined)
-                      commitDrag(drag, drag.over);
-                    else setDrag(null);
-                    dropCommitted.current = false;
-                  },
-                }}
+              : undefined
+          }
+          onDrop={
+            sectionDrag.canDropToUnsectioned
+              ? (event) => {
+                  if (event.dataTransfer.dropEffect === "copy") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  sectionDrag.dropUnsectioned(event.dataTransfer.dropEffect);
+                }
+              : undefined
+          }
+        >
+          {(pinnedRows.length > 0 || nativeSections.length > 0) && (
+            <SectionHeading label={t("section.sessions")} />
+          )}
+          {rows.length === 0 &&
+            pinnedRows.length === 0 &&
+            nativeSections.length === 0 &&
+            (hostScopeFiltered ? (
+              <div className={css.filterEmptyHint} data-row-key="empty:host-scope">
+                <span>{t("hostScope.emptySessions")}</span>
+                {onResetHostScope !== undefined && (
+                  <button type="button" className={css.emptyAction} onClick={onResetHostScope}>
+                    {t("hostScope.showAll")}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <EmptySessions
+                rowState={rowState}
+                onLeaveArchivedOnly={onLeaveArchivedOnly}
+                partial={list.hasMore}
                 t={t}
               />
-            );
-          }}
-        </ThreadTreeRows>
-        <SessionListExpansion
-          rowKey="overflow:flat"
-          hiddenCount={visible.hiddenCount}
-          hasMore={list.hasMore}
-          loading={list.loading}
-          expanded={limit > SIDEBAR_PAGE_ROWS}
-          expand={() => setLimit(limit + SIDEBAR_PAGE_ROWS)}
-          collapse={hasOverflow ? () => setLimit(SIDEBAR_PAGE_ROWS) : undefined}
-          loadMoreSessions={loadMoreSessions}
-          t={t}
-        />
+            ))}
+          <div
+            className={css.flatRows}
+            onDragOver={
+              !sectionDrag.canDropToUnsectioned && drag !== null
+                ? (event) => {
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
+                    sectionDrag.clearHover();
+                    if (drag.over?.id !== over.id || drag.over.half !== over.half)
+                      setDrag({ ...drag, over });
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.dataTransfer.dropEffect = "move";
+                  }
+                : undefined
+            }
+            onDrop={
+              !sectionDrag.canDropToUnsectioned && drag !== null
+                ? (event) => {
+                    if (event.dataTransfer.dropEffect === "copy") return;
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    sectionDrag.end();
+                    commitDrag(drag, over);
+                  }
+                : undefined
+            }
+          >
+            <ThreadTreeRows roots={visible.rows}>
+              {(node) => {
+                const active = drag !== null && drag.pinned === node.pinned;
+                const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
+                  node.blank ? "after" : half;
+                const canSectionDragRow = sectionDrag.canDragRow(node);
+                return (
+                  <SessionNodeItem
+                    key={node.id}
+                    node={node}
+                    showHost={!singleRemoteHostScoped}
+                    currentId={currentId}
+                    now={now}
+                    onOpen={open}
+                    onRenameRequest={onSessionRenameRequest}
+                    renderSlot={renderSlot}
+                    onReveal={
+                      node.id === revealSessionId
+                        ? () => {
+                            onSessionRevealed(node.id);
+                          }
+                        : undefined
+                    }
+                    drag={{
+                      start: () => {
+                        dropCommitted.current = false;
+                        setDrag({
+                          accountKey: FLAT_SESSION_ORDER_KEY,
+                          sessionId: node.id,
+                          pinned: node.pinned,
+                          over: null,
+                        });
+                        if (canSectionDragRow) sectionDrag.startFromUnsectioned(node.id);
+                        else sectionDrag.end();
+                      },
+                      active,
+                      marker:
+                        !sectionDrag.hasSectionTarget && active && drag.over?.id === node.id
+                          ? drag.over.half
+                          : null,
+                      hover: (half) => {
+                        sectionDrag.clearHover();
+                        setDrag((current) =>
+                          current === null
+                            ? current
+                            : {
+                                ...current,
+                                over: { id: node.id, half: normalizeHalf(half) },
+                              },
+                        );
+                      },
+                      drop: (half) => {
+                        sectionDrag.end();
+                        if (drag !== null)
+                          commitDrag(drag, { id: node.id, half: normalizeHalf(half) });
+                      },
+                      end: (copied?: boolean) => {
+                        const canFinish = sectionDrag.canFinishLocalDrop(copied);
+                        sectionDrag.end();
+                        if (canFinish && drag?.over) commitDrag(drag, drag.over);
+                        else setDrag(null);
+                        dropCommitted.current = false;
+                      },
+                    }}
+                    useMovingSectionSessions={useMovingSectionSessions}
+                    t={t}
+                  />
+                );
+              }}
+            </ThreadTreeRows>
+          </div>
+          <SessionListExpansion
+            rowKey="overflow:flat"
+            hiddenCount={visible.hiddenCount}
+            hasMore={list.hasMore}
+            loading={list.loading}
+            expanded={limit > SIDEBAR_PAGE_ROWS}
+            expand={() => setLimit(limit + SIDEBAR_PAGE_ROWS)}
+            collapse={hasOverflow ? () => setLimit(SIDEBAR_PAGE_ROWS) : undefined}
+            loadMoreSessions={loadMoreSessions}
+            t={t}
+          />
+        </div>
       </AnimatedRows>
       <span className={css.fade} />
     </div>
@@ -1747,12 +2250,17 @@ function WorkspaceBrowserContent({
   setWorkspacePinned,
   unarchiveSession,
   createWorkspace,
+  requestManageThreadSection,
+  moveSessionToSection,
+  setScopedSessionIds,
   searchSessions,
   searchResultLimit,
   useDirectoryFlow,
   useHostInfo,
   useShortcuts,
   useWorkspaceShortcuts,
+  useNativeThreads,
+  useMovingSectionSessions,
   requestSearch,
   requestAddWorkspace,
   closeAddWorkspace,
@@ -1771,6 +2279,8 @@ function WorkspaceBrowserContent({
   const shortcutState = useWorkspaceShortcuts((state) => state);
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
+  const nativeThreadIds = useNativeThreads((ids) => ids);
+  const finePointer = useFinePointer();
   // Ordering remains live while the rail or search replaces the list body.
   const list = useSessions((state) => state);
   const storedWorkspaces = useWorkspaces((state) => state.items);
@@ -1797,6 +2307,10 @@ function WorkspaceBrowserContent({
     (state) => state.pinnedWorkspaceIds ?? NO_PINNED_WORKSPACE_IDS,
   );
   const threadSections = useWorkspaces((state) => state.threadSections ?? NO_THREAD_SECTIONS);
+  const canManageThreadSections = useWorkspaces(
+    (state) => state.state === "idle" && state.threadSectionsV1 === true,
+  );
+  const manageThreadSection = canManageThreadSections ? requestManageThreadSection : undefined;
   // Live occupancy of this surface's directory-flow hole (the same source the
   // flow reads): a composition without a picking affordance can add nothing.
   const directoryFlowAvailable = useDirectoryFlow((occupied) => occupied);
@@ -2162,9 +2676,9 @@ function WorkspaceBrowserContent({
       hostScopeIncludesLocalSessions(effectiveHostScopeFilter, orderedWorkspaces, scopedWorkspaces),
     [effectiveHostScopeFilter, orderedWorkspaces, scopedWorkspaces],
   );
-  const scopedList = useMemo(() => {
-    if (!hostScopeFiltered) return list;
-    const allowedIds = new Set(
+  const scopedSessionIds = useMemo<ReadonlySet<SessionId> | null>(() => {
+    if (!hostScopeFiltered) return null;
+    return new Set(
       filterSessionsByHostScope(
         list.ids.map((id) => ({
           id,
@@ -2176,20 +2690,35 @@ function WorkspaceBrowserContent({
         threadOrder.rootOf,
       ).map((entry) => entry.id),
     );
-    return {
-      ...list,
-      ids: list.ids.filter((id) => allowedIds.has(id)),
-      ...(localPaginationInScope ? {} : { hasMore: false, loading: false }),
-    };
   }, [
     hostScopeFiltered,
-    list,
-    localPaginationInScope,
+    list.ids,
+    list.byId,
     visibleWorkspaceIdSet,
     orderedWorkspaces,
     effectiveHostScopeFilter,
     threadOrder.rootOf,
   ]);
+  const scopedList = useMemo(
+    () =>
+      scopedSessionIds === null
+        ? list
+        : {
+            ...list,
+            ids: list.ids.filter((id) => scopedSessionIds.has(id)),
+            ...(localPaginationInScope ? {} : { hasMore: false, loading: false }),
+          },
+    [list, localPaginationInScope, scopedSessionIds],
+  );
+  useEffect(() => {
+    setScopedSessionIds?.(scopedSessionIds);
+  }, [setScopedSessionIds, scopedSessionIds]);
+  useEffect(
+    () => () => {
+      setScopedSessionIds?.(null);
+    },
+    [setScopedSessionIds],
+  );
   const hostScopeResetKey = useMemo(
     () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
     [hostScopeFiltered, effectiveHostScopeFilter],
@@ -2581,6 +3110,18 @@ function WorkspaceBrowserContent({
           </div>
         )}
         <div className={clsx(css.headerActions, wide && searchExpanded && css.headerActionsHidden)}>
+          {wide && manageThreadSection && (
+            <Tooltip label={t("section.create.title")} side="bottom" delayMs={500}>
+              <button
+                type="button"
+                className={clsx(css.iconButton, css.wide)}
+                aria-label={t("section.create.title")}
+                onClick={() => manageThreadSection({ mode: "create" })}
+              >
+                <IconPlusOutlineRegular size={16} />
+              </button>
+            </Tooltip>
+          )}
           {wide && (
             <ViewOptionsMenu
               groupBy={groupBy}
@@ -2790,6 +3331,11 @@ function WorkspaceBrowserContent({
               sessionIds={scopedFlatSessionIds}
               rowState={rowState}
               nativeSections={nativeSections}
+              nativeThreadIds={nativeThreadIds}
+              useMovingSectionSessions={useMovingSectionSessions}
+              moveSessionToSection={moveSessionToSection}
+              finePointer={finePointer && canManageThreadSections}
+              manageThreadSection={manageThreadSection}
               onLeaveArchivedOnly={leaveArchivedOnly}
               workspaceReady={workspaceReady}
               animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}/${hostScopeResetKey}`}
@@ -2833,6 +3379,11 @@ function WorkspaceBrowserContent({
               setWorkspacePinned={setWorkspacePinned}
               rowState={rowState}
               nativeSections={nativeSections}
+              nativeThreadIds={nativeThreadIds}
+              useMovingSectionSessions={useMovingSectionSessions}
+              moveSessionToSection={moveSessionToSection}
+              finePointer={finePointer && canManageThreadSections}
+              manageThreadSection={manageThreadSection}
               onLeaveArchivedOnly={leaveArchivedOnly}
               startSession={startSession}
               open={guardedOpen}

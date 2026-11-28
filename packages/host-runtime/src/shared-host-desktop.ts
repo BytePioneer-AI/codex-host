@@ -110,6 +110,7 @@ export function sharedHostDesktop(
       sharedThreads: new SharedThreadBridge({
         connect: async () => options.owner.connect(),
         delegateCreates: true,
+        ownsNativeSections: true,
         diagnose: (error) => streams.diagnosticOutput.write(`Shared Host: ${String(error)}\n`),
       }),
       ...(delegation ? { sharedDelegation: delegation } : {}),

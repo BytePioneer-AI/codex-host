@@ -3,6 +3,7 @@ import { Button, Modal } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-controller/types";
 import css from "./WorkspaceBrowser.module.css";
+import { resolveMoveSectionDialogState } from "./section-dnd.ts";
 
 export function MoveSectionForm({
   current,
@@ -11,35 +12,48 @@ export function MoveSectionForm({
   move,
   defaultLabel,
   failedLabel,
+  busy = false,
+  disabled = false,
+  blockedMessage,
+  deletedTargetLabel,
   t,
 }: PropsLocale<"workspace"> & {
   current: string;
   sections: readonly WorkspaceThreadSection[];
   dismiss: () => void;
-  move: (target: string | null) => Promise<void>;
+  move: (target: string | null) => Promise<void | false>;
   defaultLabel: string;
   failedLabel: string;
+  busy?: boolean;
+  disabled?: boolean;
+  blockedMessage?: string;
+  deletedTargetLabel?: string;
 }) {
   const [choice, setChoice] = useState<string>();
-  // A refreshed sidebar can move the project or remove a destination while this dialog is open.
-  const target =
-    choice === undefined || (choice !== "" && !sections.some(({ id }) => id === choice))
-      ? current
-      : choice;
   const [moving, setMoving] = useState(false);
+  const active = busy || moving;
+  const { effectiveTarget, targetDeleted, canSubmit } = resolveMoveSectionDialogState(
+    current,
+    sections,
+    choice,
+    active || disabled,
+  );
   const [failed, setFailed] = useState(false);
+  const message =
+    blockedMessage ??
+    (targetDeleted ? deletedTargetLabel : undefined) ??
+    (failed ? failedLabel : undefined);
   const pending = useRef(false);
   const close = () => {
-    if (!pending.current) dismiss();
+    if (!pending.current && !busy) dismiss();
   };
   const submit = async () => {
-    if (pending.current || target === current) return;
+    if (pending.current || !canSubmit) return;
     pending.current = true;
     setMoving(true);
     setFailed(false);
     try {
-      await move(target || null);
-      dismiss();
+      if ((await move(effectiveTarget || null)) !== false) dismiss();
     } catch {
       setFailed(true);
     } finally {
@@ -56,14 +70,10 @@ export function MoveSectionForm({
       onClose={close}
       footer={
         <>
-          <Button variant="outline" disabled={moving} onClick={close}>
+          <Button variant="outline" disabled={active} onClick={close}>
             {t("cancel")}
           </Button>
-          <Button
-            variant="primary"
-            disabled={moving || target === current}
-            onClick={() => void submit()}
-          >
+          <Button variant="primary" disabled={!canSubmit} onClick={() => void submit()}>
             {t("section.move")}
           </Button>
         </>
@@ -72,11 +82,23 @@ export function MoveSectionForm({
       <select
         className={css.renameInput}
         aria-label={t("section.destination")}
-        value={target}
-        disabled={moving}
+        value={effectiveTarget}
+        disabled={active || disabled}
         data-modal-autofocus
-        onChange={({ target }) => setChoice(target.value)}
+        onChange={({ target }) => {
+          setChoice(target.value);
+          if (deletedTargetLabel !== undefined) setFailed(false);
+        }}
       >
+        {targetDeleted && (
+          <option value={effectiveTarget} disabled>
+            {t(
+              deletedTargetLabel === undefined
+                ? "section.destination"
+                : "section.targetDeletedOption",
+            )}
+          </option>
+        )}
         <option value="">{defaultLabel}</option>
         {sections.map(({ id, name }) => (
           <option key={id} value={id}>
@@ -84,9 +106,9 @@ export function MoveSectionForm({
           </option>
         ))}
       </select>
-      {failed && (
+      {message !== undefined && (
         <div className={css.renameError} role="alert">
-          {failedLabel}
+          {message}
         </div>
       )}
     </Modal>

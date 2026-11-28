@@ -13,7 +13,11 @@ import type {
   WorkspaceArchiveValue,
   WorkspaceBaseline,
   WorkspaceCreateRequest,
+  WorkspaceCreateThreadSectionRequest,
+  WorkspaceCreateThreadSectionValue,
   WorkspaceCreateValue,
+  WorkspaceDeleteThreadSectionRequest,
+  WorkspaceDeleteThreadSectionValue,
   WorkspaceDeleteValue,
   WorkspaceInsertSessionBeforeRequest,
   WorkspaceOrderValue,
@@ -23,6 +27,8 @@ import type {
   WorkspaceSetPinnedRequest,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnpinSessionRequest,
+  WorkspaceUpdateThreadSectionRequest,
+  WorkspaceUpdateThreadSectionValue,
   WorkspaceValue,
   WorkspaceId,
   WorkspaceView,
@@ -50,6 +56,7 @@ export interface WorkspaceSnapshot {
   /** Complete registry-global pinned Workspaces, recent Web pins first then Desktop order. */
   readonly pinnedWorkspaceIds?: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"];
   readonly threadSections?: readonly WorkspaceThreadSection[];
+  readonly threadSectionsV1?: true;
   readonly state: "idle" | "loading" | "error";
   readonly phase: WorkspaceListPhase;
   readonly error: RemoteFailure | null;
@@ -73,7 +80,7 @@ export interface WorkspaceFollowSink {
   replacePinnedWorkspaces(
     pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"],
   ): void;
-  replaceThreadSections(sections: readonly WorkspaceThreadSection[]): void;
+  replaceThreadSections(sections: readonly WorkspaceThreadSection[], capability?: true): void;
 }
 
 /**
@@ -86,6 +93,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"] = [];
   private pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"] = [];
   private threadSections: readonly WorkspaceThreadSection[] = [];
+  private threadSectionsV1: true | undefined;
   private state: WorkspaceSnapshot["state"] = "loading";
   private phase: WorkspaceListPhase = "pending";
   private error: RemoteFailure | null = null;
@@ -323,6 +331,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.installPinned(baseline.pinnedSessionIds);
     this.installPinnedWorkspaces(baseline.pinnedWorkspaceIds ?? []);
     this.threadSections = baseline.threadSections ?? [];
+    this.threadSectionsV1 = baseline.threadSectionsV1;
     this.state = "idle";
     this.phase = "ready";
     this.error = null;
@@ -354,6 +363,24 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     request: WorkspaceMoveWorkspaceToSectionRequest,
   ): Promise<RemoteResult<WorkspaceMoveToSectionValue>> {
     return this.remote.moveWorkspaceToSection(request);
+  }
+
+  createThreadSection(
+    request: WorkspaceCreateThreadSectionRequest,
+  ): Promise<RemoteResult<WorkspaceCreateThreadSectionValue>> {
+    return this.remote.createThreadSection(request);
+  }
+
+  updateThreadSection(
+    request: WorkspaceUpdateThreadSectionRequest,
+  ): Promise<RemoteResult<WorkspaceUpdateThreadSectionValue>> {
+    return this.remote.updateThreadSection(request);
+  }
+
+  deleteThreadSection(
+    request: WorkspaceDeleteThreadSectionRequest,
+  ): Promise<RemoteResult<WorkspaceDeleteThreadSectionValue>> {
+    return this.remote.deleteThreadSection(request);
   }
 
   /** Merge one decoded Workspace upsert from the current follow generation. */
@@ -397,8 +424,9 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.installPinnedWorkspaces(pinnedWorkspaceIds);
   }
 
-  replaceThreadSections(sections: readonly WorkspaceThreadSection[]): void {
+  replaceThreadSections(sections: readonly WorkspaceThreadSection[], capability?: true): void {
     this.threadSections = sections;
+    this.threadSectionsV1 = capability;
     this.invalidate();
   }
 
@@ -458,6 +486,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
           : this.pinnedSessionIds.filter((id) => !optimistic.has(id)),
       pinnedWorkspaceIds: this.pinnedWorkspaceIds,
       threadSections: this.threadSections,
+      ...(this.threadSectionsV1 ? { threadSectionsV1: true } : {}),
       state: this.state,
       phase: this.phase,
       error: this.error,

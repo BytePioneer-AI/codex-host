@@ -190,11 +190,17 @@ export class WorkspaceController extends TypertRemoteService {
 
   /**
    * Stream a complete Workspace baseline followed by ordered increments.
+   * @param threadSectionsV1 - opt-in for the standalone Host's section projection.
    * @param signal - generation cancellation.
    * @returns baseline followed by ordered Workspace increments.
    */
   @Remote({ mode: "stream" })
-  follow(signal: AbortSignal): AsyncIterable<WorkspaceFollowFrame> {
+  follow(
+    threadSectionsV1: boolean | undefined,
+    signal: AbortSignal,
+  ): AsyncIterable<WorkspaceFollowFrame> {
+    // The in-process feed has no native sections; standalone Web uses this wire argument.
+    void threadSectionsV1;
     return this.feed.follow(signal);
   }
 }

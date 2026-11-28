@@ -638,7 +638,19 @@ Web 的「按工作区」和「工作区树」视图支持置顶本机与远程�
 
 共享来源统一调用 Host 的 `codexhost/thread/pins/list` / `codexhost/thread/pins/set`，不调用 Renderer 的置顶服务。Host 复用原生 `threadSection/list`、`thread/list(section_position)` 和既有外部 Thread 分区移动逻辑；内置 Pinned 分区使用原生协议的保留标识，并通过原生查询确认存在，不按显示名称猜测或自行创建分区。官方 Codex Thread 的分区成员与顺序由官方 app-server 持久化，Host 通过 `thread/read` 确认当前分区，通过 `thread/section/move` 修改；外部 Thread 的归属与排序锚点只保存于 Mapping Store 的分区记录。`pins/list` 始终读取官方 Pinned 分区并合并可见外部成员，即使没有任何外部置顶也返回官方成员，和 Desktop 的原生 Thread 查询共用同一混合顺序；不修改 `.codex-global-state.json`，不创建镜像会话。展示未归档的本机官方 Codex 与 canonical external Threads 的置顶，不聚合远程 Threads。
 
-Web 侧栏读取本机 Codex Desktop 的自定义分区，并按原生成员顺序显示。置顶仍由内置分区管理。可通过会话菜单把未置顶、未归档的本机 Codex 会话移入自定义分区或移回无分区。分区名称在 Desktop 管理，Web 在刷新会话目录时同步。翻页首次读到的分区成员摘要会推送给其他已连接浏览器，普通分页新行只返回给发起请求的浏览器。
+Web 侧栏同步本机 Codex Desktop 的自定义分区。未置顶、未归档的本机官方和外部 Harness 顶层 Thread 可通过会话菜单移入分区或移回无分区，项目归属不变。官方成员仍由 app-server 保存，外部成员由 Mapping Store 保存。翻页首次读到的分区成员摘要会推送给其他已连接浏览器，普通分页新行只返回给发起请求的浏览器。
+
+普通外部 Thread 读取和共享目录使用已确认的分区定义或已保存的归属，不等待原生分区分页；显式分区查询和精确移动仍读取原生顺序。完整的未归档首页会用首页及其祖先、已发布的分区成员更新共享目录。归档查询和普通续页不会把私有行变成共享行；会话首次被分区引用时，先发布缺少的摘要，再发布分区成员列表。分区读取期间收到归档通知时，不使用归档前的目录快照恢复分区，发布前也会按当前归档状态过滤成员。
+
+共享会话所有者的分区记录或会话列表读取失败时，Host 的只读查询可返回原生分区并标记 `complete: false`；精确移动仍要求完整的跨 Owner 数据。Web 请求完整结果并保留最后一次确认的分区投影；项目分页不会把读取失败当作成员已移出分区。
+
+共享分区订阅暂时失败时随连接发现周期重试；成功恢复后触发一次目录校验，以补齐订阅中断期间的变更。旧 Host 明确不支持订阅时不重试同一连接。
+
+支持 `threadSectionsV1` 的 Host 提供新建、重命名和删除分区；重命名保留原外观，删除仅移除分区和成员归属，不删除或归档 Thread。Web 客户端在 `workspace/follow` 显式声明 `threadSectionsV1: true` 后才接收外观字段和 Host 能力标记。未协商该能力的客户端沿用原分区投影；未声明该能力的 Host 不显示管理入口，只有官方 Codex Thread 保留移动到分区的入口。
+
+桌面分区拖放只在工作区流就绪且 Host 声明 `threadSectionsV1` 时启用，断线会取消进行中的拖动。拖出分区时，Owner 会在写入前确认 Thread 仍属于起拖分区；归属已变更则拒绝。普通列表排序仍可在列表外释放并提交最后的落点；分区已接收放下、复制或取消时不提交本地排序。
+
+分区管理写入的连接故障或取消返回 `status: "unknown"`；此时不能确认写入是否生效，不会自动重发。明确拒绝仍返回原错误。
 
 Desktop 也能把项目放进自定义分区。官方 app-server 只保存分区本身和其中的会话，项目成员保存在 Desktop 当前登录身份的 `electron-owner-atoms:<owner>` → `sidebar-custom-sections-v3` 中，以 `hostSectionIds.local` 对应官方分区。Host 从 `.codex-global-state.sqlite` 读取这份状态，仅在 SQLite 文件不存在或尚未迁移（版本 0）时读取旧版 `.codex-global-state.json`。共享 Host 在 `codexhost/workspace/read` 的 `sectionProjects` 中只读返回各分区的项目 ID；这份状态是 Desktop 私有、带版本号的格式，缺失或结构变化时不返回项目分区，项目列表照常读取。Web 把这些项目的根目录工作区放进对应分区，在分组与树形模式下显示在分区自身的会话之后，顺序跟随 Desktop 分区内的项目顺序，不再出现在“工作区”段；以某项目命名的目录（该项目的第一个根目录）跟随该项目，其余目录归入第一个列出它的分区项目。树形嵌套限于同一分区，平铺模式只显示分区自身的会话。
 

@@ -11,6 +11,9 @@ import { harnessInstallationRequestTimeoutMs } from "@codexhost/shared-contracts
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 
+export const SHARED_THREAD_LIST_METHOD = "codexhost/shared-threads/list";
+export const SHARED_THREAD_OWNERSHIP_METHOD = "codexhost/shared-threads/ownership/list";
+
 export function object(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

@@ -112,10 +112,26 @@ export class ThreadPins {
       now: new Date(),
     });
     if (outcome.kind === "forward") {
-      const response = await this.requestOfficial("thread/section/move", move);
-      if (response.error) throw new ThreadSectionError(pinError(response));
+      const response = await this.requestOfficial("thread/section/move", move).catch(
+        async (error: unknown) => {
+          if (await outcome.confirm().catch(() => false)) return undefined;
+          throw new Error("Native pin change outcome is unknown; refresh before retrying", {
+            cause: error,
+          });
+        },
+      );
+      if (response?.error) throw new ThreadSectionError(pinError(response));
     } else if (outcome.kind === "error") {
       throw new ThreadSectionError(String(outcome.error.message ?? "Native pin change failed"));
+    } else if (outcome.kind === "needs-readback") {
+      const recovered = await outcome
+        .recover(() => this.repository.listSectionPlacements())
+        .catch(() => false);
+      if (!recovered) {
+        throw new Error("Native pin change outcome is unknown; refresh before retrying", {
+          cause: outcome.cause,
+        });
+      }
     }
     if (pinned) this.observedIds.add(threadId);
     else this.observedIds.delete(threadId);

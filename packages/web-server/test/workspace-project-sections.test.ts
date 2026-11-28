@@ -95,6 +95,55 @@ it("keeps a local project move across refresh and reconnect until its official m
   assert.deepEqual(next.at(-1)?.[2]?.workspaceIds, [one, two]);
 });
 
+it("keeps project overrides and session reorders independent of the official project baseline", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "project-section-session-reorder-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { refresh, follow, move, workspaces } = setup(root);
+  const official = { a: ["one"], b: ["two"], c: [] };
+  const initial = sections.map((section) =>
+    section.id === "b" ? { ...section, threadIds: ["b-thread", "extra-thread"] } : section,
+  );
+  refresh(official, initial);
+  const frames = await follow();
+  assert.equal((await move({ workspaceId: one, sectionId: "b" })).ok, true);
+  assert.deepEqual(frames.at(-1), [
+    initial[0],
+    { ...initial[1], workspaceIds: [two, one] },
+    initial[2],
+  ]);
+
+  const reordered = initial.map((section) =>
+    section.id === "b" ? { ...section, threadIds: ["extra-thread", "b-thread"] } : section,
+  );
+  assert.equal(workspaces.applyThreadSectionMove(reordered, undefined, "extra-thread"), true);
+  assert.deepEqual(frames.at(-1), [
+    reordered[0],
+    { ...reordered[1], workspaceIds: [two, one] },
+    reordered[2],
+  ]);
+
+  assert.equal((await move({ workspaceId: two, sectionId: "a" })).ok, true);
+  const bothMoved = [
+    { ...reordered[0], workspaceIds: [two] },
+    { ...reordered[1], workspaceIds: [one] },
+    reordered[2],
+  ];
+  assert.deepEqual(frames.at(-1), bothMoved);
+  refresh(official, reordered);
+  assert.equal(frames.length, 4);
+  assert.deepEqual((await follow())[0], bothMoved);
+
+  refresh({ a: [], b: ["two"], c: ["one"] }, reordered);
+  const changedBaseline = [
+    { ...reordered[0], workspaceIds: [two] },
+    reordered[1],
+    { ...reordered[2], workspaceIds: [one] },
+  ];
+  assert.equal(frames.length, 5);
+  assert.deepEqual(frames.at(-1), changedBaseline);
+  assert.deepEqual((await follow())[0], changedBaseline);
+});
+
 it("rejects missing destinations and non-native workspaces, and never publishes an unsuccessful write", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "project-section-errors-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -6,7 +6,7 @@
  * sections. A section may carry one `action` at the row's end — its own button,
  * not part of the fold gesture.
  */
-import type { ReactNode } from "react";
+import type { DragEventHandler, ReactNode } from "react";
 import { IconChevronDownOutlineRegular, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import clsx from "clsx";
 import css from "./SectionHeading.module.css";
@@ -40,6 +40,12 @@ export interface SectionHeadingProps {
     { active: boolean; hover: () => void; leave: () => void; drop: () => void } | undefined;
   /** Section action rendered at the row's end. */
   action?: SectionAction;
+  /** Highlight the heading as an active section drop target during desktop dragover. */
+  dropTarget?: boolean;
+  /** Optional dragover handler when this heading accepts section drops. */
+  onDragOver?: DragEventHandler<HTMLDivElement>;
+  /** Optional drop handler when this heading accepts section drops. */
+  onDrop?: DragEventHandler<HTMLDivElement>;
 }
 
 /**
@@ -56,7 +62,11 @@ export function SectionHeading({
   trailing,
   action,
   projectDrop,
+  dropTarget = false,
+  onDragOver,
+  onDrop,
 }: SectionHeadingProps) {
+  const activeProjectDrop = onDragOver || onDrop ? undefined : projectDrop;
   const foldable = expanded !== undefined && onToggle !== undefined && rowKey !== undefined;
   const content = (
     <>
@@ -95,40 +105,54 @@ export function SectionHeading({
       )}
     </>
   );
-  if (!foldable) return <div className={css.heading}>{content}</div>;
+  if (!foldable) {
+    return (
+      <div
+        className={clsx(css.heading, dropTarget && css.dropTarget)}
+        data-section-drop-target={dropTarget || undefined}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+      >
+        {content}
+      </div>
+    );
+  }
   return (
     <div
-      className={css.heading}
+      className={clsx(css.heading, dropTarget && css.dropTarget)}
       role="treeitem"
       tabIndex={-1}
       data-row-key={rowKey}
+      data-section-drop-target={dropTarget || undefined}
       aria-label={label}
-      data-project-drop-active={projectDrop?.active || undefined}
+      data-project-drop-active={activeProjectDrop?.active || undefined}
       onDragOver={
-        projectDrop &&
-        ((event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          event.dataTransfer.dropEffect = "move";
-          projectDrop.hover();
-        })
+        activeProjectDrop
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              event.dataTransfer.dropEffect = "move";
+              activeProjectDrop.hover();
+            }
+          : onDragOver
       }
       onDragLeave={
-        projectDrop &&
+        activeProjectDrop &&
         ((event) => {
           if (!(
             event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)
           ))
-            projectDrop.leave();
+            activeProjectDrop.leave();
         })
       }
       onDrop={
-        projectDrop &&
-        ((event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          projectDrop.drop();
-        })
+        activeProjectDrop
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              activeProjectDrop.drop();
+            }
+          : onDrop
       }
       aria-expanded={expanded}
       onClick={onToggle}

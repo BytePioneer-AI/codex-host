@@ -2,23 +2,525 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readdirSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
+import { setImmediate as immediate } from "node:timers/promises";
 import {
+  CLIENT_THREAD_SECTION_MUTATIONS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_SECTION_CAPABILITY,
   THREAD_STEER_STRICT_TARGET_FIELD,
   clientWorkspaceSnapshotSchema,
   decodeHarnessPluginRoute,
+  type ClientThreadSectionMutationResult,
+  type ClientThreadSections,
 } from "@codexhost/shared-contracts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces, projectRootTitles } from "../src/workspaces.ts";
-import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../src/transport.ts";
+import {
+  EventHub,
+  RpcError,
+  RpcRegistry,
+  StreamRegistry,
+  type StreamHandler,
+} from "../src/transport.ts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
 import { nativeProjectRootOwners, projectGroupRoot } from "../src/ch-project-groups.ts";
 import { nativeProjectCommands } from "../src/ch-project-commands.ts";
 import { peerEndpoint } from "../src/peer-manifest.ts";
+import { FakeChChannel } from "./support/ch-channel.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { nativeCodex } from "./support/native-codex.ts";
+
+function setupSectionRpc(t: TestContext, host: FakeChHost) {
+  const root = mkdtempSync(join(tmpdir(), "ch-section-rpc-"));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const events = new EventHub(root);
+  const sessions = new ChSessions(host, workspaces, events);
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  let follow: StreamHandler | undefined;
+  class WorkspaceStreams extends StreamRegistry {
+    override register(name: string, handler: StreamHandler): void {
+      super.register(name, handler);
+      if (name === "workspace/follow") follow = handler;
+    }
+  }
+  const rpc = new RpcRegistry();
+  const streams = new WorkspaceStreams();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  return {
+    rpc,
+    root,
+    workspaces,
+    list: (args: Record<string, unknown> = {}) => rpc.dispatch("session/list", { args }),
+    mutate: (op: "create" | "update" | "delete", request: object) =>
+      rpc.dispatch(`workspace/${op}ThreadSection`, { args: { request } }),
+    move: (request: object) =>
+      rpc.dispatch("workspace/moveSessionToSection", { args: { request } }),
+    subscribeAdded(onAdded: (sessionId: string) => void) {
+      return events.handler(
+        {},
+        {
+          id: "events",
+          closed: false,
+          push: (value) => {
+            const frame = value as { event?: string; args: [{ sessionId: string }] };
+            if (frame.event === "api-session/added") onAdded(frame.args[0].sessionId);
+          },
+          end: () => {},
+          fail: (code, message) => {
+            throw new Error(`${code} ${message}`);
+          },
+          onClose: (close) => t.after(close),
+        },
+      );
+    },
+    async subscribe(args: Record<string, unknown>, onSections?: (sections: unknown) => void) {
+      assert.ok(follow);
+      type Sections = { threadSections: unknown; [THREAD_SECTION_CAPABILITY]?: true };
+      type Frame = { type: "baseline"; value: Sections } | ({ type: "threadSections" } & Sections);
+      const frames: Frame[] = [];
+      await follow(args, {
+        id: "workspace",
+        closed: false,
+        push: (value) => {
+          const frame = value as Frame;
+          frames.push(frame);
+          if (frame.type === "threadSections") onSections?.(frame.threadSections);
+        },
+        end: () => {},
+        fail: (code, message) => {
+          throw new Error(`${code} ${message}`);
+        },
+        onClose: (close) => t.after(close),
+      });
+      const first = frames[0];
+      assert.ok(first?.type === "baseline");
+      return {
+        baseline: first.value,
+        updates: () => frames.filter((frame) => frame.type === "threadSections"),
+      };
+    },
+  };
+}
+
+const sectionFollowArgs = { [THREAD_SECTION_CAPABILITY]: true };
+
+it("advertises section capability for an empty list only when both ends opt in", async (t) => {
+  const host = new FakeChHost();
+  const { list, subscribe } = setupSectionRpc(t, host);
+  let supportsSections = false;
+  let sections: ClientThreadSections["sections"] = [];
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method !== "codexhost/thread/sections/list") return request<T>(method, params);
+    assert.deepEqual(params, { ...sectionFollowArgs, requireComplete: true });
+    return { sections, ...(supportsSections ? sectionFollowArgs : {}) } as T;
+  };
+  assert.ok((await list()).ok);
+  const capable = await subscribe(sectionFollowArgs);
+  const legacy = await subscribe({});
+  for (const follower of [capable, legacy]) {
+    assert.deepEqual(follower.baseline.threadSections, []);
+    assert.equal(Object.hasOwn(follower.baseline, THREAD_SECTION_CAPABILITY), false);
+  }
+  const section = { id: "legacy", name: "Existing section" };
+  sections = [{ ...section, threads: [] }];
+  assert.ok((await list()).ok);
+  const legacyFrame = {
+    type: "threadSections",
+    threadSections: [{ ...section, threadIds: [] }],
+  };
+  assert.deepEqual(capable.updates(), [legacyFrame]);
+  assert.deepEqual(legacy.updates(), [legacyFrame]);
+
+  sections = [];
+  supportsSections = true;
+  assert.ok((await list()).ok);
+  const empty = { type: "threadSections", threadSections: [] };
+  assert.deepEqual(capable.updates().at(-1), { ...empty, ...sectionFollowArgs });
+  assert.deepEqual(legacy.updates().at(-1), empty);
+  const capableBaseline = (await subscribe(sectionFollowArgs)).baseline;
+  assert.deepEqual(capableBaseline.threadSections, []);
+  assert.equal(capableBaseline[THREAD_SECTION_CAPABILITY], true);
+  const legacyBaseline = (await subscribe({ [THREAD_SECTION_CAPABILITY]: false })).baseline;
+  assert.deepEqual(legacyBaseline.threadSections, []);
+  assert.equal(Object.hasOwn(legacyBaseline, THREAD_SECTION_CAPABILITY), false);
+
+  supportsSections = false;
+  assert.ok((await list()).ok);
+  assert.deepEqual(capable.updates(), [legacyFrame, { ...empty, ...sectionFollowArgs }, empty]);
+  assert.deepEqual(legacy.updates(), [legacyFrame, empty]);
+});
+
+it("projects confirmed section writes to capable and legacy Workspace followers", async (t) => {
+  const host = new FakeChHost();
+  const { root, workspaces, list, mutate, subscribe } = setupSectionRpc(t, host);
+  const row = host.add("member", root);
+  const appearance = { color: "new-native-color", icon: "new-native-icon" };
+  const original = { id: "original", name: "Research", threadIds: [row.id] };
+  const plain = { id: "unthemed", name: "Unthemed", threadIds: [] };
+  const themed = { ...plain, appearance: null };
+  let sections: ClientThreadSections["sections"] = [
+    { id: original.id, name: original.name, threads: [{ id: row.id }] },
+    { id: themed.id, name: themed.name, threads: [], appearance: null },
+  ];
+  const request = host.request.bind(host);
+  const created = { id: "new", name: "Research", appearance };
+  const renamed = { ...created, name: "New name" };
+  const cleared = { ...renamed, appearance: null };
+  const confirmed = (section: typeof created | typeof cleared | null, sectionId = created.id) => ({
+    status: "confirmed",
+    sectionId,
+    section,
+    syncPending: false,
+  });
+  const writes: Array<{ method: string; params: Record<string, unknown> }> = [];
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/list") {
+      assert.deepEqual(params, { ...sectionFollowArgs, requireComplete: true });
+      return { sections, ...sectionFollowArgs } as T;
+    }
+    if (method === CLIENT_THREAD_SECTION_MUTATIONS.create.method) {
+      writes.push({ method, params });
+      sections = [...sections, { ...created, threads: [] }];
+      return confirmed(created) as T;
+    }
+    if (method === CLIENT_THREAD_SECTION_MUTATIONS.update.method) {
+      writes.push({ method, params });
+      const updated = params.appearance === null ? cleared : renamed;
+      sections = sections.map((section) =>
+        section.id === updated.id ? { ...section, ...updated } : section,
+      );
+      return confirmed(updated) as T;
+    }
+    if (method === CLIENT_THREAD_SECTION_MUTATIONS.delete.method) {
+      writes.push({ method, params });
+      sections = sections.filter(({ id }) => id !== original.id);
+      return confirmed(null, original.id) as T;
+    }
+    return request<T>(method, params);
+  };
+  assert.ok((await list()).ok);
+  const capable = await subscribe(sectionFollowArgs);
+  const legacy = await subscribe({});
+  assert.deepEqual(capable.baseline.threadSections, [original, themed]);
+  assert.equal(capable.baseline[THREAD_SECTION_CAPABILITY], true);
+  assert.deepEqual(legacy.baseline.threadSections, [original, plain]);
+  assert.equal(Object.hasOwn(legacy.baseline, THREAD_SECTION_CAPABILITY), false);
+  const invalid = await mutate("create", { name: "  " });
+  assert.ok(!invalid.ok);
+  assert.equal(invalid.error.code, "workspace/section-invalid");
+  assert.deepEqual(writes, []);
+
+  assert.deepEqual(await mutate("create", { name: " Research " }), {
+    ok: true,
+    value: confirmed(created),
+  });
+  assert.deepEqual(await mutate("update", { sectionId: created.id, name: " New name " }), {
+    ok: true,
+    value: confirmed(renamed),
+  });
+  const project = workspaces.ownerOf(row.id);
+  assert.ok(project);
+  assert.deepEqual(await mutate("delete", { sectionId: original.id }), {
+    ok: true,
+    value: confirmed(null, original.id),
+  });
+  assert.deepEqual(workspaces.ownerOf(row.id), project);
+  assert.equal(workspaces.isArchived(row.id), false);
+  assert.deepEqual(writes, [
+    { method: CLIENT_THREAD_SECTION_MUTATIONS.create.method, params: { name: created.name } },
+    {
+      method: CLIENT_THREAD_SECTION_MUTATIONS.update.method,
+      params: { sectionId: renamed.id, name: renamed.name },
+    },
+    { method: CLIENT_THREAD_SECTION_MUTATIONS.delete.method, params: { sectionId: original.id } },
+  ]);
+  const frame = (...threadSections: unknown[]) => ({ type: "threadSections", threadSections });
+  const capableFrame = (...threadSections: unknown[]) => ({
+    ...frame(...threadSections),
+    ...sectionFollowArgs,
+  });
+  const visible = ({ id, name }: typeof created) => ({ id, name, threadIds: [] });
+  assert.deepEqual(capable.updates(), [
+    capableFrame(original, themed, { ...created, threadIds: [] }),
+    capableFrame(original, themed, { ...renamed, threadIds: [] }),
+    capableFrame(themed, { ...renamed, threadIds: [] }),
+  ]);
+  assert.deepEqual(legacy.updates(), [
+    frame(original, plain, visible(created)),
+    frame(original, plain, visible(renamed)),
+    frame(plain, visible(renamed)),
+  ]);
+
+  const clear = { sectionId: renamed.id, name: renamed.name, appearance: null };
+  assert.deepEqual(await mutate("update", clear), {
+    ok: true,
+    value: confirmed(cleared),
+  });
+  assert.deepEqual(writes.at(-1), {
+    method: CLIENT_THREAD_SECTION_MUTATIONS.update.method,
+    params: clear,
+  });
+  assert.deepEqual(
+    capable.updates().at(-1),
+    capableFrame(themed, { ...visible(renamed), appearance: null }),
+  );
+  assert.equal(legacy.updates().length, 3);
+});
+
+it("reconciles a section mutation after an in-flight catalog read", async (t) => {
+  const host = new FakeChHost();
+  const { list, mutate, subscribe } = setupSectionRpc(t, host);
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const committed = Promise.withResolvers<undefined>();
+  const section = { id: "created", name: "Research", appearance: null };
+  let sections: ClientThreadSections["sections"] = [];
+  let sectionReads = 0;
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/list") {
+      const snapshot = { sections, ...sectionFollowArgs };
+      if (++sectionReads === 1) {
+        entered.resolve(undefined);
+        await release.promise;
+      }
+      return snapshot as T;
+    }
+    if (method === CLIENT_THREAD_SECTION_MUTATIONS.create.method) {
+      sections = [{ ...section, threads: [] }];
+      committed.resolve(undefined);
+      return { status: "confirmed", sectionId: section.id, section, syncPending: false } as T;
+    }
+    return request<T>(method, params);
+  };
+  const workspace = await subscribe({});
+  const stale = list();
+  await entered.promise;
+  const creating = mutate("create", { name: section.name });
+  await committed.promise;
+  await immediate();
+  release.resolve(undefined);
+  assert.ok((await stale).ok);
+  assert.ok((await creating).ok);
+  assert.equal(sectionReads, 2);
+  assert.deepEqual(workspace.updates(), [
+    {
+      type: "threadSections",
+      threadSections: [{ id: section.id, name: section.name, threadIds: [] }],
+    },
+  ]);
+});
+
+it("preserves rejection and pending, and never retries a section write with unknown outcome", async (t) => {
+  const host = new FakeChHost();
+  const { mutate } = setupSectionRpc(t, host);
+  let reads = 0;
+  let writes = 0;
+  let error: RpcError | undefined;
+  let result: ClientThreadSectionMutationResult | { status: "invalid" } = { status: "unknown" };
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/list") {
+      reads++;
+      return { sections: [{ id: "unrelated", name: "Research", threads: [] }] } as T;
+    }
+    if (method === CLIENT_THREAD_SECTION_MUTATIONS.create.method) {
+      writes++;
+      if (error) throw error;
+      return result as T;
+    }
+    return request<T>(method, params);
+  };
+  const create = () => mutate("create", { name: "Research" });
+  const rejectedCodes = [-32601, -32602, -32603];
+  for (const code of rejectedCodes) {
+    error = new RpcError("host/rejected", "Original rejection", { hostCode: code });
+    assert.deepEqual(await create(), {
+      ok: false,
+      error: { code: error.code, message: error.message, details: error.details },
+    });
+  }
+  assert.equal(reads, 0);
+  const ambiguous = [
+    undefined,
+    new RpcError("host/disconnected", "Lost CDP response"),
+    new RpcError("host/resync", "Obsolete reply", { hostCode: -32094 }),
+    new RpcError("host/rejected", "CH connection lost", { hostCode: -32093 }),
+  ];
+  for (const failure of ambiguous) {
+    error = failure;
+    assert.deepEqual(await create(), { ok: true, value: { status: "unknown" } });
+  }
+  error = undefined;
+  result = { status: "invalid" };
+  assert.deepEqual(await create(), { ok: true, value: { status: "unknown" } });
+  assert.equal(reads, ambiguous.length + 1);
+  assert.equal(writes, ambiguous.length + rejectedCodes.length + 1);
+
+  result = {
+    status: "confirmed",
+    sectionId: "created",
+    section: { id: "created", name: "Research", appearance: null },
+    syncPending: true,
+  };
+  host.projects = async () => {
+    throw new Error("Workspace projection unavailable");
+  };
+  assert.deepEqual(await create(), { ok: true, value: result });
+  assert.equal(reads, ambiguous.length + 2);
+  assert.equal(writes, ambiguous.length + rejectedCodes.length + 2);
+});
+
+it("retries a shared sections change after a catalog read and preserves the projection on failure", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = new FakeChChannel();
+  host.online = false;
+  const { list, subscribe } = setupSectionRpc(t, host);
+  host.online = true;
+  for (const listener of host.listeners) listener({ type: "connection", online: true });
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const published = Promise.withResolvers<unknown>();
+  let name = "Initial";
+  let reads = 0;
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/list") {
+      const snapshot = { sections: [{ id: "shared", name, threads: [] }], ...sectionFollowArgs };
+      if (++reads === 1) {
+        entered.resolve(undefined);
+        await release.promise;
+      }
+      if (reads === 2) throw new RpcError("host/disconnected", "Sections read failed");
+      return snapshot as T;
+    }
+    return request<T>(method, params);
+  };
+  let updates = 0;
+  await subscribe(sectionFollowArgs, (sections) => {
+    if (++updates === 2) published.resolve(sections);
+  });
+  const stale = list();
+  await entered.promise;
+  name = "Renamed";
+  const change = {
+    type: "sections-changed" as const,
+    cursor: { epoch: host.epoch, sequence: ++host.sequence },
+  };
+  for (const listener of host.listeners) listener(change);
+  t.mock.timers.tick(100);
+  release.resolve(undefined);
+  assert.ok((await stale).ok);
+  await immediate();
+  assert.equal(reads, 2);
+  const baseline = (await subscribe(sectionFollowArgs)).baseline;
+  assert.equal(baseline[THREAD_SECTION_CAPABILITY], true);
+  assert.deepEqual(baseline.threadSections, [{ id: "shared", name: "Initial", threadIds: [] }]);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(await published.promise, [{ id: "shared", name, threadIds: [] }]);
+  assert.equal(reads, 3);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({
+          ...sectionFollowArgs,
+          complete: false,
+          sections: [{ id: "native-only", name: "Native only", threads: [] }],
+        } as T)
+      : request<T>(method, params);
+  assert.ok((await list()).ok);
+  assert.deepEqual((await subscribe(sectionFollowArgs)).baseline.threadSections, [
+    { id: "shared", name, threadIds: [] },
+  ]);
+});
+
+it("stops advertising section support without retrying unsupported section reads", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = new FakeChChannel();
+  host.online = false;
+  const { list, subscribe } = setupSectionRpc(t, host);
+  host.online = true;
+  for (const listener of host.listeners) listener({ type: "connection", online: true });
+  let reads = 0;
+  const request = host.request.bind(host);
+  const section = { id: "shared", name: "Research" };
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/list") {
+      if (++reads > 1)
+        throw new RpcError("host/rejected", "Method not found", { hostCode: -32601 });
+      return {
+        sections: [{ ...section, threads: [], appearance: null }],
+        ...sectionFollowArgs,
+      } as T;
+    }
+    return request<T>(method, params);
+  };
+  assert.ok((await list()).ok);
+  const capable = await subscribe(sectionFollowArgs);
+  const legacy = await subscribe({});
+  const event = {
+    type: "sections-changed" as const,
+    cursor: { epoch: host.epoch, sequence: ++host.sequence },
+  };
+  for (const listener of host.listeners) listener(event);
+  t.mock.timers.tick(100);
+  await immediate();
+  assert.equal(reads, 2);
+  assert.deepEqual(capable.updates(), [
+    { type: "threadSections", threadSections: [{ ...section, threadIds: [] }] },
+  ]);
+  assert.deepEqual(legacy.updates(), []);
+  t.mock.timers.tick(1000);
+  await immediate();
+  assert.equal(reads, 2);
+});
+
+it("preserves native project placements while switching to a legacy section projection", async (t) => {
+  const host = new FakeChHost();
+  const { root, workspaces, list, subscribe } = setupSectionRpc(t, host);
+  const cwd = join(root, "shared");
+  const projects = host.projectSnapshot;
+  projects.nativeProjects = true;
+  projects.projects.push(
+    { id: "first", name: "First", rootPaths: [cwd] },
+    { id: "second", name: "Second", rootPaths: [cwd] },
+  );
+  projects.sectionProjects = { research: ["second", "first"] };
+  const section = { id: "research", name: "Research" };
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method !== "codexhost/thread/sections/list") return request<T>(method, params);
+    return (
+      projects.nativeProjects
+        ? { ...sectionFollowArgs, sections: [{ ...section, threads: [], appearance: null }] }
+        : { sections: [{ ...section, threads: [] }] }
+    ) as T;
+  };
+  assert.ok((await list()).ok);
+  const current = await subscribe(sectionFollowArgs);
+  const legacy = await subscribe({});
+  const workspaceIds = ["second", "first"].map((id) => {
+    const workspace = workspaces.list().find(({ projectId }) => projectId === id);
+    assert.ok(workspace);
+    return workspace.workspaceId;
+  });
+  const projected = { ...section, threadIds: [], workspaceIds };
+  assert.equal(current.baseline[THREAD_SECTION_CAPABILITY], true);
+  assert.deepEqual(current.baseline.threadSections, [{ ...projected, appearance: null }]);
+  assert.deepEqual(legacy.baseline.threadSections, [projected]);
+
+  delete projects.nativeProjects;
+  delete projects.sectionProjects;
+  assert.ok((await list()).ok);
+  assert.deepEqual(current.updates(), [{ type: "threadSections", threadSections: [projected] }]);
+  assert.deepEqual(legacy.updates(), []);
+});
 
 it("shares canonical CH identity and cwd without a Web index/history or physical mkdir", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-web-"));
@@ -172,14 +674,36 @@ it("propagates native section membership and summaries to browsers that did not 
   const later = host.add("native-found-by-section", root);
   const pageMember = host.add("native-found-by-page", root);
   const pageOrdinary = host.add("native-page-ordinary", root);
-  const members = [{ ...older, archived: false }];
+  const discoveredDuringMove = host.add("native-discovered-during-move", root);
+  for (const row of [ordinary, older, later, pageMember, pageOrdinary, discoveredDuringMove])
+    row.modelProvider = "openai";
+  const external = host.add("external-member", join(root, "external-project"));
+  const missingExternal = { ...external, id: "external-outside-catalog" };
+  const members = [{ ...older, archived: false }, external, missingExternal];
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     if (method === "codexhost/thread/sections/list")
-      return { sections: [{ id: "research", name: "Research", threads: members }] } as T;
+      return {
+        sections: [{ id: "research", name: "Research", threads: members }],
+        ...sectionFollowArgs,
+      } as T;
+    if (method === "codexhost/thread/sections/move") {
+      const target = params.sectionId;
+      if (params.threadId === pageOrdinary.id) {
+        members.push(pageOrdinary);
+        return {} as T;
+      }
+      assert.deepEqual(params, { threadId: external.id, sectionId: target });
+      if (target === null) {
+        members.splice(members.indexOf(external), 1);
+        members.push({ ...discoveredDuringMove, archived: false });
+      } else if (target === "research") members.push(external);
+      else assert.fail("Unexpected section target");
+      return {} as T;
+    }
     if (method === "codexhost/thread/catalog/read") {
       const continuation = params.officialCursor !== undefined;
-      const rows = continuation ? [pageMember, pageOrdinary] : [ordinary];
+      const rows = continuation ? [pageMember, pageOrdinary] : [ordinary, external];
       return {
         threads: rows.map((row) => ({ ...row, turns: [] })),
         ownership: rows.map((row) => host.threadOwnership(row.id)),
@@ -211,14 +735,21 @@ it("propagates native section membership and summaries to browsers that did not 
   sessions.register(rpc, streams);
   assert.ok(follow);
   const closeHandlers: Array<() => void> = [];
-  const subscribe = async (id: string, handler: StreamHandler) => {
+  const subscribe = async (
+    id: string,
+    handler: StreamHandler,
+    onFrame?: (frame: unknown) => void,
+  ) => {
     const frames: unknown[] = [];
     await handler(
       {},
       {
         id,
         closed: false,
-        push: (frame) => frames.push(frame),
+        push: (frame) => {
+          frames.push(frame);
+          onFrame?.(frame);
+        },
         end: () => {},
         fail: (code, message) => {
           throw new Error(`${code} ${message}`);
@@ -246,9 +777,22 @@ it("propagates native section membership and summaries to browsers that did not 
     await subscribe("A/workspace", follow);
     const firstA = await list();
     const eventsB = await subscribe("B/events", events.handler);
-    const workspaceB = await subscribe("B/workspace", follow);
+    const isSectionUpdate = (frame: unknown) =>
+      frame !== null &&
+      typeof frame === "object" &&
+      "type" in frame &&
+      frame.type === "threadSections";
+    const addedB = () =>
+      (eventsB as Array<{ type: string; event: string; args: [{ sessionId: string }] }>)
+        .filter((frame) => frame.type === "emit" && frame.event === "api-session/added")
+        .map((frame) => frame.args[0].sessionId)
+        .sort();
+    const addedBeforeSection: string[][] = [];
+    const workspaceB = await subscribe("B/workspace", follow, (frame) => {
+      if (isSectionUpdate(frame)) addedBeforeSection.push(addedB());
+    });
     const firstB = await list();
-    assert.deepEqual(firstA.ids, [ordinary.id, older.id].sort());
+    assert.deepEqual(firstA.ids, [ordinary.id, older.id, external.id].sort());
     assert.deepEqual(firstB, firstA);
     assert.ok(firstA.cursor);
     assert.equal(workspaces.isArchived(older.id), false);
@@ -258,29 +802,399 @@ it("propagates native section membership and summaries to browsers that did not 
     eventsB.length = 0;
     const continuedA = await list({ cursor: firstA.cursor });
     assert.deepEqual(continuedA.ids, [pageMember.id, pageOrdinary.id, later.id].sort());
-    assert.deepEqual(
-      workspaceB.filter((frame) => (frame as { type: string }).type === "threadSections"),
-      [sectionFrame(older.id, pageMember.id, later.id)],
-    );
+    assert.deepEqual(workspaceB.filter(isSectionUpdate), [
+      sectionFrame(older.id, external.id, pageMember.id, later.id),
+    ]);
 
-    const addedB = () =>
-      (eventsB as Array<{ type: string; event: string; args: [{ sessionId: string }] }>)
-        .filter((frame) => frame.type === "emit" && frame.event === "api-session/added")
-        .map((frame) => frame.args[0].sessionId)
-        .sort();
     const duringContinuation = addedB();
+    eventsB.length = 0;
+    pageOrdinary.updatedAt += 1;
+    const continuedAgain = await list({ cursor: firstA.cursor });
+    assert.ok(continuedAgain.ids.includes(pageOrdinary.id));
+    assert.deepEqual(addedB(), [], "updates to a request-local row must also stay request-local");
     eventsB.length = 0;
     // Another first-page read includes the section members in its RPC response, but B does not call it.
     const refreshedA = await list();
-    assert.deepEqual(refreshedA.ids, [ordinary.id, older.id, pageMember.id, later.id].sort());
+    assert.deepEqual(
+      refreshedA.ids,
+      [ordinary.id, older.id, pageMember.id, later.id, external.id].sort(),
+    );
     assert.deepEqual(
       { duringContinuation, afterRefresh: addedB() },
       { duringContinuation: [pageMember.id, later.id].sort(), afterRefresh: [] },
       "B must receive the new section summaries immediately, not ordinary pagination rows",
     );
+
+    const project = workspaces.ownerOf(external.id);
+    assert.equal(project?.path, external.cwd);
+    const move = (sectionId: string | null) =>
+      rpc.dispatch("workspace/moveSessionToSection", {
+        args: { request: { sessionId: external.id, sectionId } },
+      });
+    eventsB.length = 0;
+    assert.deepEqual(await move(null), { ok: true, value: { sectionId: null } });
+    assert.deepEqual(addedB(), [discoveredDuringMove.id]);
+    assert.deepEqual(await move("research"), { ok: true, value: { sectionId: "research" } });
+    assert.deepEqual(workspaceB.filter(isSectionUpdate).slice(-2), [
+      sectionFrame(older.id, pageMember.id, later.id, discoveredDuringMove.id),
+      sectionFrame(older.id, pageMember.id, later.id, discoveredDuringMove.id, external.id),
+    ]);
+    assert.deepEqual(workspaces.ownerOf(external.id), project);
+    eventsB.length = 0;
+    assert.ok(
+      (
+        await rpc.dispatch("workspace/moveSessionToSection", {
+          args: { request: { sessionId: pageOrdinary.id, sectionId: "research" } },
+        })
+      ).ok,
+    );
+    assert.deepEqual(addedB(), [pageOrdinary.id]);
+    assert.deepEqual(
+      addedBeforeSection.at(-1),
+      [pageOrdinary.id],
+      "B must receive the private continuation summary before the section frame that references it",
+    );
+    assert.deepEqual(
+      workspaceB.filter(isSectionUpdate).at(-1),
+      sectionFrame(
+        older.id,
+        pageMember.id,
+        later.id,
+        discoveredDuringMove.id,
+        external.id,
+        pageOrdinary.id,
+      ),
+    );
   } finally {
     for (const handler of closeHandlers) handler();
   }
+});
+
+it("publishes a slid-out head row when a new browser first sees it in a section", async (t) => {
+  const host = nativeCodex(new FakeChHost());
+  const { root, list, move, subscribe, subscribeAdded } = setupSectionRpc(t, host);
+  const formerHead = host.add("native-former-head", root);
+  const head = host.add("native-current-head", root);
+  const retained = host.add("native-retained-section-member", root);
+  const deferred = host.add("native-deferred-section-member", root);
+  const continuationOnly = host.add("native-continuation-only", root);
+  const archived = host.add("native-archived", root);
+  const archivedViewOnly = host.add("native-archive-view-only", root);
+  for (const row of [
+    formerHead,
+    head,
+    retained,
+    deferred,
+    continuationOnly,
+    archived,
+    archivedViewOnly,
+  ])
+    row.modelProvider = "openai";
+  host.projectSnapshot.nativeProjects = true;
+  const section = { id: "research", name: "Research" };
+  let headRows = [formerHead];
+  let sectionRows = [retained];
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/move") {
+      assert.deepEqual(params, { threadId: formerHead.id, sectionId: section.id });
+      sectionRows = [retained, formerHead, deferred, archivedViewOnly, continuationOnly];
+      return {} as T;
+    }
+    if (method === "codexhost/thread/sections/list")
+      return { ...sectionFollowArgs, sections: [{ ...section, threads: sectionRows }] } as T;
+    if (method === "codexhost/thread/catalog/read") {
+      const includeArchived = params.includeArchived === true;
+      const rows = includeArchived
+        ? [...headRows, archived, archivedViewOnly]
+        : params.officialCursor
+          ? [formerHead, continuationOnly]
+          : headRows;
+      return {
+        threads: rows.map((row) => ({ ...row, turns: [] })),
+        ownership: rows.map((row) => host.threadOwnership(row.id)),
+        officialCursor: { live: "next" },
+        archivedThreadIds: includeArchived ? [archived.id] : [],
+      } as T;
+    }
+    return request<T>(method, params);
+  };
+  const listIds = async (args?: Record<string, unknown>) => {
+    const result = await list(args);
+    assert.ok(result.ok);
+    const value = result.value as {
+      items: Array<{ sessionId: string }>;
+      nextCursor: string | null;
+    };
+    return { ids: value.items.map(({ sessionId }) => sessionId).sort(), cursor: value.nextCursor };
+  };
+  assert.deepEqual((await listIds()).ids, [formerHead.id, retained.id].sort());
+
+  headRows = [head];
+  sectionRows = [deferred];
+  delete host.projectSnapshot.nativeProjects;
+  const refreshedA = await listIds();
+  assert.deepEqual(refreshedA.ids, [head.id, retained.id].sort());
+  assert.ok(refreshedA.cursor);
+
+  const received: string[] = [];
+  await subscribeAdded((id) => received.push(id));
+  const browser = await subscribe(sectionFollowArgs, () => received.push("section"));
+  assert.deepEqual(browser.baseline.threadSections, [{ ...section, threadIds: [retained.id] }]);
+  const firstB = await listIds();
+  assert.deepEqual(firstB.ids, [head.id, retained.id].sort());
+  assert.deepEqual(received, []);
+
+  // A's private reads may cache these rows, but B hasn't paginated.
+  formerHead.updatedAt += 1;
+  assert.deepEqual(
+    (await listIds({ includeArchived: true })).ids,
+    [head.id, retained.id, archived.id, archivedViewOnly.id].sort(),
+  );
+  assert.deepEqual(
+    (await listIds({ cursor: refreshedA.cursor })).ids,
+    [formerHead.id, continuationOnly.id].sort(),
+  );
+  assert.deepEqual(received, []);
+
+  host.projectSnapshot.nativeProjects = true;
+  assert.deepEqual(await move({ sessionId: formerHead.id, sectionId: section.id }), {
+    ok: true,
+    value: { sectionId: section.id },
+  });
+  assert.equal(received.pop(), "section");
+  assert.deepEqual(
+    received.sort(),
+    [formerHead.id, deferred.id, archivedViewOnly.id, continuationOnly.id].sort(),
+  );
+  assert.deepEqual(
+    browser.updates().map(({ threadSections }) => threadSections),
+    [
+      [
+        {
+          ...section,
+          threadIds: [
+            retained.id,
+            formerHead.id,
+            deferred.id,
+            archivedViewOnly.id,
+            continuationOnly.id,
+          ],
+        },
+      ],
+    ],
+  );
+});
+
+it("rereads section placement after an archive notification invalidates the held move snapshot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = nativeCodex(new FakeChChannel());
+  host.online = false;
+  const { root, list, move, subscribe, subscribeAdded, workspaces } = setupSectionRpc(t, host);
+  host.online = true;
+  for (const listener of host.listeners) listener({ type: "connection", online: true });
+  const first = host.add("native-first", root);
+  const last = host.add("native-last", root);
+  first.modelProvider = last.modelProvider = "openai";
+  const section = { id: "research", name: "Research" };
+  let members = [first, last];
+  let sectionReads = 0;
+  const pendingSections = Promise.withResolvers<undefined>();
+  const releaseSections = Promise.withResolvers<undefined>();
+  const pendingSummary = Promise.withResolvers<undefined>();
+  const releaseSummary = Promise.withResolvers<undefined>();
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/move") {
+      members = [last, first];
+      return {} as T;
+    }
+    if (method === "codexhost/thread/sections/list") {
+      const snapshot = {
+        ...sectionFollowArgs,
+        sections: [{ ...section, threads: members.map((row) => ({ ...row, archived: false })) }],
+      };
+      if (++sectionReads === 2) {
+        pendingSections.resolve(undefined);
+        await releaseSections.promise;
+      }
+      return snapshot as T;
+    }
+    if (method === "codexhost/harness/plugins/list") {
+      pendingSummary.resolve(undefined);
+      await releaseSummary.promise;
+    }
+    return request<T>(method, params);
+  };
+  assert.ok((await list()).ok);
+  const browser = await subscribe(sectionFollowArgs);
+  const added: string[] = [];
+  await subscribeAdded((id) => added.push(id));
+  const moving = move({ sessionId: last.id, sectionId: section.id, beforeSessionId: first.id });
+  await pendingSections.promise;
+  host.archivedIds.add(first.id);
+  host.changed(first.id, "thread/archived");
+  const external = host.add("external-discovered-in-fallback", root);
+  members = [last, external];
+  releaseSections.resolve(undefined);
+
+  assert.equal(
+    await Promise.race([pendingSummary.promise.then(() => "summary"), moving.then(() => "moved")]),
+    "summary",
+    "the stale move snapshot must not be reused for the full refresh",
+  );
+  host.archivedIds.add(external.id);
+  host.changed(external.id, "thread/archived");
+  releaseSummary.resolve(undefined);
+  assert.deepEqual(await moving, { ok: true, value: { sectionId: section.id } });
+  assert.equal(sectionReads, 3);
+  assert.ok(workspaces.isArchived(first.id));
+  assert.ok(workspaces.isArchived(external.id));
+  assert.deepEqual(added, []);
+  assert.deepEqual(browser.updates(), [
+    {
+      type: "threadSections",
+      ...sectionFollowArgs,
+      threadSections: [{ ...section, threadIds: [last.id] }],
+    },
+  ]);
+});
+
+it("preserves omitted, null and precise section anchors and surfaces Host owner rejection", async (t) => {
+  const host = new FakeChHost();
+  const { root, workspaces, rpc, list, move, subscribe } = setupSectionRpc(t, host);
+  const first = host.add("first", root);
+  const last = host.add("last", root);
+  const outsider = host.add("outsider", root);
+  const members = [first, last];
+  host.projectSnapshot.sectionProjects = { research: ["project-first"] };
+  const request = host.request.bind(host);
+  const submitted: unknown[] = [];
+  const moveReadCalls: string[] = [];
+  const projects = host.projects.bind(host);
+  host.projects = () => {
+    moveReadCalls.push("projects");
+    return projects();
+  };
+  const pins = host.pins.bind(host);
+  host.pins = (change) => {
+    moveReadCalls.push("pins");
+    return pins(change);
+  };
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    moveReadCalls.push(method);
+    if (method === "codexhost/thread/sections/list")
+      return {
+        ...sectionFollowArgs,
+        sections: [{ id: "research", name: "Research", threads: members }],
+      } as T;
+    if (method !== "codexhost/thread/sections/move") return request<T>(method, params);
+    submitted.push(params);
+    if (params.expectedSourceSectionId !== undefined)
+      throw new RpcError("host/rejected", "Thread no longer belongs to its drag source section", {
+        hostCode: -32078,
+      });
+    switch (params.beforeThreadId) {
+      case undefined:
+        break;
+      case null:
+        members.splice(0, 2, last, first);
+        break;
+      case last.id:
+        members.splice(0, 2, first, last);
+        break;
+      default:
+        throw new RpcError(
+          "host/rejected",
+          "Complete Thread section order is unavailable across owners",
+          {
+            hostCode: -32078,
+          },
+        );
+    }
+    return {} as T;
+  };
+  assert.ok((await list()).ok);
+  const follower = await subscribe({});
+  const capable = await subscribe(sectionFollowArgs);
+  const workspaceId = workspaces.byPath(root)?.workspaceId;
+  assert.ok(workspaceId);
+  const sectionFrame = (threadIds: string[]) => ({
+    type: "threadSections",
+    threadSections: [{ id: "research", name: "Research", threadIds, workspaceIds: [workspaceId] }],
+  });
+  const toResearch = { sessionId: first.id, sectionId: "research" };
+  assert.deepEqual(await move(toResearch), { ok: true, value: { sectionId: "research" } });
+  assert.deepEqual(follower.updates(), []);
+  moveReadCalls.length = 0;
+  assert.ok((await move({ ...toResearch, beforeSessionId: null })).ok);
+  assert.deepEqual(moveReadCalls, [
+    "codexhost/thread/sections/move",
+    "codexhost/thread/sections/list",
+  ]);
+  assert.ok((await move({ ...toResearch, beforeSessionId: last.id })).ok);
+  const rejected = await move({ ...toResearch, beforeSessionId: outsider.id });
+  assert.ok(!rejected.ok);
+  assert.equal(rejected.error.code, "host/rejected");
+  assert.match(rejected.error.message, /across owners/);
+  for (const invalid of [
+    { ...toResearch, beforeSessionId: first.id },
+    { ...toResearch, beforeSessionId: 1 },
+    { ...toResearch, sectionId: null, beforeSessionId: last.id },
+  ]) {
+    const result = await move(invalid);
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, "workspace/section-invalid");
+  }
+  assert.deepEqual(submitted, [
+    { threadId: first.id, sectionId: "research" },
+    { threadId: first.id, sectionId: "research", beforeThreadId: null },
+    { threadId: first.id, sectionId: "research", beforeThreadId: last.id },
+    { threadId: first.id, sectionId: "research", beforeThreadId: outsider.id },
+  ]);
+  const updates = [sectionFrame([last.id, first.id]), sectionFrame([first.id, last.id])];
+  assert.deepEqual(follower.updates(), updates);
+  assert.deepEqual(
+    capable.updates(),
+    updates.map((frame) => ({ ...frame, ...sectionFollowArgs })),
+  );
+  assert.ok((await rpc.dispatch("workspace/delete", { args: { request: { workspaceId } } })).ok);
+  assert.ok((await move({ ...toResearch, beforeSessionId: null })).ok);
+  const afterDelete = [{ id: "research", name: "Research", threadIds: [last.id, first.id] }];
+  assert.deepEqual(follower.updates().at(-1)?.threadSections, afterDelete);
+  assert.deepEqual((await subscribe(sectionFollowArgs)).baseline.threadSections, afterDelete);
+
+  const recreated = await rpc.dispatch("workspace/create", { args: { request: { path: root } } });
+  assert.ok(recreated.ok);
+  const newWorkspaceId = workspaces.byPath(root)?.workspaceId;
+  assert.ok(newWorkspaceId);
+  assert.notEqual(newWorkspaceId, workspaceId);
+  assert.ok((await move({ ...toResearch, beforeSessionId: last.id })).ok);
+  const afterRecreate = [
+    {
+      id: "research",
+      name: "Research",
+      threadIds: [first.id, last.id],
+      workspaceIds: [newWorkspaceId],
+    },
+  ];
+  assert.deepEqual(follower.updates().at(-1)?.threadSections, afterRecreate);
+  assert.deepEqual(capable.updates().at(-1)?.threadSections, afterRecreate);
+  assert.deepEqual((await subscribe(sectionFollowArgs)).baseline.threadSections, afterRecreate);
+
+  const staleDrop = await move({
+    sessionId: first.id,
+    sectionId: null,
+    expectedSourceSectionId: "previous-section",
+  });
+  assert.ok(!staleDrop.ok);
+  assert.match(staleDrop.error.message, /drag source section/);
+  assert.deepEqual(submitted.at(-1), {
+    threadId: first.id,
+    sectionId: null,
+    expectedSourceSectionId: "previous-section",
+  });
+  assert.deepEqual(capable.updates().at(-1)?.threadSections, afterRecreate);
 });
 
 it("places Desktop's section projects as their root Workspaces in Desktop order", async (t) => {
@@ -1758,6 +2672,10 @@ it("uses existing Desktop routing without installing code, and does not retry re
     /Missing CH Thread/,
   );
   assert.equal(host.requests.filter((req) => req.method === "turn/start").length, 1);
+  for (const { method } of Object.values(CLIENT_THREAD_SECTION_MUTATIONS)) {
+    await assert.rejects(client.request(method, {}), /Unhandled CH fixture method/);
+    assert.equal(host.requests.filter((req) => req.method === method).length, 1);
+  }
   await assert.rejects(client.request("shell/execute", {}), /Unsupported CH method/);
 });
 

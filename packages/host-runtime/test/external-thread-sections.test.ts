@@ -1,8 +1,13 @@
 import type { StoredSectionPlacementV1 } from "@codexhost/mapping-store";
-import { decodeThreadListRequest, type JsonObject } from "@codexhost/protocol-core";
-import { describe, expect, it } from "vitest";
+import {
+  decodeThreadListRequest,
+  type DecodedThreadSectionMoveRequest,
+  type JsonObject,
+} from "@codexhost/protocol-core";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  listAllOfficialRows,
   listSectionThreads,
   mergeSectionOrder,
   moveThreadSection,
@@ -129,6 +134,22 @@ class Harness {
     return outcome;
   }
 
+  exactNativeMove(
+    move: DecodedThreadSectionMoveRequest,
+    savePlacements: (next: StoredSectionPlacementV1[]) => Promise<unknown>,
+  ) {
+    return moveThreadSection({
+      move,
+      custom: { currentSectionId: this.official.sectionOf(move.threadId) },
+      movingExternal: false,
+      externalThreadIds: this.externalIds,
+      placements: this.placements,
+      requestOfficial: this.official.request,
+      savePlacements,
+      now: new Date(),
+    });
+  }
+
   applyExpected(threadId: string, sectionId: string | null, before: string | null) {
     for (const order of this.expected.values()) {
       const index = order.indexOf(threadId);
@@ -188,7 +209,7 @@ describe("External Thread sections", () => {
       savePlacements: async () => undefined,
       now: new Date(),
     });
-    expect(outcome).toEqual({ kind: "forward" });
+    expect(outcome).toMatchObject({ kind: "forward" });
     expect(harness.official.requests).toEqual([]);
   });
 
@@ -210,6 +231,147 @@ describe("External Thread sections", () => {
     expect(harness.official.sections.get(PINNED)).toEqual(["off-1"]);
     // An External move changed nothing yet, so its persistence failure is a real failure.
     await expect(move("ext-a", true)).rejects.toBe(failure);
+  });
+
+  it("requires an explicit terminal cursor only when reading a complete section order", async () => {
+    const harness = new Harness(new Set(["ext-a"]));
+    let complete = false;
+    const requestOfficial = async (method: string, params: JsonObject): Promise<JsonObject> => {
+      if (method !== "thread/list") return harness.official.request(method, params);
+      if (params.cursor === null) {
+        return { result: { data: [{ id: "off-1" }], nextCursor: "last" } };
+      }
+      expect(params.cursor).toBe("last");
+      return {
+        result: { data: [{ id: "off-2" }], ...(complete ? { nextCursor: null } : {}) },
+      };
+    };
+    const savePlacements = vi.fn(async (next: StoredSectionPlacementV1[]) => {
+      harness.placements = next;
+    });
+    const move = () =>
+      moveThreadSection({
+        move: { threadId: "ext-a", sectionId: CUSTOM, beforeThreadId: "off-2" },
+        custom: { currentSectionId: null },
+        movingExternal: true,
+        externalThreadIds: harness.externalIds,
+        placements: [],
+        requestOfficial,
+        savePlacements,
+        now: new Date(),
+      });
+
+    await expect(move()).resolves.toEqual({
+      kind: "error",
+      error: { code: -32600, message: "Incomplete official section order" },
+    });
+    expect(savePlacements).not.toHaveBeenCalled();
+    await expect(listAllOfficialRows(requestOfficial, { sectionId: CUSTOM })).resolves.toEqual([
+      { id: "off-1" },
+      { id: "off-2" },
+    ]);
+
+    complete = true;
+    await expect(move()).resolves.toEqual({ kind: "moved" });
+    expect(savePlacements).toHaveBeenCalledWith([
+      expect.objectContaining({ hostThreadId: "ext-a", beforeThreadId: "off-2" }),
+    ]);
+  });
+
+  it("moves a native Thread across an External anchor without rewriting native order", async () => {
+    const harness = new Harness(new Set(["ext-a"]));
+    harness.official.sections.set(CUSTOM, ["off-1", "off-2"]);
+    await harness.move("ext-a", CUSTOM, "off-1");
+
+    const move = { threadId: "off-1", sectionId: CUSTOM, beforeThreadId: "ext-a" };
+    const failure = new Error("disk full");
+    const savePlacements = vi.fn(async (next: StoredSectionPlacementV1[]) => {
+      harness.placements = next;
+    });
+    savePlacements.mockRejectedValueOnce(failure);
+    await expect(harness.exactNativeMove(move, savePlacements)).rejects.toBe(failure);
+    expect(harness.merged(CUSTOM)).toEqual(["ext-a", "off-1", "off-2"]);
+    await expect(harness.exactNativeMove(move, savePlacements)).resolves.toEqual({ kind: "moved" });
+    expect(harness.merged(CUSTOM)).toEqual(["off-1", "ext-a", "off-2"]);
+    expect(harness.official.requests.map(({ method }) => method)).not.toContain(
+      "thread/section/move",
+    );
+  });
+
+  it("recovers a partially applied exact move from fresh placements without replaying native", async () => {
+    const harness = new Harness(new Set(["ext-a", "ext-b"]));
+    harness.official.sections.set(CUSTOM, ["off-1", "off-2", "off-3"]);
+    await harness.move("ext-a", CUSTOM, "off-2");
+    const failure = new Error("disk full");
+    const savePlacements = vi.fn(async (next: StoredSectionPlacementV1[]) => {
+      harness.placements = next;
+    });
+    savePlacements.mockRejectedValueOnce(failure);
+    const outcome = await harness.exactNativeMove(
+      { threadId: "off-2", sectionId: null, beforeThreadId: null },
+      savePlacements,
+    );
+    expect(outcome).toMatchObject({
+      kind: "needs-readback",
+      nativeConfirmed: true,
+      cause: failure,
+    });
+    if (outcome.kind !== "needs-readback") throw new Error("Expected a partial exact move");
+    expect(harness.official.sections.get(CUSTOM)).toEqual(["off-1", "off-3"]);
+    expect(harness.merged(CUSTOM)).toEqual(["off-1", "off-3", "ext-a"]);
+
+    const superseding = harness.placements.map((placement) => ({
+      ...placement,
+      beforeThreadId: "off-1",
+    }));
+    await expect(outcome.recover(async () => superseding)).resolves.toBe(false);
+    expect(savePlacements).toHaveBeenCalledTimes(1);
+
+    await harness.move("ext-b", PINNED);
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(true);
+    expect(harness.merged(CUSTOM)).toEqual(["off-1", "ext-a", "off-3"]);
+    expect(harness.merged(PINNED)).toEqual(["ext-b"]);
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(true);
+
+    harness.official.sections.set(PINNED, ["off-2"]);
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(false);
+    expect(savePlacements).toHaveBeenCalledTimes(2);
+    expect(
+      harness.official.requests.filter(({ method }) => method === "thread/section/move"),
+    ).toHaveLength(1);
+  });
+
+  it("reconciles both section orders when the native connection drops after committing", async () => {
+    const harness = new Harness(new Set(["ext-a", "ext-b"]));
+    harness.official.sections.set(CUSTOM, ["off-1", "off-2"]);
+    harness.official.sections.set(PINNED, ["off-3"]);
+    await harness.move("ext-a", CUSTOM, "off-1");
+    await harness.move("ext-b", PINNED, "off-3");
+    const request = harness.official.request;
+    const move = { threadId: "off-1", sectionId: PINNED, beforeThreadId: "ext-b" };
+    const outcome = await moveThreadSection({
+      move,
+      movingExternal: false,
+      externalThreadIds: harness.externalIds,
+      placements: harness.placements,
+      requestOfficial: async (method, params) => {
+        const reply = await request(method, params);
+        if (method === "thread/section/move") throw new Error("Official connection disconnected");
+        return reply;
+      },
+      savePlacements: async (next) => {
+        harness.placements = next;
+      },
+      now: new Date(),
+    });
+    expect(outcome).toMatchObject({ kind: "needs-readback", nativeConfirmed: false });
+    if (outcome.kind !== "needs-readback") throw new Error("Expected a native readback");
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(true);
+    expect(harness.merged(CUSTOM)).toEqual(["ext-a", "off-2"]);
+    expect(harness.merged(PINNED)).toEqual(["off-1", "ext-b", "off-3"]);
+    expect(
+      harness.official.requests.filter(({ method }) => method === "thread/section/move"),
+    ).toHaveLength(1);
   });
 
   it("keeps entry time when a Thread is reordered inside its section", async () => {

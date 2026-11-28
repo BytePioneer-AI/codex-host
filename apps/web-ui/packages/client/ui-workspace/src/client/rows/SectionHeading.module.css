@@ -27,6 +27,12 @@
   outline-offset: -2px;
 }
 
+.heading.dropTarget {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-label-primary);
+}
+
 .heading[data-row-key]:focus-visible,
 .action:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
@@ -34,6 +40,7 @@
 }
 
 .title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -77,7 +84,7 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-@media (pointer: coarse) {
+@media (hover: none), (pointer: coarse) {
   .heading {
     min-height: 44px;
   }
@@ -85,5 +92,18 @@
   .action {
     width: 44px;
     height: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
+}
+
+:global([data-phone-drawer]) .heading {
+  min-height: 44px;
+}
+
+:global([data-phone-drawer]) .action {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
 }

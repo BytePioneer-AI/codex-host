@@ -203,7 +203,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  max-width: 60px;
+  max-width: 96px;
   opacity: 1;
   overflow: hidden;
   visibility: visible;
@@ -510,10 +510,28 @@
 }
 
 .flatList > * + *,
+.flatUnsectioned > * + *,
+.flatRows > * + *,
 .searchTree > [role="treeitem"] + [role="treeitem"],
 .groupSection > * + *,
 .groupSessions > * + * {
   margin-top: 2px;
+}
+
+.unsectionedZone {
+  border-radius: var(--dsw-radius-sm);
+}
+
+.unsectionedDropTarget {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, transparent);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-state-business-primary);
+}
+
+.unsectionedDropHint {
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .searchStatus {
@@ -685,8 +703,27 @@
 
 @media (hover: none), (pointer: coarse) {
   .sessionOverflowButton,
-  .root:not(.rail) .iconButton {
+  .root:not(.rail) .iconButton,
+  .root:not(.rail) .searchButton {
     min-height: 44px;
+  }
+  .root:not(.rail) .iconButton,
+  .root:not(.rail) .searchButton {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+  }
+  .root:not(.rail) .searchSlot {
+    max-width: 44px;
+  }
+  .root:not(.rail) .searchSlotExpanded {
+    max-width: 100%;
+  }
+  .root:not(.rail) .search {
+    height: 44px;
+  }
+  .root:not(.rail) .headerActions:not(.headerActionsHidden) {
+    max-width: 148px;
   }
   .root:not(.rail) .sectionHeader {
     height: 44px;
@@ -695,6 +732,34 @@
   .renameInput {
     font-size: 16px;
   }
+}
+
+:global([data-phone-drawer]) .root:not(.rail) .sectionHeader {
+  height: 44px;
+}
+
+:global([data-phone-drawer]) .root:not(.rail) .iconButton,
+:global([data-phone-drawer]) .root:not(.rail) .searchButton {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+:global([data-phone-drawer]) .root:not(.rail) .searchSlot {
+  max-width: 44px;
+}
+
+:global([data-phone-drawer]) .root:not(.rail) .searchSlotExpanded {
+  max-width: 100%;
+}
+
+:global([data-phone-drawer]) .root:not(.rail) .search {
+  height: 44px;
+}
+
+:global([data-phone-drawer]) .root:not(.rail) .headerActions:not(.headerActionsHidden) {
+  max-width: 148px;
 }
 
 .empty {

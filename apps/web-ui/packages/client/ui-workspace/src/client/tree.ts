@@ -167,6 +167,32 @@ export function workspaceLabel(cwd: string | undefined): string {
 }
 
 /**
+ * Order Workspaces by their latest mutation or loaded Session activity.
+ * Equal timestamps preserve the Host order.
+ */
+export function orderWorkspacesByRecency(
+  workspaces: readonly WorkspaceView[],
+  summaries: SessionListState["byId"],
+): WorkspaceView[] {
+  return workspaces
+    .map((workspace) => {
+      let updatedAt = Math.max(
+        Date.parse(workspace.createdAt) || 0,
+        Date.parse(workspace.updatedAt) || 0,
+      );
+      for (const id of workspace.sessionIds) {
+        const session = summaries[id];
+        if (session !== undefined && !session.blank) {
+          updatedAt = Math.max(updatedAt, session.updatedAt);
+        }
+      }
+      return { workspace, updatedAt };
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map(({ workspace }) => workspace);
+}
+
+/**
  * Project known account members by current Session recency.
  * @param sessionIds - authoritative account membership.
  * @param summaries - current Session summaries; members without a summary are omitted until it arrives.
@@ -521,7 +547,7 @@ export function deriveThreadForest(
  * appear per the archived filter. Content
  * search lives outside this derivation (see {@link deriveSearchResults}).
  * @param list - sessions list snapshot (`mainView` retention feeds containsCurrent).
- * @param workspaces - real Workspaces in Host group order with caller-projected Session order.
+ * @param workspaces - real Workspaces in display order with caller-projected Session order.
  * @param rowState - registry-global pin and archive sets plus the archived filter.
  * @param statuses - unified UI status by Session.
  * @param view - local expansion arrays.

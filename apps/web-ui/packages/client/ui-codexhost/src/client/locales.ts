@@ -69,7 +69,7 @@ export const en = {
   "connection.host": "Host unavailable; reconnecting…",
   "connection.error": "Could not sync messages. Retry the connection.",
   "connection.unsupportedHistory":
-    "The remote host's Codex or codexhost version does not support paginated history. Update the remote host and retry.",
+    "This remote host version does not support loading this conversation or its history. Update the remote host and retry.",
   "opening.loading": "Opening conversation…",
   "opening.error": "Could not open conversation",
   "connection.checking": "Checking the connection…",
@@ -1012,8 +1012,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connection.offline": "网络可能已断开，当前显示上次同步内容。",
   "connection.host": "Host 暂不可用，正在重连…",
   "connection.error": "消息同步失败，请重试连接。",
-  "connection.unsupportedHistory":
-    "远端主机的 Codex 或 codexhost 版本不支持分页历史，请升级远端后再试。",
+  "connection.unsupportedHistory": "远端主机版本不支持加载此会话或其历史记录，请升级远端后再试。",
   "opening.loading": "正在打开会话…",
   "opening.error": "无法打开会话",
   "connection.checking": "正在检查连接…",

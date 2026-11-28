@@ -346,6 +346,7 @@ export class PeerHostClient {
   get isHttpReady(): boolean {
     return (
       this.record.enabled &&
+      !this.closed &&
       (this.state === "connected" || (this.state === "connecting" && this.manifestVerified))
     );
   }
@@ -612,14 +613,17 @@ export class PeerHostClient {
         let checked = Date.now();
         let pending = "";
         const decoder = new TextDecoder();
+        let receivedHello = false;
         resetIdleTimer();
         for await (const chunk of response.body) {
-          resetIdleTimer();
-          if (Date.now() - checked >= 30000) {
-            const before = JSON.stringify(this.manifest);
-            await this.probe();
-            checked = Date.now();
-            if (before !== JSON.stringify(this.manifest)) this.changed(this.hostId);
+          if (receivedHello) {
+            resetIdleTimer();
+            if (Date.now() - checked >= 30000) {
+              const before = JSON.stringify(this.manifest);
+              await this.probe();
+              checked = Date.now();
+              if (before !== JSON.stringify(this.manifest)) this.changed(this.hostId);
+            }
           }
           pending += decoder.decode(chunk, { stream: true });
           let i;
@@ -636,13 +640,16 @@ export class PeerHostClient {
             const parsed = c.clientChannelEventSchema.safeParse(raw);
             if (!parsed.success) continue;
             const event = parsed.data;
-            this.cursor = event.cursor;
             if (event.type === "hello") {
+              resetIdleTimer();
               if (this.manifest?.epoch !== event.cursor.epoch) {
                 await this.probe();
                 if (this.life.signal.aborted) return;
                 this.changed(this.hostId);
               }
+              receivedHello = true;
+              resetIdleTimer();
+              this.cursor = event.cursor;
               delay = 1000;
               const becameConnected = this.state !== "connected" || !this.streamOnline;
               this.state = "connected";
@@ -656,7 +663,8 @@ export class PeerHostClient {
               }
               this.initialConnection.resolve(undefined);
               this.publish(event);
-            } else {
+            } else if (receivedHello) {
+              this.cursor = event.cursor;
               delay = 1000;
               this.publish(event);
             }
@@ -669,11 +677,13 @@ export class PeerHostClient {
       } finally {
         if (idleTimer) clearTimeout(idleTimer);
         streamAbort.abort();
+        this.manifestVerified = false;
+        if (!this.life.signal.aborted && this.state !== "auth-error") {
+          this.state = "offline";
+        }
         this.setStreamOffline();
       }
       if (this.life.signal.aborted) return;
-      this.manifestVerified = false;
-      if (this.state !== "auth-error") this.state = "offline";
       this.initialConnection.resolve(undefined);
       this.changed(this.hostId);
       await sleep(delay, undefined, { signal: this.life.signal }).catch(() => {});

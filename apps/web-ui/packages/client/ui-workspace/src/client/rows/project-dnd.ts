@@ -24,7 +24,7 @@ export interface ProjectDropTarget {
 type DialogInput = Parameters<typeof resolveMoveProjectDialogState>[0];
 
 export interface ProjectDragInput extends Omit<DialogInput, "selectedTarget"> {
-  readonly sourceKind: ProjectDragSource["sourceKind"] | "custom-section";
+  readonly sourceKind: ProjectDragSource["sourceKind"];
   readonly sourceWorkspaceId: WorkspaceId | null;
   /** Unique project owners for the currently rendered local workspace groups. */
   readonly workspaceProjectMap: ReadonlyMap<WorkspaceId, string>;
@@ -68,7 +68,7 @@ export function isProjectDropTargetRow(live: ProjectDragInput): boolean {
 
 export function resolveProjectDragSource(live: ProjectDragInput): ProjectDragSource | null {
   const { sourceKind, sourceWorkspaceId, sessionId, workspaceProjectMap } = live;
-  if (live.busy || sourceKind === "custom-section") return null;
+  if (live.busy) return null;
   const state = resolveMoveProjectDialogState({ ...live, selectedTarget: null });
   if (!state.eligible) return null;
   const sourceProjectId = state.currentProjectId || null;
@@ -91,7 +91,6 @@ interface ProjectDropInput {
   readonly source: ProjectDragSource;
   readonly live: ProjectDragInput;
   readonly targetWorkspaceId: WorkspaceId | undefined;
-  readonly targetRemote?: boolean;
   /** Undefined for a header; null when the hovered row is no longer available. */
   readonly targetRow?: ProjectDragInput | null;
 }
@@ -99,7 +98,6 @@ interface ProjectDropInput {
 export function resolveProjectDropTarget(input: ProjectDropInput): ProjectDropTarget | null {
   const { live, source, targetWorkspaceId, targetRow } = input;
   if (
-    input.targetRemote ||
     targetWorkspaceId === undefined ||
     (targetRow !== undefined &&
       (targetRow === null ||

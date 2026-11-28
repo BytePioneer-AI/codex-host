@@ -94,7 +94,6 @@ describe("sidebar project drag", () => {
     for (const invalid of [
       { ...live, sourceWorkspaceId: "web-only" as WorkspaceId },
       { ...live, sourceWorkspaceId: b },
-      { ...live, sourceKind: "custom-section" as const },
       input([alpha, beta, { ...gamma, workspaceIds: [a, c] }]),
       input([alpha, beta, { ...alpha, workspaceIds: [], sessionIds: [] }]),
       input([alpha, { ...beta, workspaceIds: [] }]),
@@ -138,7 +137,7 @@ describe("sidebar project drag", () => {
     const drop = gesture();
     for (const change of [
       { targetWorkspaceId: undefined },
-      { targetRemote: true },
+      { targetWorkspaceId: "remote-workspace" as WorkspaceId },
       { expectedTarget: null },
       { targetWorkspaceId: a },
       { targetWorkspaceId: c },

@@ -6,17 +6,31 @@ import path from "node:path";
 import {
   downloadArtifact,
   validateArtifact,
+  verifyArtifactFile,
   verifyDownloadedArtifact,
   type ArtifactDownloadProgress,
   type ArtifactDownloader,
   type ArtifactSource,
 } from "./artifact.js";
+import type { ReleaseTarget } from "./github-release.js";
 import {
   prefetchNpmRelease,
   resolveNpmConfiguration,
+  resolveNpmPackageCacheFiles,
+  type NpmConfiguration,
   type NpmDownloadProgress,
   type NpmReleaseTarget,
 } from "./npm-registry.js";
+import {
+  readStagedUpdate,
+  stageArtifact as stageArtifactToDisk,
+  stageNpm as stageNpmToDisk,
+  verifyStagedArtifact,
+  verifyStagedNpm as verifyStagedNpmRecord,
+  type StageArtifactOptions,
+  type StagedUpdateRecord,
+  type StageNpmOptions,
+} from "./staging.js";
 import {
   parseUpdateStatus,
   requireSemanticVersion,
@@ -47,6 +61,8 @@ export interface CommonUpdateOptions {
   restartTarget?: "desktop" | "web";
   dataDirectory?: string;
   onPrepared?(info: PreparedUpdateInfo): void | Promise<void>;
+  /** Waits for an in-flight background staging job for this version before reusing or downloading. */
+  waitForStaged?(): Promise<void>;
 }
 
 export interface NpmUpdateOptions extends CommonUpdateOptions {
@@ -54,6 +70,8 @@ export interface NpmUpdateOptions extends CommonUpdateOptions {
   npmCliPath: string;
   npmLauncherPath: string;
   packageRoot: string;
+  target?: ReleaseTarget;
+  npmConfigSha256?: string;
 }
 
 export interface WindowsInstallerUpdateOptions extends CommonUpdateOptions {
@@ -94,6 +112,10 @@ export interface BackgroundUpdateManagerDependencies {
     target: NpmReleaseTarget,
     onProgress: (progress: NpmDownloadProgress) => Promise<void>,
   ): Promise<void>;
+  /** Resolves global npm configuration digest and cache directory for config-drift checks. */
+  resolveNpmConfiguration?(target: NpmReleaseTarget): Promise<NpmConfiguration>;
+  /** Resolves relative `_cacache` content paths for the target npm packages. */
+  resolveNpmPackageCacheFiles?(target: NpmReleaseTarget): Promise<string[]>;
   now?(): number;
 }
 
@@ -104,6 +126,15 @@ export interface BackgroundUpdateManager {
   ): Promise<PreparedBackgroundUpdate>;
   prepareMacOsDmg(options: MacOsDmgUpdateOptions): Promise<PreparedBackgroundUpdate>;
   prepareLinuxArchive(options: LinuxArchiveUpdateOptions): Promise<PreparedBackgroundUpdate>;
+  stageArtifact(
+    options: Omit<StageArtifactOptions, "download" | "now">,
+  ): Promise<StagedUpdateRecord>;
+  stageNpm(options: Omit<StageNpmOptions, "prefetchNpm" | "now">): Promise<StagedUpdateRecord>;
+  verifyStagedNpm(options: {
+    stateDirectory: string;
+    npmTarget: NpmReleaseTarget;
+    target?: ReleaseTarget;
+  }): Promise<boolean>;
   /** Resolves only after the Updater validates the owner and is waiting for its exit. */
   start(
     prepared: PreparedBackgroundUpdate,
@@ -156,6 +187,7 @@ interface PreparedCommonUpdate {
   launcherPid: number;
   launcherExecutable: string;
   runtimeDescriptorPath: string;
+  stateDirectory: string;
   workDirectory: string;
   helperPath: string;
   requestPath: string;
@@ -252,6 +284,12 @@ export function createBackgroundUpdateManager(
   const prefetchNpm: NonNullable<BackgroundUpdateManagerDependencies["prefetchNpm"]> =
     dependencies.prefetchNpm ??
     ((target, onProgress) => prefetchNpmRelease(target, undefined, onProgress));
+  const resolveNpmConfig =
+    dependencies.resolveNpmConfiguration ??
+    (dependencies.prefetchNpm ? undefined : resolveNpmConfiguration);
+  const resolveNpmCacheFiles =
+    dependencies.resolveNpmPackageCacheFiles ??
+    (dependencies.prefetchNpm ? undefined : resolveNpmPackageCacheFiles);
   const now = dependencies.now ?? Date.now;
   const preparedRequests = new Set<string>();
 
@@ -384,6 +422,7 @@ export function createBackgroundUpdateManager(
       launcherPid,
       launcherExecutable,
       runtimeDescriptorPath,
+      stateDirectory,
       workDirectory,
       helperPath,
       requestPath,
@@ -394,17 +433,50 @@ export function createBackgroundUpdateManager(
     };
   }
 
+  async function tryReuseStagedArtifact(
+    common: PreparedCommonUpdate,
+    source: ArtifactSource,
+    temporaryPath: string,
+  ): Promise<number | null> {
+    const staged = await readStagedUpdate(common.stateDirectory);
+    if (!staged || staged.version !== common.version) return null;
+    const verified = await verifyStagedArtifact(common.stateDirectory, staged, source);
+    if (!verified) return null;
+    try {
+      await copyFile(verified.artifactPath, temporaryPath);
+      if (platform !== "win32") await chmod(temporaryPath, 0o600);
+      return await verifyArtifactFile(source, temporaryPath);
+    } catch {
+      await rm(temporaryPath, { force: true });
+      return null;
+    }
+  }
+
   async function prepareArtifact(
     common: PreparedCommonUpdate,
     installation: BackgroundUpdateInstallation,
     sourceValue: ArtifactSource,
     fileName: string,
+    waitForStaged?: () => Promise<void>,
   ): Promise<{ source: ArtifactSource; artifactPath: string }> {
     const temporaryPath = path.join(common.workDirectory, `.${fileName}.download`);
     const artifactPath = path.join(common.workDirectory, fileName);
     let progress: ReturnType<typeof progressReporter> | undefined;
     try {
       const source = validateArtifact(sourceValue);
+      await waitForStaged?.();
+      const reusedSize = await tryReuseStagedArtifact(common, source, temporaryPath);
+      if (reusedSize !== null) {
+        await writeStatusSnapshot(
+          common.statusPath,
+          statusSnapshot(common.version, installation, "downloading", {
+            downloadedBytes: reusedSize,
+            totalBytes: source.size ?? reusedSize,
+          }),
+        );
+        await rename(temporaryPath, artifactPath);
+        return { source, artifactPath };
+      }
       progress = progressReporter(common.statusPath, common.version, installation, source.size);
       const result = await download(source, temporaryPath, progress.update);
       progress.update({ downloadedBytes: result.bytes, totalBytes: source.size });
@@ -469,20 +541,31 @@ export function createBackgroundUpdateManager(
         const nodePath = await requireRegularFile(options.nodePath, "npm Node.js executable");
         const npmCliPath = await requireRegularFile(options.npmCliPath, "npm CLI");
         const packageRoot = requireAbsolutePath(options.packageRoot, "npm platform package root");
-        // The Updater installs from this cache after the services stop, so a registry that is
-        // unreachable or lacks the release fails here while everything keeps running.
+        await options.waitForStaged?.();
         const target = { nodePath, npmCliPath, packageRoot, version: common.version };
-        const configuration = dependencies.prefetchNpm
-          ? undefined
-          : await resolveNpmConfiguration(target);
-        await prefetchNpm(
-          { ...target, ...(configuration ? { configuration: configuration.environment } : {}) },
-          (npmDownload) =>
-            writeStatusSnapshot(common.statusPath, {
-              ...statusSnapshot(common.version, "npm", "downloading"),
-              npmDownload,
-            }).catch(() => undefined),
-        );
+        const configuration = resolveNpmConfig ? await resolveNpmConfig(target) : undefined;
+        const expectedConfigSha256 = options.npmConfigSha256 ?? configuration?.digest;
+        const staged = await readStagedUpdate(common.stateDirectory);
+        const alreadyStaged =
+          staged !== null &&
+          (await verifyStagedNpmRecord(staged, {
+            version: common.version,
+            ...(options.target ? { target: options.target } : {}),
+            ...(expectedConfigSha256 ? { npmConfigSha256: expectedConfigSha256 } : {}),
+            ...(configuration ? { npmCacheDirectory: configuration.cacheDirectory } : {}),
+          }));
+        if (!alreadyStaged) {
+          // The Updater installs from this cache after the services stop, so a registry that is
+          // unreachable or lacks the release fails here while everything keeps running.
+          await prefetchNpm(
+            { ...target, ...(configuration ? { configuration: configuration.environment } : {}) },
+            (npmDownload) =>
+              writeStatusSnapshot(common.statusPath, {
+                ...statusSnapshot(common.version, "npm", "downloading"),
+                npmDownload,
+              }).catch(() => undefined),
+          );
+        }
         return await finalize(common, {
           kind: "npm",
           node_path: nodePath,
@@ -511,6 +594,7 @@ export function createBackgroundUpdateManager(
         "windows-installer",
         options.artifact,
         "update.exe",
+        options.waitForStaged,
       );
       return finalize(
         common,
@@ -531,7 +615,13 @@ export function createBackgroundUpdateManager(
         throw new Error("macOS application path must end in .app");
       }
       const common = await prepareCommon(options, "macos-dmg");
-      const artifact = await prepareArtifact(common, "macos-dmg", options.artifact, "update.dmg");
+      const artifact = await prepareArtifact(
+        common,
+        "macos-dmg",
+        options.artifact,
+        "update.dmg",
+        options.waitForStaged,
+      );
       return finalize(
         common,
         {
@@ -555,6 +645,7 @@ export function createBackgroundUpdateManager(
         "linux-archive",
         options.artifact,
         "update.tar.gz",
+        options.waitForStaged,
       );
       return finalize(
         common,
@@ -566,6 +657,62 @@ export function createBackgroundUpdateManager(
         },
         artifact.artifactPath,
       );
+    },
+
+    stageArtifact(
+      options: Omit<StageArtifactOptions, "download" | "now">,
+    ): Promise<StagedUpdateRecord> {
+      return stageArtifactToDisk({
+        ...options,
+        download,
+        now,
+      });
+    },
+
+    async stageNpm(
+      options: Omit<StageNpmOptions, "prefetchNpm" | "now">,
+    ): Promise<StagedUpdateRecord> {
+      const configuration = resolveNpmConfig
+        ? await resolveNpmConfig(options.npmTarget)
+        : undefined;
+      const npmTarget: NpmReleaseTarget = {
+        ...options.npmTarget,
+        ...(configuration ? { configuration: configuration.environment } : {}),
+      };
+      const npmConfigSha256 = options.npmConfigSha256 ?? configuration?.digest;
+      const npmCacheDirectory = options.npmCacheDirectory ?? configuration?.cacheDirectory;
+      const resolveCacheFiles = options.resolveCacheFiles ?? resolveNpmCacheFiles;
+      return stageNpmToDisk({
+        ...options,
+        npmTarget,
+        ...(npmConfigSha256 ? { npmConfigSha256 } : {}),
+        ...(npmCacheDirectory ? { npmCacheDirectory } : {}),
+        ...(resolveCacheFiles ? { resolveCacheFiles } : {}),
+        prefetchNpm: (target, onProgress) =>
+          prefetchNpm(target, async (progress) => {
+            await onProgress?.(progress);
+          }),
+        now,
+      });
+    },
+
+    async verifyStagedNpm(options: {
+      stateDirectory: string;
+      npmTarget: NpmReleaseTarget;
+      target?: ReleaseTarget;
+    }): Promise<boolean> {
+      const staged = await readStagedUpdate(options.stateDirectory);
+      if (!staged) return false;
+      const configuration = resolveNpmConfig
+        ? await resolveNpmConfig(options.npmTarget).catch(() => null)
+        : undefined;
+      if (configuration === null) return false;
+      return verifyStagedNpmRecord(staged, {
+        version: options.npmTarget.version,
+        ...(options.target ? { target: options.target } : {}),
+        ...(configuration ? { npmConfigSha256: configuration.digest } : {}),
+        ...(configuration ? { npmCacheDirectory: configuration.cacheDirectory } : {}),
+      });
     },
 
     async start(

@@ -12,6 +12,8 @@ export interface SettingsLauncherFace {
   openSection: (id: string) => void;
 }
 
+const UPDATE_REFRESH_INTERVAL_MS = 15 * 60_000;
+
 export function SettingsLauncher({
   wide,
   settingsOpen,
@@ -24,27 +26,58 @@ export function SettingsLauncher({
   const connected =
     useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot) === "connected";
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [readyVersion, setReadyVersion] = useState<string | null>(null);
   useEffect(() => {
     if (settingsOpen) preloadHostSettings();
   }, [settingsOpen]);
   useEffect(() => {
     if (!connected || settingsOpen) return;
-    const controller = new AbortController();
-    // Closing settings refreshes the badge after checks or installation on the update page.
-    void checkHostUpdate(AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]))
-      .then((result) => {
-        if (
-          !controller.signal.aborted &&
-          (result.error === null || result.latestVersion !== null)
-        ) {
-          setUpdateAvailable(result.updateAvailable);
-        }
-      })
-      .catch(() => undefined);
-    return () => controller.abort();
+    let activeController: AbortController | null = null;
+    const refresh = (): void => {
+      activeController?.abort();
+      const controller = new AbortController();
+      activeController = controller;
+      // Closing settings or periodic polling refreshes the badge as background staging completes.
+      void checkHostUpdate(AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]))
+        .then((result) => {
+          if (
+            !controller.signal.aborted &&
+            (result.error === null || result.latestVersion !== null)
+          ) {
+            const available =
+              result.updateAvailable &&
+              (result.installationAvailable ||
+                result.error !== null ||
+                result.backgroundPhase === "failed");
+            const staged =
+              available &&
+              result.stagedVersion &&
+              result.stagedVersion === result.latestVersion &&
+              result.backgroundPhase === "ready"
+                ? result.stagedVersion
+                : null;
+            setUpdateAvailable(available);
+            setReadyVersion(staged);
+          }
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      refresh();
+    }, UPDATE_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+      activeController?.abort();
+    };
   }, [connected, settingsOpen]);
 
-  const label = updateAvailable ? t("settings.updateAvailable") : t("settings.open");
+  const label = readyVersion
+    ? t("settings.updateReady", { version: readyVersion })
+    : updateAvailable
+      ? t("settings.updateAvailable")
+      : t("settings.open");
   return (
     <Tooltip disabled={settingsOpen} label={label} shortcutKeys={settingsShortcut?.keys}>
       <button
@@ -52,6 +85,7 @@ export function SettingsLauncher({
         className={css.trigger}
         data-wide={wide}
         data-update-available={updateAvailable || undefined}
+        data-update-ready={readyVersion ? "true" : undefined}
         aria-label={label}
         aria-keyshortcuts={settingsShortcut?.aria}
         aria-haspopup="dialog"

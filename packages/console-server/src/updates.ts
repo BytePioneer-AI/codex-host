@@ -10,6 +10,7 @@ import type {
 } from "@codexhost/shared-contracts";
 import {
   acquireUpdateOperationLock,
+  cleanupStagedUpdates,
   cleanupTerminalUpdateState,
   compareSemanticVersions,
   createBackgroundUpdateManager,
@@ -20,10 +21,12 @@ import {
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
   fetchLatestNpmRelease,
+  readStagedUpdate,
   recoverUpdateOperationLock,
   resolveNpmRuntimePaths,
   selectInstallerReleaseArtifact,
   readRuntimeMetadata,
+  verifyStagedArtifact,
   type BackgroundUpdateManager,
   type BackgroundUpdateStatus,
   type CodexhostLatestRelease,
@@ -235,6 +238,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       return manager.prepareNpm({
         ...common,
         packageRoot: npm.packageRoot,
+        target: metadata.target,
         nodePath: npm.nodePath,
         npmCliPath: npm.npmCliPath,
         npmLauncherPath: npm.npmLauncherPath,
@@ -278,6 +282,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       try {
         await recoverUpdateOperationLock(stateDirectory());
         await cleanupTerminalUpdateState(stateDirectory());
+        await cleanupStagedUpdates(stateDirectory(), { currentVersion: metadata.version });
         status = await latestStatus();
         const release = await fetchLatest(signal).catch((error) =>
           npmFallbackRelease(metadata, target, error),
@@ -287,6 +292,47 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         const { available: installationAvailable, error } = updateAvailable
           ? await installable(metadata, target, release)
           : { available: false, error: null };
+        let stagedVersion: string | null = null;
+        if (updateAvailable && installationAvailable) {
+          if (installationKind(metadata) === "npm") {
+            try {
+              const npm = await resolveConsoleNpmPaths(target);
+              const verified = await manager.verifyStagedNpm({
+                stateDirectory: stateDirectory(),
+                target: metadata.target,
+                npmTarget: {
+                  nodePath: npm.nodePath,
+                  npmCliPath: npm.npmCliPath,
+                  packageRoot: npm.packageRoot,
+                  version: release.version,
+                },
+              });
+              if (verified) stagedVersion = release.version;
+            } catch {
+              // Missing npm paths or changed configuration falls back to live download.
+            }
+          } else {
+            const staged = await readStagedUpdate(stateDirectory());
+            if (
+              staged &&
+              staged.distribution === "installer" &&
+              staged.version === release.version &&
+              staged.target === metadata.target
+            ) {
+              try {
+                const selected = selectInstallerReleaseArtifact(release, metadata.target);
+                const verified = await verifyStagedArtifact(
+                  stateDirectory(),
+                  staged,
+                  selected.source,
+                );
+                if (verified) stagedVersion = staged.version;
+              } catch {
+                // Invalid or missing staged artifact falls back to live download.
+              }
+            }
+          }
+        }
         return {
           ...empty,
           latestVersion: release.version,
@@ -296,6 +342,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           releaseNotesUrl: release.releaseNotesUrl,
           status,
           error,
+          ...(stagedVersion ? { stagedVersion, backgroundPhase: "ready" as const } : {}),
         };
       } catch (error) {
         return { ...empty, status, error: boundedError(error) };

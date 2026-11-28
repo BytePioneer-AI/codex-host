@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const triggerRefresh = vi.fn(() => true);
 const triggerSetUpdateAvailable = vi.fn();
+const triggerSetUpdateReadyVersion = vi.fn();
 const shellClose = vi.fn();
 
 vi.mock("../src/codex-locale-adapter.js", () => ({
@@ -38,6 +39,7 @@ vi.mock("../src/settings/trigger.js", () => ({
     refresh: triggerRefresh,
     setSelected: vi.fn(),
     setUpdateAvailable: triggerSetUpdateAvailable,
+    setUpdateReadyVersion: triggerSetUpdateReadyVersion,
     dispose: vi.fn(),
   })),
 }));
@@ -192,6 +194,70 @@ describe("Renderer Settings lifecycle", () => {
     lifecycle.refresh();
     await vi.advanceTimersByTimeAsync(0);
     expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(false);
+    expect(triggerSetUpdateReadyVersion).toHaveBeenLastCalledWith(null);
+
+    // Background staging failure still keeps the update badge lit so the user can retry or install manually.
+    clients.current = updateClient(async () => ({
+      ...failedUpdateCheck(),
+      latestVersion: "0.3.3",
+      updateAvailable: true,
+      installationAvailable: true,
+      backgroundPhase: "failed",
+      backgroundError: "network timeout",
+      error: null,
+    }));
+    lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(true);
+    expect(triggerSetUpdateReadyVersion).toHaveBeenLastCalledWith(null);
+
+    // Ready staged version lights the badge and advertises the ready version for the tooltip.
+    clients.current = updateClient(async () => ({
+      ...failedUpdateCheck(),
+      latestVersion: "0.3.3",
+      updateAvailable: true,
+      installationAvailable: true,
+      stagedVersion: "0.3.3",
+      backgroundPhase: "ready",
+      error: null,
+    }));
+    lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(true);
+    expect(triggerSetUpdateReadyVersion).toHaveBeenLastCalledWith("0.3.3");
+    lifecycle.dispose();
+  });
+
+  it("falls back to periodic refresh after initial retries are exhausted and lights the indicator on recovery", async () => {
+    vi.useFakeTimers();
+    let recovered = false;
+    const client = updateClient(async () =>
+      recovered
+        ? {
+            ...failedUpdateCheck(),
+            latestVersion: "0.3.3",
+            updateAvailable: true,
+            installationAvailable: true,
+            stagedVersion: "0.3.3",
+            backgroundPhase: "ready",
+            error: null,
+          }
+        : failedUpdateCheck(),
+    );
+    const lifecycle = installWithClients({ current: client });
+
+    // Exhaust initial check + 4 fast retries (~44s total).
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(client.checkUpdate).toHaveBeenCalledTimes(5);
+    expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(false);
+
+    // Host later recovers and finishes background staging; the 15-minute periodic refresh picks it up.
+    recovered = true;
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(client.checkUpdate).toHaveBeenCalledTimes(6);
+    expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(true);
+    expect(triggerSetUpdateReadyVersion).toHaveBeenLastCalledWith("0.3.3");
+
     lifecycle.dispose();
   });
 

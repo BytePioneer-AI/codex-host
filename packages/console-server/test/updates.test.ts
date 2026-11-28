@@ -106,6 +106,81 @@ describe("console updates", () => {
     });
   });
 
+  it("reports ready staged state and cleans obsolete staged directories on check", async () => {
+    const { target, environment } = await npmLayout();
+    const stateDirectory = path.join(root, "state");
+    await mkdir(path.join(stateDirectory, "staged"), { recursive: true });
+    await writeFile(
+      path.join(stateDirectory, "staged", "staged-v1.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.1.0",
+        distribution: "npm",
+        target: "linux-x64",
+        stagedAt: 1_700_000_000,
+      }),
+    );
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory,
+      fetchLatest: async () => release,
+    });
+    await expect(updates.check(target)).resolves.toMatchObject({
+      latestVersion: "1.1.0",
+      stagedVersion: "1.1.0",
+      backgroundPhase: "ready",
+    });
+
+    // Once upgraded to 1.1.0, check() cleans obsolete staged metadata.
+    const distribution = target.distribution;
+    if (!distribution) throw new Error("expected npm distribution metadata");
+    await updates.check({
+      ...target,
+      distribution: { ...distribution, version: "1.1.0" },
+    });
+    await expect(
+      readFileSync.bind(null, path.join(stateDirectory, "staged", "staged-v1.json")),
+    ).toThrow();
+  });
+
+  it("ignores a leftover installer staged record when checking an npm installation", async () => {
+    const { target, environment } = await npmLayout();
+    const stateDirectory = path.join(root, "state");
+    const artifactDirectory = path.join(stateDirectory, "staged", "update-1.1.0");
+    await mkdir(artifactDirectory, { recursive: true });
+    const artifactPath = path.join(artifactDirectory, "codexhost-1.1.0-linux-x64.tar.gz");
+    await writeFile(artifactPath, "installer-bytes");
+    await writeFile(
+      path.join(stateDirectory, "staged", "staged-v1.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.1.0",
+        distribution: "installer",
+        target: "linux-x64",
+        stagedAt: 1_700_000_000,
+        assetName: "codexhost-1.1.0-linux-x64.tar.gz",
+        artifactPath,
+        sha256: "a".repeat(64),
+        size: 15,
+      }),
+    );
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory,
+      fetchLatest: async () => release,
+    });
+    const checked = await updates.check(target);
+    expect(checked).toMatchObject({
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      installationAvailable: true,
+    });
+    expect(checked.stagedVersion).toBeUndefined();
+    expect(checked.backgroundPhase).toBeUndefined();
+  });
+
   it("waits for an npm registry that has not synced the release", async () => {
     const { target, environment } = await npmLayout();
     npmRegistry.installable.mockImplementationOnce(async () => false);

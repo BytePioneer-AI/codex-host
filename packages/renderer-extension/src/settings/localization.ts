@@ -272,7 +272,18 @@ export interface RendererSettingsMessages {
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
   readonly updateAvailable: string;
+  readonly updateReadyTooltip: string;
+  readonly updateReadyDetail: string;
+  readonly updateBackgroundDownloading: string;
+  readonly updateBackgroundFailedTitle: string;
+  readonly updateBackgroundFailedHint: string;
+  readonly updateNpmDownloadProgress: string;
   readonly updateAndRestart: string;
+  readonly updateRestartToUpdate: string;
+  readonly updateConfirmRunningTitle: string;
+  readonly updateConfirmRunningDetail: string;
+  readonly updateConfirmCancel: string;
+  readonly updateConfirmProceed: string;
   readonly updateChecking: string;
   readonly updateDownloading: string;
   readonly updatePreparing: string;
@@ -602,7 +613,20 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
   updateAvailable: "A new version is available.",
+  updateReadyTooltip: "Restart to update to v{version}",
+  updateReadyDetail: "v{version} is downloaded and verified. Restart to apply.",
+  updateBackgroundDownloading: "Downloading v{version} in the background...",
+  updateBackgroundFailedTitle: "New version v{version} found, but background download failed.",
+  updateBackgroundFailedHint:
+    "You can retry automatic update, or install manually using the command or GitHub Release link below.",
+  updateNpmDownloadProgress: "Downloading npm packages ({completed}/{total} · {percent}%)",
   updateAndRestart: "Update",
+  updateRestartToUpdate: "Restart to update",
+  updateConfirmRunningTitle: "Restart with running sessions?",
+  updateConfirmRunningDetail:
+    "{count} session(s) are currently running. Restarting to update will interrupt them. Chat history is preserved, and interrupted tasks will not resume automatically.",
+  updateConfirmCancel: "Cancel",
+  updateConfirmProceed: "Restart and update",
   updateChecking: "Checking for updates...",
   updateDownloading: "Downloading update...",
   updatePreparing: "Preparing update...",
@@ -942,7 +966,20 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
   updateAvailable: "有新版本可用。",
+  updateReadyTooltip: "重启以更新到 v{version}",
+  updateReadyDetail: "v{version} 已在后台下载并校验完成，点击重启即可应用更新。",
+  updateBackgroundDownloading: "正在后台下载 v{version}...",
+  updateBackgroundFailedTitle: "已发现新版本 v{version}，后台自动下载失败",
+  updateBackgroundFailedHint:
+    "你可以点击重试，或直接使用下方的手动更新命令与 GitHub Release 下载链接安装。",
+  updateNpmDownloadProgress: "正在下载 npm 安装包（{completed}/{total} · {percent}%）",
   updateAndRestart: "更新",
+  updateRestartToUpdate: "重启以更新",
+  updateConfirmRunningTitle: "确认中断运行中的会话并重启？",
+  updateConfirmRunningDetail:
+    "当前有 {count} 个会话正在运行。重启以应用更新将中断这些任务；聊天记录会保留，中断的任务不会自动续跑。",
+  updateConfirmCancel: "取消",
+  updateConfirmProceed: "确认重启并更新",
   updateChecking: "正在检查更新...",
   updateDownloading: "正在下载更新...",
   updatePreparing: "正在准备更新...",

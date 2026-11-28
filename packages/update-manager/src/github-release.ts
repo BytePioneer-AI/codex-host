@@ -41,7 +41,18 @@ export interface SelectedReleaseArtifact {
 export interface GitHubReleaseFetchOptions {
   fetch?: typeof fetch;
   signal?: AbortSignal;
+  etag?: string | null;
+  cachedRelease?: CodexhostLatestRelease | null;
+  onEtag?(etag: string | null): void;
 }
+
+export type ConditionalGitHubReleaseResult =
+  | { readonly status: "not-modified"; readonly etag: string | null }
+  | {
+      readonly status: "modified";
+      readonly release: CodexhostLatestRelease;
+      readonly etag: string | null;
+    };
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -107,23 +118,45 @@ export function parseLatestGitHubRelease(value: unknown): CodexhostLatestRelease
   });
 }
 
+export async function fetchLatestGitHubReleaseConditional(
+  options: GitHubReleaseFetchOptions = {},
+): Promise<ConditionalGitHubReleaseResult> {
+  const response = await requestGitHubRelease(CODEXHOST_LATEST_RELEASE_URL, options);
+  const etag = response.headers.get("etag") ?? options.etag ?? null;
+  if (response.status === 304) {
+    options.onEtag?.(etag);
+    return { status: "not-modified", etag };
+  }
+  if (!response.ok)
+    throw new Error(`GitHub latest Release request failed with HTTP ${response.status}`);
+  const release = parseLatestGitHubRelease(await response.json());
+  options.onEtag?.(response.headers.get("etag"));
+  return { status: "modified", release, etag: response.headers.get("etag") };
+}
+
 export async function fetchLatestGitHubRelease(
   options: GitHubReleaseFetchOptions = {},
 ): Promise<CodexhostLatestRelease> {
-  const response = await requestGitHubRelease(CODEXHOST_LATEST_RELEASE_URL, options);
-  if (!response.ok)
-    throw new Error(`GitHub latest Release request failed with HTTP ${response.status}`);
-  return parseLatestGitHubRelease(await response.json());
+  const result = await fetchLatestGitHubReleaseConditional(options);
+  if (result.status === "not-modified") {
+    if (options.cachedRelease) return options.cachedRelease;
+    throw new Error("GitHub latest Release returned HTTP 304 without a cached release");
+  }
+  return result.release;
 }
 
 function requestGitHubRelease(url: string, options: GitHubReleaseFetchOptions): Promise<Response> {
   const fetchImpl = options.fetch ?? fetch;
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+    "user-agent": "codexhost-updater",
+    "x-github-api-version": "2022-11-28",
+  };
+  if (options.etag) {
+    headers["if-none-match"] = options.etag;
+  }
   return fetchImpl(url, {
-    headers: {
-      accept: "application/vnd.github+json",
-      "user-agent": "codexhost-updater",
-      "x-github-api-version": "2022-11-28",
-    },
+    headers,
     redirect: "error",
     ...(options.signal ? { signal: options.signal } : {}),
   });

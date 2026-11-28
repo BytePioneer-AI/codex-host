@@ -1748,6 +1748,9 @@
 
 .settings-update-panel[data-update-state="current"]
   .settings-update-panel__head
+  .codexhost-settings-icon,
+.settings-update-panel[data-update-state="ready"]
+  .settings-update-panel__head
   .codexhost-settings-icon {
   color: var(--settings-success);
 }

@@ -3360,6 +3360,177 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("renders Restart to update when staged ready and prompts confirmation when tasks are running", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({
+        ...updateCheck(),
+        stagedVersion: "1.2.3",
+        backgroundPhase: "ready" as const,
+        backgroundDownload: null,
+        backgroundError: null,
+        runningTaskCount: 2,
+      })),
+      startUpdate: vi.fn(async () => ({ status: updateStatus("prepared") })),
+      readUpdateStatus: vi.fn(async () => ({ status: updateStatus("prepared") })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("ready"));
+    expect(visibleNotesText(panel)).toContain("重启以更新");
+    expect(visibleText(panel)).toContain("v1.2.3 已在后台下载并校验完成");
+
+    const restartButton = descendants(panel).find(({ tagName }) => tagName === "button");
+    if (!restartButton) throw new Error("Missing Restart to update button");
+    restartButton.dispatch("click");
+
+    let dialog: FakeElement | undefined;
+    await vi.waitFor(() => {
+      dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+      expect(dialog).toBeDefined();
+    });
+    if (!dialog) throw new Error("Missing running tasks confirmation dialog");
+    expect(visibleText(dialog)).toContain("2 个会话正在运行");
+    expect(client.startUpdate).not.toHaveBeenCalled();
+
+    // Cancelling keeps the update from starting.
+    const cancelButton = descendants(dialog).find(
+      ({ tagName, textContent }) => tagName === "button" && textContent === "取消",
+    );
+    if (!cancelButton) throw new Error("Missing Cancel button");
+    cancelButton.dispatch("click");
+    await Promise.resolve();
+    expect(client.startUpdate).not.toHaveBeenCalled();
+
+    // Refreshing runningTaskCount on click picks up a newly started task before confirming.
+    client.checkUpdate.mockResolvedValueOnce({
+      ...updateCheck(),
+      stagedVersion: "1.2.3",
+      backgroundPhase: "ready" as const,
+      backgroundDownload: null,
+      backgroundError: null,
+      runningTaskCount: 4,
+    });
+    restartButton.dispatch("click");
+    let secondDialog: FakeElement | undefined;
+    await vi.waitFor(() => {
+      secondDialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+      expect(secondDialog).toBeDefined();
+    });
+    if (!secondDialog) throw new Error("Missing second confirmation dialog");
+    expect(visibleText(secondDialog)).toContain("4 个会话正在运行");
+    const confirmButton = descendants(secondDialog).find(
+      ({ tagName, textContent }) => tagName === "button" && textContent === "确认重启并更新",
+    );
+    if (!confirmButton) throw new Error("Missing Confirm button");
+    confirmButton.dispatch("click");
+    await vi.waitFor(() => expect(client.startUpdate).toHaveBeenCalledOnce());
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("surfaces silent background download failure with Retry and highlighted manual fallback", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({
+        ...updateCheck(),
+        stagedVersion: null,
+        backgroundPhase: "failed" as const,
+        backgroundDownload: null,
+        backgroundError: "network reset during silent download",
+        runningTaskCount: 0,
+      })),
+      startUpdate: vi.fn(async () => ({ status: updateStatus("downloading") })),
+      readUpdateStatus: vi.fn(async () => ({ status: updateStatus("downloading") })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("failed"));
+    expect(visibleText(panel)).toContain("已发现新版本 v1.2.3，后台自动下载失败");
+    expect(visibleText(panel)).toContain("network reset during silent download");
+    // Manual fallback controls are shown at full weight (not .is-quiet).
+    expect(elementWithClass(content, "settings-update-controls").className).toBe(
+      "settings-update-controls",
+    );
+    expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
+
+    const retryButton = descendants(panel).find(
+      ({ tagName, children }) => tagName === "button" && children.includes("重试"),
+    );
+    if (!retryButton) throw new Error("Missing Retry button on background failure");
+    retryButton.dispatch("click");
+    await vi.waitFor(() => expect(client.startUpdate).toHaveBeenCalledOnce());
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("displays interactive npmDownload progress while an npm update is downloading", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () =>
+        updateCheck({
+          ...updateStatus("downloading", "npm"),
+          npmDownload: { completed: 1, total: 2 },
+        }),
+      ),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({
+        status: {
+          ...updateStatus("downloading", "npm"),
+          npmDownload: { completed: 1, total: 2 },
+        },
+      })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("downloading"));
+    expect(visibleText(panel)).toContain("正在下载 npm 安装包（1/2 · 50%）");
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
       ({ id }) => id === "about",

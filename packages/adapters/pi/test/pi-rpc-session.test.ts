@@ -1,6 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
@@ -2423,6 +2424,44 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.start();
     expect(spawnProcess).toHaveBeenCalledOnce();
     await rpc.close();
+  });
+
+  it("places a sibling node directory beside Pi before the Host Node runtime", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "pi-sibling-node-"));
+    const siblingBin = path.join(root, "bin");
+    const piExecutable = path.join(siblingBin, process.platform === "win32" ? "pi.cmd" : "pi");
+    const siblingNode = path.join(siblingBin, process.platform === "win32" ? "node.exe" : "node");
+    try {
+      mkdirSync(siblingBin, { recursive: true });
+      writeFileSync(piExecutable, "#!/usr/bin/env node\n", { mode: 0o755 });
+      writeFileSync(siblingNode, "#!/bin/sh\n", { mode: 0o755 });
+      let spawnedPath: string[] = [];
+      const spawnProcess = vi.fn((options: PiRpcProcessOptions) => {
+        spawnedPath = options.environment.PATH?.split(path.delimiter) ?? [];
+        return new FakePiRpcProcess("final-only") as unknown as ChildProcessWithoutNullStreams;
+      });
+      const rpc = new PiRpcSession(
+        {
+          cwd: process.cwd(),
+          command: piExecutable,
+          environment: {
+            PATH: [path.join(root, "empty-a"), path.join(root, "empty-b")].join(path.delimiter),
+          },
+          commandTimeoutMs: 2_000,
+          closeTimeoutMs: 500,
+        },
+        { spawn: spawnProcess },
+      );
+
+      await rpc.start();
+      const siblingIndex = spawnedPath.indexOf(siblingBin);
+      const hostNodeIndex = spawnedPath.indexOf(path.dirname(process.execPath));
+      expect(siblingIndex).toBeGreaterThanOrEqual(0);
+      expect(hostNodeIndex).toBeGreaterThan(siblingIndex);
+      await rpc.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects native state without stable Session identity", async () => {

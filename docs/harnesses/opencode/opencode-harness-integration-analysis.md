@@ -30,7 +30,7 @@ v1 的已有 Native Ref 不变。v2 的 Session locator 额外记录 `protocol: 
 - Prompt 使用原生 inbox 接纳；`session.execution.*`、消息列表中的 durable `idle` 决定执行结果。HTTP 返回、文本结束或 interrupt 确认均不是 Turn 终态。已有活动原生执行会被拒绝接管。
 - 未命名的 Thread 会采用 OpenCode v2 提供的首个有效标题。原生时间戳占位标题继续使用首条消息预览，用户可随时重命名 Thread。
 - 流式文本/Reasoning 由原生 transient delta 投影，Tool、历史和终态从原生持久消息校验。v2 的 `ordinal` 在正文和推理内分别从零计数，不是 `content` 数组下标；实时和历史统一使用 `messageID:type:ordinal` 作为文本 Item ID，Tool 使用 `messageID:tool:toolID`，避免推理与正文复用 ID 导致完成投影失败。Native Turn/Checkpoint 身份不变。取消可能使没有 `text.ended` 的 transient 文本未落盘，完成快照以原生历史为准，部分流式文本可能消失；不制造持久历史。
-- 历史读取遍历原生游标分页；一次执行中的追加用户输入归入同一个 Turn。Fork 使用原生 `before` 边界，新消息 ID 以派生结果为准；校验语义前缀、源未变、当前 Model/Thinking/权限和目录。Rollback 通过 Fork 移除末轮，保留当前文件。
+- 历史读取遍历原生游标分页；一次执行中的追加用户输入归入同一个 Turn。若历史执行因进程中断等原因缺少持久化 `idle`，冷读与 Resume 如实保留 `unknown`（无 Checkpoint），后续带新 `codexhost.turnId` 的用户输入或手动 `/compact` 归入新 Turn；执行期对账跳过基线历史 Turn 的 `session.diff` 查询。Fork 与 Rollback 仍拒绝含未完成（`unknown`）轮次的源历史；Fork 使用原生 `before` 边界，新消息 ID 以派生结果为准；校验语义前缀、源未变、当前 Model/Thinking/权限和目录。Rollback 通过 Fork 移除末轮，保留当前文件。
 - 支持原生审批的允许一次/拒绝、原生 Question、平面的字符串/数字/布尔/多选 Form；答案校验后交给原生端点。External、hidden 或 conditional Form 当前无法映射，明确报错并停止执行，不自动作答。
 - 支持 Model、Thinking、权限模式切换和 `/compact`；Usage 投影原生累计 token 与费用。未额外声明后台自主 Turn、子 Agent 专用观察、原生会话导入或复杂 Form 的完整支持。
 

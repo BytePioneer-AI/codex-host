@@ -126,6 +126,18 @@ export async function activate(ctx) {
 - `ctx.extensionId`、`ctx.extensionDir`、`ctx.dataDir`（`$CODEXHOST_DATA_DIR/host-extension-data/<id>`）、`ctx.readSettings()`、`ctx.writeSettings(values)`、`ctx.handle(method, handler)`。
 - 后端随共享 Host 唯一运行 1 个进程，与前端开闭无关；**进程隔离不是权限沙箱**，只运行信任的代码。
 
+### 2.6 任务活动摘要、Harness 元数据、托管原生浮窗与 Web 标签页图标
+
+- **任务与通知活动摘要（`ctx.activity?.read()`）**：按需订阅并在扩展停用时自动释放，返回 `{ epoch, revision, running, waiting, sessions, notifications }`（最多 32 条会话摘要与 256 条通知），不暴露提示词、工具输出或 Transcript。运行态同时覆盖父 Thread 与活跃子 Agent，快照瞬时失败会在同一生命周期内有界重试而不丢失完成标记；请结合 `epoch` 与通知 `revision` 维护已读进度。
+- **Harness 展示元数据（`ctx.harnesses?.describe(id)`）**：按会话摘要中的 `harness: { id, name }` 按需读取已安装 Harness 的名称、图标与受限 `iconStyle`（官方会话为 `codex`），使用独立 IPC 并发配额（上限 16），不与设置读写（上限 4）互相挤占；未找到时回退通用图标，不要按模型名猜测。
+- **托管原生浮窗（`ctx.windows`）**：仅由独立 **CodexHost Desktop Shell** 在 Host 本机托管（不会控制独立 Codex Desktop 进程，远程浏览器不会在客户端弹窗）。先检查 `ctx.windows?.available` 与 `ctx.windows?.clickThroughSupported`：
+  - `open({ url, width, height })` 仅允许显式端口的 `http://127.0.0.1:<port>/...` 与 `96..=640` 逻辑宽高；
+  - `close()` 释放窗口，扩展禁用/卸载/更新或 Host 退出时也会自动回收进程树；
+  - `showHost(route?)` 唤起独立 CodexHost Desktop Shell 并导航到根相对路由（`/`、`/?...`、`/#...`，禁止 `token` 参数），复用已有 Web 登录态；
+  - 浮窗页面可通过 `window.codexhostWindow.{ clickThroughSupported, startDragging(), setHitRegions(regions) }` 实现拖动与逻辑坐标交互区；在 **Linux Wayland** 下 `clickThroughSupported` 为 `false`，宿主显式禁用基于全局光标的点击穿透（`setHitRegions` 校验后返回 `false`），扩展应保证整窗可见元素可交互而不依赖点击穿透。
+- **Web 标签页图标贡献（`api.tabIcon?.set(pngDataUrl | null)`）**：在 `web` 入口中提交小于 128 KiB 的 PNG data URL，传 `null` 清除本扩展贡献；多扩展独立持有，页面隐藏或扩展卸载时自动恢复原 favicon 节点与顺序。
+- 完整契约、安全边界与平台支持矩阵见 [Host 扩展架构](../../../docs/architecture/desktop-ui-extensions.md)。
+
 ## 3. 打包与隔离实测
 
 1. 将 `manifest.json`、构建后的 `page`/`widget`/`desktop`/`web`/`backend` 文件以及声明的图标、截图与静态资源打入 `.zip`（`manifest.json` 位于 ZIP 根或唯一顶层目录；ZIP ≤ 64 MiB）。如仅构建 `desktop` 经典入口，也可复用：

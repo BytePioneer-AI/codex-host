@@ -215,13 +215,10 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  height: 52px;
+  height: 38px;
   box-sizing: border-box;
   margin: -6px calc(-1 * var(--dsh-sidebar-inline-padding)) 0;
-  /* The 2px foot centres the 28px toggle at y 25, level with the collapsed
-     seat (ui-layout .leadingSeat, top 11) and the conversation title row, so
-     collapse/expand never shifts it vertically. */
-  padding: 0 12px 2px;
+  padding: 4px 12px 0;
 }
 
 /* Window fullscreen hides the traffic lights (html[data-fullscreen], desktop
@@ -230,13 +227,8 @@
   justify-content: flex-start;
 }
 
-/* The strip's full 52px foot leaves the wordmark too low at 100%; tuck 12px
-   back under it while still clearing the toggle (ends at y 40). Below 100%
-   native shell zoom, --dsh-mac-lights-bottom grows past 32px so the wordmark
-   pushes down to clear the fixed-size macOS traffic lights without moving the
-   toggle inside .topStrip. */
 .topStrip + .logoRow {
-  margin-top: calc(max(0px, var(--dsh-mac-lights-bottom, 32px) - 32px) - 12px);
+  margin-top: max(0px, var(--dsh-mac-lights-bottom, 32px) - 32px);
 }
 
 /* Logo row (figma pad (4,8,4,8)): expanded keeps the panel toggle at the
@@ -256,8 +248,8 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  height: 60px;
-  padding: 8px 0 8px 4px;
+  height: 44px;
+  padding: 4px 0 4px 4px;
   margin-bottom: 4px;
   box-sizing: border-box;
   overflow: hidden;
@@ -432,18 +424,68 @@
   white-space: nowrap;
 }
 
+/* Row pairing New Session with the secondary-navigation collapse toggle. */
+.newSessionRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 0 2px;
+}
+
+.newSessionRowCompact {
+  margin-bottom: 12px;
+}
+
+.collapsed .newSessionRow {
+  margin: 0 0 12px;
+}
+
+.panelToggleBtn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.panelToggleBtn:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.panelToggleChevron {
+  flex: none;
+  transition: transform 150ms ease;
+}
+
+.panelToggleChevronOpen {
+  transform: rotate(180deg);
+}
+
 /* New chat is a quiet navigation row, not a raised call-to-action card. */
 .newSession {
   container-type: inline-size;
   position: relative;
-  flex: none;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0;
   height: 36px;
   padding: 6px 8px;
-  margin: 0 0 2px;
+  margin: 0;
   box-sizing: border-box;
   border: none;
   border-radius: var(--dsw-radius-md);

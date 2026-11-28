@@ -5,7 +5,11 @@
  * compact parent-folder hints.
  */
 import type { WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
-import { deriveAvailableHosts, type HostSummary } from "./rows/host-scope-filter.ts";
+import {
+  deriveAvailableHosts,
+  isRemoteFallbackWorkspace,
+  type HostSummary,
+} from "./rows/host-scope-filter.ts";
 
 export interface ConfiguredRemotePeer {
   readonly hostId: string;
@@ -41,7 +45,10 @@ export function buildHeroLocationOptions(
   const remoteByHostId = new Map<string, HeroLocationOption>();
   for (const host of derived) {
     if (host.key === "local" || host.hostId === undefined) continue;
-    remoteByHostId.set(host.hostId, host);
+    remoteByHostId.set(host.hostId, {
+      ...host,
+      workspaces: host.workspaces.filter((workspace) => !isRemoteFallbackWorkspace(workspace)),
+    });
   }
 
   for (const peer of configuredPeers) {
@@ -103,9 +110,10 @@ export function filterHeroProjects(
   query: string,
   titleOf: (workspace: WorkspaceView) => string,
 ): WorkspaceView[] {
+  const selectable = projects.filter((workspace) => !isRemoteFallbackWorkspace(workspace));
   const needle = query.trim().toLowerCase();
-  if (needle === "") return [...projects];
-  return projects.filter((workspace) => {
+  if (needle === "") return selectable;
+  return selectable.filter((workspace) => {
     const title = titleOf(workspace).toLowerCase();
     const path = (workspace.path ?? "").toLowerCase();
     return title.includes(needle) || path.includes(needle);

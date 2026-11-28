@@ -9,11 +9,7 @@ import css from "./PinnedSection.module.css";
 
 type RowProps = ComponentProps<typeof SessionNodeItem>;
 
-/**
- * One projection of the shared pin order. No duplicate project rows or local
- * drag order. The section folds as a whole; the pins themselves stay in the
- * registry set while folded.
- */
+/** A collapsible sidebar section with its Sessions followed by its Workspace groups. */
 export function PinnedSection({
   rows,
   customSection,
@@ -28,9 +24,14 @@ export function PinnedSection({
   expanded,
   onToggle,
   children,
+  hasWorkspaces = false,
 }: Pick<RowProps, "currentId" | "onOpen" | "onRenameRequest" | "renderSlot" | "t"> & {
   rows: readonly SessionNode[];
-  customSection?: { key: string; name: string };
+  customSection?: {
+    key: string;
+    name: string;
+    projectDrop?: ComponentProps<typeof SectionHeading>["projectDrop"];
+  };
   revealSessionId?: RowProps["currentId"];
   onSessionRevealed: (id: SessionNode["id"]) => void;
   showHost?: boolean;
@@ -40,8 +41,10 @@ export function PinnedSection({
   onToggle: () => void;
   /** Rows after the section's own Threads, shown while it is expanded (its Workspaces). */
   children?: ReactNode;
+  /** Workspace rows can keep the section visible even when it has no Sessions. */
+  hasWorkspaces?: boolean;
 }) {
-  if (rows.length === 0 && !customSection) return null;
+  if (rows.length === 0 && !hasWorkspaces && !customSection) return null;
   const label = customSection?.name ?? t("section.pinned");
   return (
     <div
@@ -56,6 +59,7 @@ export function PinnedSection({
         expanded={expanded}
         onToggle={onToggle}
         rowKey={`section:${customSection?.key ?? PINNED_SECTION_KEY}`}
+        projectDrop={customSection?.projectDrop}
       />
       {expanded && (
         <ThreadTreeRows roots={rows}>

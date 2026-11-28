@@ -146,7 +146,7 @@ export async function fetchLatestNpmRelease(
     return Object.freeze({
       version,
       releaseNotes: null,
-      releaseNotesUrl: "",
+      releaseNotesUrl: null,
       assets: Object.freeze([]),
     });
   } catch {

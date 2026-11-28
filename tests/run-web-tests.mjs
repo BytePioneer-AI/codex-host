@@ -8,7 +8,9 @@ const root = path.resolve(import.meta.dirname, "..");
 const files = globSync(
   [
     "packages/web-server/test/*.test.ts",
+    "apps/web-ui/packages/client/file-upload/test/runtime.test.ts",
     "apps/web-ui/packages/client/ui-workspace/test/startup-restoration.test.ts",
+    "apps/web-ui/packages/client/ui-workspace/test/session-action-capabilities.test.ts",
   ],
   { cwd: root },
 )

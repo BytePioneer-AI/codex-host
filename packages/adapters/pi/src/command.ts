@@ -5,10 +5,11 @@ import path from "node:path";
 import {
   resolveHarnessExecutable,
   VERSION_MANAGER_ROOTS,
+  withNodeRuntimeOnPath,
   type HarnessDiscoverySpec,
 } from "@codexhost/harness-discovery";
 
-export { withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
+export { withNodeRuntimeOnPath };
 
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const PI_PACKAGE_PATH = path.join("node_modules", "@earendil-works", "pi-coding-agent");
@@ -53,6 +54,75 @@ export function resolvePiExecutable(
     { ...(dependencies.isExecutable ? { isExecutable: dependencies.isExecutable } : {}) },
   );
   return resolution?.executable ?? input.command ?? input.environment.PI_COMMAND ?? "pi";
+}
+
+function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean {
+  try {
+    fs.accessSync(filePath, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function appendDirectoryToPath(
+  environment: NodeJS.ProcessEnv,
+  directory: string,
+  platform: NodeJS.Platform,
+): NodeJS.ProcessEnv {
+  const pathKey = Object.keys(environment).find((name) => name.toLowerCase() === "path") ?? "PATH";
+  const delimiter = platform === "win32" ? ";" : ":";
+  const directories = (environment[pathKey] ?? "").split(delimiter).filter(Boolean);
+  const equal =
+    platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
+  if (!directories.some((existing) => equal(existing) === equal(directory))) {
+    directories.push(directory);
+  }
+  return { ...environment, [pathKey]: directories.join(delimiter) };
+}
+
+/**
+ * Keeps user PATH entries first, then prefers a sibling `node` beside the
+ * resolved Pi executable before falling back to the Host Node runtime (which
+ * on macOS may be Codex Desktop's library-validated `cua_node`).
+ */
+export function withPiNodeRuntimeOnPath(
+  environment: NodeJS.ProcessEnv,
+  options: {
+    command?: string;
+    runtimeExecutable?: string;
+    platform?: NodeJS.Platform;
+    homeDirectory?: string;
+    isExecutable?: (filePath: string) => boolean;
+  } = {},
+): NodeJS.ProcessEnv {
+  const platform = options.platform ?? process.platform;
+  const pathFlavor = platform === "win32" ? path.win32 : path.posix;
+  const isExecutable =
+    options.isExecutable ?? ((candidate: string) => isExecutableFile(candidate, platform));
+  const resolved = resolvePiExecutable(
+    {
+      ...(options.command ? { command: options.command } : {}),
+      environment,
+    },
+    {
+      platform,
+      ...(options.homeDirectory ? { homeDirectory: options.homeDirectory } : {}),
+      isExecutable,
+    },
+  );
+  let next = environment;
+  if (pathFlavor.isAbsolute(resolved)) {
+    const siblingDirectory = pathFlavor.dirname(resolved);
+    const siblingNode = pathFlavor.join(
+      siblingDirectory,
+      platform === "win32" ? "node.exe" : "node",
+    );
+    if (isExecutable(siblingNode)) {
+      next = appendDirectoryToPath(next, siblingDirectory, platform);
+    }
+  }
+  return withNodeRuntimeOnPath(next, options.runtimeExecutable, platform);
 }
 
 /** Find the package backing the executable selected by the Pi Harness resolver. */

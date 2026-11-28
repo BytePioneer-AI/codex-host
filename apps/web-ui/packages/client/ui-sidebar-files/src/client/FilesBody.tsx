@@ -1,5 +1,5 @@
 /**
- * The file tree's body: the session's workspace root, listed one level at a time.
+ * The file tree's body: a workspace directory, listed one level at a time.
  *
  * Everything the tree keeps lives in its store, keyed by tab; everything it asks
  * for goes through its injected face. The component itself only decides what to
@@ -35,6 +35,7 @@ import type { WorkspaceDirectoryEntry } from "@deepseek-ai/dsh-api-workspace-fil
 import { childPath } from "./face.ts";
 import type { FilesInjected } from "./face.ts";
 import type {} from "./locales.ts";
+import { filesRoot } from "./root.ts";
 import type { FilesTabState, createFilesStore } from "./store.ts";
 import css from "./FilesBody.module.css";
 
@@ -208,7 +209,7 @@ function Level({ path, tree }: { path: string; tree: TreeContext }): ReactNode {
   );
 }
 
-/** The file tree's body: the workspace root and whatever the reader has opened under it. */
+/** The file tree's body: its root and whatever the reader has opened under it. */
 export function FilesBody({
   useTabInfo,
   sessionId,
@@ -251,8 +252,11 @@ export function FilesBody({
   );
   const remoteFilesReady =
     remoteHost != null && remoteHost.state === "connected" && remoteHost.workspaceFiles === true;
-  const root = cwd ?? (remoteFilesReady ? "." : undefined);
-  const state = useStore((store) => store.byTab[tab.id]);
+  const params = tab.navigation.params;
+  const directory = params !== undefined && "directory" in params ? params.directory : undefined;
+  const root = filesRoot(cwd, directory, remoteFilesReady);
+  const stored = useStore((store) => store.byTab[tab.id]);
+  const state = stored?.root === root ? stored : undefined;
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrollTopRef = useRef(0);
   // Come back where the reader was: loaded levels outlive the body in the
@@ -309,9 +313,8 @@ export function FilesBody({
     onToggle: (parent, path) => {
       toggle(tab.id, parent, path, state.expanded, signal);
     },
-    // Every row is under the tree's root, so its address is session-relative.
     onOpen: (path) => {
-      tabActions.openResource(fileAddressFor(sessionId, state.root, path));
+      tabActions.openResource(fileAddressFor(sessionId, cwd, path));
     },
     t,
   };

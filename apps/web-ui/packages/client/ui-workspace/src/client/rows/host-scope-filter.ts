@@ -64,6 +64,21 @@ export function hasRemoteWorkspaces(workspaces: readonly WorkspaceView[]): boole
   return workspaces.some((workspace) => workspace.remote !== undefined);
 }
 
+/**
+ * Whether a workspace or derived group is the synthetic per-host fallback bucket
+ * for remote sessions outside any registered remote project (or a host placeholder
+ * when a remote host has zero projects).
+ */
+export function isRemoteFallbackWorkspace(workspace: {
+  readonly remote?: unknown;
+  readonly path?: string | undefined;
+  readonly cwd?: string | undefined;
+}): boolean {
+  if (workspace.remote === undefined) return false;
+  const dir = workspace.path ?? workspace.cwd;
+  return dir === undefined || dir.trim() === "";
+}
+
 /** Whether any workspace belongs to a peer-hub remote host (`remote-peer:*`). */
 export function hasRemotePeerWorkspaces(workspaces: readonly WorkspaceView[]): boolean {
   return workspaces.some(
@@ -244,16 +259,47 @@ function sessionIdOf(session: SessionFilterInput): string {
   return typeof session === "string" ? session : session.id;
 }
 
-function isRemoteSession(session: SessionFilterInput): boolean {
-  if (typeof session === "string") return false;
-  return (session.remote ?? session.projectionValues?.remoteHost ?? null) !== null;
+function sessionHostKey(session: SessionFilterInput): string {
+  if (typeof session === "string") return "local";
+  return session.remote?.hostId ?? session.projectionValues?.remoteHost?.hostId ?? "local";
+}
+
+/**
+ * Whether ungrouped local sessions are included under the active host scope.
+ * Gates local-only projectless session creation in Recents.
+ */
+export function hostScopeIncludesUngroupedLocal(
+  state: HostScopeFilterState,
+  workspaces: readonly WorkspaceView[],
+): boolean {
+  if (!hasRemoteWorkspaces(workspaces)) return true;
+  const effective = reconcileHostScopeFilter(state, workspaces);
+  const localIncluded = effective.selectedHost === "all" || effective.selectedHost === "local";
+  return localIncluded && effective.perHost["local"]?.mode !== "selected";
+}
+
+/**
+ * Whether local catalog pagination (`list.hasMore` / `list.loading`) can still
+ * yield sessions within the active host & workspace scope.
+ */
+export function hostScopeIncludesLocalSessions(
+  state: HostScopeFilterState,
+  workspaces: readonly WorkspaceView[],
+  visibleWorkspaces: readonly WorkspaceView[] = filterWorkspacesByHostScope(workspaces, state),
+): boolean {
+  if (!hasRemoteWorkspaces(workspaces)) return true;
+  const effective = reconcileHostScopeFilter(state, workspaces);
+  const localIncluded = effective.selectedHost === "all" || effective.selectedHost === "local";
+  if (!localIncluded) return false;
+  if (effective.perHost["local"]?.mode !== "selected") return true;
+  return visibleWorkspaces.some((workspace) => workspace.remote === undefined);
 }
 
 /**
  * Filter flat-list sessions by the active host & workspace scope:
  * - Unfiltered: returns all sessions unchanged.
  * - Filtered: keeps sessions belonging to the visible workspaces, plus
- *   ungrouped local sessions only when `"local"` is included and in `mode: "all"`.
+ *   ungrouped sessions of any included host that is in `mode: "all"`.
  *   When `rootOf` is provided, non-root delegation descendants follow their top-level
  *   root's host & workspace visibility so filtered trees stay intact.
  */
@@ -280,15 +326,14 @@ export function filterSessionsByHostScope<T extends SessionFilterInput>(
     }
   }
 
-  const localIncluded = effective.selectedHost === "all" || effective.selectedHost === "local";
-  const includeUngroupedLocal = localIncluded && effective.perHost["local"]?.mode !== "selected";
-
   return sessions.filter((session) => {
     const id = sessionIdOf(session);
     const targetId = rootOf?.get(id) ?? id;
     if (visibleWorkspaceSessionIds.has(targetId)) return true;
     if (!allWorkspaceSessionIds.has(targetId)) {
-      return !isRemoteSession(session) && includeUngroupedLocal;
+      const hostKey = sessionHostKey(session);
+      const hostIncluded = effective.selectedHost === "all" || effective.selectedHost === hostKey;
+      return hostIncluded && effective.perHost[hostKey]?.mode !== "selected";
     }
     return false;
   });

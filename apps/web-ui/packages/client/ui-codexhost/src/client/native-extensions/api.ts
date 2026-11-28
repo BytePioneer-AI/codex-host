@@ -19,6 +19,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { ExtensionContributionRegistry } from "./contributions.ts";
 import type { WebNativeExtensionRpcClient } from "./rpc.ts";
+import { createTabIconContribution } from "./tab-icon.ts";
 
 interface ObservableStoreLike<T> {
   getSnapshot(): T;
@@ -263,6 +264,8 @@ export function createWebExtensionApi(
   const storageListeners = new Set<(values: JsonObject) => void>();
   const sessionListeners = new Set<(session: WebExtensionActiveSession | null) => void>();
   const trackedDisposers = new Set<WebExtensionDispose>();
+  const tabIcon = createTabIconContribution(doc);
+  trackedDisposers.add(() => tabIcon.dispose());
   let currentSettingsRevision = entry.settingsRevision;
   let stopping = false;
   let lastSessionSnapshot: WebExtensionActiveSession | null = null;
@@ -401,6 +404,12 @@ export function createWebExtensionApi(
     id,
     apiVersion: 1,
     signal: controller.signal,
+    tabIcon: {
+      set: (value) => {
+        guard();
+        tabIcon.set(value);
+      },
+    },
     dom: {
       mount(
         target: HTMLElement | WebExtensionRegion,

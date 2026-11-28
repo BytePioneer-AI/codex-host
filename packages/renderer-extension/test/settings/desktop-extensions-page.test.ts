@@ -544,6 +544,10 @@ describe("Unified Host extensions settings page", () => {
     };
 
     const mounted = mountPage("zh-CN", () => client);
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("已安装 (4)"));
+    must(descendants(mounted.content).find((el) => el.dataset.tab === "installed")).dispatch(
+      "click",
+    );
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
     const firstCard = must(
@@ -595,13 +599,18 @@ describe("Unified Host extensions settings page", () => {
       recoverHostExtensions: vi.fn(),
     };
     const mounted = mountPage("zh-CN", () => client);
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("已安装 (4)"));
+    must(descendants(mounted.content).find((el) => el.dataset.tab === "installed")).dispatch(
+      "click",
+    );
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
     const groups = descendants(mounted.content).filter(
       (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
     );
-    expect(groups.map((group) => group.dataset.extensionGroup)).toEqual(["attention"]);
+    expect(groups.map((group) => group.dataset.extensionGroup)).toEqual(["attention", "installed"]);
     expect(textOf(must(groups[0]))).toContain("需要关注");
+    expect(textOf(must(groups[1]))).toContain("已安装");
 
     const cards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
@@ -618,7 +627,7 @@ describe("Unified Host extensions settings page", () => {
     expect(attentionGrid.parent).toBe(groups[0]);
     expect(cards[1]?.parent).toBe(attentionGrid);
     expect(cards[3]?.parent).toBe(normalGrid);
-    expect(normalGrid.parent).toBe(groups[0]?.parent);
+    expect(normalGrid.parent).toBe(groups[1]);
 
     const incompatibleSwitch = must(
       descendants(must(cards[0])).find((el) => el.tagName === "input"),
@@ -627,19 +636,10 @@ describe("Unified Host extensions settings page", () => {
     expect(incompatibleSwitch.disabled).toBe(true);
     expect(invalidSwitch.disabled).toBe(true);
 
-    // The shared page and widget have separate badges; only the page adds an Open Page button.
+    // Cards omit routine compatible platform/capability pills; only the page adds an Open Page button.
     const treeCard = must(cards[2]);
-    expect(textOf(descendants(treeCard).find((el) => el.dataset.platform === "both"))).toBe(
-      "Codex Desktop · CH Web",
-    );
-    const treeBadges = descendants(treeCard)
-      .filter((el) => el.dataset.capability)
-      .map((el) => ({ kind: el.dataset.capability, text: textOf(el) }));
-    expect(treeBadges).toEqual([
-      { kind: "page", text: "独立页面" },
-      { kind: "widget", text: "挂件" },
-      { kind: "backend", text: "后台" },
-    ]);
+    expect(descendants(treeCard).find((el) => el.dataset.platform)).toBeUndefined();
+    expect(descendants(treeCard).filter((el) => el.dataset.capability)).toEqual([]);
     const openPageBtn = must(
       descendants(treeCard).find(
         (el) => el.tagName === "button" && el.dataset.action === "open-page",
@@ -647,11 +647,25 @@ describe("Unified Host extensions settings page", () => {
     );
     expect(textOf(openPageBtn)).toBe("打开页面");
 
-    // The Desktop-only card has no Open Page button.
-    const badgesCard = must(cards[3]);
-    expect(textOf(descendants(badgesCard).find((el) => el.dataset.platform === "desktop"))).toBe(
-      "仅 Codex Desktop",
+    // Full platform and capability badges remain available inside the detail modal.
+    treeCard.dispatch("click");
+    const detailDialog = must(descendants(mounted.content).find((el) => el.tagName === "dialog"));
+    expect(textOf(descendants(detailDialog).find((el) => el.dataset.platform === "both"))).toBe(
+      "Codex Desktop · CH Web",
     );
+    const treeBadges = descendants(detailDialog)
+      .filter((el) => el.dataset.capability)
+      .map((el) => ({ kind: el.dataset.capability, text: textOf(el) }));
+    expect(treeBadges).toEqual([
+      { kind: "page", text: "独立页面" },
+      { kind: "widget", text: "挂件" },
+      { kind: "backend", text: "后台" },
+    ]);
+    detailDialog.close();
+
+    // The Desktop-only card omits routine platform badges and has no Open Page button.
+    const badgesCard = must(cards[3]);
+    expect(descendants(badgesCard).find((el) => el.dataset.platform)).toBeUndefined();
     expect(descendants(badgesCard).find((el) => el.dataset.action === "open-page")).toBeUndefined();
 
     mounted.dispose();
@@ -680,9 +694,11 @@ describe("Unified Host extensions settings page", () => {
 
     const assertUnifiedGrid = () => {
       const elements = descendants(mounted.content);
-      const grids = elements.filter((el) => el.className === "settings-extensions-grid");
+      const grids = elements.filter((el) => el.className === "settings-extensions-row-grid");
       expect(grids).toHaveLength(1);
-      expect(elements.some((el) => el.dataset.extensionGroup)).toBe(false);
+      expect(
+        elements.filter((el) => el.dataset.extensionGroup).map((el) => el.dataset.extensionGroup),
+      ).toEqual(["installed"]);
       const cards = descendants(must(grids[0])).filter((el) => el.tagName === "article");
       expect(cards.map((el) => el.dataset.extensionId)).toEqual([
         "sidebar-delegation-badges",
@@ -804,21 +820,25 @@ describe("Unified Host extensions settings page", () => {
     };
     const mounted = mountPage("zh-CN", () => client);
     const elements = () => descendants(mounted.content);
-    const marketplaceTab = must(elements().find((el) => el.dataset.tab === "marketplace"));
-    const installedTab = must(elements().find((el) => el.dataset.tab === "installed"));
+    const allTab = must(elements().find((el) => el.dataset.nav === "all"));
+    const installedTab = must(elements().find((el) => el.dataset.nav === "installed"));
     const treeCard = () =>
       must(elements().find((el) => el.tagName === "article" && el.dataset.extensionId === tree.id));
     const updateButton = () => descendants(treeCard()).find((el) => el.dataset.action === "update");
-    expect(textOf(marketplaceTab)).toBe("市场");
+    expect(textOf(allTab)).toBe("全部");
+    expect(allTab.getAttribute("aria-selected")).toBe("true");
     expect(client.listHostExtensionCatalog).toHaveBeenCalledWith({});
+
+    // Switch to Installed view and verify update button appears once catalog resolves.
+    installedTab.dispatch("click");
     await vi.waitFor(() => expect(textOf(treeCard())).toContain("侧栏委派树"));
     expect(installedTab.getAttribute("aria-selected")).toBe("true");
-    expect(textOf(marketplaceTab)).toBe("市场");
     expect(updateButton()).toBeUndefined();
 
     pendingCatalog.resolve(sampleCatalog([makeCatalogEntry({ id: tree.id, version: "0.2.0" })]));
-    await vi.waitFor(() => expect(textOf(marketplaceTab)).toBe("市场 (1)"));
-    expect(installedTab.getAttribute("aria-description")).toBe("有插件可更新");
+    await vi.waitFor(() =>
+      expect(installedTab.getAttribute("aria-description")).toBe("有插件可更新"),
+    );
     expect(textOf(treeCard())).toContain("可更新 v0.2.0");
     const button = must(updateButton());
     expect(textOf(button)).toBe("更新");
@@ -847,7 +867,7 @@ describe("Unified Host extensions settings page", () => {
     mounted.dispose();
   });
 
-  it("keeps a failed Marketplace prefetch off the installed tab and counts an empty catalog after retry", async () => {
+  it("keeps a failed Marketplace prefetch off the installed tab and loads an empty catalog after retry", async () => {
     const listHostExtensionCatalog = vi
       .fn<() => Promise<HostExtensionsCatalogResult>>()
       .mockRejectedValueOnce(new Error("Catalog offline"))
@@ -856,19 +876,28 @@ describe("Unified Host extensions settings page", () => {
       listHostExtensions: async () => sampleList(),
       listHostExtensionCatalog,
     }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Catalog offline"));
+    const installedTab = must(
+      descendants(mounted.content).find((el) => el.dataset.nav === "installed"),
+    );
+    const allTab = must(descendants(mounted.content).find((el) => el.dataset.nav === "all"));
+    expect(textOf(allTab)).toBe("All");
+
+    // Switching to Installed shows installed plugins cleanly without the Marketplace error.
+    installedTab.dispatch("click");
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Sidebar Thread Tree"));
     expect(textOf(mounted.content)).not.toContain("Catalog offline");
-    const marketplaceTab = must(
-      descendants(mounted.content).find((el) => el.dataset.tab === "marketplace"),
-    );
-    expect(textOf(marketplaceTab)).toBe("Marketplace");
-    marketplaceTab.dispatch("click");
+
+    // Switching back to All and clicking Retry recovers cleanly to empty catalog state.
+    allTab.dispatch("click");
     expect(textOf(mounted.content)).toContain("Catalog offline");
     const retry = must(
       descendants(mounted.content).find((el) => el.tagName === "button" && textOf(el) === "Retry"),
     );
     retry.dispatch("click");
-    await vi.waitFor(() => expect(textOf(marketplaceTab)).toBe("Marketplace (0)"));
+    await vi.waitFor(() =>
+      expect(textOf(mounted.content)).toContain("No marketplace plugins available"),
+    );
     expect(textOf(mounted.content)).not.toContain("Catalog offline");
     mounted.dispose();
   });
@@ -880,6 +909,7 @@ describe("Unified Host extensions settings page", () => {
       both: "Codex Desktop & CH Web",
       desktopOnly: "Codex Desktop Only",
       webOnly: "CH Web Only",
+      webOnlyCard: "Web only",
       notice: "Runs in CH Web only. You can still install or toggle it from Codex Desktop.",
     },
     {
@@ -888,6 +918,7 @@ describe("Unified Host extensions settings page", () => {
       both: "Codex Desktop · CH Web",
       desktopOnly: "仅 Codex Desktop",
       webOnly: "仅 CH Web",
+      webOnlyCard: "仅 Web 端",
       notice: "此插件仅在 CH Web 界面生效，Codex Desktop 仅支持安装与启停管理。",
     },
   ] as const)("shows Marketplace platform filters and detail guidance in $locale", async (copy) => {
@@ -900,15 +931,18 @@ describe("Unified Host extensions settings page", () => {
           makeCatalogEntry({ id: "both", targets: ["desktop", "web"], apis: { page: 1 } }),
         ]),
     }));
-    must(descendants(mounted.content).find((el) => el.dataset.tab === "marketplace")).dispatch(
-      "click",
-    );
 
     const cards = () => descendants(mounted.content).filter((el) => el.tagName === "article");
     await vi.waitFor(() => expect(cards()).toHaveLength(3));
     const checkPlatform = (id: string, platform: string, label: string, notice?: string) => {
       const card = must(cards().find((el) => el.dataset.extensionId === id));
-      expect(textOf(descendants(card).find((el) => el.dataset.platform === platform))).toBe(label);
+      if (platform === "web") {
+        expect(textOf(descendants(card).find((el) => el.dataset.platform === platform))).toBe(
+          copy.webOnlyCard,
+        );
+      } else {
+        expect(descendants(card).find((el) => el.dataset.platform)).toBeUndefined();
+      }
       card.dispatch("click");
       const dialog = must(descendants(mounted.content).find((el) => el.tagName === "dialog"));
       const platformRow = descendants(dialog).find((el) => el.className.endsWith("__platform-row"));
@@ -1202,6 +1236,123 @@ describe("Unified Host extensions settings page", () => {
       descendants(mounted.content).find((el) => el.dataset.action === "open-recovery"),
     );
     expect(recoveryMenuItem.disabled).toBe(true);
+    mounted.dispose();
+  });
+
+  it("opens on Marketplace All by default with Kettu nav order, explicit featured ordering, filter popover, and cached catalogIcon RPC", async () => {
+    const readHostExtensionCatalogIcon = vi.fn(async ({ id }: { id: string }) => ({
+      mimeType: "image/png" as const,
+      base64: Buffer.from(`icon-${id}`).toString("base64"),
+    }));
+    const entries = [
+      makeCatalogEntry({
+        id: "regular-high",
+        trustTier: "official",
+        downloads: 900,
+        categories: ["tools"],
+        icon: "https://github.com/codexhost/ext/releases/download/v1.0.0/regular.png",
+      }),
+      makeCatalogEntry({
+        id: "curated-b",
+        featured: true,
+        featuredOrder: 2,
+        categories: ["workflow"],
+        icon: "https://github.com/codexhost/ext/releases/download/v1.0.0/b.png",
+      }),
+      makeCatalogEntry({
+        id: "curated-a",
+        featured: true,
+        featuredOrder: 1,
+        categories: ["appearance"],
+        icon: "https://github.com/codexhost/ext/releases/download/v1.0.0/a.png",
+      }),
+      makeCatalogEntry({
+        id: "regular-other",
+        downloads: 120,
+        categories: ["analytics"],
+      }),
+    ];
+    const mounted = mountPage("zh-CN", () => ({
+      listHostExtensions: vi.fn(async () => ({
+        revision: 1,
+        configuration: { revision: 1, enabled: [] },
+        diagnostics: [],
+        extensions: [],
+      })),
+      listHostExtensionCatalog: vi.fn(async () => sampleCatalog(entries)),
+      readHostExtensionCatalogIcon,
+    }));
+
+    await vi.waitFor(() =>
+      expect(
+        descendants(mounted.content).some((el) => el.dataset.marketSection === "featured"),
+      ).toBe(true),
+    );
+
+    // Single-row nav order: All -> Installed (0) -> sorted present categories.
+    const tabs = descendants(mounted.content).filter((el) => el.getAttribute("role") === "tab");
+    expect(tabs.map((tab) => textOf(tab))).toEqual([
+      "全部",
+      "已安装 (0)",
+      "外观主题",
+      "效率与协作",
+      "数据与统计",
+      "实用工具",
+    ]);
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+
+    // Featured section respects explicit featured: true + featuredOrder ascending.
+    const featuredSection = must(
+      descendants(mounted.content).find((el) => el.dataset.marketSection === "featured"),
+    );
+    const featuredCards = descendants(featuredSection).filter((el) => el.tagName === "article");
+    expect(featuredCards.map((c) => c.dataset.extensionId)).toEqual(["curated-a", "curated-b"]);
+    expect(featuredCards.every((c) => c.dataset.layout === "featured")).toBe(true);
+
+    // Community section contains remaining entries as lightweight rows.
+    const communitySection = must(
+      descendants(mounted.content).find((el) => el.dataset.marketSection === "community"),
+    );
+    const communityRows = descendants(communitySection).filter((el) => el.tagName === "article");
+    expect(communityRows.map((c) => c.dataset.extensionId)).toEqual([
+      "regular-high",
+      "regular-other",
+    ]);
+    expect(communityRows.every((c) => c.dataset.layout === "row")).toBe(true);
+
+    // readHostExtensionCatalogIcon RPC was called once per iconful entry and cached for detail modal.
+    await vi.waitFor(() => expect(readHostExtensionCatalogIcon).toHaveBeenCalledTimes(3));
+    const curatedACard = must(featuredCards[0]);
+    const curatedAImg = must(descendants(curatedACard).find((el) => el.tagName === "img"));
+    expect(curatedAImg.src).toBe(
+      `data:image/png;base64,${Buffer.from("icon-curated-a").toString("base64")}`,
+    );
+
+    // Opening detail modal reuses the cached icon without triggering another RPC.
+    curatedACard.dispatch("click");
+    const dialog = must(descendants(mounted.content).find((el) => el.tagName === "dialog"));
+    const modalImg = must(descendants(dialog).find((el) => el.tagName === "img"));
+    expect(modalImg.src).toBe(curatedAImg.src);
+    expect(readHostExtensionCatalogIcon).toHaveBeenCalledTimes(3);
+    dialog.close();
+
+    // Filter popover toggles open and filters by content language + capability.
+    const filterBtn = must(
+      descendants(mounted.content).find((el) => el.dataset.action === "filter-menu"),
+    );
+    const filterMenu = must(
+      descendants(mounted.content).find((el) => el.dataset.menu === "filter"),
+    );
+    expect(filterMenu.hidden).toBe(true);
+    filterBtn.dispatch("click");
+    expect(filterMenu.hidden).toBe(false);
+    const enLocaleOption = must(
+      descendants(filterMenu).find((el) => el.dataset.contentLocale === "en"),
+    );
+    enLocaleOption.dispatch("click");
+    expect(filterMenu.hidden).toBe(true);
+    expect(filterBtn.dataset.active).toBe("true");
+
     mounted.dispose();
   });
 });

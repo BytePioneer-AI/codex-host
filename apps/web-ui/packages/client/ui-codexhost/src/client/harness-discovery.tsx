@@ -112,7 +112,8 @@ export function registerHarnessDiscovery(ctx: Context): void {
     const row = ctx.sessions.list.getSnapshot().byId[id];
     if (
       !connection.generation.getSnapshot() ||
-      row?.projectionValues?.nativeConnection?.state === "reconnecting"
+      row?.projectionValues?.nativeConnection?.state === "reconnecting" ||
+      (isRemotePeer(id) && connectionStateOf(id) !== "connected")
     )
       return t("discovery.offline");
     if (pending.has(id)) return t("discovery.pending");
@@ -256,11 +257,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
             if (cache.get(sessionId) !== entry || !supported(sessionId)) return [];
             const query = req.query.toLocaleLowerCase();
             const codex = harnessIdOf(sessionId) === "codex";
-            const remotePeer = isRemotePeer(sessionId);
-            const visibleCommands = remotePeer
-              ? catalog.commands.filter((command) => !isDirectCommand(command))
-              : catalog.commands;
-            const rows: InputTriggerCandidate[] = visibleCommands
+            const rows: InputTriggerCandidate[] = catalog.commands
               .filter((command) =>
                 `${command.invocation} ${command.label}`.toLocaleLowerCase().includes(query),
               )
@@ -298,7 +295,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
                 disabledReason: t("discovery.static"),
                 section: t("discovery.commands"),
               });
-            if (!visibleCommands.length && !query && catalog.source !== "static")
+            if (!catalog.commands.length && !query && catalog.source !== "static")
               rows.push({
                 name: t("discovery.empty"),
                 disabledReason: t("discovery.empty"),
@@ -350,10 +347,6 @@ export function registerHarnessDiscovery(ctx: Context): void {
             return "handled";
           }
           if (isDirectCommand(command)) {
-            if (isRemotePeer(id)) {
-              notify(id, t("discovery.stale"));
-              return "handled";
-            }
             execute(pick, commandId);
             return "handled";
           }
@@ -403,24 +396,13 @@ export function registerHarnessDiscovery(ctx: Context): void {
           const query = req.query.toLocaleLowerCase();
           return groups
             .filter((group) => `${group.name} ${group.id}`.toLocaleLowerCase().includes(query))
-            .map((group) => {
-              const icon = harnessIconSources(group.id, iconHostId);
-              return {
-                name: group.id,
-                label: group.name,
-                value: group.id,
-                section: t("discovery.agents"),
-                icon: (props: IconProps) => (
-                  <RemotePluginIcon
-                    id={group.id}
-                    src={icon.src}
-                    presentationUrl={icon.presentationUrl}
-                    size={props.size ?? 14}
-                    fallback={<IconDataOutlineRegular size={props.size ?? 14} />}
-                  />
-                ),
-              };
-            });
+            .map((group) => ({
+              name: group.id,
+              label: group.name,
+              value: group.id,
+              section: t("discovery.agents"),
+              icon: harnessAgentIcon(group.id, iconHostId),
+            }));
         },
         onPick: (pick) => {
           const group = delegationGroupsOf(pick.session.sessionId).find(
@@ -446,4 +428,26 @@ export function registerHarnessDiscovery(ctx: Context): void {
   );
 
   registerRemoteHostDelegation(ctx, { hostIdOf, supportsDelegation, notify });
+}
+
+type AgentIconComponent = Exclude<InputTriggerCandidate["icon"], string | undefined>;
+const agentIconCache = new Map<string, AgentIconComponent>();
+
+/** Return a stable icon component per Harness icon identity so menu filtering never remounts icons. */
+export function harnessAgentIcon(harnessId: string, hostId?: string): AgentIconComponent {
+  const icon = harnessIconSources(harnessId, hostId);
+  const key = `${harnessId}\0${hostId ?? ""}\0${icon.src ?? ""}\0${icon.presentationUrl ?? ""}`;
+  const cached = agentIconCache.get(key);
+  if (cached !== undefined) return cached;
+  const HarnessAgentIcon: AgentIconComponent = (props: IconProps) => (
+    <RemotePluginIcon
+      id={harnessId}
+      src={icon.src}
+      presentationUrl={icon.presentationUrl}
+      size={props.size ?? 14}
+      fallback={<IconDataOutlineRegular size={props.size ?? 14} />}
+    />
+  );
+  agentIconCache.set(key, HarnessAgentIcon);
+  return HarnessAgentIcon;
 }

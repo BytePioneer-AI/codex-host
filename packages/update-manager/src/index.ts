@@ -10,8 +10,11 @@ export {
   defaultUpdateStateDirectory,
   parseDistributionMetadata,
   resolveInstalledUpdateContext,
+  resolveNpmRuntimePaths,
   type DistributionMetadata,
   type InstalledUpdateContext,
+  type NpmRuntimePaths,
+  type ResolveNpmRuntimePathsOptions,
 } from "./distribution.js";
 export {
   CODEXHOST_LATEST_RELEASE_URL,

@@ -6,7 +6,6 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
-  "iconStyle": { "borderRadius": 22.37 },
   "links": {
     "website": "https://github.com/can1357/oh-my-pi",
     "installation": "https://github.com/can1357/oh-my-pi#install"
@@ -17,7 +16,10 @@
         "terminal": "macOS / Linux · Terminal (sh/bash)",
         "command": "curl -fsSL https://omp.sh/install | sh"
       },
-      { "terminal": "Windows · PowerShell", "command": "irm https://omp.sh/install.ps1 | iex" }
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://omp.sh/install.ps1 | iex"
+      }
     ],
     "after": {
       "en": "After installation, run omp to complete login or setup.",

@@ -1,4 +1,4 @@
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -10,6 +10,8 @@ import type {
 } from "./update-manager.js";
 import { requireSemanticVersion } from "./status.js";
 import type { ReleaseTarget } from "./github-release.js";
+
+const PLATFORM_PACKAGE_PATTERN = /^cli-[a-z0-9-]+$/u;
 
 export const UPDATE_RUNTIME_ENV = Object.freeze({
   launcherPid: "CODEXHOST_LAUNCHER_PID",
@@ -31,6 +33,20 @@ export interface DistributionMetadata {
   target: ReleaseTarget;
 }
 
+export interface NpmRuntimePaths {
+  nodePath: string;
+  npmCliPath: string;
+  npmLauncherPath: string;
+  packageRoot: string;
+}
+
+export interface ResolveNpmRuntimePathsOptions {
+  packageRoot: string;
+  environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  nodeExecutable?: string;
+}
+
 export interface InstalledUpdateContext {
   metadata: DistributionMetadata;
   common: CommonUpdateOptions;
@@ -47,6 +63,7 @@ interface ResolveInstalledUpdateContextOptions {
   platform?: NodeJS.Platform;
   architecture?: string;
   stateDirectory?: string;
+  nodeExecutable?: string;
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -89,6 +106,243 @@ function absoluteEnvironmentPath(environment: NodeJS.ProcessEnv, name: string): 
   const value = environment[name];
   if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be an absolute path`);
   return path.normalize(value);
+}
+
+function explicitAbsoluteEnvironmentPath(
+  environment: NodeJS.ProcessEnv,
+  name: string,
+): string | undefined {
+  const value = environment[name];
+  if (value === undefined) return undefined;
+  if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be an absolute path`);
+  return path.normalize(value);
+}
+
+function npmPackageLayout(
+  packageRoot: string,
+): { launcherCandidate: string; globalModulesRoot: string } | null {
+  const scopeDirectory = path.dirname(packageRoot);
+  if (
+    path.basename(scopeDirectory) !== "@codexhost" ||
+    !PLATFORM_PACKAGE_PATTERN.test(path.basename(packageRoot))
+  ) {
+    return null;
+  }
+  const parentModules = path.dirname(scopeDirectory);
+  const cliPackage = path.dirname(parentModules);
+  const outerScope = path.dirname(cliPackage);
+  if (
+    path.basename(parentModules) === "node_modules" &&
+    path.basename(cliPackage) === "cli" &&
+    path.basename(outerScope) === "@codexhost"
+  ) {
+    return {
+      launcherCandidate: path.join(cliPackage, "bin", "codexhost.js"),
+      globalModulesRoot: path.dirname(outerScope),
+    };
+  }
+  return {
+    launcherCandidate: path.resolve(packageRoot, "../cli/bin/codexhost.js"),
+    globalModulesRoot: parentModules,
+  };
+}
+
+async function resolveRegularFile(candidate: string): Promise<string | null> {
+  if (!candidate || !path.isAbsolute(candidate)) return null;
+  try {
+    const resolved = await realpath(candidate);
+    const metadata = await lstat(resolved);
+    return metadata.isFile() && !metadata.isSymbolicLink() ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+async function firstRegularFile(
+  candidates: readonly string[],
+  predicate?: (resolved: string) => boolean,
+): Promise<string | null> {
+  for (const candidate of candidates) {
+    const resolved = await resolveRegularFile(candidate);
+    if (resolved && (!predicate || predicate(resolved))) return resolved;
+  }
+  return null;
+}
+
+function discoverNpmNodePath(
+  globalModulesRoot: string,
+  platform: NodeJS.Platform,
+  nodeExecutable: string,
+): Promise<string | null> {
+  const candidates: string[] = [];
+  if (path.basename(globalModulesRoot) === "node_modules") {
+    const modulesParent = path.dirname(globalModulesRoot);
+    if (platform === "win32") {
+      candidates.push(path.join(modulesParent, "node.exe"));
+    } else if (path.basename(modulesParent) === "lib") {
+      candidates.push(path.join(path.dirname(modulesParent), "bin", "node"));
+    }
+  }
+  candidates.push(nodeExecutable);
+  return firstRegularFile(candidates);
+}
+
+function homebrewNpmCliCandidates(nodePath: string, environment: NodeJS.ProcessEnv): string[] {
+  const candidates: string[] = [];
+  const segments = nodePath.split(path.sep);
+  const cellarIndex = segments.lastIndexOf("Cellar");
+  if (
+    cellarIndex >= 1 &&
+    segments[cellarIndex + 1]?.startsWith("node") &&
+    segments.at(-2) === "bin" &&
+    segments.at(-1) === "node"
+  ) {
+    const brewPrefix = segments.slice(0, cellarIndex).join(path.sep);
+    candidates.push(
+      path.join(brewPrefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+      path.join(
+        path.dirname(path.dirname(nodePath)),
+        "libexec",
+        "lib",
+        "node_modules",
+        "npm",
+        "bin",
+        "npm-cli.js",
+      ),
+    );
+  }
+  if (environment.HOMEBREW_PREFIX && path.isAbsolute(environment.HOMEBREW_PREFIX)) {
+    candidates.push(
+      path.join(environment.HOMEBREW_PREFIX, "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    );
+  }
+  return candidates;
+}
+
+function discoverNpmCliPath(
+  globalModulesRoot: string,
+  nodePath: string,
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): Promise<string | null> {
+  const candidates: string[] = [];
+  if (path.basename(globalModulesRoot) === "node_modules") {
+    candidates.push(path.join(globalModulesRoot, "npm", "bin", "npm-cli.js"));
+  }
+  candidates.push(
+    platform === "win32"
+      ? path.join(path.dirname(nodePath), "node_modules", "npm", "bin", "npm-cli.js")
+      : path.join(
+          path.dirname(path.dirname(nodePath)),
+          "lib",
+          "node_modules",
+          "npm",
+          "bin",
+          "npm-cli.js",
+        ),
+  );
+  if (platform !== "win32") {
+    candidates.push(...homebrewNpmCliCandidates(nodePath, environment));
+  }
+  if (environment.npm_execpath) {
+    candidates.push(environment.npm_execpath);
+  }
+  for (const directory of (environment.PATH ?? "").split(path.delimiter)) {
+    if (!directory || !path.isAbsolute(directory)) continue;
+    if (platform === "win32") {
+      candidates.push(
+        path.join(directory, "node_modules", "npm", "bin", "npm-cli.js"),
+        path.join(directory, "npm.cmd"),
+      );
+    } else {
+      candidates.push(path.join(directory, "npm"));
+    }
+  }
+  return firstRegularFile(candidates, (resolved) => path.basename(resolved) === "npm-cli.js");
+}
+
+/**
+ * Resolves the npm update runtime paths from explicit `CODEXHOST_NPM_*` variables,
+ * falling back to the installed `@codexhost/cli-*` global layout only for variables
+ * that are unset. Explicitly provided invalid values are always rejected.
+ */
+export async function resolveNpmRuntimePaths(
+  options: ResolveNpmRuntimePathsOptions,
+): Promise<NpmRuntimePaths> {
+  const environment = options.environment ?? process.env;
+  const platform = options.platform ?? process.platform;
+  if (!path.isAbsolute(options.packageRoot)) {
+    throw new Error("npm platform package root must be an absolute path");
+  }
+  const resourcesRoot = path.normalize(options.packageRoot);
+  const explicitNodePath = explicitAbsoluteEnvironmentPath(
+    environment,
+    UPDATE_RUNTIME_ENV.npmNodePath,
+  );
+  const explicitNpmCliPath = explicitAbsoluteEnvironmentPath(
+    environment,
+    UPDATE_RUNTIME_ENV.npmCliPath,
+  );
+  const explicitLauncherPath = explicitAbsoluteEnvironmentPath(
+    environment,
+    UPDATE_RUNTIME_ENV.npmLauncherPath,
+  );
+  const explicitPackageRoot = explicitAbsoluteEnvironmentPath(
+    environment,
+    UPDATE_RUNTIME_ENV.npmPackageRoot,
+  );
+  if (explicitPackageRoot !== undefined && explicitPackageRoot !== resourcesRoot) {
+    throw new Error("npm platform package root does not own the Host Runtime");
+  }
+  if (
+    explicitNodePath !== undefined &&
+    explicitNpmCliPath !== undefined &&
+    explicitLauncherPath !== undefined &&
+    explicitPackageRoot !== undefined
+  ) {
+    return {
+      nodePath: explicitNodePath,
+      npmCliPath: explicitNpmCliPath,
+      npmLauncherPath: explicitLauncherPath,
+      packageRoot: explicitPackageRoot,
+    };
+  }
+  const layout = npmPackageLayout(resourcesRoot);
+  if (!layout) {
+    if (explicitNodePath === undefined) {
+      throw new Error(`${UPDATE_RUNTIME_ENV.npmNodePath} must be an absolute path`);
+    }
+    if (explicitNpmCliPath === undefined) {
+      throw new Error(`${UPDATE_RUNTIME_ENV.npmCliPath} must be an absolute path`);
+    }
+    if (explicitLauncherPath === undefined) {
+      throw new Error(`${UPDATE_RUNTIME_ENV.npmLauncherPath} must be an absolute path`);
+    }
+    throw new Error(`${UPDATE_RUNTIME_ENV.npmPackageRoot} must be an absolute path`);
+  }
+  const packageRoot = explicitPackageRoot ?? resourcesRoot;
+  const nodePath =
+    explicitNodePath ??
+    (await discoverNpmNodePath(
+      layout.globalModulesRoot,
+      platform,
+      options.nodeExecutable ?? process.execPath,
+    ));
+  if (!nodePath) {
+    throw new Error(`${UPDATE_RUNTIME_ENV.npmNodePath} must be an absolute path`);
+  }
+  const npmCliPath =
+    explicitNpmCliPath ??
+    (await discoverNpmCliPath(layout.globalModulesRoot, nodePath, environment, platform));
+  if (!npmCliPath) {
+    throw new Error(`${UPDATE_RUNTIME_ENV.npmCliPath} must be an absolute path`);
+  }
+  const npmLauncherPath =
+    explicitLauncherPath ?? (await resolveRegularFile(layout.launcherCandidate));
+  if (!npmLauncherPath) {
+    throw new Error(`${UPDATE_RUNTIME_ENV.npmLauncherPath} must be an absolute path`);
+  }
+  return { nodePath, npmCliPath, npmLauncherPath, packageRoot };
 }
 
 function positiveEnvironmentInteger(environment: NodeJS.ProcessEnv, name: string): number {
@@ -183,17 +437,17 @@ export async function resolveInstalledUpdateContext(
   };
 
   if (metadata.distribution === "npm") {
-    const npmOptions = {
-      ...common,
-      nodePath: absoluteEnvironmentPath(environment, UPDATE_RUNTIME_ENV.npmNodePath),
-      npmCliPath: absoluteEnvironmentPath(environment, UPDATE_RUNTIME_ENV.npmCliPath),
-      npmLauncherPath: absoluteEnvironmentPath(environment, UPDATE_RUNTIME_ENV.npmLauncherPath),
-      packageRoot: absoluteEnvironmentPath(environment, UPDATE_RUNTIME_ENV.npmPackageRoot),
+    const npmPaths = await resolveNpmRuntimePaths({
+      packageRoot: resourcesRoot,
+      environment,
+      platform,
+      ...(options.nodeExecutable === undefined ? {} : { nodeExecutable: options.nodeExecutable }),
+    });
+    return {
+      metadata,
+      common,
+      installation: { kind: "npm", options: { ...common, ...npmPaths } },
     };
-    if (path.normalize(npmOptions.packageRoot) !== resourcesRoot) {
-      throw new Error("npm platform package root does not own the Host Runtime");
-    }
-    return { metadata, common, installation: { kind: "npm", options: npmOptions } };
   }
   if (platform === "win32") {
     return {

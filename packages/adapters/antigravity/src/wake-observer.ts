@@ -1,15 +1,23 @@
 import type { HostTurnSnapshot } from "@codexhost/harness-adapter";
 import { projectReplayedEventsToTurns } from "./acp-projection.js";
+import { readNativeDbFingerprint } from "./native-db-fingerprint.js";
 import { readNativeHistory } from "./native-replay.js";
+import { nativeConversationDbPath } from "./native-turn-boundaries.js";
 
-const COMMIT_POLL_MS = 100;
+export const WAKE_COMMIT_POLL_DELAYS_MS = [150, 250, 400, 600, 1000] as const;
 const COMMIT_WAIT_MS = 10_000;
 
 /** Idle ACP updates have no response/stop boundary or native Turn identity.
  * Publish the committed SQLite Turn, not a second, timer-segmented transcript. */
 export class AntigravityWakeObserver {
+  readonly #dbPath: string;
+  readonly #readHistory: typeof readNativeHistory;
+  readonly #pollDelaysMs: readonly number[];
   #cursor: number;
   #deadline = 0;
+  #pollAttempt = 0;
+  #timerDelayMs = 0;
+  #lastFingerprint: string | null = null;
   #work: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
   #closed = false;
@@ -25,9 +33,17 @@ export class AntigravityWakeObserver {
       /** Whether output that started at this native time was streamed into a live prompt's Turn. */
       streamedIntoPrompt(startedAtMs: number | undefined): boolean;
       publish(snapshot: HostTurnSnapshot): void;
+      readHistory?: typeof readNativeHistory;
+      pollDelaysMs?: readonly number[];
     },
   ) {
     this.#cursor = options.cursor;
+    this.#dbPath = nativeConversationDbPath(options.nativeSessionId, options.home);
+    this.#readHistory = options.readHistory ?? readNativeHistory;
+    this.#pollDelaysMs =
+      options.pollDelaysMs && options.pollDelaysMs.length > 0
+        ? options.pollDelaysMs
+        : WAKE_COMMIT_POLL_DELAYS_MS;
   }
 
   get observing(): boolean {
@@ -37,7 +53,16 @@ export class AntigravityWakeObserver {
   observe(): void {
     if (this.#closed) return;
     this.#deadline = Date.now() + COMMIT_WAIT_MS;
-    if (!this.observing) void this.#startRead();
+    this.#pollAttempt = 0;
+    const firstDelay = this.#pollDelaysMs[0] ?? WAKE_COMMIT_POLL_DELAYS_MS[0];
+    if (!this.observing) {
+      void this.#startRead(false);
+    } else if (this.#timer && this.#timerDelayMs > firstDelay) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+      this.#timerDelayMs = 0;
+      this.#scheduleNextPoll();
+    }
   }
 
   /** Probe once before submitting a successor, without waiting on a pending native wake. */
@@ -46,20 +71,47 @@ export class AntigravityWakeObserver {
     if (this.#work) return this.#work;
     clearTimeout(this.#timer);
     this.#timer = undefined;
-    return this.#startRead();
+    this.#timerDelayMs = 0;
+    return this.#startRead(true);
   }
 
-  #startRead(): Promise<void> {
-    return (this.#work = this.#read().finally(() => {
+  #startRead(force: boolean): Promise<void> {
+    return (this.#work = this.#read(force).finally(() => {
       this.#work = undefined;
     }));
   }
 
-  async #read(): Promise<void> {
+  #scheduleNextPoll(): void {
+    if (this.#closed || Date.now() >= this.#deadline) return;
+    const index = Math.min(this.#pollAttempt, this.#pollDelaysMs.length - 1);
+    const delay =
+      this.#pollDelaysMs[index] ??
+      this.#pollDelaysMs[this.#pollDelaysMs.length - 1] ??
+      WAKE_COMMIT_POLL_DELAYS_MS[0];
+    this.#pollAttempt += 1;
+    this.#timerDelayMs = delay;
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      this.#timerDelayMs = 0;
+      void this.#startRead(false);
+    }, delay);
+    this.#timer.unref();
+  }
+
+  async #read(force: boolean): Promise<void> {
     try {
+      const fingerprint = await readNativeDbFingerprint(this.#dbPath);
+      if (this.#closed) return;
+      if (!force && fingerprint !== null && fingerprint === this.#lastFingerprint) {
+        return;
+      }
+      if (fingerprint !== this.#lastFingerprint) {
+        this.#pollAttempt = 0;
+      }
       const { nativeSessionId, home, cwd, outputLimit } = this.options;
-      const { events, wakeWatermark } = await readNativeHistory(nativeSessionId, home);
+      const { events, wakeWatermark } = await this.#readHistory(nativeSessionId, home);
       if (this.#closed || !this.options.canPublish()) return;
+      if (fingerprint !== null) this.#lastFingerprint = fingerprint;
       if (wakeWatermark <= this.#cursor) return;
       const turns = projectReplayedEventsToTurns({
         nativeSessionId,
@@ -88,13 +140,7 @@ export class AntigravityWakeObserver {
     } finally {
       // A notification carries no run ID. Finding a committed wake does not prove the
       // notified wake is already in SQLite; keep polling until the deadline.
-      if (!this.#closed && Date.now() < this.#deadline) {
-        this.#timer = setTimeout(() => {
-          this.#timer = undefined;
-          void this.#startRead();
-        }, COMMIT_POLL_MS);
-        this.#timer.unref();
-      }
+      this.#scheduleNextPoll();
     }
   }
 
@@ -102,5 +148,6 @@ export class AntigravityWakeObserver {
     this.#closed = true;
     clearTimeout(this.#timer);
     this.#timer = undefined;
+    this.#timerDelayMs = 0;
   }
 }

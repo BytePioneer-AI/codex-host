@@ -282,7 +282,9 @@ fn help_prints_usage_to_stdout_and_succeeds() {
             "codexhost host info|list ...",
             "codexhost project list ...",
             "codexhost harness list|inspect ...",
-            "codexhost thread send|cancel|read|wait|watch|watches|list|file ...",
+            "codexhost thread send|cancel|read|wait|answer|watch|watches|list|file ...",
+            "codexhost client add|list|set|remove ...",
+            "codexhost events ...",
             "codexhost broker install|status|stop|uninstall",
         ] {
             assert!(stdout.contains(command), "{argument}: {command}");
@@ -312,7 +314,10 @@ fn native_subcommand_help_succeeds_without_starting_services() {
         (&["reveal-file"], "codexhost reveal-file <absolute-path>"),
         (&["open-loopback-url"], "codexhost open-loopback-url"),
         (&["proxy-environment"], "codexhost proxy-environment"),
-        (&["web-service"], "codexhost web-service <ensure|stop|serve>"),
+        (
+            &["web-service"],
+            "codexhost web-service <ensure|stop|serve>",
+        ),
         // npm puts its runtime options ahead of the user's arguments.
         (
             &[
@@ -364,7 +369,10 @@ fn native_subcommand_help_succeeds_without_starting_services() {
                 "{arguments:?} {flag}: {stderr}"
             );
             assert!(stderr.is_empty(), "{arguments:?} {flag}: {stderr}");
-            assert!(stdout.starts_with(&format!("usage: {synopsis}")), "{stdout}");
+            assert!(
+                stdout.starts_with(&format!("usage: {synopsis}")),
+                "{stdout}"
+            );
             assert!(!wrote_data, "{arguments:?} {flag} wrote startup data");
         }
     }

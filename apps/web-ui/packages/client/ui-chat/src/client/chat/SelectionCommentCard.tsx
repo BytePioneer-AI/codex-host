@@ -88,7 +88,9 @@ export function SelectionCommentCard({
   }, [fieldRef, value]);
 
   const submit = (): void => {
-    if (comment !== "" && !onSubmit(comment)) setUnavailable(true);
+    if (comment === "") return;
+    setUnavailable(false);
+    if (!onSubmit(comment)) setUnavailable(true);
   };
 
   return (
@@ -146,6 +148,7 @@ export function SelectionCommentCard({
           placeholder={labels.placeholder}
           aria-label={labels.placeholder}
           onChange={(event) => {
+            if (unavailable) setUnavailable(false);
             setValue(event.target.value);
           }}
           onKeyDown={(event) => {

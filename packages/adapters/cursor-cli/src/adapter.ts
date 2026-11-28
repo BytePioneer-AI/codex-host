@@ -52,6 +52,7 @@ import {
   cursorConfiguredModelRef,
   cursorModelSelection,
   cursorModels,
+  normalizeStoredCursorModelRef,
 } from "./models.js";
 import {
   CursorTransport,
@@ -103,7 +104,9 @@ export function cursorError(error: unknown): HarnessError {
 function rejected(code: HarnessError["code"], message: string): { ok: false; error: HarnessError } {
   return { ok: false, error: { code, message, retryable: false } };
 }
+const openingSessions = new WeakSet<CursorSession>();
 export class CursorAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredCursorModelRef;
   readonly commandCatalog = CURSOR_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
   readonly subagents: HarnessSubagentCapability = {
@@ -279,6 +282,7 @@ export class CursorAdapter implements HarnessAdapter {
         input.kind === "create",
         loadedSnapshot,
       );
+      openingSessions.add(session);
       if (input.model) {
         const selected = await session.execute({ type: "model.select", model: input.model });
         if (!selected.ok) throw new Error(selected.error.message);
@@ -301,6 +305,7 @@ export class CursorAdapter implements HarnessAdapter {
         await session.close();
         return rejected("invalidState", "Cursor adapter closed during session startup");
       }
+      openingSessions.delete(session);
       this.#sessions.add(session);
       return { ok: true, value: session };
     } catch (error) {
@@ -469,7 +474,7 @@ export class CursorSession implements HarnessSession {
   get capabilities() {
     return cursorCapabilities(this.info);
   }
-  /** The live Session catalog, including parameters the inspection Session does not pin. */
+  /** The live Session catalog from the active Cursor ACP session. */
   modelCatalog() {
     return cursorCatalog(this.info);
   }
@@ -715,6 +720,7 @@ export class CursorSession implements HarnessSession {
       let published = false;
       const publish = (): void => {
         published = true;
+        if (openingSessions.has(this)) return;
         this.#channel.emit({
           kind: "event",
           event: { type: "session.state.changed", state: structuredClone(this.initialState) },

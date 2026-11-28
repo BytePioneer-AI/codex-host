@@ -45,6 +45,8 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .cardStack {
@@ -202,6 +204,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .inlineNotices > [data-slot] > * {
@@ -287,6 +291,8 @@
   color: var(--dsw-alias-label-primary);
   /* Business blue, not brand-primary: that token resolves to ink in this sheet. */
   caret-color: var(--dsw-alias-state-business-primary);
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Lexical paragraphs are <p> blocks: strip the UA margins so the surface
@@ -705,6 +711,8 @@
   gap: 2px;
   min-width: 0;
   overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .creationErrorTitle {

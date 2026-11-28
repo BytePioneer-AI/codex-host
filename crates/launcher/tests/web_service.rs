@@ -1179,6 +1179,20 @@ setInterval(() => {{
         );
         fs::write(&helper, helper_source).unwrap();
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        if attempt == 2 {
+            let current = codexhost_platform::process_snapshot(std::process::id()).unwrap();
+            fs::write(
+                fixture.root.join("desktop-shell-ready.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "pid": current.id,
+                    "started_at_micros": current.started_at_micros,
+                    "executable": current.executable,
+                    "version": env!("CARGO_PKG_VERSION"),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
         fs::write(&request, serde_json::to_vec(&serde_json::json!({
             "schema_version":1,"wait_pid":owner,"wait_executable":environment["CODEXHOST_LAUNCHER_EXECUTABLE"],
             "status_path":status,"service_managed":true,"restart_target":"desktop","data_directory":fixture.root
@@ -1207,6 +1221,12 @@ setInterval(() => {{
             thread::sleep(Duration::from_millis(20));
         };
         assert_eq!(observed["request"]["restart_target"], "web");
+        if attempt == 1 {
+            assert!(observed["request"].get("restart_desktop_shell").is_none());
+        } else {
+            assert_eq!(observed["request"]["restart_desktop_shell"], true);
+            fs::remove_file(fixture.root.join("desktop-shell-ready.json")).unwrap();
+        }
         let updater = observed["pid"].as_u64().unwrap() as u32;
         let until = deadline();
         loop {

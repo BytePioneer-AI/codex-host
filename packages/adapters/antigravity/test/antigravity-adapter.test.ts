@@ -37,8 +37,11 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
+import { readNativeDbFingerprint } from "../src/native-db-fingerprint.js";
+import { readNativeHistory } from "../src/native-replay.js";
 import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
+import { AntigravityWakeObserver, WAKE_COMMIT_POLL_DELAYS_MS } from "../src/wake-observer.js";
 import {
   answerStep,
   checkpointStep,
@@ -2185,15 +2188,22 @@ describe("inspection and errors", () => {
           },
         },
       };
+      const callsFile = path.join(home, "quota-calls");
       const writeQuota = async (script: string) => {
         await writeFile(command, script);
         await chmod(command, 0o755);
       };
-      const quotaScript = `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`;
+      const quotaScript = `#!/bin/sh\nprintf 'call\\n' >> '${callsFile}'\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`;
+      const failingQuotaScript = `#!/bin/sh\nprintf 'fail\\n' >> '${callsFile}'\nexit 1\n`;
       await writeQuota(quotaScript);
       let now = 100_000;
       const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-      const { adapter, transports } = fixture({ command });
+      const { adapter, transports } = fixture({ command }, (transport) => {
+        transport.config[0]?.options.push({
+          value: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+        });
+      });
       try {
         expect(adapter.credits()).toBeNull();
         expect(await adapter.refreshCredits()).toMatchObject({
@@ -2203,10 +2213,10 @@ describe("inspection and errors", () => {
         const account = await adapter.inspectAccount();
         expect(account?.credits).toMatchObject({ usedPercent: 25 });
         expect(account?.credits).not.toHaveProperty("fetchedAt");
-        const { session } = await sessionOf(
+        const { session, outputs } = await sessionOf(
           await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
         );
-        await writeQuota("#!/bin/sh\nexit 1\n");
+        await writeQuota(failingQuotaScript);
         now = 110_000;
         expect(await session.readAccountCredits?.()).toMatchObject({
           scope: { id: "Claude and GPT Models" },
@@ -2218,16 +2228,54 @@ describe("inspection and errors", () => {
           periodType: "five_hour",
         });
         expect(transports).toHaveLength(0);
+        // Explicit inspectAccount bypasses cooldown.
         expect(await adapter.inspectAccount()).toBeNull();
         expect(adapter.credits()).toBeNull();
         await writeQuota(quotaScript);
-        now = 140_000;
+        // Still within the 10-minute passive cooldown after inspectAccount at 110_000.
+        now = 600_000;
         expect(await adapter.refreshCredits()).toBeNull();
-        now = 170_000;
+        // Once past the 10-minute cooldown, idle passive refresh runs again.
+        now = 720_000;
         expect(await adapter.refreshCredits()).toMatchObject({
           usedPercent: 25,
           periodType: "five_hour",
         });
+
+        // During an active Turn, passive reads keep returning cached quota even past cooldown,
+        // while explicit inspectAccount still forces a CLI refresh.
+        const callsBeforeTurn = (await readFile(callsFile, "utf8")).trim().split("\n").length;
+        const transport = await start(session, transports);
+        now = 1_500_000;
+        expect(await session.readAccountCredits?.()).toMatchObject({
+          scope: { id: "Claude and GPT Models" },
+          usedPercent: 0,
+        });
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+        expect((await readFile(callsFile, "utf8")).trim().split("\n")).toHaveLength(
+          callsBeforeTurn,
+        );
+        expect(await adapter.inspectAccount()).toMatchObject({ credits: { usedPercent: 25 } });
+        expect((await readFile(callsFile, "utf8")).trim().split("\n")).toHaveLength(
+          callsBeforeTurn + 1,
+        );
+
+        // Once the Turn finishes and cooldown expires, passive readAccountCredits refreshes again.
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs);
+        now = 2_200_000;
+        expect(await session.readAccountCredits?.()).toMatchObject({
+          scope: { id: "Claude and GPT Models" },
+          usedPercent: 0,
+        });
+        await vi.waitFor(async () =>
+          expect((await readFile(callsFile, "utf8")).trim().split("\n")).toHaveLength(
+            callsBeforeTurn + 2,
+          ),
+        );
       } finally {
         clock.mockRestore();
         await adapter.close();
@@ -3403,6 +3451,128 @@ describe("Antigravity idle wake Turns", () => {
           },
         },
       ]);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("skips redundant SQLite reads when unchanged, backs off wake polling, and catches same-ms in-page writes", async () => {
+    expect(WAKE_COMMIT_POLL_DELAYS_MS).toEqual([150, 250, 400, 600, 1000]);
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-wake-fp-"));
+    directories.push(home);
+    const sessionId = "wake-fp-session";
+    const db = await createNativeHistoryDatabase(home, sessionId);
+    const dbPath = nativeBoundaries.nativeConversationDbPath(sessionId, home);
+    try {
+      userStep(db, 0, "hello", "fg");
+      answerStep(db, 1, "done", "fg");
+
+      // Same-millisecond in-page write in DELETE mode keeps file size identical but changes the
+      // SQLite file change counter at bytes 24..27.
+      const beforeSize = fs.statSync(dbPath).size;
+      const beforeFp = await readNativeDbFingerprint(dbPath);
+      systemStep(db, 2, "wake-1");
+      answerStep(db, 3, "first wake", "wake-1");
+      const afterSize = fs.statSync(dbPath).size;
+      const afterFp = await readNativeDbFingerprint(dbPath);
+      expect(afterSize).toBe(beforeSize);
+      expect(beforeFp).not.toBeNull();
+      expect(afterFp).not.toBe(beforeFp);
+
+      // WAL mode commits also mutate the fingerprint even across consecutive writes.
+      db.exec("PRAGMA journal_mode = WAL");
+      const walFp1 = await readNativeDbFingerprint(dbPath);
+      systemStep(db, 4, "wake-2");
+      answerStep(db, 5, "second wake", "wake-2");
+      const walFp2 = await readNativeDbFingerprint(dbPath);
+      expect(walFp2).not.toBe(walFp1);
+
+      // WakeObserver skips readHistory on unchanged polls and uses the configured backoff sequence.
+      const published: string[] = [];
+      const readHistory = vi.fn(readNativeHistory);
+      const recordedDelays: number[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        fn: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (typeof delay === "number") recordedDelays.push(delay);
+        return realSetTimeout(fn, delay, ...args);
+      }) as typeof setTimeout);
+      const observer = new AntigravityWakeObserver({
+        nativeSessionId: sessionId,
+        cwd: home,
+        home,
+        cursor: 5,
+        outputLimit: undefined,
+        canPublish: () => true,
+        streamedIntoPrompt: () => false,
+        publish: (snapshot) => published.push(snapshot.nativeTurnRef.nativeTurnKey),
+        readHistory,
+        pollDelaysMs: [15, 25, 40],
+      });
+      try {
+        observer.observe();
+        await vi.waitFor(() => expect(recordedDelays.length).toBeGreaterThanOrEqual(3));
+        // Only the initial read opened SQLite; all subsequent unchanged polls were skipped.
+        expect(readHistory).toHaveBeenCalledTimes(1);
+        expect(recordedDelays.slice(0, 3)).toEqual([15, 25, 40]);
+
+        // A new observe() resets the backoff delay back to the first step.
+        observer.observe();
+        await vi.waitFor(() => expect(recordedDelays.slice(3)).toContain(15));
+        expect(readHistory).toHaveBeenCalledTimes(1);
+
+        // Writing a new wake triggers a single SQLite read and publishes wake-6.
+        systemStep(db, 6, "wake-3");
+        answerStep(db, 7, "third wake", "wake-3");
+        await vi.waitFor(() => expect(published).toEqual(["wake-6"]));
+        expect(readHistory).toHaveBeenCalledTimes(2);
+      } finally {
+        observer.close();
+        timerSpy.mockRestore();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("coalesces burst usage.context events without re-reading unchanged transcript or emitting duplicate usage", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      const readStreamMock = vi.mocked(fs.createReadStream);
+      userStep(db, 2, "hello", "fg-burst");
+      // First usage.context runs initial usage & compaction check.
+      transport.eventHandler?.({ type: "usage.context", used: 10_000, size: 200_000 });
+      await session.refreshUsage();
+      readStreamMock.mockClear();
+      const usageCountAfterFirst = events(outputs).filter(
+        (event) => event.type === "session.usage.changed",
+      ).length;
+
+      // Repeated refreshUsage calls with unchanged transcript/DB skip re-reading and duplicate emits.
+      await session.refreshUsage();
+      await session.refreshUsage();
+      expect(readStreamMock).not.toHaveBeenCalled();
+      expect(
+        events(outputs).filter((event) => event.type === "session.usage.changed"),
+      ).toHaveLength(usageCountAfterFirst);
+
+      // Same-ms in-page compaction write is still picked up on the next usage.context / turn end.
+      checkpointStep(db, 3, { status: 3, run: "fg-burst", summary: "Compacted" });
+      transport.eventHandler?.({ type: "usage.context", used: 8_000, size: 200_000 });
+      await vi.waitFor(() =>
+        expect(
+          events(outputs).filter(
+            (event) =>
+              event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+          ),
+        ).toHaveLength(1),
+      );
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
       await session.close();
     } finally {
       db.close();

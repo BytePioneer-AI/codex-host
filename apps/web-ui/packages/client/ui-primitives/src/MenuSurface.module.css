@@ -29,6 +29,11 @@
   pointer-events: none;
 }
 
+.solid .material {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .backing {
   display: none;
 }

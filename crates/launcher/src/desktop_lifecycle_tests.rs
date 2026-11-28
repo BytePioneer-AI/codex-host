@@ -270,3 +270,190 @@ fn matches_replaced_linux_executable_only_when_unlinked() {
     assert_eq!(stripped_deleted_executable(&deleted), None);
     assert!(!same_executable(&expected, &deleted));
 }
+
+struct ChildGuard(std::process::Child);
+impl ChildGuard {
+    fn spawn_sleeper() -> Self {
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        Self(child)
+    }
+}
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn closed_port() -> u16 {
+    let listener = listen();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    port
+}
+
+fn dead_instance(pid: u32, executable: PathBuf) -> Instance {
+    Instance {
+        pid,
+        started_at_micros: 1,
+        executable,
+    }
+}
+
+fn build_owner(data: &Path, port: u16, launcher_exe: PathBuf, desktop: Instance) -> Owner {
+    let launcher_pid = i32::MAX as u32 - 2;
+    Owner {
+        descriptor: RuntimeDescriptor::new(launcher_pid, port, random_nonce().unwrap()).unwrap(),
+        data: data.canonicalize().unwrap(),
+        launcher: dead_instance(launcher_pid, launcher_exe),
+        controller: dead_instance(i32::MAX as u32 - 1, PathBuf::from("/usr/bin/node")),
+        desktop,
+        key: [7; 32],
+    }
+}
+
+#[test]
+fn update_ignores_foreign_detached_desktop_with_dead_launcher_and_controller() {
+    let runtime = Temp::new();
+    let foreign_data = Temp::new();
+    let current_data = Temp::new();
+    let descriptor_path = runtime.0.join("runtime.json");
+    let lifecycle = Lifecycle::open(&descriptor_path, true).unwrap();
+    let mut desktop_child = ChildGuard::spawn_sleeper();
+    let desktop = Instance::from(&snapshot(desktop_child.0.id()));
+    let owner = build_owner(
+        &foreign_data.0,
+        closed_port(),
+        PathBuf::from("/other/worktree/target/debug/codexhost"),
+        desktop,
+    );
+    lifecycle.fixture_record(&owner);
+    // Even a mismatched leftover descriptor on disk must not block an unrelated update.
+    let mismatched = RuntimeDescriptor {
+        nonce: random_nonce().unwrap(),
+        ..owner.descriptor.clone()
+    };
+    write_descriptor(&descriptor_path, &mismatched).unwrap();
+
+    assert!(!running_for_update_at(&descriptor_path, &current_data.0).unwrap());
+    assert!(!stop_managed_at(&descriptor_path, &current_data.0).unwrap());
+    assert!(lifecycle.read().unwrap().as_ref() == Some(&owner));
+    assert!(desktop_child.0.try_wait().unwrap().is_none());
+    assert!(owner.desktop.live().unwrap().is_some());
+}
+
+#[test]
+fn update_ignores_active_foreign_data_from_different_installation() {
+    let runtime = Temp::new();
+    let foreign_data = Temp::new();
+    let current_data = Temp::new();
+    let descriptor_path = runtime.0.join("runtime.json");
+    let lifecycle = Lifecycle::open(&descriptor_path, true).unwrap();
+    let listener = listen();
+    let port = listener.local_addr().unwrap().port();
+    let _foreign_guard = lifecycle.launcher_guard().unwrap().unwrap();
+    let owner = build_owner(
+        &foreign_data.0,
+        port,
+        PathBuf::from("/other/worktree/target/debug/codexhost"),
+        dead_instance(i32::MAX as u32, PathBuf::from("/Applications/Codex.app")),
+    );
+    lifecycle.fixture_record(&owner);
+    let mismatched = RuntimeDescriptor {
+        nonce: random_nonce().unwrap(),
+        ..owner.descriptor.clone()
+    };
+    write_descriptor(&descriptor_path, &mismatched).unwrap();
+
+    assert!(!running_for_update_at(&descriptor_path, &current_data.0).unwrap());
+    assert!(!stop_managed_at(&descriptor_path, &current_data.0).unwrap());
+    assert!(lifecycle.read().unwrap().as_ref() == Some(&owner));
+    assert!(!port_closed(port).unwrap());
+}
+
+#[test]
+fn update_rejects_active_foreign_data_from_same_installation() {
+    let runtime = Temp::new();
+    let foreign_data = Temp::new();
+    let current_data = Temp::new();
+    let descriptor_path = runtime.0.join("runtime.json");
+    let lifecycle = Lifecycle::open(&descriptor_path, true).unwrap();
+    let listener = listen();
+    let port = listener.local_addr().unwrap().port();
+    let current_exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let owner = build_owner(
+        &foreign_data.0,
+        port,
+        current_exe,
+        dead_instance(i32::MAX as u32, PathBuf::from("/Applications/Codex.app")),
+    );
+    lifecycle.fixture_record(&owner);
+
+    let foreign_display = foreign_data.0.display().to_string();
+    for error in [
+        running_for_update_at(&descriptor_path, &current_data.0)
+            .unwrap_err()
+            .to_string(),
+        stop_managed_at(&descriptor_path, &current_data.0)
+            .unwrap_err()
+            .to_string(),
+    ] {
+        assert!(error.contains("different CODEXHOST_DATA_DIR"), "{error}");
+        assert!(error.contains(&foreign_display), "{error}");
+        assert!(error.contains(&owner.launcher.pid.to_string()), "{error}");
+        assert!(error.contains("no GUI action taken"), "{error}");
+    }
+}
+
+#[test]
+fn update_ignores_same_data_detached_desktop_with_dead_launcher_and_controller() {
+    let runtime = Temp::new();
+    let data = Temp::new();
+    let descriptor_path = runtime.0.join("runtime.json");
+    let lifecycle = Lifecycle::open(&descriptor_path, true).unwrap();
+    let mut desktop_child = ChildGuard::spawn_sleeper();
+    let desktop = Instance::from(&snapshot(desktop_child.0.id()));
+    let current_exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let owner = build_owner(&data.0, closed_port(), current_exe, desktop);
+    lifecycle.fixture_record(&owner);
+
+    assert!(!running_for_update_at(&descriptor_path, &data.0).unwrap());
+    assert!(!stop_managed_at(&descriptor_path, &data.0).unwrap());
+    assert!(lifecycle.read().unwrap().as_ref() == Some(&owner));
+    assert!(desktop_child.0.try_wait().unwrap().is_none());
+    assert!(owner.desktop.live().unwrap().is_some());
+}
+
+#[test]
+fn update_rejects_same_data_active_desktop_from_different_installation() {
+    let runtime = Temp::new();
+    let data = Temp::new();
+    let descriptor_path = runtime.0.join("runtime.json");
+    let lifecycle = Lifecycle::open(&descriptor_path, true).unwrap();
+    let listener = listen();
+    let port = listener.local_addr().unwrap().port();
+    let owner = build_owner(
+        &data.0,
+        port,
+        PathBuf::from("/other/installation/codexhost"),
+        dead_instance(i32::MAX as u32, PathBuf::from("/Applications/Codex.app")),
+    );
+    lifecycle.fixture_record(&owner);
+
+    for error in [
+        running_for_update_at(&descriptor_path, &data.0)
+            .unwrap_err()
+            .to_string(),
+        stop_managed_at(&descriptor_path, &data.0)
+            .unwrap_err()
+            .to_string(),
+    ] {
+        assert!(error.contains("different installation"), "{error}");
+    }
+}

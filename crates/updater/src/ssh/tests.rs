@@ -73,7 +73,11 @@ fn login_environment_finds_tools_despite_a_system_node_and_noisy_startup() {
     std::fs::create_dir_all(&system).unwrap();
     std::fs::create_dir_all(&selected).unwrap();
     executable(&system.join("node"), "#!/bin/sh\nexit 1\n");
-    for tool in ["node", "npm", "codex", "codexhost"] {
+    executable(
+        &selected.join("node"),
+        "#!/bin/sh\ncase \"$*\" in *process.platform*) echo linux-x64;; esac\n",
+    );
+    for tool in ["npm", "codex", "codexhost"] {
         executable(&selected.join(tool), "#!/bin/sh\nexit 0\n");
     }
     // A shell fixture loads a version manager only when both login and interactive flags
@@ -481,11 +485,12 @@ fn maintenance_finds_tools_beside_the_recorded_node() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(root.join(".codexhost/remote")).unwrap();
     std::fs::write(root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
-    for tool in ["node", "npm", "codexhost"] {
-        use std::os::unix::fs::PermissionsExt;
-        let path = bin.join(tool);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    executable(
+        &bin.join("node"),
+        "#!/bin/sh\ncase \"$*\" in *process.platform*) echo linux-x64;; esac\n",
+    );
+    for tool in ["npm", "codexhost"] {
+        executable(&bin.join(tool), "#!/bin/sh\nexit 0\n");
     }
     let mut r = request();
     for (action, version) in [("update", Some("1.2.3")), ("repair", None)] {
@@ -548,6 +553,172 @@ fn install_refuses_to_replace_existing_remote_services() {
 }
 #[cfg(unix)]
 #[test]
+fn install_and_update_prefetch_both_packages_and_classify_failures() {
+    let root = std::env::temp_dir().join(format!(
+        "codexhost-ssh-prefetch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mocks = r#"
+node(){ case "$*" in *process.platform*) printf '%s' "$TEST_PLATFORM_TARGET";; *) :;; esac; }
+codex(){ :; }
+npm(){
+  printf '%s\n' "$*" >> "$HOME/calls"
+  if [ "$1" = cache ] && [ "$3" = "$MISSING_PACKAGE" ]; then
+    printf '%s\n' "$NPM_ERR" >&2
+    return 1
+  fi
+}
+codexhost(){ printf '%s\n' "$*" >> "$HOME/calls"; }
+"#;
+    for (name, action, target, missing, npm_err, expected_code) in [
+        (
+            "update-platform-404",
+            "update",
+            "linux-x64",
+            "@codexhost/cli-linux-x64@1.2.4",
+            "npm error code E404",
+            62,
+        ),
+        (
+            "install-platform-404",
+            "install",
+            "linux-x64",
+            "@codexhost/cli-linux-x64@1.2.4",
+            "npm error code ETARGET",
+            62,
+        ),
+        (
+            "update-timeout",
+            "update",
+            "darwin-arm64",
+            "@codexhost/cli-darwin-arm64@1.2.4",
+            "npm error code ETIMEDOUT",
+            63,
+        ),
+        (
+            "update-registry-error",
+            "update",
+            "linux-x64",
+            "@codexhost/cli-linux-x64@1.2.4",
+            "npm error code ECONNREFUSED",
+            53,
+        ),
+        (
+            "update-unsupported-platform",
+            "update",
+            "freebsd-x64",
+            "",
+            "",
+            44,
+        ),
+    ] {
+        let home = root.join(name);
+        let manifest = home.join(".codexhost/remote/manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        if action == "update" {
+            std::fs::write(&manifest, "{}").unwrap();
+        }
+        let mut r = request();
+        r.action = action.into();
+        r.version = Some("1.2.4".into());
+        let result = Command::new("/bin/sh")
+            .args(["-c", &format!("{mocks}{}", script(&r).unwrap())])
+            .env("HOME", &home)
+            .env("TEST_PLATFORM_TARGET", target)
+            .env("MISSING_PACKAGE", missing)
+            .env("NPM_ERR", npm_err)
+            .output()
+            .unwrap();
+        assert_eq!(
+            result.status.code(),
+            Some(expected_code),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let calls = std::fs::read_to_string(home.join("calls")).unwrap_or_default();
+        if expected_code == 44 {
+            assert!(calls.is_empty(), "{name}: {calls}");
+        } else {
+            assert_eq!(
+                calls,
+                format!(
+                    "cache add @codexhost/cli@1.2.4 --fetch-retries=0 --fetch-timeout=30000\ncache add {missing} --fetch-retries=0 --fetch-timeout=30000\n"
+                ),
+                "{name}"
+            );
+        }
+        assert_eq!(manifest.exists(), action == "update", "{name}");
+        assert!(!home.join(".codexhost/ssh-setup.lock").exists(), "{name}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn repair_and_uninstall_report_missing_platform_package_separately_from_permissions() {
+    let root = std::env::temp_dir().join(format!(
+        "codexhost-ssh-repair-missing-pkg-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mocks = r#"
+node(){
+  case "$*" in
+    *manifest.json*) printf '\n' ;;
+    *) return 0 ;;
+  esac
+}
+codexhost(){
+  printf '%s\n' "$*" >> "$HOME/calls"
+  if [ "$MODE" = missing-pkg ]; then
+    printf '%s\n' "codexhost: missing optional platform package '@codexhost/cli-linux-x64'. Reinstall @codexhost/cli without --omit=optional." >&2
+    return 1
+  fi
+  if [ "$MODE" = perm-error ] && [ "$2" = uninstall ]; then
+    printf '%s\n' "EACCES: permission denied" >&2
+    return 1
+  fi
+  return 0
+}
+"#;
+    for (name, action, mode, expected_code) in [
+        ("repair-missing-pkg", "repair", "missing-pkg", 61),
+        ("uninstall-missing-pkg", "uninstall", "missing-pkg", 61),
+        ("repair-perm-error", "repair", "perm-error", 51),
+    ] {
+        let home = root.join(name);
+        let manifest = home.join(".codexhost/remote/manifest.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(&manifest, "{}").unwrap();
+        let mut r = request();
+        r.action = action.into();
+        let result = Command::new("/bin/sh")
+            .args(["-c", &format!("{mocks}{}", script(&r).unwrap())])
+            .env("HOME", &home)
+            .env("MODE", mode)
+            .output()
+            .unwrap();
+        assert_eq!(
+            result.status.code(),
+            Some(expected_code),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(manifest.exists(), "{name}");
+        assert!(!home.join(".codexhost/ssh-setup.lock").exists(), "{name}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn executes_initial_setup_and_refuses_an_existing_installation() {
     let root = std::env::temp_dir().join(format!(
         "codexhost-ssh-{}-{}",
@@ -561,7 +732,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     let mut r = request();
     r.action = "install".into();
     r.version = Some("1.2.3".into());
-    let mocks = r#"node(){ :; }; npm(){ printf '%s\n' "$*" >> "$HOME/calls"; }; codex(){ :; }; codexhost(){ printf '%s\n' "$*" >> "$HOME/calls"; }; "#;
+    let mocks = r#"node(){ case "$*" in *process.platform*) echo darwin-arm64;; *) :;; esac; }; npm(){ printf '%s\n' "$*" >> "$HOME/calls"; }; codex(){ :; }; codexhost(){ printf '%s\n' "$*" >> "$HOME/calls"; }; "#;
     let value = format!("{mocks}{}", script(&r).unwrap());
     let first = Command::new("sh")
         .args(["-c", &value])
@@ -572,7 +743,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     let calls = std::fs::read_to_string(root.join("calls")).unwrap();
     assert_eq!(
         calls,
-        "install -g @codexhost/cli@1.2.3\nremote install\nremote start\n"
+        "cache add @codexhost/cli@1.2.3 --fetch-retries=0 --fetch-timeout=30000\ncache add @codexhost/cli-darwin-arm64@1.2.3 --fetch-retries=0 --fetch-timeout=30000\ninstall -g --prefer-offline @codexhost/cli@1.2.3 @codexhost/cli-darwin-arm64@1.2.3\nremote install\nremote start\n"
     );
     std::fs::create_dir_all(root.join(".codexhost/remote")).unwrap();
     std::fs::write(root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
@@ -594,7 +765,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
         .unwrap();
     assert!(updated.status.success());
     let calls = format!(
-        "{calls}view @codexhost/cli@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g @codexhost/cli@1.2.4\nremote install\nremote stop\nremote start\n"
+        "{calls}cache add @codexhost/cli@1.2.4 --fetch-retries=0 --fetch-timeout=30000\ncache add @codexhost/cli-darwin-arm64@1.2.4 --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g --prefer-offline @codexhost/cli@1.2.4 @codexhost/cli-darwin-arm64@1.2.4\nremote install\nremote stop\nremote start\n",
     );
     assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), calls);
     assert!(!root.join(".codexhost/ssh-setup.lock").exists());

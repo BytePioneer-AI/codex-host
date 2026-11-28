@@ -65,6 +65,7 @@ export interface WebExtensionApi {
     /** Subscribe to main-view active-session changes without replaying the initial snapshot. */
     onChange(listener: (session: WebExtensionActiveSession | null) => void): () => void;
   };
+  tabIcon?: { set(pngDataUrl: string | null): void };
   settings: { registerPage(page: WebExtensionContribution): () => void };
   panels: {
     register(panel: WebExtensionContribution & { placement: "main" | "sidebar" }): () => void;

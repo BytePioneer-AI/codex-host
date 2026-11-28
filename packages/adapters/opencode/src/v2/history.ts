@@ -105,12 +105,23 @@ export function projectHistory(
     throw new Error("Clear the staged OpenCode v2 revert before using this Session in codexhost");
   const turns: HostTurnSnapshot[] = [];
   let turn: HostTurnSnapshot | undefined;
+  let openHostTurnId: string | undefined;
   for (const message of messages) {
-    if (message.type === "user" && turn) {
+    const messageHostTurnId =
+      message.type === "user" &&
+      typeof message.metadata?.["codexhost.turnId"] === "string" &&
+      message.metadata["codexhost.turnId"].length > 0
+        ? message.metadata["codexhost.turnId"]
+        : undefined;
+    if (
+      message.type === "user" &&
+      turn &&
+      (!messageHostTurnId || messageHostTurnId === openHostTurnId)
+    ) {
       turn.input.push({ type: "text", text: message.text });
     } else if (
       message.type === "user" ||
-      (message.type === "compaction" && message.reason === "manual" && !turn)
+      (message.type === "compaction" && message.reason === "manual")
     ) {
       turn = {
         nativeTurnRef: nativeTurnRefSchema.parse({
@@ -124,6 +135,7 @@ export function projectHistory(
         outcome: { status: "unknown", reason: "OpenCode execution has no durable terminal" },
         startedAtMs: message.time.created,
       };
+      openHostTurnId = messageHostTurnId;
       turns.push(turn);
     }
     if (!turn) continue;
@@ -186,6 +198,7 @@ export function projectHistory(
         formatVersion: 1,
       });
       turn = undefined;
+      openHostTurnId = undefined;
     }
   }
   return { turns };
@@ -228,11 +241,12 @@ export async function readHistory(
   session: SessionInfo,
   limit: number,
   index: OpenCodeModelIndex,
+  skipDiffTurnKeys?: ReadonlySet<string>,
 ) {
   const messages = await readMessages(client, session.id);
   const snapshot = projectHistory(session, messages, limit, index);
   for (const turn of snapshot.turns) {
-    if (!turn.checkpoint) continue;
+    if (!turn.checkpoint || skipDiffTurnKeys?.has(turn.nativeTurnRef.nativeTurnKey)) continue;
     const first = messages.findIndex((m) => m.id === turn.nativeTurnRef.nativeTurnKey);
     const last = messages.findIndex((m) => m.id === turn.checkpoint?.checkpointId);
     if (

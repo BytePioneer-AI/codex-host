@@ -130,6 +130,8 @@ import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics
 import { createRendererSkillLibrary, type RendererSkillContext } from "./renderer-skill-library.js";
 import { installRendererSkillReferences } from "./renderer-skill-reference.js";
 import {
+  DELEGATION_MENTION_MENU_SELECTOR,
+  DELEGATION_MENTION_STYLE_SELECTOR,
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
 } from "./renderer-delegation-mention.js";
@@ -253,15 +255,17 @@ export function rendererUsageRefreshDelay(attempt: number): number {
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
 }
 
-/**
- * Missing usage keeps retrying. Once usage is shown, a quota or balance that never arrives (no
- * key, an invalid key, an account without quota) gets one pass of the backoff, not endless polls.
- */
-export function canScheduleExternalThreadUsageRefresh(
-  usage: ThreadUsageSnapshot | null,
-  attempt: number,
+/** A missing snapshot gets one bounded backoff pass, regardless of its shape. */
+export function canScheduleExternalThreadUsageRefresh(attempt: number): boolean {
+  return attempt < rendererUsageRefreshDelays.length;
+}
+
+/** Empty notifications do not restart the bounded retry pass. */
+export function hasExternalThreadUsageEvidence(
+  update: Pick<ThreadUsageInspection, "usage" | "accountCredits" | "accountBalance">,
 ): boolean {
-  return usage === null || attempt < rendererUsageRefreshDelays.length;
+  // Account quota alone must not restart a Thread usage retry pass.
+  return update.usage !== null;
 }
 
 /** Retry quota only when the Host confirms that this source supplies it. */
@@ -766,10 +770,26 @@ export function applyComposerModelWrite(
   return write();
 }
 
+function isDelegationMentionMutationNode(node: Node): boolean {
+  return (
+    node instanceof Element &&
+    (node.matches(DELEGATION_MENTION_MENU_SELECTOR) ||
+      node.matches(DELEGATION_MENTION_STYLE_SELECTOR) ||
+      node.closest(DELEGATION_MENTION_MENU_SELECTOR) !== null)
+  );
+}
+
 export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
   const target =
     mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
   if (!target) return true;
+  if (isDelegationMentionMutationNode(target)) return false;
+  if (
+    mutation.type === "childList" &&
+    (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0) &&
+    [...mutation.addedNodes, ...mutation.removedNodes].every(isDelegationMentionMutationNode)
+  )
+    return false;
   // Identity changes are lifecycle events even after the marker is removed.
   if (
     mutation.type === "attributes" &&
@@ -1430,7 +1450,7 @@ export function installRendererBindingProbe(
       mounted.accountBalance = update.accountBalance ?? null;
       if (update.accountCreditsSupported !== undefined)
         mounted.accountCreditsSupported = update.accountCreditsSupported;
-      usageRefreshAttempts.delete(mounted.composer);
+      if (hasExternalThreadUsageEvidence(update)) usageRefreshAttempts.delete(mounted.composer);
       renderMounted(mounted);
     }
   };
@@ -1499,7 +1519,6 @@ export function installRendererBindingProbe(
         if (!client.inspectHarnessAccount) return;
         const result = await client.inspectHarnessAccount({
           harnessId: harnessIdSchema.parse(agent),
-          refresh: true,
         });
         if (!isCurrent() || result.harnessId !== agent) return;
         mounted.accountCredits = result.account?.credits ?? null;
@@ -1588,7 +1607,7 @@ export function installRendererBindingProbe(
   const scheduleThreadUsageRefresh = (mounted: MountedComposer): void => {
     if (usageRefreshTimers.has(mounted.composer)) return;
     const attempt = usageRefreshAttempts.get(mounted.composer) ?? 0;
-    if (!canScheduleExternalThreadUsageRefresh(mounted.usage, attempt)) return;
+    if (!canScheduleExternalThreadUsageRefresh(attempt)) return;
     usageRefreshAttempts.set(mounted.composer, attempt + 1);
     const timer = window.setTimeout(() => {
       usageRefreshTimers.delete(mounted.composer);

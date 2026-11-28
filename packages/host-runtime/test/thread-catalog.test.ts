@@ -105,7 +105,7 @@ describe("source-separated Thread catalog", () => {
         archived: false,
         limit: 20,
         modelProviders: [],
-        sortKey: "updated_at",
+        sortKey: "recency_at",
         sortDirection: "desc",
       })),
     );
@@ -210,16 +210,29 @@ describe("source-separated Thread catalog", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ archived: false }));
   });
 
-  it("sorts native and external rows by last update rather than creation time", async () => {
+  it("sorts by conversation recency with last-update fallback, preserving native timestamps", async () => {
     const record = { ...external("external", 20), updatedAt: new Date(1_000).toISOString() };
     const result = await readThreadCatalog({
       ...input([record]),
       requestOfficialPage: async (params) => {
-        expect(params.sortKey).toBe("updated_at");
-        return page([{ ...row("native", 10), updatedAt: 1000 }]);
+        expect(params.sortKey).toBe("recency_at");
+        return page([
+          { ...row("imported", 10), updatedAt: 1000, recencyAt: 0 },
+          row("legacy", 10),
+          { ...row("native", 10), updatedAt: 1, recencyAt: 30 },
+        ]);
       },
     });
-    expect(result.threads.map((thread) => thread.id)).toEqual(["native", "external"]);
+    expect(result.threads.map((thread) => thread.id)).toEqual([
+      "native",
+      "legacy",
+      "external",
+      "imported",
+    ]);
+    expect(result.threads.find((thread) => thread.id === "imported")).toMatchObject({
+      updatedAt: 1000,
+      recencyAt: 0,
+    });
   });
 
   it("shares lazy initialization between archive branches and only degrades admission unavailable", async () => {
@@ -377,6 +390,45 @@ describe("source-separated Thread catalog", () => {
     },
   );
 
+  it("omits untouched official import mirrors but keeps continued or sectioned ones", async () => {
+    const options = input();
+    const times = new Map([
+      ["mirror", 10],
+      ["continued", 10],
+      ["placed", 10],
+    ]);
+    options.readLocal = async () => ({ records: [], placements: [], officialImportTimes: times });
+    options.readContinuationImportTimes = async () => times;
+    options.requestOfficialPage = async () =>
+      page([
+        { ...row("mirror", 5), recencyAt: 5 },
+        { ...row("continued", 4), recencyAt: 90 },
+        { ...row("placed", 3), recencyAt: 3, section: { id: "pinned" } },
+        row("native", 2),
+      ]);
+    const firstPage = await readThreadCatalog(options);
+    expect(firstPage.threads.map((thread) => thread.id)).toEqual(["continued", "placed", "native"]);
+    const nextPage = await readThreadCatalog({ ...options, officialCursor: { live: "next" } });
+    expect(nextPage.threads.map((thread) => thread.id)).toEqual(["continued", "placed", "native"]);
+  });
+
+  it("continues a scoped read past a page containing only a hidden import", async () => {
+    const options = input();
+    options.scope = { cwd: "/project", excludeCwds: [] };
+    options.readLocal = async () => ({
+      records: [],
+      placements: [],
+      officialImportTimes: new Map([["mirror", 10]]),
+    });
+    options.requestOfficialPage = async ({ cursor }) =>
+      cursor === null
+        ? page([{ ...row("mirror", 5), recencyAt: 5, cwd: "/project" }], "more")
+        : page([{ ...row("native", 4), cwd: "/project" }]);
+    const result = await readThreadCatalog(options);
+    expect(result.threads.map((thread) => thread.id)).toEqual(["native"]);
+    expect(result.officialCursor).toEqual({ live: null });
+  });
+
   it("rejects a non-advancing native cursor without requesting another page", async () => {
     const request = vi.fn(async () => page([], "A"));
     await expect(
@@ -419,7 +471,7 @@ describe("source-separated Thread catalog", () => {
         archived: true,
         cursor: "archive20",
         limit: 20,
-        sortKey: "updated_at",
+        sortKey: "recency_at",
         sortDirection: "desc",
       });
       return page([row("old-archive", 1)]);

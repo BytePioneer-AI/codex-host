@@ -1,11 +1,13 @@
 import {
+  catalogModelForRef,
   harnessModelRefSchema,
   harnessPermissionModeCatalogSchema,
+  type HarnessModelRef,
 } from "@codexhost/shared-contracts";
 import type { HarnessModelCatalog, HarnessSessionCapabilities } from "@codexhost/harness-adapter";
 import type { CursorSessionInfo, CursorNativeModel } from "./transport.js";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
-import { cursorThinking, cursorThinkingState, isCursorThinkingOption } from "./thinking.js";
+import { cursorThinking, cursorThinkingState } from "./thinking.js";
 import { cursorForkAvailable } from "./fork-support.js";
 
 export const CURSOR_CAPABILITIES: HarnessSessionCapabilities = {
@@ -81,26 +83,16 @@ export function cursorCatalog(info: CursorSessionInfo): HarnessModelCatalog {
       : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
     const options = cursorThinking(config);
     for (const { id, label } of options) thinking.set(id, { id, label });
-    // Only the live model's parameters reflect the user's Cursor settings. The parameterized
-    // catalog reports Cursor's built-in defaults for every other model (for example
-    // `fast=true`), so pinning them would override the user's remembered per-model parameters.
-    // Other models pin only `fast`, which the Fast pair must state explicitly to switch it off.
+    // Pin only `fast` so every Model keeps the same Ref in inspection and live catalogs, while
+    // leaving other `model_config` parameters (such as `context`) to Cursor's per-model settings.
     const fast = config?.find(isCursorFastOption);
-    const pinned = live ? config : fast ? [fast] : undefined;
-    const withFast = (value: string) =>
-      cursorConfiguredModelRef(
-        model.value,
-        pinned?.map((option) =>
-          option === fast ? ({ ...option, currentValue: value } as SessionConfigOption) : option,
-        ),
-      );
+    const withFast = (option: SessionConfigOption, value: string) =>
+      cursorConfiguredModelRef(model.value, [
+        { ...option, currentValue: value } as SessionConfigOption,
+      ]);
     return {
-      ref: fast
-        ? withFast("false")
-        : live
-          ? cursorConfiguredModelRef(model.value, config)
-          : cursorModelRef(model.value),
-      ...(fast ? { fastModel: withFast("true") } : {}),
+      ref: fast ? withFast(fast, "false") : cursorModelRef(model.value),
+      ...(fast ? { fastModel: withFast(fast, "true") } : {}),
       label: model.name,
       supportedThinkingOptionIds: options.map(({ id }) => id),
     };
@@ -182,25 +174,81 @@ export function parseCursorNativeModels(input: Record<string, unknown>): CursorN
   });
 }
 
+function decodeCursorModelRef(ref: string): string | undefined {
+  if (!ref.startsWith("cursor.")) return undefined;
+  const decoded = Buffer.from(ref.slice(7), "base64url").toString();
+  return cursorModelRef(decoded).id === ref ? decoded : undefined;
+}
+
+function parseCursorParameters(raw: string): Array<[string, string]> | undefined {
+  const parameters: Array<[string, string]> = [];
+  for (const parameter of raw ? raw.split(",") : []) {
+    const pair = parameter.split("=");
+    const [id, value] = pair;
+    if (pair.length !== 2 || !id || value === undefined || parameters.some(([key]) => key === id))
+      return undefined;
+    parameters.push([id, value]);
+  }
+  return parameters;
+}
+
+function catalogEntryBaseModel(entry: HarnessModelCatalog["models"][number]): string | undefined {
+  const decoded = decodeCursorModelRef(entry.ref.id);
+  if (!decoded) return undefined;
+  if (entry.fastModel) {
+    const match = /^([^\[\]]+)\[([^\[\]]*)\]$/u.exec(decoded);
+    const parameters = match ? parseCursorParameters(match[2] ?? "") : undefined;
+    if (
+      match?.[1] &&
+      parameters?.length === 1 &&
+      parameters[0]?.[0] === "fast" &&
+      parameters[0]?.[1] === "false"
+    )
+      return match[1];
+  }
+  return decoded;
+}
+
+/** Map a stored Cursor Model Ref (including legacy parameterized forms) to the matching catalog entry. */
+export function normalizeStoredCursorModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  if (catalogModelForRef(catalog, ref)) return ref;
+  if (ref.serviceTier) return undefined;
+  const decoded = decodeCursorModelRef(ref.id);
+  if (!decoded) return undefined;
+  let baseModel = decoded;
+  let fastValue: string | undefined;
+  if (decoded.includes("[") || decoded.includes("]")) {
+    const match = /^([^\[\]]+)\[([^\[\]]*)\]$/u.exec(decoded);
+    const parameters = match ? parseCursorParameters(match[2] ?? "") : undefined;
+    if (!match?.[1] || !parameters) return undefined;
+    baseModel = match[1];
+    fastValue = parameters.find(([id]) => id === "fast")?.[1];
+    if (fastValue !== undefined && fastValue !== "true" && fastValue !== "false") return undefined;
+  }
+  const entry = catalog.models.find((model) => catalogEntryBaseModel(model) === baseModel);
+  if (!entry) return undefined;
+  return fastValue === "true" && entry.fastModel ? entry.fastModel : entry.ref;
+}
+
 export function cursorModelSelection(
   info: CursorSessionInfo,
   ref: string,
 ): Array<[string, string]> {
   const exact = cursorModels(info).models.find((model) => cursorModelRef(model.value).id === ref);
   if (exact) return [["model", exact.value]];
-  // Revalidate legacy bracketed refs against native parameter metadata before changing anything.
+  // Revalidate bracketed refs against native parameter metadata before changing anything.
   if (!ref.startsWith("cursor.")) throw new Error("Unknown Cursor model reference");
-  const decoded = Buffer.from(ref.slice(7), "base64url").toString();
-  if (cursorModelRef(decoded).id !== ref) throw new Error("Invalid Cursor model reference");
+  const decoded = decodeCursorModelRef(ref);
+  if (decoded === undefined) throw new Error("Invalid Cursor model reference");
   const match = /^([^\[\]]+)\[([^\[\]]*)\]$/u.exec(decoded);
   const model = match && info.nativeModels?.find((entry) => entry.value === match[1]);
   if (!match || !model) throw new Error("Model is not in this Cursor session's native catalog");
-  const parameters: Array<[string, string]> = [];
-  for (const parameter of match[2] ? match[2].split(",") : []) {
-    const pair = parameter.split("=");
-    const [id, value] = pair;
-    if (pair.length !== 2 || !id || value === undefined || parameters.some(([key]) => key === id))
-      throw new Error("Invalid Cursor model parameters");
+  const parameters = parseCursorParameters(match[2] ?? "");
+  if (!parameters) throw new Error("Invalid Cursor model parameters");
+  for (const [id, value] of parameters) {
     const option = model.configOptions.find((option) => option.id === id);
     if (
       !option ||
@@ -210,7 +258,6 @@ export function cursorModelSelection(
         .some((entry) => entry.value === value)
     )
       throw new Error("Legacy Cursor model parameter is not selectable in the native catalog");
-    parameters.push([id, value]);
   }
   return [["model", model.value], ...parameters];
 }
@@ -225,16 +272,8 @@ export function cursorCapabilities(info: CursorSessionInfo): HarnessSessionCapab
   };
 }
 
-/** Keep native non-Thinking parameters in the persisted Model Ref across Host restarts. */
+/** Encode the model ID with its Fast toggle when advertised, omitting session-scoped parameters. */
 export function cursorConfiguredModelRef(model: string, options?: SessionConfigOption[] | null) {
-  // Parameters offered as Thinking must stay out of the Ref; otherwise changing them would
-  // produce a Ref absent from the catalog and the selection could never be confirmed.
-  const parameters = (options ?? []).flatMap((option) =>
-    option.category === "model_config" &&
-    option.type === "select" &&
-    !isCursorThinkingOption(option)
-      ? [`${option.id}=${option.currentValue}`]
-      : [],
-  );
-  return cursorModelRef(parameters.length ? `${model}[${parameters.join(",")}]` : model);
+  const fast = options?.find(isCursorFastOption);
+  return cursorModelRef(fast ? `${model}[fast=${fast.currentValue}]` : model);
 }

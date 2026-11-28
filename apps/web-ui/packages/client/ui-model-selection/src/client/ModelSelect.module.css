@@ -135,7 +135,9 @@
   position: absolute;
   top: 0;
   right: calc(100% + 8px);
-  width: min(264px, calc(100vw - 292px));
+  width: max-content;
+  min-width: 264px;
+  max-width: var(--ch-model-panel-max-width, calc(100vw - 24px));
 }
 
 .modelRight .modelPanel {
@@ -148,6 +150,7 @@
   top: auto;
   right: auto;
   width: 100%;
+  min-width: 0;
 }
 
 .modelReplace .thinkingPanel {
@@ -177,6 +180,11 @@
   font-size: 13px;
   line-height: 20px;
   font-weight: 500;
+}
+
+.modelCount {
+  margin-inline-start: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 .backButton,
@@ -453,6 +461,11 @@
   white-space: nowrap;
 }
 
+.modelPanel .modelName {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .check {
   display: grid;
   place-items: center;
@@ -532,6 +545,8 @@
     position: relative;
     top: auto;
     right: auto;
+    left: auto;
+    min-width: 0;
   }
 
   .modelOpen .thinkingPanel {

@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -231,4 +231,205 @@ describe("installed update context", () => {
       }),
     ).toThrow("unknown fields");
   });
+
+  it.each([
+    ["sibling", ["lib", "node_modules", "@codexhost", "cli-darwin-arm64"]],
+    [
+      "nested",
+      [
+        "lib",
+        "node_modules",
+        "@codexhost",
+        "cli",
+        "node_modules",
+        "@codexhost",
+        "cli-darwin-arm64",
+      ],
+    ],
+  ] as const)(
+    "discovers npm runtime paths from a %s global layout when CODEXHOST_NPM_* env vars are unset",
+    async (_layout, packageSegments) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-npm-discovery-"));
+      roots.push(root);
+      const prefix = path.join(root, "prefix");
+      const packageRoot = path.join(prefix, ...packageSegments);
+      const host = path.join(packageRoot, "app", "host-runtime.mjs");
+      const realNode = path.join(prefix, "Cellar", "node", "22.14.0", "bin", "node");
+      const binNode = path.join(prefix, "bin", "node");
+      const npmCli = path.join(prefix, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+      const launcher = path.join(
+        prefix,
+        "lib",
+        "node_modules",
+        "@codexhost",
+        "cli",
+        "bin",
+        "codexhost.js",
+      );
+      await Promise.all([
+        file(host),
+        file(path.join(packageRoot, "libexec", "codexhost-updater")),
+        file(realNode),
+        file(npmCli),
+        file(launcher),
+        file(
+          path.join(packageRoot, "app", "codexhost-distribution.json"),
+          JSON.stringify({
+            schemaVersion: 1,
+            version: "1.2.3",
+            distribution: "npm",
+            target: "macos-arm64",
+          }),
+        ),
+      ]);
+      await mkdir(path.dirname(binNode), { recursive: true });
+      await symlink(realNode, binNode);
+
+      const resolved = await resolveInstalledUpdateContext({
+        hostRuntimePath: host,
+        environment: runtimeEnvironment(root),
+        platform: "darwin",
+        architecture: "arm64",
+        stateDirectory: path.join(root, "state"),
+      });
+
+      expect(resolved).toMatchObject({
+        metadata: { version: "1.2.3", distribution: "npm", target: "macos-arm64" },
+        installation: {
+          kind: "npm",
+          options: {
+            packageRoot,
+            nodePath: await realpath(realNode),
+            npmCliPath: await realpath(npmCli),
+            npmLauncherPath: await realpath(launcher),
+          },
+        },
+      });
+    },
+  );
+
+  it("derives node and npm-cli from nodeExecutable when the global prefix has no bundled node or npm", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-npm-custom-prefix-"));
+    roots.push(root);
+    const customPrefix = path.join(root, "npm-global");
+    const packageRoot = path.join(
+      customPrefix,
+      "lib",
+      "node_modules",
+      "@codexhost",
+      "cli-darwin-arm64",
+    );
+    const host = path.join(packageRoot, "app", "host-runtime.mjs");
+    const launcher = path.join(
+      customPrefix,
+      "lib",
+      "node_modules",
+      "@codexhost",
+      "cli",
+      "bin",
+      "codexhost.js",
+    );
+    const nodePrefix = path.join(root, "node-install");
+    const nodeExecutable = path.join(nodePrefix, "bin", "node");
+    const npmCli = path.join(nodePrefix, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+    await Promise.all([
+      file(host),
+      file(path.join(packageRoot, "libexec", "codexhost-updater")),
+      file(launcher),
+      file(nodeExecutable),
+      file(npmCli),
+      file(
+        path.join(packageRoot, "app", "codexhost-distribution.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.2.3",
+          distribution: "npm",
+          target: "macos-arm64",
+        }),
+      ),
+    ]);
+
+    const resolved = await resolveInstalledUpdateContext({
+      hostRuntimePath: host,
+      environment: runtimeEnvironment(root),
+      platform: "darwin",
+      architecture: "arm64",
+      stateDirectory: path.join(root, "state"),
+      nodeExecutable,
+    });
+
+    expect(resolved).toMatchObject({
+      metadata: { version: "1.2.3", distribution: "npm", target: "macos-arm64" },
+      installation: {
+        kind: "npm",
+        options: {
+          packageRoot,
+          nodePath: await realpath(nodeExecutable),
+          npmCliPath: await realpath(npmCli),
+          npmLauncherPath: await realpath(launcher),
+        },
+      },
+    });
+  });
+
+  it.each([
+    [UPDATE_RUNTIME_ENV.npmNodePath, "node", "CODEXHOST_NPM_NODE_PATH must be an absolute path"],
+    [UPDATE_RUNTIME_ENV.npmNodePath, "", "CODEXHOST_NPM_NODE_PATH must be an absolute path"],
+    [
+      UPDATE_RUNTIME_ENV.npmCliPath,
+      "npm-cli.js",
+      "CODEXHOST_NPM_CLI_PATH must be an absolute path",
+    ],
+    [
+      UPDATE_RUNTIME_ENV.npmLauncherPath,
+      "bin/codexhost.js",
+      "CODEXHOST_NPM_LAUNCHER_PATH must be an absolute path",
+    ],
+    [
+      UPDATE_RUNTIME_ENV.npmPackageRoot,
+      "relative-root",
+      "CODEXHOST_NPM_PACKAGE_ROOT must be an absolute path",
+    ],
+  ] as const)(
+    "still rejects an explicitly set invalid %s (%j) even in a valid npm layout",
+    async (envName, badValue, expectedError) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-npm-invalid-env-"));
+      roots.push(root);
+      const prefix = path.join(root, "prefix");
+      const packageRoot = path.join(
+        prefix,
+        "lib",
+        "node_modules",
+        "@codexhost",
+        "cli-darwin-arm64",
+      );
+      const host = path.join(packageRoot, "app", "host-runtime.mjs");
+      await Promise.all([
+        file(host),
+        file(path.join(packageRoot, "libexec", "codexhost-updater")),
+        file(path.join(prefix, "bin", "node")),
+        file(path.join(prefix, "lib", "node_modules", "npm", "bin", "npm-cli.js")),
+        file(path.join(prefix, "lib", "node_modules", "@codexhost", "cli", "bin", "codexhost.js")),
+        file(
+          path.join(packageRoot, "app", "codexhost-distribution.json"),
+          JSON.stringify({
+            schemaVersion: 1,
+            version: "1.2.3",
+            distribution: "npm",
+            target: "macos-arm64",
+          }),
+        ),
+      ]);
+
+      await expect(
+        resolveInstalledUpdateContext({
+          hostRuntimePath: host,
+          environment: { ...runtimeEnvironment(root), [envName]: badValue },
+          platform: "darwin",
+          architecture: "arm64",
+          stateDirectory: path.join(root, "state"),
+        }),
+      ).rejects.toThrow(expectedError);
+    },
+  );
 });

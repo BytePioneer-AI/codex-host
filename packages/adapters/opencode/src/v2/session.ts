@@ -43,7 +43,13 @@ import {
 } from "../model-catalog.js";
 import { openCodeCommandCatalog } from "../opencode-adapter.js";
 import type { V2Connection } from "./connection.js";
-import { contentId, readHistory, readMessages, terminalItemOutcome } from "./history.js";
+import {
+  contentId,
+  projectHistory,
+  readHistory,
+  readMessages,
+  terminalItemOutcome,
+} from "./history.js";
 import { v2UsageRequest, type V2OutputTiming } from "./usage.js";
 import { errorResult, failure, harnessId, v2Permissions, v2State, v2Usage } from "./state.js";
 import {
@@ -324,10 +330,13 @@ export class V2Session implements HarnessSession {
       if ((await this.client.session.active())[this.info.id])
         throw new Error("OpenCode Session is already running");
       this.info = await this.client.session.get({ sessionID: this.info.id });
-      const before = await readHistory(this.client, this.info, this.limit, this.models.index);
-      if (before.snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
-        throw new Error("OpenCode history contains an incomplete execution");
-      active.baseline = new Set(before.snapshot.turns.map((t) => t.nativeTurnRef.nativeTurnKey));
+      const before = projectHistory(
+        this.info,
+        await readMessages(this.client, this.info.id),
+        this.limit,
+        this.models.index,
+      );
+      active.baseline = new Set(before.turns.map((t) => t.nativeTurnRef.nativeTurnKey));
       attempted = true;
       if (compact) await this.client.session.compact({ sessionID: this.info.id });
       else
@@ -479,6 +488,7 @@ export class V2Session implements HarnessSession {
       info,
       this.limit,
       this.models.index,
+      active.baseline,
     );
     if (this.#active !== active || this.#closed) return;
     this.info = info;

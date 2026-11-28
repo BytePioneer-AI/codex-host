@@ -1,20 +1,28 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CodexHost",
-  "version": "0.28.1",
+  "version": "0.29.0",
   "identifier": "com.codexhost.shell",
   "build": {
     "frontendDist": "../ui"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "capabilities": ["embedded-pages", "window-chrome"],
+      "capabilities": [
+        "embedded-pages",
+        "window-chrome",
+        "desktop-notifications",
+        "extension-window"
+      ],
       "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
     "active": false,
+    "publisher": "codexhost",
+    "copyright": "Copyright (c) codexhost contributors",
     "icon": ["icons/icon.ico", "icons/tray.png"]
   }
 }

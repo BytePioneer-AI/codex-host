@@ -49,6 +49,7 @@ function renderSettled(
   fileMentions: MarkdownFileMentions | undefined,
   pathImages: MarkdownPathImages | undefined,
   responseAnnotations: MarkdownResponseAnnotations | undefined,
+  fileCitations: MarkdownFileMentions | undefined,
   breaks: boolean,
 ): ReactNode[] {
   const root = parseGfmWithMath(text);
@@ -61,6 +62,7 @@ function renderSettled(
     fileMentions,
     pathImages,
     responseAnnotations,
+    fileCitations,
     targets,
     footnoteOrder: [],
     footnoteCounts: new Map(),
@@ -151,6 +153,7 @@ class StreamingRenderer {
         fileMentions: undefined,
         pathImages: undefined,
         responseAnnotations: this.responseAnnotations,
+        fileCitations: undefined,
         targets: frameTargets,
         footnoteOrder: this.frozenFootnoteOrder,
         footnoteCounts: this.frozenFootnoteCounts,
@@ -172,6 +175,7 @@ class StreamingRenderer {
       fileMentions: undefined,
       pathImages: undefined,
       responseAnnotations: this.responseAnnotations,
+      fileCitations: undefined,
       targets: frameTargets,
       footnoteOrder: [...this.frozenFootnoteOrder],
       footnoteCounts: new Map(this.frozenFootnoteCounts),
@@ -224,6 +228,7 @@ export const MarkdownText = memo(function MarkdownText({
   fileMentions,
   pathImages,
   responseAnnotations,
+  fileCitations,
   variant = "body",
 }: {
   text: string;
@@ -233,6 +238,8 @@ export const MarkdownText = memo(function MarkdownText({
   fileMentions?: MarkdownFileMentions | undefined;
   pathImages?: MarkdownPathImages | undefined;
   responseAnnotations?: MarkdownResponseAnnotations | undefined;
+  /** Harness file citations: opens `:codex-file-citation{path="..."}` markers; absent keeps the marker text. */
+  fileCitations?: MarkdownFileMentions | undefined;
   variant?: "body" | "compact";
 }) {
   const streamRef = useRef<StreamingRenderer | null>(null);
@@ -242,7 +249,15 @@ export const MarkdownText = memo(function MarkdownText({
   const children = useMemo(() => {
     if (!streaming) {
       streamRef.current = null;
-      return renderSettled(text, labels, fileMentions, pathImages, responseAnnotations, breaks);
+      return renderSettled(
+        text,
+        labels,
+        fileMentions,
+        pathImages,
+        responseAnnotations,
+        fileCitations,
+        breaks,
+      );
     }
     if (
       streamRef.current === null ||
@@ -256,7 +271,16 @@ export const MarkdownText = memo(function MarkdownText({
       streamBreaksRef.current = breaks;
     }
     return streamRef.current.render(text);
-  }, [text, streaming, breaks, labels, fileMentions, pathImages, responseAnnotations]);
+  }, [
+    text,
+    streaming,
+    breaks,
+    labels,
+    fileMentions,
+    pathImages,
+    responseAnnotations,
+    fileCitations,
+  ]);
   return (
     <div
       className={clsx(css.markdown, variant === "compact" && css.compact)}

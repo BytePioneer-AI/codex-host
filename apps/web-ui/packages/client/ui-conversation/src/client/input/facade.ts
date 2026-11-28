@@ -55,7 +55,7 @@ import { SubmitMachine } from "./machine.ts";
 import { resolveDraftInput, snapshotDraft } from "../draft.ts";
 import { DraftEditorRuntime } from "./editor/runtime.ts";
 import type { EditorProjection } from "./editor/projection.ts";
-import { composeAnnotatedMessage } from "@codexhost/shared-contracts";
+import { composeAnnotatedMessage, type ResponseAnnotation } from "@codexhost/shared-contracts";
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -91,6 +91,7 @@ export interface SessionInputDeps {
     attachmentIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal: AbortSignal,
+    onRequestId?: (requestId: string) => void,
   ): Promise<SubmitOutcome>;
   /** Command-plane attachment plumbing (the hub owns the conversation face and the copy). */
   commandAttachments: {
@@ -128,6 +129,10 @@ function projectionContentChanged(prev: EditorProjection, next: EditorProjection
 }
 
 const EMPTY_QUEUE: InboxState["next-turn"] = [];
+const MAX_SUBMITTED_ANNOTATION_ANCHORS = 32;
+
+/** Coalesce synchronous localStorage draft writes during continuous typing. */
+export const DRAFT_PERSIST_DEBOUNCE_MS = 180;
 
 /** Unavailable catalogs contain no named text references. */
 const EMPTY_LEXICON: ReadonlyMap<"/" | "@" | "#", readonly string[]> = new Map();
@@ -202,7 +207,6 @@ export class SessionInputShell implements SessionInput {
       this.pruneAttachments(ids);
     },
     addResponseAnnotation: (annotation, options) => {
-      if (options?.focus === "end" && !this.canInsertReferences()) return undefined;
       const id = this.addResponseAnnotation(annotation);
       if (id !== undefined && options?.focus === "end" && this.canInsertReferences()) {
         this.focus("end");
@@ -242,11 +246,20 @@ export class SessionInputShell implements SessionInput {
   private responseAnnotations: readonly DraftResponseAnnotation[] = [];
   private hoveredResponseAnnotationId: DraftAttachmentId | undefined;
   private annotationSeq = 0;
+  /** Session-local DOM anchors remembered by requestId so queued edits restore highlights. */
+  private readonly submittedAnnotationAnchors = new Map<
+    string,
+    readonly DraftResponseAnnotationInput[]
+  >();
   /** Failure restoration must not mutate the draft captured by an async adjudication. */
   private adjudication: Promise<PickOutcome> | undefined;
   private disposed = false;
   /** Conversation store writer for the current semantic document. */
   private persistDraft: ((draft: DraftSnapshot) => void) | undefined;
+  private persistDraftTimer: ReturnType<typeof setTimeout> | undefined;
+  private pendingPersistDraft: DraftSnapshot | undefined;
+  private removeUnloadFlush: (() => void) | undefined;
+  private deferredTriggerTrack = false;
   /** The mounted composer's file-picker opener (scoped pick-files event target). */
   private filePicker: Parameters<ComposerKeyboard["bindFilePicker"]>[0] | undefined;
   /** Default sends retained until admission settles or scope disposal releases their attachments. */
@@ -275,6 +288,9 @@ export class SessionInputShell implements SessionInput {
     this.draftEditor = new DraftEditorRuntime({
       onUpdate: () => {
         this.onEditorUpdate();
+      },
+      onCompositionEnd: () => {
+        this.onCompositionEnd();
       },
       openReference: (source, reference) =>
         this.deps.inputTriggers?.()?.openReference(source, reference) ?? false,
@@ -307,6 +323,23 @@ export class SessionInputShell implements SessionInput {
       }
       this.dispatchRun({ type: "draft-changed", draft: this.projection.clipboardText });
     }
+    if (this.draftEditor.isComposing()) {
+      this.deferredTriggerTrack = true;
+      return;
+    }
+    this.deferredTriggerTrack = false;
+    this.trackCurrentTriggers();
+  }
+
+  private onCompositionEnd(): void {
+    if (this.disposed) return;
+    this.draftEditor.refreshProjection();
+    if (!this.deferredTriggerTrack && this.projection.caret === null) return;
+    this.deferredTriggerTrack = false;
+    this.trackCurrentTriggers();
+  }
+
+  private trackCurrentTriggers(): void {
     const caret = this.projection.caret;
     if (caret !== null) {
       this.deps
@@ -347,9 +380,59 @@ export class SessionInputShell implements SessionInput {
     return value;
   }
 
-  /** Persist the latest document without changing the editor or binding a writer. */
+  /** Persist the latest document immediately without waiting for the debounce timer. */
   persistCurrentDraft(): void {
-    this.persistDraft?.(this.draftSnapshot);
+    const draft = this.draftSnapshot;
+    this.lastPublishedDraft = draft;
+    this.clearPersistTimer();
+    this.pendingPersistDraft = undefined;
+    this.persistDraft?.(draft);
+  }
+
+  /** Flush any pending debounced draft write synchronously. */
+  flushDraftPersistence(): void {
+    this.clearPersistTimer();
+    const pending = this.pendingPersistDraft;
+    if (pending === undefined) return;
+    this.pendingPersistDraft = undefined;
+    this.persistDraft?.(pending);
+  }
+
+  private scheduleDraftPersistence(draft: DraftSnapshot): void {
+    if (this.persistDraft === undefined) return;
+    this.pendingPersistDraft = draft;
+    if (this.persistDraftTimer !== undefined) clearTimeout(this.persistDraftTimer);
+    this.armUnloadFlush();
+    this.persistDraftTimer = setTimeout(() => {
+      this.persistDraftTimer = undefined;
+      this.flushDraftPersistence();
+    }, DRAFT_PERSIST_DEBOUNCE_MS);
+  }
+
+  private clearPersistTimer(): void {
+    if (this.persistDraftTimer !== undefined) {
+      clearTimeout(this.persistDraftTimer);
+      this.persistDraftTimer = undefined;
+    }
+    this.disarmUnloadFlush();
+  }
+
+  private armUnloadFlush(): void {
+    if (this.removeUnloadFlush !== undefined || typeof window === "undefined") return;
+    const flush = (): void => {
+      this.flushDraftPersistence();
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    this.removeUnloadFlush = () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }
+
+  private disarmUnloadFlush(): void {
+    this.removeUnloadFlush?.();
+    this.removeUnloadFlush = undefined;
   }
 
   /**
@@ -463,7 +546,11 @@ export class SessionInputShell implements SessionInput {
    * @returns the draft identity, or undefined when the draft is locked.
    */
   addResponseAnnotation(annotation: DraftResponseAnnotationInput): DraftAttachmentId | undefined {
-    if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
+    if (
+      this.disposed ||
+      this.snapshot.phase === "adjudicating" ||
+      this.snapshot.phase === "submitting"
+    )
       return undefined;
     this.annotationSeq += 1;
     const id = `response-annotation-${String(this.annotationSeq)}` as DraftAttachmentId;
@@ -478,6 +565,78 @@ export class SessionInputShell implements SessionInput {
     ];
     this.publish();
     return id;
+  }
+
+  /**
+   * Append multiple annotations in one state publication (e.g. restoring a queued message).
+   * @param annotations - annotations in order.
+   * @returns allocated draft identities, or empty when the draft is locked.
+   */
+  addResponseAnnotations(
+    annotations: readonly DraftResponseAnnotationInput[],
+  ): readonly DraftAttachmentId[] {
+    if (
+      this.disposed ||
+      annotations.length === 0 ||
+      this.snapshot.phase === "adjudicating" ||
+      this.snapshot.phase === "submitting"
+    )
+      return [];
+    const ids: DraftAttachmentId[] = [];
+    const added: DraftResponseAnnotation[] = [];
+    for (const annotation of annotations) {
+      this.annotationSeq += 1;
+      const id = `response-annotation-${String(this.annotationSeq)}` as DraftAttachmentId;
+      ids.push(id);
+      added.push({
+        id,
+        text: annotation.text.trim(),
+        ...(annotation.annotation === undefined ? {} : { annotation: annotation.annotation }),
+        ...(annotation.anchor === undefined ? {} : { anchor: annotation.anchor }),
+      });
+    }
+    this.responseAnnotations = [...this.responseAnnotations, ...added];
+    this.publish();
+    return ids;
+  }
+
+  /**
+   * Re-attach remembered DOM anchors for a queued message submitted from this tab.
+   * Falls back to anchor-free annotations after a reload or for externally queued items.
+   */
+  takeSubmittedAnnotationAnchors(
+    rpcId: string | undefined,
+    annotations: readonly ResponseAnnotation[],
+  ): readonly DraftResponseAnnotationInput[] {
+    if (rpcId === undefined) return annotations;
+    const saved = this.submittedAnnotationAnchors.get(rpcId);
+    this.submittedAnnotationAnchors.delete(rpcId);
+    if (saved === undefined || saved.length !== annotations.length) return annotations;
+    for (let i = 0; i < annotations.length; i += 1) {
+      if (saved[i]?.text !== annotations[i]?.text) return annotations;
+    }
+    return annotations.map((entry, index) => {
+      const anchor = saved[index]?.anchor;
+      return anchor === undefined ? entry : { ...entry, anchor };
+    });
+  }
+
+  private rememberSubmittedAnnotations(
+    requestId: string,
+    annotations: readonly DraftResponseAnnotation[],
+  ): void {
+    const entries: DraftResponseAnnotationInput[] = annotations.map((entry) => ({
+      text: entry.text,
+      ...(entry.annotation === undefined ? {} : { annotation: entry.annotation }),
+      ...(entry.anchor === undefined ? {} : { anchor: entry.anchor }),
+    }));
+    this.submittedAnnotationAnchors.delete(requestId);
+    this.submittedAnnotationAnchors.set(requestId, entries);
+    while (this.submittedAnnotationAnchors.size > MAX_SUBMITTED_ANNOTATION_ANCHORS) {
+      const oldest = this.submittedAnnotationAnchors.keys().next().value;
+      if (oldest === undefined) break;
+      this.submittedAnnotationAnchors.delete(oldest);
+    }
   }
 
   /**
@@ -718,6 +877,7 @@ export class SessionInputShell implements SessionInput {
         .inputTriggers?.()
         ?.track(this.projection.detectText, 0, { tier: "frozen" }, this.rev);
     }
+    this.flushDraftPersistence();
   }
 
   /**
@@ -891,6 +1051,8 @@ export class SessionInputShell implements SessionInput {
    */
   dispose(): readonly DraftAttachmentId[] {
     if (this.disposed) return [];
+    this.flushDraftPersistence();
+    this.persistDraft = undefined;
     const retained = new Set(this.attachmentIds);
     for (const record of this.detachedDrafts.values()) {
       for (const attachmentId of record.attachmentIds) retained.add(attachmentId);
@@ -907,6 +1069,7 @@ export class SessionInputShell implements SessionInput {
     this.failedDetached.clear();
     this.failedRestorePrefix = undefined;
     this.hoveredResponseAnnotationId = undefined;
+    this.submittedAnnotationAnchors.clear();
     this.attachmentFlights.clear();
     return [...retained];
   }
@@ -924,7 +1087,9 @@ export class SessionInputShell implements SessionInput {
   bindDraftPersistence(write: (draft: DraftSnapshot) => void): () => void {
     this.persistDraft = write;
     return () => {
-      if (this.persistDraft === write) this.persistDraft = undefined;
+      if (this.persistDraft !== write) return;
+      this.flushDraftPersistence();
+      this.persistDraft = undefined;
     };
   }
 
@@ -1020,6 +1185,7 @@ export class SessionInputShell implements SessionInput {
       return null;
     });
     this.draftEditor.clearHistory();
+    this.flushDraftPersistence();
   }
 
   /**
@@ -1045,12 +1211,18 @@ export class SessionInputShell implements SessionInput {
     }
     // Only the body is trimmed: the annotation block carries the Desktop
     // contract's own leading and trailing newlines.
+    const onRequestId = responseAnnotations.some((entry) => entry.anchor !== undefined)
+      ? (requestId: string): void => {
+          this.rememberSubmittedAnnotations(requestId, responseAnnotations);
+        }
+      : undefined;
     const send = (text: string): Promise<SubmitOutcome> =>
       this.deps.defaultSink(
         composeAnnotatedMessage(responseAnnotations, text.trim()),
         attachmentIds,
         mode,
         attempt.signal,
+        onRequestId,
       );
     if (occurrences.length === 0) {
       this.settleSink(attempt, send(draft));
@@ -1314,7 +1486,7 @@ export class SessionInputShell implements SessionInput {
     const draft = this.draftSnapshot;
     if (draft !== this.lastPublishedDraft) {
       this.lastPublishedDraft = draft;
-      this.persistDraft?.(draft);
+      this.scheduleDraftPersistence(draft);
     }
   }
 }

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   harnessPermissionModeIdSchema,
@@ -7,7 +8,7 @@ import {
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { DevinAdapter, DevinSession } from "../src/adapter.js";
-import { devinCatalog, devinModelRef } from "../src/models.js";
+import { devinCatalog, devinModelRef, devinThinkingOptionId } from "../src/models.js";
 import { DevinTransport, type DevinSessionInfo } from "../src/transport.js";
 
 const info = {
@@ -177,6 +178,137 @@ describe("Devin unattended execution policy", () => {
         expect(f.configure).toHaveBeenCalledWith("mode", "plan");
       } finally {
         await f.adapter.close();
+      }
+    },
+  );
+  it.each(["create", "resume"] as const)(
+    "does not buffer startup session.state.changed events during %s and still emits post-open updates",
+    async (kind) => {
+      const thinkingOption: SessionConfigOption = {
+        id: "thought_level",
+        category: "thought_level",
+        name: "Thinking",
+        type: "select",
+        currentValue: "max",
+        options: ["medium", "max"].map((value) => ({ value, name: value })),
+      };
+      const modeOption: SessionConfigOption = {
+        id: "mode",
+        category: "mode",
+        name: "Mode",
+        type: "select",
+        currentValue: "accept-edits",
+        options: ["accept-edits", "plan", "bypass"].map((value) => ({ value, name: value })),
+      };
+      const initial: DevinSessionInfo = {
+        ...structuredClone(info),
+        configOptions: [modeOption, ...structuredClone(info.configOptions), thinkingOption],
+      };
+      let currentOptions = structuredClone(initial.configOptions ?? []);
+      let activeTransport: DevinTransport | undefined;
+      vi.spyOn(DevinTransport.prototype, "open").mockImplementation(async function (
+        this: DevinTransport,
+      ) {
+        this.sessionId = info.sessionId;
+        return structuredClone(initial);
+      });
+      vi.spyOn(DevinTransport.prototype, "close").mockResolvedValue();
+      const applyOption = (id: string, value: string) => {
+        currentOptions = currentOptions.map((option) => {
+          if (option.id === id) return { ...option, currentValue: value } as SessionConfigOption;
+          if (id === "model" && option.id === "thought_level")
+            return { ...option, currentValue: "medium" } as SessionConfigOption;
+          return option;
+        });
+        return structuredClone(currentOptions);
+      };
+      vi.spyOn(DevinTransport.prototype, "configure").mockImplementation(async function (
+        this: DevinTransport,
+        id,
+        value,
+      ) {
+        const snapshot = applyOption(id, value);
+        this.onConfigOptions?.(snapshot);
+        return { configOptions: snapshot };
+      });
+      const adapter = new DevinAdapter();
+      const targetMode = harnessPermissionModeIdSchema.parse(kind === "create" ? "bypass" : "plan");
+      const maxThinking = devinThinkingOptionId("max");
+      try {
+        const result = await adapter.open(
+          kind === "create"
+            ? {
+                kind,
+                cwd: process.cwd(),
+                executionPolicy: "unattended-full-access",
+                model,
+                thinkingOptionId: maxThinking,
+              }
+            : {
+                kind,
+                cwd: process.cwd(),
+                nativeRef: nativeSessionRefSchema.parse({
+                  harnessId: "devin",
+                  nativeSessionId: info.sessionId,
+                  formatVersion: 1,
+                }),
+                model,
+                thinkingOptionId: maxThinking,
+                permissionModeId: targetMode,
+              },
+        );
+        if (!result.ok) throw new Error(result.error.message);
+        const session = result.value;
+        if (!(session instanceof DevinSession)) throw new Error("Expected DevinSession");
+        activeTransport = session.transport;
+        expect(session.initialState).toMatchObject({
+          effectiveModel: model,
+          effectiveThinkingOptionId: maxThinking,
+          effectivePermissionModeId: targetMode,
+        });
+        // An independent notification immediately after open() must queue even before subscription.
+        const pushedMode = harnessPermissionModeIdSchema.parse(kind === "create" ? "smart" : "ask");
+        activeTransport.onConfigOptions?.(applyOption("mode", pushedMode));
+        const outputs: HarnessOutput[] = [];
+        const done = (async () => {
+          for await (const output of session.outputs) outputs.push(output);
+        })();
+        const nextMode = harnessPermissionModeIdSchema.parse(kind === "create" ? "plan" : "bypass");
+        try {
+          expect(
+            (await session.execute({ type: "permissionMode.select", permissionModeId: nextMode }))
+              .ok,
+          ).toBe(true);
+        } finally {
+          await session.close();
+          await done;
+        }
+        expect(outputs).toEqual([
+          {
+            kind: "event",
+            event: {
+              type: "session.state.changed",
+              state: expect.objectContaining({
+                effectiveModel: model,
+                effectiveThinkingOptionId: maxThinking,
+                effectivePermissionModeId: pushedMode,
+              }),
+            },
+          },
+          {
+            kind: "event",
+            event: {
+              type: "session.state.changed",
+              state: expect.objectContaining({
+                effectiveModel: model,
+                effectiveThinkingOptionId: maxThinking,
+                effectivePermissionModeId: nextMode,
+              }),
+            },
+          },
+        ]);
+      } finally {
+        await adapter.close();
       }
     },
   );

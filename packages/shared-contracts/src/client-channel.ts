@@ -163,6 +163,9 @@ export const clientWorkspaceSnapshotSchema = z.object({
   /** Projects Desktop placed in each custom section, keyed by the official section ID, in
    * Desktop's section order. Omitted when no section holds a project. */
   sectionProjects: z.record(z.string(), z.array(z.string())).optional(),
+  /** Projects pinned in Codex Desktop (`pinned-project-ids`), in Desktop order.
+   * Omitted when Desktop global state has no `pinned-project-ids` array. */
+  pinnedProjects: z.array(z.string()).optional(),
 });
 export type ClientWorkspaceSnapshot = z.infer<typeof clientWorkspaceSnapshotSchema>;
 const record = z.record(z.string(), z.unknown());
@@ -341,6 +344,8 @@ export const clientThreadSnapshotSchema = z.object({
       modelProvider: z.string().min(1),
       createdAt: z.number(),
       updatedAt: z.number(),
+      /** Last conversation activity in Unix seconds, distinct from metadata writes. */
+      recencyAt: z.number().nullable().optional(),
       status: z.object({ type: z.string() }).passthrough(),
       name: z.string().nullable().optional(),
       preview: z.string().optional(),

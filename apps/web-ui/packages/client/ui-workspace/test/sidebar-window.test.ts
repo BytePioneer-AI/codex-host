@@ -44,21 +44,6 @@ it("retains pinned, provisional and active conversations outside the ordinary qu
   );
   assert.equal(result.hiddenCount, 31);
 });
-it("fills Recents with sessions that are not already shown in a Project", () => {
-  const source = rows();
-  const project = sidebarWindow(source.slice(0, 4), 2);
-  const shownProjectIds = new Set(project.rows.map((row) => row.id));
-
-  assert.deepEqual(sidebarWindow(source, 3, "0", "1", shownProjectIds), {
-    rows: source.slice(2, 5),
-    hiddenCount: 35,
-  });
-  assert.deepEqual(sidebarWindow(source, 3, "0", "1", new Set()), {
-    rows: source.slice(0, 3),
-    hiddenCount: 37,
-  });
-});
-
 it("extends a presentation window by ten without mutating the catalog order", () => {
   const source = rows();
   const before = structuredClone(source);

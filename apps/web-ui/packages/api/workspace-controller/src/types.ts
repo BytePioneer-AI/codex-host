@@ -165,14 +165,32 @@ export interface WorkspacePinValue {
   readonly pinnedSessionIds: readonly SessionId[];
 }
 
+/** Workspace requested for pinning or unpinning in the shared sidebar projection. */
+export interface WorkspaceSetPinnedRequest {
+  readonly workspaceId: WorkspaceId;
+  readonly pinned: boolean;
+}
+
+/** Complete pinned Workspace set after a mutation, most recently pinned in Web first. */
+export interface WorkspacePinnedWorkspacesValue {
+  readonly pinnedWorkspaceIds: readonly WorkspaceId[];
+}
+
 export interface WorkspaceMoveSessionToSectionRequest {
   readonly sessionId: SessionId;
   readonly sectionId: string | null;
 }
 
-export interface WorkspaceMoveSessionToSectionValue {
+export interface WorkspaceMoveWorkspaceToSectionRequest {
+  readonly workspaceId: WorkspaceId;
   readonly sectionId: string | null;
 }
+
+export interface WorkspaceMoveToSectionValue {
+  readonly sectionId: string | null;
+}
+
+export type WorkspaceMoveSessionToSectionValue = WorkspaceMoveToSectionValue;
 
 /** Groups supplied by the native Codex app-server. */
 export interface WorkspaceThreadSection {
@@ -191,6 +209,8 @@ export interface WorkspaceBaseline {
   readonly archivedSessionIds: readonly SessionId[];
   /** Registry-global pin set, most recently pinned first. */
   readonly pinnedSessionIds: readonly SessionId[];
+  /** Registry-global pinned Workspaces, recent Web pins first then Desktop order. */
+  readonly pinnedWorkspaceIds?: readonly WorkspaceId[];
   readonly threadSections?: readonly WorkspaceThreadSection[];
 }
 
@@ -201,6 +221,7 @@ export type WorkspaceFollowIncrement =
   | { readonly type: "order"; readonly workspaceIds: readonly WorkspaceId[] }
   | { readonly type: "archived"; readonly archivedSessionIds: readonly SessionId[] }
   | { readonly type: "pinned"; readonly pinnedSessionIds: readonly SessionId[] }
+  | { readonly type: "pinnedWorkspaces"; readonly pinnedWorkspaceIds: readonly WorkspaceId[] }
   | { readonly type: "threadSections"; readonly threadSections: readonly WorkspaceThreadSection[] };
 
 /** Workspace state stream; every generation starts with exactly one baseline. */

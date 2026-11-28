@@ -12,6 +12,8 @@
   color: var(--dsw-alias-label-tertiary);
   font-size: 13px;
   line-height: 20px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .frame strong {

@@ -1,4 +1,5 @@
 /** Prefetch queued image bytes and restore a removed queued message into the local composer draft. */
+import { splitAnnotatedMessage } from "@codexhost/shared-contracts";
 import type { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { RestoredQueuedMessage } from "../contract/slots.ts";
@@ -39,6 +40,30 @@ export async function prefetchQueueImageBlobs(
 }
 
 /**
+ * Split any leading response-annotation block out of a queued message's text
+ * and restore its annotations (with remembered DOM anchors when available) plus
+ * clean request body into the composer without clobbering existing draft input.
+ */
+export function restoreQueuedTextAndAnnotations(
+  shell: SessionInputShell,
+  rawText: string,
+  rpcId?: string,
+): void {
+  const { annotations, body } = splitAnnotatedMessage(rawText);
+  if (annotations.length > 0) {
+    shell.addResponseAnnotations(shell.takeSubmittedAnnotationAnchors(rpcId, annotations));
+  }
+  if (body !== "") {
+    // Preserve text, references and attachments typed while removal was pending.
+    const draft = shell.draftSnapshot;
+    shell.setDraft({
+      ...draft,
+      text: draft.text === "" ? body : `${draft.text}\n${body}`,
+    });
+  }
+}
+
+/**
  * Restore removed queued text and staged Web attachments into the originating shell in one
  * synchronous tick once the composer is editable (not in a slash-command adjudication/submission
  * lock), preserving any draft typed in the meantime.
@@ -46,11 +71,12 @@ export async function prefetchQueueImageBlobs(
 export function restoreQueuedMessageToComposer(input: {
   readonly sessionId: SessionId;
   readonly shell: SessionInputShell;
-  readonly conversation: ConversationController;
+  readonly conversation?: ConversationController | undefined;
   readonly message: RestoredQueuedMessage;
   readonly imageBlobs: ReadonlyMap<string, PrefetchedQueueImage>;
+  readonly rpcId?: string;
 }): Promise<void> {
-  const { sessionId, shell, conversation, message, imageBlobs } = input;
+  const { sessionId, shell, conversation, message, imageBlobs, rpcId } = input;
   const applyRestore = (): boolean => {
     if (shell.isDisposed) {
       throw new Error(
@@ -61,6 +87,9 @@ export function restoreQueuedMessageToComposer(input: {
     if (phase !== "plain" && phase !== "claimed") return false;
 
     if (message.attachments.length > 0) {
+      if (conversation === undefined) {
+        throw new Error("Queued attachments cannot be restored without a conversation controller.");
+      }
       const staged = message.attachments.map((entry) => {
         if (entry.kind !== "image") return entry;
         const prefetched = imageBlobs.get(entry.file.attachmentId);
@@ -83,12 +112,7 @@ export function restoreQueuedMessageToComposer(input: {
     }
 
     if (message.text !== "") {
-      // Preserve text, references and attachments typed while removal was pending.
-      const draft = shell.draftSnapshot;
-      shell.setDraft({
-        ...draft,
-        text: draft.text === "" ? message.text : `${draft.text}\n${message.text}`,
-      });
+      restoreQueuedTextAndAnnotations(shell, message.text, rpcId);
     }
     shell.actions.persistDraft();
     shell.focus("end");

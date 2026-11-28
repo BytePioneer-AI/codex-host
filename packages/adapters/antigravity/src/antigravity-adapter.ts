@@ -101,6 +101,7 @@ import {
 import { AntigravityWakeObserver } from "./wake-observer.js";
 import {
   readNativeHistory,
+  readNativeSubagentSpawns,
   readNativeStepWatermark,
   readNativeTurnCompactions,
 } from "./native-replay.js";
@@ -309,6 +310,7 @@ interface ActiveTurn {
   promptChain?: Promise<AntigravityPromptResult>[];
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
+  subagentSync?: Promise<void> | undefined;
   dbPath?: string;
   compactionAfterStep?: number;
   readonly emittedCompactions: Set<number>;
@@ -1569,6 +1571,10 @@ export class AntigravitySession implements HarnessSession {
         this.#confirmedCount = confirmedCount;
         confirmedCheckpoint = key;
       }
+      if (outcome.status === "succeeded") {
+        await turn.subagentSync;
+        await this.#syncNativeSubagentSpawns(turn);
+      }
       await this.#trackUsageWork(
         Promise.resolve(this.#usageWork).then(() =>
           this.#collectUsage({
@@ -1630,9 +1636,29 @@ export class AntigravitySession implements HarnessSession {
       this.#closeInteractions("cancelled", turn, false, event.toolCallId);
     turn.tracker.handleToolEvent(event);
     if (event.status === "completed" || event.status === "failed") {
+      if (turn.tracker.awaitingSubagentId(event.toolCallId)) {
+        turn.subagentSync ??= this.#syncNativeSubagentSpawns(turn).finally(() => {
+          turn.subagentSync = undefined;
+        });
+        return;
+      }
       turn.detachedToolCallIds.delete(event.toolCallId);
       this.#toolOwners.delete(event.toolCallId);
     }
+  }
+
+  async #syncNativeSubagentSpawns(turn: ActiveTurn): Promise<void> {
+    const { tracker, dbPath, compactionAfterStep, submittedAtMs, returnedAtMs } = turn;
+    if (!tracker || !dbPath || compactionAfterStep === undefined || submittedAtMs === undefined)
+      return;
+    const spawns = await readNativeSubagentSpawns(
+      dbPath,
+      compactionAfterStep,
+      submittedAtMs,
+      returnedAtMs ?? Date.now(),
+    );
+    if (!this.#isCurrent(turn) || turn.cancelled) return;
+    for (const { call, result } of spawns) tracker.reconcileNativeSubagent(call, result);
   }
   #appendText(turn: ActiveTurn, type: "agentMessage" | "reasoning", text: string): void {
     if (!text) return;

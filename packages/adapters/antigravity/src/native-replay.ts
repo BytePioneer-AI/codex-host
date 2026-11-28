@@ -100,6 +100,54 @@ export async function readNativeStepWatermark(dbPath: string): Promise<number> {
   }
 }
 
+export async function readNativeSubagentSpawns(
+  dbPath: string,
+  afterStep: number,
+  submittedAtMs: number,
+  returnedAtMs: number,
+): Promise<
+  Array<{
+    call: Extract<AntigravityAcpEvent, { type: "tool.call" }>;
+    result: Extract<AntigravityAcpEvent, { type: "tool.update" }>;
+  }>
+> {
+  const { DatabaseSync } = await import("node:sqlite");
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    if (db.prepare("PRAGMA user_version").get()?.user_version !== 1) return [];
+    return db
+      .prepare(
+        `SELECT metadata, step_payload FROM steps
+       WHERE idx > ? AND step_type = ${GENERIC_TOOL} AND status = ${DONE} ORDER BY idx`,
+      )
+      .all(afterStep)
+      .flatMap((row) => {
+        const createdAtMs = nativeStepCreatedAtMs(row.metadata);
+        if (createdAtMs === undefined || createdAtMs < submittedAtMs || createdAtMs > returnedAtMs)
+          return [];
+        const step = message(row.step_payload);
+        const call = nested(nested(step, 5), 4);
+        const toolCallId = textField(call, 1);
+        const name = textField(call, 2);
+        if (name !== "invoke_subagent" || !toolCallId) return [];
+        const rawOutput = textField(nested(nested(step, 140), 2), 1);
+        return rawOutput
+          ? [
+              {
+                call: { type: "tool.call", toolCallId, name, args: argsValue(textField(call, 3)) },
+                result: { type: "tool.update", toolCallId, status: "completed", rawOutput },
+              },
+            ]
+          : [];
+      });
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
 function decodeCheckpointEvent(
   idx: number,
   status: unknown,

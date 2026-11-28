@@ -335,6 +335,49 @@ interface ToolState {
 const uuidPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/iu;
 const succeeded: HostItemOutcome = { status: "succeeded" };
 
+function decodeToolJson(value: unknown): unknown {
+  for (let depth = 0; depth < 2 && typeof value === "string"; depth++) {
+    if (!/^["{]/u.test(value.trimStart())) break;
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      break;
+    }
+  }
+  return value;
+}
+
+function firstToolText(...values: unknown[]): string {
+  for (const value of values) {
+    const original = text(value);
+    const decoded = original.trimStart().startsWith('"') ? decodeToolJson(original) : original;
+    const candidate = typeof decoded === "string" ? decoded : original;
+    if (candidate.trim()) return candidate;
+  }
+  return "";
+}
+
+function subagentIdInOutput(value: unknown): string | undefined {
+  const decoded = decodeToolJson(value);
+  const result = record(decoded);
+  const namedId = /"(?:conversationId|conversation_id)"\s*:\s*"([^"]+)"/u.exec(text(decoded))?.[1];
+  return uuidPattern.exec(
+    firstToolText(
+      result.conversationId,
+      result.conversation_id,
+      result.subagentId,
+      result.subagent_id,
+      result.agentId,
+      result.agent_id,
+      result.sessionId,
+      result.session_id,
+      result.cascadeId,
+      result.cascade_id,
+      namedId,
+    ),
+  )?.[0];
+}
+
 export class AntigravityToolTracker {
   #tools = new Map<string, ToolState>();
   #spawned = new Set<string>();
@@ -352,6 +395,41 @@ export class AntigravityToolTracker {
       : undefined;
   }
 
+  awaitingSubagentId(toolCallId: string): boolean {
+    const state = this.#tools.get(toolCallId);
+    return (
+      !state?.snapshot &&
+      state?.item?.type === "subagentDelegation" &&
+      state.item.operation === "spawn" &&
+      !state.item.subagents[0]?.nativeSubagentId
+    );
+  }
+
+  reconcileNativeSubagent(call: ToolEvent, result: ToolEvent): void {
+    const state = this.#tools.get(call.toolCallId);
+    const nativeId = subagentIdInOutput(result.rawOutput);
+    if (!nativeId) return;
+    if (
+      [...this.#tools.values()].some(
+        ({ item }) =>
+          item?.type === "subagentDelegation" &&
+          item.operation === "spawn" &&
+          item.subagents.some((child) => child.nativeSubagentId === nativeId),
+      )
+    )
+      return;
+    const toolCallId =
+      state && !this.awaitingSubagentId(call.toolCallId)
+        ? `native:${call.toolCallId}`
+        : call.toolCallId;
+    this.handleToolEvent({
+      ...call,
+      ...result,
+      toolCallId,
+      args: call.args ?? state?.event.args,
+    });
+  }
+
   handleToolEvent(event: ToolEvent): void {
     let state = this.#tools.get(event.toolCallId);
     if (state?.snapshot) return;
@@ -363,7 +441,7 @@ export class AntigravityToolTracker {
       state.event = {
         ...state.event,
         ...Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined)),
-        ...(event.args !== undefined || event.rawInput !== undefined
+        ...(event.args != null || event.rawInput != null
           ? { args: event.args ?? event.rawInput }
           : {}),
       } as ToolEvent;
@@ -373,10 +451,10 @@ export class AntigravityToolTracker {
       `tool-${this.options.turnId}-${createHash("sha256").update(event.toolCallId).digest("hex").slice(0, 20)}`,
     );
     const args = tool.args ?? tool.rawInput;
-    const input = record(args);
+    const contentText = bodyText(tool.content);
     const fullOutput =
-      tool.rawOutput === undefined
-        ? bodyText(tool.content)
+      tool.rawOutput == null
+        ? contentText
         : typeof tool.rawOutput === "string"
           ? tool.rawOutput
           : JSON.stringify(tool.rawOutput);
@@ -407,35 +485,54 @@ export class AntigravityToolTracker {
         ...(terminal ? { exitCode: failed ? 1 : 0 } : {}),
       };
     } else if (["invokesubagent", "sendmessage"].includes(compactToolName(name))) {
-      const result = record(tool.rawOutput);
-      const nativeId =
-        uuidPattern.exec(
-          text(result.subagent_id) ||
-            text(result.agent_id) ||
-            text(result.session_id) ||
-            text(result.cascade_id),
-        )?.[0] ??
-        uuidPattern.exec(fullOutput)?.[0] ??
-        uuidPattern.exec(
-          text(input.subagent_id) || text(input.agent_id) || text(input.session_id),
-        )?.[0];
+      const input = record(decodeToolJson(args));
+      const operation = compactToolName(name) === "sendmessage" ? "send" : "spawn";
+      const recipient = operation === "send" ? firstToolText(input.Recipient, input.recipient) : "";
+      const nativeId = recipient
+        ? uuidPattern.exec(recipient)?.[0]
+        : (subagentIdInOutput(tool.rawOutput) ??
+          subagentIdInOutput(contentText) ??
+          (previous?.type === "subagentDelegation"
+            ? previous.subagents[0]?.nativeSubagentId
+            : undefined) ??
+          uuidPattern.exec(text(tool.rawOutput) || contentText)?.[0] ??
+          uuidPattern.exec(
+            firstToolText(
+              input.subagentId,
+              input.subagent_id,
+              input.agentId,
+              input.agent_id,
+              input.sessionId,
+              input.session_id,
+            ),
+          )?.[0]);
+      const description = firstToolText(
+        input.description,
+        input.Role,
+        input.role,
+        input.TypeName,
+        input.typeName,
+        tool.title,
+        name,
+      );
+      const role = firstToolText(input.role, input.Role, input.typeName, input.TypeName);
+      const prompt = firstToolText(input.prompt, input.Prompt, input.message, input.Message);
       const nativeConfiguration = subagentConfiguration(input);
       state.item = {
         type: "subagentDelegation",
         itemId,
-        operation: compactToolName(name) === "sendmessage" ? "send" : "spawn",
-        ...(text(input.prompt) || text(input.message)
-          ? { prompt: text(input.prompt) || text(input.message) }
-          : {}),
+        operation,
+        ...(prompt ? { prompt } : {}),
         subagents: [
           {
             subagentId: nativeId ?? event.toolCallId,
             ...(nativeId ? { nativeSubagentId: nativeId } : {}),
-            description: text(input.description) || tool.title || name,
+            description,
+            ...(role ? { role } : {}),
             ...this.options.parentConfiguration,
             ...nativeConfiguration,
             background: input.run_in_background === true,
-            status: terminal ? (failed ? "failed" : "completed") : "running",
+            status: failed ? "failed" : terminal && nativeId ? "completed" : "running",
             ...(output ? { resultSummary: output } : {}),
           },
         ],
@@ -493,7 +590,8 @@ export class AntigravityToolTracker {
         update: { type: "subagents.replace", subagents: state.item.subagents },
       });
     this.#diff(state, tool.content, limit);
-    if (terminal) this.#complete(state, outcome);
+    if (terminal && (failed || !this.awaitingSubagentId(event.toolCallId)))
+      this.#complete(state, outcome);
   }
 
   #diff(state: ToolState, content: unknown, limit: number): void {

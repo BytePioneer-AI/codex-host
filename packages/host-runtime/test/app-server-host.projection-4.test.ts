@@ -38,6 +38,37 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("keeps projectless workspace roots empty across start, resume and a same-cwd Fork", async () => {
+    const fixture = createFixture();
+    try {
+      await fixture.ready;
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "thread/start",
+        params: { model: "codexhost/pi-native", projectlessWorkspace: { prompt: "Work" } },
+      });
+      const started = await fixture.collector.waitFor((message) => requestId(message, 1));
+      const { id } = (started.result as JsonObject).thread as JsonObject;
+      if (typeof id !== "string") throw new Error("Missing projectless Thread ID");
+      const response = {
+        result: { thread: { workspaceKind: "projectless" }, runtimeWorkspaceRoots: [] },
+      };
+      expect(started).toMatchObject(response);
+      await completePiTurn(fixture, id, 2);
+      for (const [request, method] of [
+        [3, "thread/resume"],
+        [4, "thread/fork"],
+      ] as const) {
+        writeRequest(fixture.desktopInput, { id: request, method, params: { threadId: id } });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, request)),
+        ).resolves.toMatchObject(response);
+      }
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("tail-Forks the latest completed Checkpoint while the source Turn is active", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -52,7 +83,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: { threadId },
     });
     const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
-    expect(forkResponse).toMatchObject({ result: { thread: { turns: [{}] } } });
+    expect(forkResponse).toMatchObject({
+      result: { thread: { turns: [{}] }, runtimeWorkspaceRoots: ["/synthetic"] },
+    });
     const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
     if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
 

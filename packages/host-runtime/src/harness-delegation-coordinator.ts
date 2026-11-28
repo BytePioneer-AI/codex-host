@@ -67,7 +67,13 @@ import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-ru
 const IMPLICIT_DEDUPLICATION_MS = 30_000;
 const NATIVE_REF_TIMEOUT_MS = 10_000;
 
-type ParentMetadata = { cwd?: string; title?: string };
+type ParentMetadata = { cwd?: string; title?: string; projectId?: string };
+type OfficialStartInput = DelegationStartInput & {
+  parentThreadId: string;
+  cwd: string;
+  title: string;
+  projectId?: string;
+};
 type ReadDelegationDefault = (
   harnessId: RoutedHarnessId,
 ) => Promise<HarnessDelegationDefault | undefined>;
@@ -182,11 +188,12 @@ export class HarnessDelegationCoordinator {
   readonly #sendOfficial: (input: ThreadSendInput) => Promise<ThreadSendResult>;
   readonly #cancelOfficial: (input: ThreadCancelInput) => Promise<ThreadCancelResult>;
   readonly #startOfficial: (
-    input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+    input: OfficialStartInput,
     resolveConfiguration: ResolveOfficialConfiguration,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
+  readonly #projectExists: (projectId: string) => Promise<boolean>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
   readonly #externalQueueWaiting: (thread: ExternalThread) => boolean;
@@ -218,11 +225,12 @@ export class HarnessDelegationCoordinator {
     sendOfficial(input: ThreadSendInput): Promise<ThreadSendResult>;
     cancelOfficial(input: ThreadCancelInput): Promise<ThreadCancelResult>;
     startOfficial(
-      input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+      input: OfficialStartInput,
       resolveConfiguration: ResolveOfficialConfiguration,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
+    projectExists(projectId: string): Promise<boolean>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
     /** Desktop or Web follow-ups are queued (running or paused) and own the next Turn. */
@@ -247,6 +255,7 @@ export class HarnessDelegationCoordinator {
     this.#startOfficial = input.startOfficial;
     this.#listOfficial = input.listOfficial;
     this.#officialThreadMetadata = input.officialThreadMetadata;
+    this.#projectExists = input.projectExists;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
     this.#externalQueueWaiting = input.externalQueueWaiting;
@@ -294,7 +303,14 @@ export class HarnessDelegationCoordinator {
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const title = delegationTitle(input);
     if (input.harnessId === "codex") {
-      const startInput = { ...input, parentThreadId, cwd: selectedCwd, title };
+      const projectId = parent.projectId;
+      const startInput = {
+        ...input,
+        parentThreadId,
+        cwd: selectedCwd,
+        title,
+        ...(projectId && (await this.#projectExists(projectId)) ? { projectId } : {}),
+      };
       // The official owner resolves preferences only after checking the original request digest.
       const result = await this.#startOfficial(startInput, (model, inspected) =>
         this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
@@ -363,6 +379,7 @@ export class HarnessDelegationCoordinator {
     const childThreadId = hostThreadIdSchema.parse(randomUUID());
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const createRequestId = input.requestId ? `delegation:${input.requestId}` : randomUUID();
+    const projectId = parent.projectId;
     let record = await this.#repository.createProvisional(
       createExternalThreadRecordInput({
         hostThreadId: childThreadId,
@@ -370,6 +387,7 @@ export class HarnessDelegationCoordinator {
         harnessId: harnessIdSchema.parse(targetHarnessId),
         cwd: startInput.cwd,
         title,
+        ...(projectId && (await this.#projectExists(projectId)) ? { projectId } : {}),
         transportModelId,
         ephemeral: false,
         historyMode: "paginated",
@@ -881,6 +899,7 @@ export class HarnessDelegationCoordinator {
         harnessId: record.harnessId as RoutedHarnessId,
         cwd: record.cwd,
         title: record.title.trim() || record.preview || "",
+        ...(record.projectId ? { projectId: record.projectId } : {}),
       };
     const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => ({}));
     return { harnessId: "codex", ...metadata };

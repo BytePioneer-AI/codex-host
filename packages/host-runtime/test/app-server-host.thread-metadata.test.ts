@@ -22,7 +22,10 @@ import {
   JsonLineCollector,
   closeFixture,
   createFixture,
+  messageParams,
   method,
+  readJsonLine,
+  requiredMessageId,
   requestId,
   startPiThread,
   startPiTurn,
@@ -416,6 +419,70 @@ describe("External Thread failed history", () => {
 });
 
 describe("External Thread metadata updates", () => {
+  it.each(["pi", "codex"] as const)(
+    "starts a delegated %s child in its official parent's project",
+    async (harnessId) => {
+      let delegationApi: DelegationControlApi | undefined;
+      const fixture = createFixture({
+        onDelegationApi: (api) => {
+          delegationApi = api;
+          return undefined;
+        },
+      });
+      const answer = async (method: string, params: JsonObject, result: JsonObject) => {
+        const request = await readJsonLine(fixture.official.stdin);
+        expect(request).toMatchObject({ method, params });
+        writeRequest(fixture.official.stdout, { id: requiredMessageId(request), result });
+      };
+      try {
+        await fixture.ready;
+        if (!delegationApi) throw new Error("Missing Delegation API");
+        const parent = { id: "native-parent", cwd: "/worktree", projectId: "project-a" };
+        const pending = delegationApi.start({
+          harnessId,
+          parentThreadId: parent.id,
+          task: "Inspect files",
+        });
+        await answer(
+          "thread/read",
+          { threadId: parent.id, includeTurns: false },
+          { thread: parent },
+        );
+        await answer(
+          "project/read",
+          { projectId: parent.projectId },
+          { project: { id: parent.projectId } },
+        );
+        if (harnessId === "codex") {
+          const child = { ...parent, id: "native-child" };
+          await answer(
+            "thread/start",
+            { cwd: parent.cwd, projectId: parent.projectId },
+            { thread: child },
+          );
+          await answer("thread/name/set", { threadId: child.id }, {});
+          await answer("turn/start", { threadId: child.id }, { turn: { id: "native-turn" } });
+          await expect(pending).resolves.toMatchObject({ threadId: child.id, status: "running" });
+        } else {
+          const { threadId } = await pending;
+          await expect(
+            fixture.collector.waitFor(
+              (message) =>
+                method(message, "thread/started") &&
+                (messageParams(message).thread as JsonObject | undefined)?.id === threadId,
+            ),
+          ).resolves.toMatchObject({ params: { thread: { projectId: parent.projectId } } });
+          await expect(
+            fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+          ).resolves.toMatchObject({ projectId: parent.projectId });
+          fixture.adapter.sessions[0]?.succeedTurn();
+        }
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("creates a Thread in the requested project and restores the assignment from disk", async () => {
     let fixture = createFixture();
     try {
@@ -430,10 +497,27 @@ describe("External Thread metadata updates", () => {
       });
       const response = await fixture.collector.waitFor((message) => requestId(message, 1));
       expect(response).toMatchObject({
-        result: { thread: { cwd: "/worktree", projectId: "project-a" } },
+        result: {
+          thread: { cwd: "/worktree", projectId: "project-a" },
+          runtimeWorkspaceRoots: ["/worktree"],
+        },
       });
       const { id } = (response.result as { thread: { id: string } }).thread;
       await expect(listIds(fixture, 2, { projectId: "project-a" })).resolves.toEqual([id]);
+      for (const [request, roots, expected] of [
+        [3, undefined, ["/worktree"]],
+        [4, [null, ""], ["/worktree"]],
+        [5, ["/explicit"], ["/explicit"]],
+      ] as const) {
+        writeRequest(fixture.desktopInput, {
+          id: request,
+          method: "thread/resume",
+          params: { threadId: id, ...(roots ? { runtimeWorkspaceRoots: [...roots] } : {}) },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, request)),
+        ).resolves.toMatchObject({ result: { runtimeWorkspaceRoots: expected } });
+      }
       await closeFixture(fixture);
       fixture = createFixture({ mappingStoreDirectory: fixture.mappingStoreDirectory });
       await fixture.ready;

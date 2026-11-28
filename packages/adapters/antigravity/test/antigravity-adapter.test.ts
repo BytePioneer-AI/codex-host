@@ -1020,6 +1020,71 @@ describe("Antigravity ACP Session", () => {
         .map((event) => event.snapshot.item),
     ).toMatchObject([{ text: "new" }]);
   });
+  it("projects committed subagent spawns even when ACP omits their results or calls", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-live-subagents-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const nativeRef = ref();
+    const database = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    const childIds = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ];
+    const writeSpawn = (idx: number, childId: string, createdAtMs = Date.now()) => {
+      const args = { Role: `Researcher ${idx}`, TypeName: "research", Prompt: "Check results" };
+      const call = Buffer.concat([
+        textField(1, `call-${idx}`),
+        textField(2, "invoke_subagent"),
+        textField(3, JSON.stringify(args)),
+      ]);
+      const result = `Created the following subagent:\n${JSON.stringify({ conversationId: childId })}`;
+      database
+        .prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, 132, 3, ?)")
+        .run(
+          idx,
+          Buffer.concat([bytes(5, bytes(4, call)), bytes(140, bytes(2, textField(1, result)))]),
+        );
+      stampStep(database, idx, createdAtMs);
+      return args;
+    };
+    try {
+      database.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      userStep(database, 0, "previous turn");
+      writeSpawn(1, required(childIds[0]));
+      const { session, outputs } = await sessionOf(
+        await adapter.open({ kind: "resume", cwd: home, nativeRef }),
+      );
+      const transport = await start(session, transports);
+      userStep(database, 2, "hello");
+      stampStep(database, 2, Date.now());
+      writeSpawn(3, required(childIds[1]));
+      const args = writeSpawn(4, required(childIds[2]));
+      const handler = required(transport.handler);
+      handler.onEvent({ type: "tool.call", toolCallId: "call-4", name: "invoke_subagent", args });
+      handler.onEvent({ type: "tool.update", toolCallId: "call-4", status: "completed" });
+      await vi.waitFor(() =>
+        expect(events(outputs).filter((event) => event.type === "item.completed")).toHaveLength(2),
+      );
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      expect(
+        events(outputs).flatMap((event) => {
+          if (event.type !== "item.completed" || event.snapshot.item.type !== "subagentDelegation")
+            return [];
+          return event.snapshot.item.subagents.map(({ nativeSubagentId, description }) => ({
+            nativeSubagentId,
+            description,
+          }));
+        }),
+      ).toEqual([
+        { nativeSubagentId: childIds[1], description: "Researcher 3" },
+        { nativeSubagentId: childIds[2], description: "Researcher 4" },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
   it("routes a detached tool update after cancelling its successor Turn", async () => {
     const { adapter, transports } = fixture();
     const { session, outputs } = await sessionOf(

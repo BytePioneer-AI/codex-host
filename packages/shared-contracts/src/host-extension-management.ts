@@ -48,7 +48,7 @@ export const hostExtensionDefaultSeedsSchema = z.strictObject({
 });
 export type HostExtensionDefaultSeeds = z.infer<typeof hostExtensionDefaultSeedsSchema>;
 
-export const hostExtensionChangelogEntrySchema = z.strictObject({
+export const hostExtensionChangelogEntrySchema = z.object({
   version: z.string().trim().min(1).max(128),
   publishedAt: z.string().trim().min(1).max(64).optional(),
   notes: z.string().trim().min(1).max(8192),

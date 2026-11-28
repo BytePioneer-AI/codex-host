@@ -872,8 +872,9 @@ export function createDesktopExtensionDetailModal(options: {
     if (!installedVersion) return "older";
     const cmp = compareExtensionVersions(entry.version, installedVersion);
     if (cmp > 0) return "new";
-    if (cmp === 0) return "current";
-    return "older";
+    if (cmp < 0) return "older";
+    const normalize = (value: string) => value.trim().replace(/^v/iu, "").toLowerCase();
+    return normalize(entry.version) === normalize(installedVersion) ? "current" : "older";
   };
 
   const renderActions = (

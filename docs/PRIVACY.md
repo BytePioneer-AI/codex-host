@@ -18,6 +18,15 @@ The Web interface can also be reached through a local network, Tailscale, a conf
 
 Account features may query the corresponding service for identity and usage information. Installation and updates use GitHub or your configured package registry. These services receive the connection and request information needed to provide those functions.
 
+## Anonymous product telemetry
+
+On official release builds (`npm` / `installer`), CodexHost sends lightweight **zero-ID, locally deduplicated** aggregate counter increments to `https://ext-stats.chost.dev/v1/telemetry/heartbeat` solely to guide compatibility maintenance and release priorities.
+
+- **Local-only deduplication (zero client ID)**: Daily, weekly, monthly, new-install, and Day-1/Day-7 retention deduplication is computed strictly locally using UTC calendar dates in `$CODEXHOST_DATA_DIR/telemetry-v1.json`. CodexHost never generates, stores, or transmits any `installId`, UUID, hardware identifier, account hash, or client IP address. The server stores only aggregate counters with no per-device table, so requests cannot be correlated to any individual machine or user.
+- **Strictly allowlisted fields**: Only stateless period increment booleans (`dailyActive`, `weeklyActive`, `monthlyActive`, `newInstall`, `retainedD1`, `retainedD7`, `remoteAny`), `appVersion`, `codexDesktopVersion` (Desktop mode only), `os`/`arch`, coarse 2-letter `uiLanguage` (`zh`, `en`, `ja`, etc.), active entry `surfaces`, active `remoteAccess` transport categories (such as official vs. self-hosted Relay, Tailscale, LAN, or reverse proxy), and allowlisted official `harnesses` (unknown Harnesses collapse to `"custom"`). On `dailyActive` increments, Cloudflare's coarse 2-letter edge country code is aggregated server-side without logging or storing IP addresses.
+- **Never collected**: Prompts, conversation content, code, file paths, repository names, third-party auth files, accounts, credentials, model/provider usage, token counts, installed local extensions, unused remote configurations, private Relay hostnames, or custom Harness names.
+- **Auto-disabled & easy to opt out or inspect**: Automatically disabled in local source checkouts (`development` builds) and CI environments. Disable at any time with `CODEXHOST_TELEMETRY=0`, `DO_NOT_TRACK=1`, `CODEXHOST_TELEMETRY_URL=off`, or by setting `"enabled": false` in `$CODEXHOST_DATA_DIR/telemetry-v1.json`. Set `CODEXHOST_TELEMETRY_DEBUG=1` to print every outgoing JSON payload to stderr. See [Product Telemetry](product/product-telemetry.md) for the complete field specification.
+
 ## Credentials
 
 Authentication generally uses the selected application's existing credentials and storage. CodexHost backend integrations may read or use credentials for supported account features. Remote connections do not automatically copy Harness credential stores between computers.

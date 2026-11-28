@@ -38,6 +38,8 @@ import {
   isHostExtensionManagementMethod,
   jsonValueSchema,
   LOADED_SESSIONS_METHOD,
+  PRODUCT_TELEMETRY_GET_METHOD,
+  PRODUCT_TELEMETRY_SET_METHOD,
   RELEASE_ANNOUNCEMENT_GET_METHOD,
   RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
   USAGE_STATISTICS_METHOD,
@@ -69,6 +71,7 @@ import {
   handleReleaseAnnouncementRequest,
   type HostReleaseAnnouncement,
 } from "./release-announcement.js";
+import { handleProductTelemetryRequest, type HostProductTelemetry } from "./product-telemetry.js";
 import type { UsageStatistics } from "./usage-statistics.js";
 
 /** The Host state and handlers that Host-level Desktop control requests act on. */
@@ -96,6 +99,7 @@ export interface DesktopControlRequestHost {
     refresh?: boolean,
   ): Promise<HarnessAccountInspectResult>;
   readonly releaseAnnouncement: HostReleaseAnnouncement | undefined;
+  readonly productTelemetry: HostProductTelemetry | undefined;
   handleUpdateRequest(request: JsonRpcRequest): Promise<void>;
   handleConsoleOpen(request: JsonRpcRequest): Promise<void>;
   handleWebOpen(request: JsonRpcRequest): Promise<void>;
@@ -274,6 +278,14 @@ export class DesktopControlRequests {
       this.#host.dispatchReply(request, async () => {
         await this.#host.writeJson(
           await handleReleaseAnnouncementRequest(this.#host.releaseAnnouncement, request),
+        );
+      });
+      return true;
+    }
+    if (method === PRODUCT_TELEMETRY_GET_METHOD || method === PRODUCT_TELEMETRY_SET_METHOD) {
+      this.#host.dispatchReply(request, async () => {
+        await this.#host.writeJson(
+          await handleProductTelemetryRequest(this.#host.productTelemetry, request),
         );
       });
       return true;

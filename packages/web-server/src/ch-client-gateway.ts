@@ -6,6 +6,8 @@ import {
   CLIENT_REQUEST_LIMIT_BYTES,
   isHostExtensionManagementMethod,
   PEER_DELEGATION_CHANNEL_METHOD,
+  PRODUCT_TELEMETRY_SET_METHOD,
+  PRODUCT_TELEMETRY_SIGNAL_METHOD,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import { compressResponse } from "./compression.ts";
@@ -124,6 +126,24 @@ export async function serveChClientGateway(
           error: {
             code: -32601,
             message: "Peer delegation must use /api/peer/v1/delegation",
+          },
+        });
+        return;
+      }
+      if (input.method === PRODUCT_TELEMETRY_SIGNAL_METHOD) {
+        await reply(403, {
+          error: {
+            code: -32601,
+            message: "Telemetry signal ingestion is internal to the Web server",
+          },
+        });
+        return;
+      }
+      if (!authenticated && input.method === PRODUCT_TELEMETRY_SET_METHOD) {
+        await reply(403, {
+          error: {
+            code: -32000,
+            message: "Authentication must be enabled to change telemetry settings.",
           },
         });
         return;

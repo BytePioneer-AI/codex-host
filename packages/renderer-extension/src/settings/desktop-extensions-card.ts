@@ -21,14 +21,18 @@ import type { RendererSettingsMessages } from "./localization.js";
 
 export const MAX_CARD_CATEGORIES = 2;
 
+export type DesktopExtensionCardLayout = "featured" | "row";
+
 export interface DesktopExtensionCardOptions {
   readonly document: Document;
   readonly messages: RendererSettingsMessages;
   readonly contentLocale?: DesktopExtensionContentLocale | undefined;
   readonly extensionId: string;
   readonly cardKind: "installed" | "marketplace";
+  readonly layout?: DesktopExtensionCardLayout | undefined;
   readonly displayName: string;
   readonly iconUrl?: string | undefined;
+  readonly resolveIconUrl?: (() => Promise<string | null>) | undefined;
   readonly author?: string | undefined;
   readonly version?: string | undefined;
   readonly downloads?: number | undefined;
@@ -39,7 +43,8 @@ export interface DesktopExtensionCardOptions {
   readonly attention?: DesktopExtensionAttentionDetail | null | undefined;
   readonly attentionId?: string | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
-  readonly platformBadge: ExtensionPlatformBadge | null;
+  readonly platformBadge?: ExtensionPlatformBadge | null | undefined;
+  readonly incompatiblePlatformLabel?: string | undefined;
   readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
   readonly secondaryAction?: HTMLElement | undefined;
   readonly actionControl: HTMLElement;
@@ -48,15 +53,10 @@ export interface DesktopExtensionCardOptions {
   readonly onOpenDetails: () => void;
 }
 
-function formatAuthorVersion(author: string | undefined, version: string | undefined): string {
-  const parts: string[] = [];
-  const trimmedAuthor = author?.trim();
-  const trimmedVersion = version?.trim();
-  if (trimmedAuthor) parts.push(trimmedAuthor);
-  if (trimmedVersion) {
-    parts.push(trimmedVersion.startsWith("v") ? trimmedVersion : `v${trimmedVersion}`);
-  }
-  return parts.join(" · ");
+function formatVersion(version: string | undefined): string | undefined {
+  const trimmed = version?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
 }
 
 function shouldShowStatusDot(state: DesktopExtensionStatus["state"] | undefined): boolean {
@@ -72,6 +72,10 @@ export function createExtensionPlatformBadgeElement(
   return element;
 }
 
+/**
+ * Renders either a Kettu-style 3-column Featured showcase card (`layout: "featured"`)
+ * or a lightweight 2-column borderless row (`layout: "row"`), aligned with CH Web.
+ */
 export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions): HTMLElement {
   const {
     document,
@@ -79,8 +83,10 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     contentLocale = messages.locale,
     extensionId,
     cardKind,
+    layout = "row",
     displayName,
     iconUrl,
+    resolveIconUrl,
     author,
     version,
     downloads,
@@ -92,7 +98,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     attentionId,
     categories,
     platformBadge,
-    capabilityBadges = [],
+    incompatiblePlatformLabel,
     secondaryAction,
     actionControl,
     busy,
@@ -102,31 +108,36 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   const copy = messages.desktopExtensions;
   const contentCopy = contentLocaleMessages(contentLocale);
 
-  const card = createEl(document, "article", "settings-extensions-card");
+  const isFeatured = layout === "featured";
+  const card = createEl(
+    document,
+    "article",
+    isFeatured
+      ? "settings-extensions-card settings-extensions-card--featured"
+      : "settings-extensions-row",
+  );
   card.dataset.extensionId = extensionId;
   card.dataset.cardKind = cardKind;
+  card.dataset.layout = layout;
   if (dataset) {
     for (const [key, value] of Object.entries(dataset)) {
       if (value !== undefined) card.dataset[key] = value;
     }
   }
   if (busy) card.dataset.busy = "true";
+  if (update) card.dataset.updateAvailable = "true";
   card.tabIndex = 0;
   card.setAttribute("role", "button");
   card.setAttribute("aria-haspopup", "dialog");
   card.setAttribute("aria-label", formatMessage(copy.openDetailsLabel, { name: displayName }));
-  if (platformBadge) card.setAttribute("aria-description", platformBadge.label);
+  const ariaDesc = platformBadge?.label ?? incompatiblePlatformLabel;
+  if (ariaDesc) card.setAttribute("aria-description", ariaDesc);
 
-  // Row 1: 32x32 rounded icon + Title + optional official shield / status dot on left, actions on right.
-  const topRow = createEl(document, "div", "settings-extensions-card__top");
-  const identity = createEl(document, "div", "settings-extensions-card__identity");
-  const iconEl = createExtensionIconElement({
-    document,
-    iconUrl,
-    categories,
-    size: "card",
-    alt: displayName,
-  });
+  const stopTrigger = (event: Event): void => {
+    event.stopPropagation?.();
+  };
+
+  // Title group: title + optional official shield + optional status dot + optional incompatible platform hint.
   const titleGroup = createEl(document, "div", "settings-extensions-card__title-group");
   const nameEl = createEl(document, "h3", "settings-extensions-card__title", displayName);
   nameEl.title = displayName;
@@ -138,7 +149,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     verified.setAttribute("role", "img");
     verified.setAttribute("aria-label", copy.trustOfficial);
     verified.title = copy.trustOfficial;
-    verified.append(createRendererSettingsIcon("shield-check", 14));
+    verified.append(createRendererSettingsIcon("shield-check", 13));
     titleGroup.append(verified);
   }
 
@@ -152,12 +163,59 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     titleGroup.append(dot);
   }
 
-  identity.append(iconEl, titleGroup);
+  const compatLabel =
+    incompatiblePlatformLabel ?? (platformBadge?.kind === "web" ? platformBadge.label : undefined);
+  if (compatLabel) {
+    const hint = createEl(document, "span", "settings-extensions-compat-hint", compatLabel);
+    hint.dataset.platform = platformBadge?.kind ?? "web";
+    titleGroup.append(hint);
+  }
+
+  // Single muted dot-separated metadata line: Category · Author · vX.Y.Z · ↓ N
+  const primaryCategory =
+    categories && categories.length > 0
+      ? (contentCopy.categories[categories[0]!] ?? categories[0])
+      : undefined;
+  const trimmedAuthor = author?.trim() || undefined;
+  const formattedVersion = formatVersion(version);
+  const formattedDownloads = formatPositiveExtensionCount(downloads);
+
+  const metaParts: string[] = [];
+  if (primaryCategory) metaParts.push(primaryCategory);
+  if (trimmedAuthor) metaParts.push(trimmedAuthor);
+  if (formattedVersion) metaParts.push(formattedVersion);
+
+  const downloadsLabel = formattedDownloads
+    ? formatMessage(copy.downloadsLabel, { count: formattedDownloads })
+    : undefined;
+
+  let metaLine: HTMLDivElement | null = null;
+  if (metaParts.length > 0 || formattedDownloads) {
+    metaLine = createEl(document, "div", "settings-extensions-card__meta-line");
+    metaLine.title = [...metaParts, ...(downloadsLabel ? [downloadsLabel] : [])].join(" · ");
+    for (const part of metaParts) {
+      metaLine.append(createEl(document, "span", "settings-extensions-card__meta-segment", part));
+    }
+    if (formattedDownloads) {
+      const downloadsBadge = createEl(
+        document,
+        "span",
+        "settings-extensions-card__meta-segment settings-extensions-card__downloads",
+      );
+      downloadsBadge.dataset.metric = "downloads";
+      if (downloadsLabel) {
+        downloadsBadge.title = downloadsLabel;
+        downloadsBadge.setAttribute("aria-label", downloadsLabel);
+      }
+      downloadsBadge.append(
+        createRendererSettingsIcon("download", 11),
+        createEl(document, "span", "", formattedDownloads),
+      );
+      metaLine.append(downloadsBadge);
+    }
+  }
 
   const actionWrap = createEl(document, "div", "settings-extensions-card__action");
-  const stopTrigger = (event: Event): void => {
-    event.stopPropagation?.();
-  };
   actionWrap.addEventListener("click", stopTrigger);
   actionWrap.addEventListener("keydown", stopTrigger);
   if (secondaryAction) {
@@ -165,36 +223,65 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   }
   actionWrap.append(actionControl);
 
-  topRow.append(identity, actionWrap);
-  card.append(topRow);
-
-  // Platform and capability badges.
-  if (platformBadge || capabilityBadges.length > 0) {
-    const badgesRow = createEl(document, "div", "settings-extensions-card__capabilities");
-    if (platformBadge)
-      badgesRow.append(createExtensionPlatformBadgeElement(document, platformBadge));
-    for (const badge of capabilityBadges) {
-      const chip = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
-      chip.dataset.capability = badge.kind;
-      badgesRow.append(chip);
-    }
-    card.append(badgesRow);
-  }
-
-  // Row 2: 2-line clamped muted description + optional compact inline error callout.
   const trimmedDescription = description?.trim() ?? "";
-  if (trimmedDescription || attention) {
-    const body = createEl(document, "div", "settings-extensions-card__body");
+
+  if (isFeatured) {
+    const topRow = createEl(document, "div", "settings-extensions-card__featured-top");
+    const iconEl = createExtensionIconElement({
+      document,
+      iconUrl,
+      resolveIconUrl,
+      categories,
+      size: "card",
+      alt: displayName,
+    });
+    topRow.append(iconEl, actionWrap);
+
+    const body = createEl(document, "div", "settings-extensions-card__featured-body");
+    body.append(titleGroup);
+    if (metaLine) body.append(metaLine);
     if (trimmedDescription) {
       const descEl = createEl(
         document,
         "p",
-        "settings-extensions-card__description",
+        "settings-extensions-card__description settings-extensions-card__description--featured",
         trimmedDescription,
       );
       descEl.title = trimmedDescription;
       body.append(descEl);
     }
+    card.append(topRow, body);
+  } else {
+    const iconWrap = createEl(document, "div", "settings-extensions-row__icon");
+    const iconEl = createExtensionIconElement({
+      document,
+      iconUrl,
+      resolveIconUrl,
+      categories,
+      size: "row",
+      alt: displayName,
+    });
+    iconWrap.append(iconEl);
+
+    const main = createEl(document, "div", "settings-extensions-row__main");
+    const rowTop = createEl(document, "div", "settings-extensions-row__top");
+    const textHead = createEl(document, "div", "settings-extensions-row__text-head");
+    textHead.append(titleGroup);
+    if (metaLine) textHead.append(metaLine);
+    rowTop.append(textHead, actionWrap);
+    main.append(rowTop);
+
+    if (trimmedDescription) {
+      const descEl = createEl(
+        document,
+        "p",
+        "settings-extensions-row__description",
+        trimmedDescription,
+      );
+      descEl.title = trimmedDescription;
+      main.append(descEl);
+    }
+
     if (attention) {
       const detail = createEl(document, "div", "settings-extensions-card__detail");
       if (attentionId) detail.id = attentionId;
@@ -203,76 +290,25 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
         createRendererSettingsIcon("alert", 13),
         createEl(document, "span", "", attention.text),
       );
-      body.append(detail);
+      main.append(detail);
     }
-    card.append(body);
-  }
 
-  if (update) {
-    card.dataset.updateAvailable = "true";
-    const row = createEl(document, "div", "settings-extensions-card__update");
-    row.dataset.updateAvailable = "true";
-    update.action.addEventListener("click", stopTrigger);
-    update.action.addEventListener("keydown", stopTrigger);
-    const label = createEl(
-      document,
-      "span",
-      "settings-extensions-card__update-label",
-      update.label,
-    );
-    row.append(label, update.action);
-    card.append(row);
-  }
-
-  // Borderless muted metadata line.
-  const authorVersion = formatAuthorVersion(author, version);
-  const formattedDownloads = formatPositiveExtensionCount(downloads);
-  const categoryLabels = (categories ?? [])
-    .slice(0, MAX_CARD_CATEGORIES)
-    .map((category) => contentCopy.categories[category] ?? category);
-  const categoriesText = categoryLabels.join(" · ");
-
-  if (authorVersion || formattedDownloads || categoriesText) {
-    const metaRow = createEl(document, "div", "settings-extensions-card__meta");
-    const metaLeft = createEl(document, "div", "settings-extensions-card__meta-left");
-    if (authorVersion) {
-      const authorVersionWrap = createEl(
+    if (update) {
+      const updateRow = createEl(document, "div", "settings-extensions-card__update");
+      updateRow.dataset.updateAvailable = "true";
+      update.action.addEventListener("click", stopTrigger);
+      update.action.addEventListener("keydown", stopTrigger);
+      const label = createEl(
         document,
         "span",
-        "settings-extensions-card__author-version",
-        authorVersion,
+        "settings-extensions-card__update-label",
+        update.label,
       );
-      authorVersionWrap.title = authorVersion;
-      metaLeft.append(authorVersionWrap);
+      updateRow.append(label, update.action);
+      main.append(updateRow);
     }
 
-    if (formattedDownloads) {
-      const downloadsBadge = createEl(document, "span", "settings-extensions-card__downloads");
-      downloadsBadge.dataset.metric = "downloads";
-      const downloadsLabel = formatMessage(copy.downloadsLabel, { count: formattedDownloads });
-      downloadsBadge.title = downloadsLabel;
-      downloadsBadge.setAttribute("aria-label", downloadsLabel);
-      downloadsBadge.append(
-        createRendererSettingsIcon("download", 11),
-        createEl(document, "span", "", formattedDownloads),
-      );
-      metaLeft.append(downloadsBadge);
-    }
-
-    metaRow.append(metaLeft);
-
-    if (categoriesText) {
-      const catEl = createEl(
-        document,
-        "span",
-        "settings-extensions-card__categories-text",
-        categoriesText,
-      );
-      catEl.title = categoriesText;
-      metaRow.append(catEl);
-    }
-
-    card.append(metaRow);
+    card.append(iconWrap, main);
   }
 
   card.addEventListener("click", (event) => {

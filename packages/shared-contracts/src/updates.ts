@@ -87,9 +87,27 @@ export const updateStatusResultSchema = z.strictObject({
   status: updateStatusSchema.nullable(),
 });
 
+export const MACOS_SIGNING_STATUS_METHOD = "codexhost/update/macos-signing/status";
+export const MACOS_SIGNING_SETUP_METHOD = "codexhost/update/macos-signing/setup";
+export const MACOS_SIGNING_REMOVE_METHOD = "codexhost/update/macos-signing/remove";
+
+export const macosLocalSigningStatusSchema = z.strictObject({
+  supported: z.boolean(),
+  enabled: z.boolean(),
+  certificatePresent: z.boolean(),
+  appSignedWithLocalCert: z.boolean(),
+  appPath: z.string().min(1).nullable(),
+  certificateName: z.string().min(1),
+  certificateSha1: z
+    .string()
+    .regex(/^[0-9A-Fa-f]{40}$/u)
+    .nullable(),
+});
+
 export type UpdateInstallation = z.infer<typeof updateInstallationSchema>;
 export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
 export type UpdateStatus = z.infer<typeof updateStatusSchema>;
 export type UpdateCheckResult = z.infer<typeof updateCheckResultSchema>;
 export type UpdateStartResult = z.infer<typeof updateStartResultSchema>;
 export type UpdateStatusResult = z.infer<typeof updateStatusResultSchema>;
+export type MacOsLocalSigningStatus = z.infer<typeof macosLocalSigningStatusSchema>;

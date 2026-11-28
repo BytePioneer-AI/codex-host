@@ -568,12 +568,20 @@ const npmCliPath =
   homebrewNpmCliPath(process.execPath) ??
   pathNpmCliPath();
 if (!npmCliPath) fail("could not locate the npm CLI used to update this global installation");
+const resolvedLocale =
+  process.env.LC_ALL ??
+  process.env.LC_MESSAGES ??
+  process.env.LANG ??
+  Intl.DateTimeFormat().resolvedOptions().locale;
 const updateEnvironment = {
   ...process.env,
   CODEXHOST_NPM_NODE_PATH: process.execPath,
   CODEXHOST_NPM_CLI_PATH: path.resolve(npmCliPath),
   CODEXHOST_NPM_LAUNCHER_PATH: fileURLToPath(import.meta.url),
   CODEXHOST_NPM_PACKAGE_ROOT: packageRoot,
+  ...(resolvedLocale && !process.env.CODEXHOST_UI_LOCALE
+    ? { CODEXHOST_UI_LOCALE: resolvedLocale }
+    : {}),
 };
 // A managed SSH installation deliberately exports these variables from the
 // remote login profile so stock Codex can enter the remote Host. When this npm
@@ -608,6 +616,8 @@ if (userArguments.length === 0) {
   userArguments[0] === "inspect" ||
   userArguments[0] === "status" ||
   userArguments[0] === "autostart" ||
+  userArguments[0] === "shortcut" ||
+  userArguments[0] === "macos-signing" ||
   userArguments[0] === "app" ||
   userArguments[0] === "launch-prefs"
 ) {
@@ -654,6 +664,8 @@ if (userArguments.length === 0) {
       "  codexhost stop",
       "  codexhost status",
       "  codexhost autostart on|off|status",
+      "  codexhost shortcut install|remove|status [--json]",
+      "  codexhost macos-signing status|setup|remove [--app <path>] [--json]",
       "  codexhost console",
       "  codexhost update",
       "  codexhost launch [launcher options]",

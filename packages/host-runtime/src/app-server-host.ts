@@ -4322,6 +4322,26 @@ export class AppServerHost {
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
         return;
       }
+      if (
+        request.method === "codexhost/update/macos-signing/status" ||
+        request.method === "codexhost/update/macos-signing/setup" ||
+        request.method === "codexhost/update/macos-signing/remove"
+      ) {
+        if (!coordinator.macosSigning) {
+          await this.#writer.json(
+            rpcError(request, -32090, "macOS local signing is unavailable on this Host"),
+          );
+          return;
+        }
+        const action = request.method.endsWith("/setup")
+          ? "setup"
+          : request.method.endsWith("/remove")
+            ? "remove"
+            : "status";
+        const result = await coordinator.macosSigning(action);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        return;
+      }
       const result = updateStartResultSchema.parse(await coordinator.start());
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
     } catch (error) {

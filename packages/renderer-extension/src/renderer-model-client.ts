@@ -111,6 +111,7 @@ import {
   type ReleaseAnnouncementAcknowledgeParams,
   type ReleaseAnnouncementGetParams,
   type ReleaseAnnouncementGetResult,
+  macosLocalSigningStatusSchema,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -138,6 +139,7 @@ import {
   type ThreadOwnershipListResult,
   type ThreadUsageInspection,
   type ThreadUsageInspectionParams,
+  type MacOsLocalSigningStatus,
   type UpdateCheckResult,
   type UpdateStartResult,
   type UpdateStatusResult,
@@ -211,6 +213,9 @@ const THREAD_USAGE_REFRESH_METHODS = [
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
+export const MACOS_SIGNING_STATUS_METHOD = "codexhost/update/macos-signing/status";
+export const MACOS_SIGNING_SETUP_METHOD = "codexhost/update/macos-signing/setup";
+export const MACOS_SIGNING_REMOVE_METHOD = "codexhost/update/macos-signing/remove";
 export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
@@ -351,6 +356,9 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  getMacOsSigningStatus?(): Promise<MacOsLocalSigningStatus | null>;
+  setupMacOsSigning?(): Promise<MacOsLocalSigningStatus>;
+  removeMacOsSigning?(): Promise<MacOsLocalSigningStatus>;
   getReleaseAnnouncement?(
     input?: ReleaseAnnouncementGetParams,
   ): Promise<ReleaseAnnouncementGetResult | null>;
@@ -939,6 +947,27 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async getMacOsSigningStatus(): Promise<MacOsLocalSigningStatus | null> {
+      const result = await manager.sendRequest(
+        MACOS_SIGNING_STATUS_METHOD,
+        updateEmptyParamsSchema.parse({}),
+      );
+      return macosLocalSigningStatusSchema.nullable().parse(result);
+    },
+    async setupMacOsSigning(): Promise<MacOsLocalSigningStatus> {
+      const result = await manager.sendRequest(
+        MACOS_SIGNING_SETUP_METHOD,
+        updateEmptyParamsSchema.parse({}),
+      );
+      return macosLocalSigningStatusSchema.parse(result);
+    },
+    async removeMacOsSigning(): Promise<MacOsLocalSigningStatus> {
+      const result = await manager.sendRequest(
+        MACOS_SIGNING_REMOVE_METHOD,
+        updateEmptyParamsSchema.parse({}),
+      );
+      return macosLocalSigningStatusSchema.parse(result);
     },
     async getReleaseAnnouncement(
       input: ReleaseAnnouncementGetParams = {},

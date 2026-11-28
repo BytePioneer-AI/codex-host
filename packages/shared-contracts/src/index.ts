@@ -351,8 +351,12 @@ export type {
   NativeTurnRefV1,
 } from "./native-refs.js";
 export {
+  MACOS_SIGNING_REMOVE_METHOD,
+  MACOS_SIGNING_SETUP_METHOD,
+  MACOS_SIGNING_STATUS_METHOD,
   UPDATE_ERROR_MAX_LENGTH,
   UPDATE_SEMVER_PATTERN,
+  macosLocalSigningStatusSchema,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateInstallationSchema,
@@ -364,6 +368,7 @@ export {
   updateStatusSchema,
 } from "./updates.js";
 export type {
+  MacOsLocalSigningStatus,
   UpdateCheckResult,
   UpdateInstallation,
   UpdatePhase,

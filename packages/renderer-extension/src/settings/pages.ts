@@ -47,6 +47,7 @@ import {
 import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
+import { createMacOsSigningSection, type MacOsSigningClient } from "./macos-signing-card.js";
 import {
   openReleaseAnnouncementDialog,
   type ReleaseAnnouncementDialogHandle,
@@ -118,7 +119,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
-export interface RendererUpdateClient {
+export interface RendererUpdateClient extends MacOsSigningClient {
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
@@ -468,9 +469,18 @@ function updatesPage(
       // without scrolling past the notes.
       const notes = document.createElement("div");
       notes.className = "settings-update-notes-section";
+      const macosSigning = createMacOsSigningSection(document, messages, context.signal);
       const starBanner = updateStarBanner(document, messages);
 
-      context.content.append(header, metadata, panel, controls, starBanner, notes);
+      context.content.append(
+        header,
+        metadata,
+        panel,
+        macosSigning.card,
+        controls,
+        starBanner,
+        notes,
+      );
 
       // Presentation-only: emphasise the manual path once the automatic one has
       // visibly failed.
@@ -527,6 +537,7 @@ function updatesPage(
         copy.className = "settings-update-summary";
         copy.textContent = detail;
         panel.append(createPanelHead(document, "unavailable", messages.notAvailable), copy);
+        macosSigning.sync({ installation: null, client: null });
         notes.replaceChildren();
       };
 
@@ -637,6 +648,10 @@ function updatesPage(
           ? "settings-update-metadata__value--newer"
           : "";
         installationValue.textContent = installationLabel(result.installation, messages);
+        macosSigning.sync({
+          installation: result.installation,
+          client,
+        });
         manualNpm.hidden = result.installation !== "npm";
         manualWindowsInstaller.hidden = !windows || result.installation !== "windows-installer";
         releaseLink.hidden = windows;

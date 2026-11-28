@@ -129,10 +129,17 @@ Mac、Linux、Windows 一键双向互通，不同机器上的 Agent 可跨机互
 </tr>
 </table>
 
-Windows 也可用 WinGet 安装：`winget install --id BytePioneer-AI.CodexHost --exact`
+Windows WinGet：`winget install --id BytePioneer-AI.CodexHost --exact`
+
+macOS 一键安装（推荐，免验证弹窗）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BytePioneer-AI/codex-host/main/scripts/install-macos.sh | bash
+```
 
 > [!NOTE]
-> **macOS 首次打开提示「应用无法验证」**：在终端执行 `xattr -dr com.apple.quarantine /Applications/codexhost.app` 放行即可。
+> **macOS 手动装 `.dmg` 提示「无法验证」**：执行 `xattr -dr com.apple.quarantine /Applications/codexhost.app`，或在「系统设置 → 隐私与安全性」点「仍要打开」。
+> **更新后不想重授系统权限**：在「设置 → 更新」开启「更新后保留系统权限」即可。
 
 ### 2. npm 安装
 
@@ -146,6 +153,7 @@ codexhost app      # 直接打开轻量独立客户端
 codexhost web      # 启动本地 Web 端
 codexhost status   # 查看服务状态
 codexhost update   # 升级到最新版本
+codexhost shortcut install|remove|status  # 管理 macOS / Windows 桌面图标
 codexhost stop     # 停止后台服务（npm 重装前先执行）
 ```
 

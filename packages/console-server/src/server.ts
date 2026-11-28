@@ -1,9 +1,11 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { promisify } from "node:util";
 
 import {
   HOST_EXTENSION_ZIP_MAX_BYTES,
   isConsoleHostMethod,
+  macosLocalSigningStatusSchema,
   type ConsoleAnnouncement,
 } from "@codexhost/shared-contracts";
 import { readAnnouncement } from "./announcement.js";
@@ -32,6 +34,7 @@ import { ConsoleUpdateError, type ConsoleUpdates } from "./updates.js";
 import { runServiceCommand, serviceCommand } from "./services.js";
 import { webConnectionRequest, WEB_CONNECTION_METHODS } from "./web-client.js";
 
+const execFileAsync = promisify(execFile);
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_EXTENSION_INSTALL_BODY_BYTES =
@@ -464,6 +467,70 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         else sendJson(response, 200, reply.result);
         return;
       }
+    }
+    if (
+      route === "GET /api/update/macos-signing/status" ||
+      route === "POST /api/update/macos-signing/setup" ||
+      route === "POST /api/update/macos-signing/remove"
+    ) {
+      const action = route.endsWith("/setup")
+        ? "setup"
+        : route.endsWith("/remove")
+          ? "remove"
+          : "status";
+      if (await options.host.available()) {
+        const reply = await options.host
+          .request(`codexhost/update/macos-signing/${action}`, {})
+          .catch((error: unknown) => ({
+            error: {
+              code: -32603,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          }));
+        if ("error" in reply) sendJson(response, 500, { error: reply.error.message });
+        else sendJson(response, 200, reply.result);
+        return;
+      }
+      if (process.platform !== "darwin" || !options.installation.launcherExecutable) {
+        if (action === "status") {
+          sendJson(response, 200, {
+            supported: false,
+            enabled: false,
+            certificatePresent: false,
+            appSignedWithLocalCert: false,
+            appPath: null,
+            certificateName: "CodexHost Local Signer",
+            certificateSha1: null,
+          });
+        } else {
+          sendJson(response, 400, { error: "macOS local signing is unavailable" });
+        }
+        return;
+      }
+      try {
+        const { stdout } = await execFileAsync(
+          options.installation.launcherExecutable,
+          ["macos-signing", action, "--json"],
+          {
+            env: serviceEnvironment(),
+            timeout: action === "setup" ? 120_000 : 30_000,
+            maxBuffer: 256 * 1024,
+          },
+        );
+        sendJson(response, 200, macosLocalSigningStatusSchema.parse(JSON.parse(stdout.trim())));
+      } catch (error) {
+        const stderr =
+          typeof error === "object" &&
+          error !== null &&
+          "stderr" in error &&
+          typeof (error as { stderr?: unknown }).stderr === "string"
+            ? (error as { stderr: string }).stderr.trim()
+            : "";
+        sendJson(response, 500, {
+          error: stderr || (error instanceof Error ? error.message : String(error)),
+        });
+      }
+      return;
     }
     if (route === "POST /api/update/check") {
       sendJson(response, 200, await options.updates.check(await updateTarget()));

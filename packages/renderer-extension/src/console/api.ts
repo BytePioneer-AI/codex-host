@@ -1,4 +1,5 @@
 import type {
+  MacOsLocalSigningStatus,
   UpdateCheckResult,
   UpdateStartResult,
   UpdateStatusResult,
@@ -115,5 +116,11 @@ export function consoleUpdateClient(): RendererUpdateClient {
     checkUpdate: () => consolePost<UpdateCheckResult | null>("/api/update/check"),
     startUpdate: () => consolePost<UpdateStartResult>("/api/update/start"),
     readUpdateStatus: () => consoleGet<UpdateStatusResult>("/api/update/status"),
+    getMacOsSigningStatus: () =>
+      consoleGet<MacOsLocalSigningStatus | null>("/api/update/macos-signing/status"),
+    setupMacOsSigning: () =>
+      consolePost<MacOsLocalSigningStatus>("/api/update/macos-signing/setup"),
+    removeMacOsSigning: () =>
+      consolePost<MacOsLocalSigningStatus>("/api/update/macos-signing/remove"),
   };
 }

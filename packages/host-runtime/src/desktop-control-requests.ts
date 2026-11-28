@@ -266,7 +266,10 @@ export class DesktopControlRequests {
     if (
       request.method === "codexhost/update/check" ||
       request.method === "codexhost/update/start" ||
-      request.method === "codexhost/update/status"
+      request.method === "codexhost/update/status" ||
+      request.method === "codexhost/update/macos-signing/status" ||
+      request.method === "codexhost/update/macos-signing/setup" ||
+      request.method === "codexhost/update/macos-signing/remove"
     ) {
       this.#host.dispatchReply(request, () => this.#host.handleUpdateRequest(request));
       return true;

@@ -1,8 +1,14 @@
-import type {
-  UpdateCheckResult,
-  UpdateStartResult,
-  UpdateStatus,
-  UpdateStatusResult,
+import { execFile } from "node:child_process";
+import path from "node:path";
+import { promisify } from "node:util";
+
+import {
+  macosLocalSigningStatusSchema,
+  type MacOsLocalSigningStatus,
+  type UpdateCheckResult,
+  type UpdateStartResult,
+  type UpdateStatus,
+  type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 import {
   acquireUpdateOperationLock,
@@ -26,12 +32,23 @@ import {
   type NpmReleaseAvailability,
 } from "@codexhost/update-manager";
 
+const execFileAsync = promisify(execFile);
 const ERROR_MAX_LENGTH = 500;
+const UNSUPPORTED_MACOS_SIGNING_STATUS: MacOsLocalSigningStatus = Object.freeze({
+  supported: false,
+  enabled: false,
+  certificatePresent: false,
+  appSignedWithLocalCert: false,
+  appPath: null,
+  certificateName: "CodexHost Local Signer",
+  certificateSha1: null,
+});
 
 export interface HostUpdateCoordinator {
   check(signal?: AbortSignal): Promise<UpdateCheckResult>;
   start(): Promise<UpdateStartResult>;
   status(): Promise<UpdateStatusResult>;
+  macosSigning?(action: "status" | "setup" | "remove"): Promise<MacOsLocalSigningStatus>;
 }
 
 export interface CreateHostUpdateCoordinatorOptions {
@@ -316,6 +333,50 @@ export function createHostUpdateCoordinator(
         return { status: await latestStatus(context) };
       } catch {
         return { status: null };
+      }
+    },
+
+    async macosSigning(action: "status" | "setup" | "remove"): Promise<MacOsLocalSigningStatus> {
+      if (platform !== "darwin") return UNSUPPORTED_MACOS_SIGNING_STATUS;
+      let context: InstalledUpdateContext;
+      try {
+        context = await installedContext();
+      } catch {
+        if (action === "status") return UNSUPPORTED_MACOS_SIGNING_STATUS;
+        throw new Error("macOS local signing requires an installed macOS app bundle");
+      }
+      if (context.installation.kind !== "macos-dmg") {
+        if (action === "status") return UNSUPPORTED_MACOS_SIGNING_STATUS;
+        throw new Error("macOS local signing is only available for the macOS app bundle");
+      }
+      const appPath = context.installation.options.appPath;
+      const launcher =
+        options.environment?.CODEXHOST_LAUNCHER_EXECUTABLE ??
+        path.join(appPath, "Contents", "MacOS", "codexhost");
+      const args = ["macos-signing", action, "--json", "--app", appPath];
+      const timeout = action === "setup" ? 120_000 : 30_000;
+      try {
+        const { stdout } = await execFileAsync(launcher, args, {
+          env: {
+            ...process.env,
+            ...options.environment,
+            ...(context.common.dataDirectory
+              ? { CODEXHOST_DATA_DIR: context.common.dataDirectory }
+              : {}),
+          },
+          timeout,
+          maxBuffer: 256 * 1024,
+        });
+        return macosLocalSigningStatusSchema.parse(JSON.parse(stdout.trim()));
+      } catch (error) {
+        const stderr =
+          typeof error === "object" &&
+          error !== null &&
+          "stderr" in error &&
+          typeof (error as { stderr?: unknown }).stderr === "string"
+            ? (error as { stderr: string }).stderr.trim()
+            : "";
+        throw new Error(stderr || boundedError(error));
       }
     },
   });

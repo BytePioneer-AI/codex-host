@@ -15,12 +15,14 @@ mod desktop_shell;
 mod host_service;
 mod installation_layout;
 mod launch_preferences;
+mod macos_signing;
 mod native_harness_broker;
 mod runtime_instance;
 #[cfg(unix)]
 mod secure_storage;
 mod service_update;
 mod services;
+mod shortcut;
 mod startup_record;
 mod system_proxy_environment;
 mod web_service;
@@ -175,6 +177,8 @@ const USAGE: &str = "usage:
   codexhost stop
   codexhost status
   codexhost autostart on|off|status
+  codexhost shortcut install|remove|status [--json]
+  codexhost macos-signing status|setup|remove [--app <path>] [--json]
   codexhost console
   codexhost update
   codexhost launch [--windows-direct] [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
@@ -1802,6 +1806,9 @@ fn launch_default(interactive: bool) -> Result<(), Box<dyn Error>> {
         startup_record::finish(StartupOutcome::Ready, None);
         return Ok(());
     }
+    if !interactive {
+        shortcut::maybe_prompt_on_first_run();
+    }
     let options = default_launch_options();
     autostart::refresh();
     start_launch_console(&options);
@@ -1857,6 +1864,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 [flag] if flag == "--onboarding" => true,
                 _ => return Err("usage: codexhost app [--onboarding]".into()),
             };
+            shortcut::maybe_prompt_on_first_run();
             autostart::refresh();
             start_launch_console(&default_launch_options());
             let installed = InstalledResources::from_current_executable()?;
@@ -1874,6 +1882,8 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             services::run(action, &arguments[1..])
         }
         Some("autostart") => autostart::run(&arguments[1..]),
+        Some("shortcut") => shortcut::run(&arguments[1..]),
+        Some("macos-signing") => macos_signing::run(&arguments[1..]),
         Some("console") if arguments.len() == 1 => run_console_command("open"),
         Some("update") if arguments.len() == 1 => run_console_command("update"),
         Some("update") => Err("update accepts no arguments".into()),

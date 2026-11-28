@@ -34,6 +34,11 @@ pub(crate) fn subcommand_usage(arguments: &[String]) -> Option<&'static str> {
         ),
         "status" => ("codexhost status", None),
         "autostart" => ("codexhost autostart on|off|status", None),
+        "shortcut" => ("codexhost shortcut install|remove|status [--json]", None),
+        "macos-signing" => (
+            "codexhost macos-signing status|setup|remove [--app <path>] [--json]",
+            None,
+        ),
         "console" => ("codexhost console", None),
         "update" => ("codexhost update", None),
         "launch-prefs" => (

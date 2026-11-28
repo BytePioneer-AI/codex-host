@@ -307,6 +307,15 @@ export interface RendererSettingsMessages {
   };
   readonly updateStarCallout: string;
   readonly updateStarLink: string;
+  readonly macosSigningTitle: string;
+  readonly macosSigningDescription: string;
+  readonly macosSigningStatusEnabled: string;
+  readonly macosSigningStatusNeedsResign: string;
+  readonly macosSigningEnableButton: string;
+  readonly macosSigningResignButton: string;
+  readonly macosSigningSettingUp: string;
+  readonly macosSigningRemoveButton: string;
+  readonly macosSigningRemoving: string;
   readonly aboutTagline: string;
   readonly aboutParagraphs: readonly string[];
   readonly aboutOpenSource: string;
@@ -636,6 +645,16 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateStarCallout:
     "If CodexHost has helped you, please Star it on GitHub. It means a lot to us 👉",
   updateStarLink: "GitHub",
+  macosSigningTitle: "Keep macOS permissions after updates",
+  macosSigningDescription:
+    "Avoid re-granting notification or microphone permissions on updates (verified once on this Mac).",
+  macosSigningStatusEnabled: "On",
+  macosSigningStatusNeedsResign: "Needs re-sign",
+  macosSigningEnableButton: "Enable",
+  macosSigningResignButton: "Re-sign",
+  macosSigningSettingUp: "Verifying...",
+  macosSigningRemoveButton: "Turn off",
+  macosSigningRemoving: "Turning off...",
   aboutTagline: "Run Pi and other Harnesses in Codex Desktop",
   aboutParagraphs: Object.freeze([
     "We believe Codex Desktop offers the best desktop development experience available today.",
@@ -960,6 +979,15 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   }),
   updateStarCallout: "如果 CodexHost 帮到了你，请在 GitHub 点个 Star，这对我们意义重大 👉",
   updateStarLink: "GitHub",
+  macosSigningTitle: "更新后保留系统权限",
+  macosSigningDescription: "避免每次更新后重新授予通知、麦克风等权限（仅需本机验证一次）。",
+  macosSigningStatusEnabled: "已开启",
+  macosSigningStatusNeedsResign: "需重新验证",
+  macosSigningEnableButton: "开启",
+  macosSigningResignButton: "重新验证",
+  macosSigningSettingUp: "验证中…",
+  macosSigningRemoveButton: "关闭",
+  macosSigningRemoving: "关闭中…",
   aboutTagline: "在 Codex Desktop 中运行 Pi 和其他 Harness",
   aboutParagraphs: Object.freeze([
     "我们认为 Codex Desktop 提供了目前最好的桌面开发交互体验。",

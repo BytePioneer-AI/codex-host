@@ -29,6 +29,7 @@ mod installation;
 mod linux_installation;
 #[cfg(target_os = "macos")]
 mod macos_aqua_process;
+mod macos_local_signing;
 mod macos_native_harness_broker;
 #[cfg(target_os = "macos")]
 pub use macos_aqua_process::{
@@ -89,6 +90,14 @@ pub use installation::discover_desktop_managed_codex_cli;
 pub use installation::discover_registered_codex_desktop;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
+pub use macos_local_signing::{
+    DEFAULT_LOCAL_SIGNING_CERT_NAME, MACOS_LOCAL_SIGNING_FILE, MacOsLocalSigningConfig,
+    MacOsLocalSigningStatus, inspect_macos_local_signing, read_macos_local_signing_config,
+    remove_macos_local_signing, remove_macos_local_signing_config, setup_macos_local_signing,
+    write_macos_local_signing_config,
+};
+#[cfg(target_os = "macos")]
+pub use macos_local_signing::{resign_staged_macos_app_if_enabled, sign_macos_app_bundle};
 pub use macos_native_harness_broker::{
     NATIVE_HARNESS_BROKER_LABEL, NativeHarnessBrokerCommand, NativeHarnessBrokerInstallStep,
     NativeHarnessBrokerLaunchAgentPlan, NativeHarnessBrokerLaunchctlPlan,

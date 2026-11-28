@@ -131,8 +131,15 @@ Reuses your local logins—no extra account or third-party proxy.
 
 Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
 
+macOS one-line install (recommended, no Gatekeeper prompt):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BytePioneer-AI/codex-host/main/scripts/install-macos.sh | bash
+```
+
 > [!NOTE]
-> **macOS "App can't be verified" on first launch**: run `xattr -dr com.apple.quarantine /Applications/codexhost.app` in Terminal.
+> **macOS manual `.dmg` shows "App can't be verified"**: run `xattr -dr com.apple.quarantine /Applications/codexhost.app`, or click **Open Anyway** in **System Settings → Privacy & Security**.
+> **Keep macOS permissions across updates**: enable **Keep macOS permissions after updates** in **Settings → Updates**.
 
 ### 2. npm
 
@@ -146,6 +153,7 @@ codexhost app      # Open the lightweight standalone app directly
 codexhost web      # Start local Web UI
 codexhost status   # Check service status
 codexhost update   # Upgrade to the latest release
+codexhost shortcut install|remove|status  # Manage macOS/Windows desktop icon
 codexhost stop     # Stop background services (run before npm reinstall)
 ```
 

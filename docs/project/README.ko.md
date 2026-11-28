@@ -131,8 +131,15 @@ Mac·Linux·Windows를 원클릭 양방향으로 연결해 서로 다른 머신�
 
 Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
 
+macOS 원라인 설치 (권장, Gatekeeper 경고 없음):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BytePioneer-AI/codex-host/main/scripts/install-macos.sh | bash
+```
+
 > [!NOTE]
-> **macOS 최초 실행 시 「확인할 수 없는 앱」 경고가 뜰 때**: 터미널에서 `xattr -dr com.apple.quarantine /Applications/codexhost.app`를 실행하세요.
+> **macOS `.dmg` 수동 설치 후 「확인할 수 없는 앱」 경고가 뜰 때**: `xattr -dr com.apple.quarantine /Applications/codexhost.app`를 실행하거나 **시스템 설정 → 개인정보 보호 및 보안**에서 **확인 없이 열기**를 클릭하세요.
+> **업데이트 후 시스템 권한 유지**: **설정 → 업데이트**에서 **업데이트 후 macOS 권한 유지**를 켜세요.
 
 ### 2. npm 설치
 
@@ -146,6 +153,7 @@ codexhost app      # 경량 독립 클라이언트 바로 실행
 codexhost web      # 로컬 Web UI 시작
 codexhost status   # 서비스 상태 확인
 codexhost update   # 최신 버전으로 업그레이드
+codexhost shortcut install|remove|status  # macOS / Windows 데스크톱 아이콘 관리
 codexhost stop     # 백그라운드 서비스 종료 (npm 재설치 전 실행)
 ```
 

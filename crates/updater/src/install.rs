@@ -261,7 +261,19 @@ fn install_macos(request: &UpdateRequest, macos: &MacOsInstallation) -> Result<(
                 .args(["--verify", "--deep", "--strict"])
                 .arg(&staged),
             "macOS application integrity check",
-        )
+        )?;
+        let signing_data_dir = request.data_directory.clone().or_else(|| {
+            env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".codexhost"))
+        });
+        if let Some(data_dir) = signing_data_dir
+            && let Err(error) =
+                codexhost_platform::resign_staged_macos_app_if_enabled(&data_dir, &staged)
+        {
+            eprintln!(
+                "codexhost updater: warning: could not re-sign updated macOS app with local certificate: {error}"
+            );
+        }
+        Ok(())
     })();
     let detach_result = run_checked(
         Command::new("/usr/bin/hdiutil").arg("detach").arg(&mount),

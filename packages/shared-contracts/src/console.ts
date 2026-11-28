@@ -64,6 +64,9 @@ export const CONSOLE_HOST_METHODS = Object.freeze([
   "codexhost/update/check",
   "codexhost/update/start",
   "codexhost/update/status",
+  "codexhost/update/macos-signing/status",
+  "codexhost/update/macos-signing/setup",
+  "codexhost/update/macos-signing/remove",
 ] as const);
 
 export type ConsoleHostMethod = (typeof CONSOLE_HOST_METHODS)[number];

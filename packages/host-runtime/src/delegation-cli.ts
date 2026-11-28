@@ -597,6 +597,7 @@ export async function runDelegationCli(input: {
         "--message-file",
         "--interrupt",
         "--steer",
+        "--mailbox",
         "--watch",
         "--watch-timeout-ms",
       ]);
@@ -624,10 +625,18 @@ export async function runDelegationCli(input: {
       const interrupt = value(parsed, "--interrupt");
       if (interrupt !== undefined && interrupt !== "true" && interrupt !== "false")
         throw new DelegationControlError("INVALID_ARGUMENT", "--interrupt must be true or false");
+      const mailbox = value(parsed, "--mailbox");
+      if (mailbox !== undefined && mailbox !== "true" && mailbox !== "false")
+        throw new DelegationControlError("INVALID_ARGUMENT", "--mailbox must be true or false");
       if (steer === "true" && interrupt === "true")
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
           "--steer and --interrupt are mutually exclusive",
+        );
+      if (mailbox === "true" && (steer !== undefined || interrupt !== undefined))
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--mailbox true cannot be combined with --steer or --interrupt",
         );
       const watch = value(parsed, "--watch");
       if (watch !== undefined && watch !== "true" && watch !== "false")
@@ -642,6 +651,8 @@ export async function runDelegationCli(input: {
           "UNSUPPORTED",
           "Cross-host thread watch is not supported yet",
         );
+      if (remote && mailbox === "true")
+        throw new DelegationControlError("UNSUPPORTED", "Cross-host mailbox is not supported yet");
       const caller = callerThreadId(environment);
       writeResult(
         "thread send",
@@ -650,10 +661,14 @@ export async function runDelegationCli(input: {
           path: "/v1/thread/send",
           body: {
             ...target,
-            ...(remote && caller ? { callerThreadId: normalizeThreadId(caller) } : {}),
+            // A mailbox message names its sender when it is delivered later.
+            ...((remote || mailbox === "true") && caller
+              ? { callerThreadId: normalizeThreadId(caller) }
+              : {}),
             message,
             ...(interrupt === "true" ? { interrupt: true } : {}),
             ...(steer !== undefined ? { steer: steer === "true" } : {}),
+            ...(mailbox === "true" ? { mailbox: true } : {}),
             ...(watch === "true"
               ? {
                   ...(caller ? { notifyThreadId: normalizeThreadId(caller) } : {}),

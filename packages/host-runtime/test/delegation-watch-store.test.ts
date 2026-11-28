@@ -80,11 +80,21 @@ describe("FileDelegationWatchStore", () => {
     expect(await readdir(directory)).toEqual(["mine.json"]);
   });
 
-  it.each(["审查最近PR · 委派", undefined])(
-    "adopts records of an exited Runtime, with or without a title (%s)",
-    async (title) => {
+  it.each([
+    { title: "审查最近PR · 委派" },
+    {},
+    {
+      state: "pendingDelivery" as const,
+      message: "合入了\n第二行",
+      from: "line",
+      watchAfterDelivery: { notifyThreadId: "line", timeoutMs: 60_000 },
+    },
+  ])(
+    "adopts records of an exited Runtime, including titles and mailbox messages (%o)",
+    async (fields) => {
+      const title = "title" in fields ? fields.title : undefined;
       await mkdir(directory, { recursive: true });
-      const record = watch("old", title ? { title } : {});
+      const record = watch("old", fields);
       await writeForeign(directory, "old.json", { pid: exitedPid(), boot: bootSeconds() }, record);
 
       const adopted = await new FileDelegationWatchStore(directory).adopt();

@@ -1,6 +1,8 @@
-# Thread watch：一次性的 Thread 停下或等待回答通知
+# Thread watch 与信箱：等 Thread 空闲后送达的通知和消息
 
 `codexhost thread watch` 让一个 Thread 在另一个 Thread **停下（不再运行）或等待回答问题**时收到一次通知。调用方注册后立即返回，可以继续工作或结束自己的 Turn，不需要等待或轮询。
+
+`codexhost thread send --mailbox true` 复用同一套送达：收件 Thread 忙时消息留在它的信箱，空闲后与其他待送内容合成一轮送达，见[信箱](#信箱thread-send---mailbox)。
 
 它是显式选择的能力：不调用时，Host 不会因为子任务终态或提问而主动向任何 Thread 提交输入。同一变更中的忙碌判断修正（见“实现与边界”）不依赖 watch，也作用于普通的 `thread read`、`wait`、`send`。
 
@@ -76,12 +78,12 @@ EOF
 ## 送达
 
 - 通知通过普通的 `send` 在被通知 Thread 中启动一个新 Turn，外部 Harness 与原生 Codex 使用同一路径；不做同轮注入。
-- 被通知 Thread 正忙时通知保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；`thread send` 自身“不排队”的语义不变。
+- 被通知 Thread 正忙时通知保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；不带 `--mailbox true` 的 `thread send` 仍不保留消息。外部 Thread 的 Desktop/Web 跟进队列不为空时也算忙，通知等队列清空后再送（见[外部 Thread 跟进消息队列](external-thread-queue.md)）。
 - 投递失败只有在调用链能证明没有启动 Turn 时才重试：
   - `THREAD_BUSY`（启动前判定），或错误带 `notStarted`（例如原生 Codex 的 resume 校验失败，或 `turn/start` 明确返回错误）：保持待送达并重试；
   - 被通知 Thread 不存在或只读：立即标记 `undeliverable`；
   - 其他失败都视为结果未知，包括 Harness 启动确认超时后包装成的 `DELEGATION_FAILED`：原生可能已经启动了 Turn，为避免重复唤醒不再重试，标记 `undeliverable` 并在原因中说明。
-- 每次投递将同一个被通知 Thread 当前所有待送达通知合并为一条消息，包括此前轮询积累的通知，只启动一个 Turn。
+- 每次投递将同一个被通知 Thread 当前所有待送达通知合并为一条消息，包括此前轮询积累的通知和信箱消息，只启动一个 Turn。
 - 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达时，watch 标记为 `undeliverable` 并保留原因，可由 `thread watches` 查看；最多保留最近 50 条无法送达记录。
 
 ## 与 Stop 的关系
@@ -89,7 +91,22 @@ EOF
 - Desktop / Web 的 Stop 被观察的 Thread，Thread 停下，watch 以 `interrupted` 通知一次。“调整方向”的停止后重发不算停下，不会通知。主动 `thread cancel` 则移除被观察 Thread 的 watch；自然完成、失败或 Host 重启等外部中断仍照常通知。
 - `thread send --interrupt` 始终采用先停再发，不做原生同轮插入：目标忙时取消当前 Turn，确认 Thread 已停下后只发送一次；目标空闲时直接发送。读取、取消和等待停下合计最多 30 秒，取消拒绝、失败或超时都不发送新消息。它直接使用所属会话的取消接口，不经过会删除 watch 的主动 cancel 入口；从取消到新消息提交结束，暂停该 Thread 的 watch 观察和通知投递，丢弃跨越这段操作的在途观察结果，保留原有注册及期限。成功重发不产生临时 `interrupted` 通知；失败后恢复观察，实际终态仍可通知。已发起的投递不能撤回。与其他提交竞争时仍可能返回 `THREAD_BUSY`，不自动重试或排队。
 - 用户 Stop 被通知 Thread 的当前 Turn，不会取消观察其他 Thread 的 watch：该 Thread 空闲后，到期的通知仍会启动一个新 Turn。
-- 与 `thread send` 的“不排队”约定和 [调整方向](external-thread-steering.md) 的“失败不自动重试或偷偷排队”并不冲突：待送达的通知只存在于显式注册的 watch 中，普通消息的语义不变。
+- 与 [调整方向](external-thread-steering.md) 的“失败不自动重试或偷偷排队”并不冲突：待送达的内容只来自显式注册的 watch 和显式 `--mailbox true` 的发送，普通消息的语义不变。
+
+## 信箱（thread send --mailbox）
+
+`thread send --mailbox true`（HTTP/MCP `mailbox: true`）给忙碌的 Thread 发消息时不返回 `THREAD_BUSY`，也不打断它：
+
+- 收件 Thread 空闲、信箱里没有等它的内容、也不在 `--interrupt` 停止再发的过程中时，直接发送，与普通 `thread send` 相同，返回 `delivery: "started"`。
+- 否则消息进入信箱，返回 `delivery: "mailbox"` 和收件 Thread 当时的状态。信箱里已有内容时新消息排在后面，即使收件 Thread 此刻空闲，保证先后顺序。
+- 收件 Thread 空闲（外部 Thread 还要求 Desktop/Web 跟进队列为空）后，信箱里的消息按发出先后，连同同时到期的 watch 通知合成一轮送达，只启动一个 Turn。被 `--interrupt` 停止再发期间不投递。
+- 送达的文字以 `[codexhost mailbox] Messages sent to you while you were busy, oldest first:` 开头，每条前写明发件方和发出多久：发件方是 Thread 时为它的会话引用（标题读不到时用 ID），外部客户端为 `client <名称>`，无法识别时为 `an unidentified sender`。发件方取 Host 验证过的调用身份，其次是 CLI 的 `CODEXHOST_THREAD_ID` / `CODEX_THREAD_ID`，只用于显示，不参与授权。watch 通知部分保持原格式，接在最后；含信箱消息的一轮在 Web 中按普通用户消息显示，不折叠成通知卡片。
+- `--watch true` 搭配信箱时，观察的是处理这条消息的那一轮，而不是收件 Thread 当时正在跑的那一轮。直接发送时返回 `watch: { state: "watching" }`；消息进入信箱时返回 `watch: { state: "afterDelivery" }`，观察请求随消息存盘。两种情况都在发送成功后立即登记，不先读取状态，所以那一轮即使在第一次观察前就已结束，也会按它的结果通知；若那时收件 Thread 已开始另一轮，则在那一轮停下时通知。通知目标在发送前按 `thread watch` 的规则检查，不合格时消息照常发送，`watch` 为 `notRegistered` 并给出原因。
+- 只有 `THREAD_BUSY` 会把消息留进信箱；其他发送失败（Thread 不存在、只读等）照常返回给发件方。
+- 投递规则与 watch 通知相同：最长等 6 小时（发送前若已超过 6 小时投递窗口，直接标记 `undeliverable` 而不继续发送），送达结果未知时不重发并标记 `undeliverable`，Host 重启后继续投递（可能重复一次）。等待中和无法送达的消息出现在 `thread watches` 中，带 `message` 和 `from`；此时 `threadId` 与 `notifyThreadId` 都是收件 Thread。
+- 单个收件 Thread 的待送达信箱最多保留 50 条消息、正文 UTF-8 总大小不超过 256 KiB；超限时返回 `MAILBOX_FULL` 且不写入新消息。
+- 主动 `thread cancel` 收件 Thread 不会删除别人发给它的信箱消息。用户在跟进队列为空时 Stop 收件 Thread，它空闲后信箱照常送达。
+- `--mailbox true` 不能与 `--steer`、`--interrupt` 同时给出。和 watch 一样只用于本机 Host：带 `--host` 时 CLI 拒绝，控制接口拒绝远端目标；观察请求只能由本机控制接口给出，通知目标按 `thread send --watch true` 的规则确定，配对 Peer 无法替接收 Host 上的 Thread 指定通知目标。
 
 ## 被通知 Thread 的确定
 
@@ -104,7 +121,7 @@ EOF
 
 - `packages/host-runtime/src/delegation-watch.ts` 只依赖公开的 `read` 与 `send`，每轮完成后间隔 2 秒继续轮询（现有 `thread wait` 同样基于轮询）。它不依赖具体 Harness、Desktop、Renderer 或委派血缘；就绪条件为终态或 `pendingQuestions` 非空。
 - 服务由 `DelegationControlRegistry` 持有，位于各 Host 会话之上，因此两端可以属于不同的 Host 会话。CLI 与 Runtime 控制接口的 cancel 都经此入口：取消结果未定时暂停该 Thread 的通知投递，接受后删除所有通知目标的 watch，否则恢复投递。异步观察和投递准备在继续时检查 watch 是否仍有效；已经发起的投递无法撤回，仍按原有规则清理。
-- watch 持久保存在 `<数据目录>/delegation-watches/`（默认 `~/.codexhost`），每个 watch 一个仅当前用户可读写的记录，只含 Thread 标识、状态、期限与原因。Runtime 重启后恢复观察与投递，调用方无需重新注册；期限按绝对时间计算，停机时间计入。
+- watch 持久保存在 `<数据目录>/delegation-watches/`（默认 `~/.codexhost`），每个 watch 一个仅当前用户可读写的记录，只含 Thread 标识、状态、期限与原因；信箱消息同样一条一个记录，另含消息原文和发件方，送达后删除。Runtime 重启后恢复观察与投递，调用方无需重新注册；期限按绝对时间计算，停机时间计入。
 - 多个 Runtime 进程可共用数据目录（例如 Desktop 与远程监听同时运行）。每个进程只写自己的记录；启动时接管已退出进程（或上次开机遗留）的记录，以原子重命名认领，同一记录只被一个进程接管。
 - 恢复后的 watch 最多等待 5 分钟让持有 Thread 的会话重新注册：这期间读取失败不计入 60 秒 `unreadable` 宽限，也不报告 `notFound` 或 `timedOut`；待投递通知要等被通知 Thread 可读后再发送。
 - Host Runtime 重启会结束它持有的 Harness 进程，正在运行的 Turn 随之中断。之后读取时它可能显示为已完成（有的 Harness 恢复后还会换一个 Turn 标识），也可能根本无法重新打开。因此，重启前处于观察中的 watch，恢复后第一次成功读取若已是终态，或宽限结束后仍报告 Thread 不存在，都按 `interrupted` 通知并说明原因；原因随记录保存，再次重启也不丢失。代价是：由长期运行的远程监听持有、在停机期间真正完成的 Thread 也会被报告为 `interrupted`；被通知方本来就要先读取 Thread 再行动。

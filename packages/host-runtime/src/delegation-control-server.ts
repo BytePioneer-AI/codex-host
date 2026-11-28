@@ -13,6 +13,7 @@ import {
   type ThreadAnswerInput,
   type ThreadCancelInput,
   type ThreadListInput,
+  type ThreadMailInput,
   type ThreadSendInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -164,6 +165,34 @@ async function sendWithWatch(
   return { ...result, watch };
 }
 
+/**
+ * `thread send --mailbox` is local, like watches: only this route names its watch, from the
+ * notified Thread already resolved for the caller, so no other entry can choose a target.
+ */
+function sendToMailbox(
+  watches: DelegationWatchApi | undefined,
+  body: Record<string, unknown>,
+  callerAuth?: DelegationCallerAuthContext,
+): Promise<unknown> {
+  if (body.steer !== undefined || body.interrupt !== undefined)
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      "mailbox cannot be combined with steer or interrupt",
+    );
+  if (isRemoteHostId(body.hostId as string | undefined))
+    throw new DelegationControlError("UNSUPPORTED", "Cross-host mailbox is not supported yet");
+  const { threadId, message, callerThreadId, watchTimeoutMs, notifyThreadId } = body;
+  const input = {
+    threadId,
+    message,
+    ...(callerThreadId !== undefined ? { callerThreadId } : {}),
+    ...(watchTimeoutMs !== undefined
+      ? { watch: { notifyThreadId: notifyThreadId ?? "", timeoutMs: watchTimeoutMs } }
+      : {}),
+  };
+  return watchApi(watches).mail(attachCallerAuth(input, callerAuth) as unknown as ThreadMailInput);
+}
+
 /** The delegation routes shared by the Host control server and the external client listener. */
 export async function routeDelegationRequest(
   handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi; inventory?: HostInventory },
@@ -245,6 +274,10 @@ export async function routeDelegationRequest(
           "Cross-host thread watch is not supported yet",
         );
       }
+      if (normalized.mailbox !== undefined && typeof normalized.mailbox !== "boolean")
+        throw new DelegationControlError("INVALID_ARGUMENT", "mailbox must be a boolean");
+      if (normalized.mailbox === true)
+        return sendToMailbox(handlers.watchApi, normalized, callerAuth);
       return normalized.watchTimeoutMs === undefined
         ? handlers.api.send(attachCallerAuth(normalized, callerAuth) as unknown as ThreadSendInput)
         : sendWithWatch(handlers.api, watchApi(handlers.watchApi), normalized, callerAuth);

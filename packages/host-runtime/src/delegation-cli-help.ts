@@ -54,12 +54,13 @@ Reuse --request-id for an idempotent retry. Identical recent parent/target/task/
 --ref records where the work came from, such as an issue URL; repeat it for several. Absolute URIs only, at most 16 per Thread; credentials in a URI are removed. A child inherits its parent Thread's references.
 An external client that omits --parent-thread starts the work as itself (parent client:<name>) and must pass --cwd.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--host <hostId>] [--interrupt] [--steer true|false] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
+  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--host <hostId>] [--interrupt] [--steer true|false] [--mailbox true|false] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
 Start a new Turn in a writable Thread and return after submission. Accepts thread://<id>?hostId=<encoded-host-id> or --host <remote-peer:id> for paired Peers.
 --message and --message-file are mutually exclusive. --message-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --message is unchanged.
-Without --interrupt or --steer true, THREAD_BUSY means the current Turn is still active. Messages are not queued.
+Without --interrupt, --steer true or --mailbox true, THREAD_BUSY means the current Turn is still active, or queued Desktop/Web follow-ups go first; the message is not kept.
+--mailbox true sends at once when the Thread is free and nothing else waits for it. Otherwise the message waits in the Thread's mailbox (kept across Host restarts, up to 6 hours; at most 50 pending messages and 256 KiB total UTF-8 text per recipient, returning MAILBOX_FULL when exceeded) and everything waiting, watch notifications included, is delivered as one Turn when the Thread is free and its queued follow-ups have run; the delivered Turn names each sender. The response has delivery=started or delivery=mailbox. With --watch true, a kept message reports watch state afterDelivery and is watched from its delivery, so a delivered Turn that ends at once is still notified. Not available with --host. thread watches lists waiting messages.
 --interrupt cancels an active Turn and confirms it stopped before sending (30 s stop timeout); an idle Thread is sent normally. Cancellation failure/timeout sends nothing. It preserves existing watches, suppressing the temporary stop notification; it never retries or queues a failed send.
---steer true and --interrupt true are mutually exclusive; asking for both is rejected before any request.
+--steer true and --interrupt true are mutually exclusive, and --mailbox true cannot be combined with either; such requests are rejected before sending. --steer true and --interrupt may start ahead of queued follow-ups.
 --steer true uses the same adjustment operation as Desktop: native steering where supported, otherwise stop and resend. An idle Thread starts a new Turn. Omitted or false keeps the busy rejection above.
 Success confirms acceptance, not execution in the current Turn or task completion. Use read/wait to observe the result.
 --watch true registers a watch only after sending succeeds, notifying the resolved caller (CODEXHOST_THREAD_ID, then CODEX_THREAD_ID; otherwise the external client itself). The response's watch field has the same shape as delegate start: watching/alreadyTerminal, or notRegistered with a reason, including a missing caller. --watch-timeout-ms requires --watch true and defaults to 1740000 (29 min).`,
@@ -125,7 +126,7 @@ export const DELEGATION_HELP = `usage:
   codexhost harness list
   codexhost harness inspect <harness>
   codexhost delegate start --harness <id> (--task <text> | --task-file <path|->)
-  codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--watch true]
+  codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--mailbox true] [--watch true]
   codexhost thread cancel <thread>
   codexhost thread read <thread>
   codexhost thread export <thread> (rarely needed)

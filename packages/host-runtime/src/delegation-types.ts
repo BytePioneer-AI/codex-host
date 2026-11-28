@@ -229,14 +229,45 @@ export interface ThreadSendInput {
   steer?: boolean;
 }
 
+/** The message started a Turn, or steered into the running one. */
 export interface ThreadSendResult {
   hostId?: string;
   threadId: string;
   turnId: string;
   harnessId: RoutedHarnessId;
   status: "running";
+  /** Present only for mailbox sends. */
+  delivery?: "started";
   /** Present only when send also requested a watch, in the same shape as delegate start. */
   watch?: DelegationStartResult["watch"];
+  next: { read: string; wait: string };
+}
+
+/**
+ * `thread send --mailbox`: a busy Thread keeps the message instead of returning THREAD_BUSY, and
+ * everything waiting for it is delivered as one Turn once it is free. Local only, like watches.
+ */
+export interface ThreadMailInput {
+  /** Sender named by the CLI; Host-verified caller identity takes precedence. */
+  callerThreadId?: string;
+  threadId: string;
+  message: string;
+  /** Watch the Turn that delivers this message, notifying this Thread or client. */
+  watch?: { notifyThreadId: string; timeoutMs: number };
+}
+
+/** A mailbox send to a busy Thread: the message waits and is delivered when the Thread is free. */
+export interface ThreadSendMailboxResult {
+  hostId?: string;
+  threadId: string;
+  harnessId: RoutedHarnessId;
+  /** The recipient's status when the message was kept. */
+  status: DelegationThreadStatus;
+  delivery: "mailbox";
+  /** Present when a watch was requested; it is registered once the message is delivered. */
+  watch?:
+    | { state: "afterDelivery"; notifyThreadId: string; timeoutMs: number }
+    | { state: "notRegistered"; reason: string };
   next: { read: string; wait: string };
 }
 
@@ -384,6 +415,13 @@ export interface ThreadWatchEntry {
   threadStatus?: DelegationThreadStatus;
   /** Elapsed time since registration, including Host downtime. */
   watchedForMs?: number;
+  /**
+   * Present for a mailbox message instead of a watch: `threadId` and `notifyThreadId` are both
+   * the recipient, and the entry is `pendingDelivery` or `undeliverable` from the start.
+   */
+  message?: string;
+  /** Mailbox message sender: a Thread ID or `client:<name>`; absent when unidentified. */
+  from?: string;
 }
 
 export interface ThreadWatchListResult {
@@ -398,6 +436,7 @@ export interface ThreadWatchListResult {
 export interface DelegationWatchApi {
   watch(input: ThreadWatchInput): Promise<ThreadWatchResult>;
   watches(): Promise<ThreadWatchListResult>;
+  mail(input: ThreadMailInput): Promise<ThreadSendResult | ThreadSendMailboxResult>;
 }
 
 export interface DelegationControlApi {
@@ -445,6 +484,8 @@ export type DelegationControlErrorCode =
   | "CURSOR_EXPIRED"
   /** The Question request is unknown, already answered, or no longer pending. */
   | "QUESTION_NOT_PENDING"
+  /** The recipient Thread's pending mailbox reached its message or size limit. */
+  | "MAILBOX_FULL"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

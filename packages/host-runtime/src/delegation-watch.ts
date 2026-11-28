@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 
 import { formatThreadWatchNotice } from "@codexhost/shared-contracts";
@@ -8,6 +9,8 @@ import {
   type DelegationControlApi,
   type DelegationThreadSnapshot,
   type ThreadCancelResult,
+  type ThreadSendMailboxResult,
+  type ThreadSendResult,
   type ThreadWatchInput,
   type ThreadWatchListResult,
   type ThreadWatchOutcome,
@@ -25,6 +28,10 @@ export interface ClientEventSink {
 }
 
 export { DEFAULT_WATCH_TIMEOUT_MS };
+/** Maximum pending mailbox messages kept for one recipient Thread. */
+export const MAX_MAILBOX_MESSAGES_PER_THREAD = 50;
+/** Maximum total UTF-8 bytes of pending mailbox messages kept for one recipient Thread. */
+export const MAX_MAILBOX_BYTES_PER_THREAD = 256 * 1024;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 /** How long a fired notification may wait for a busy or unreachable subscriber. */
 const DELIVERY_WINDOW_MS = 6 * 60 * 60_000;
@@ -33,6 +40,8 @@ const MAX_UNDELIVERABLE_ENTRIES = 50;
 const UNREADABLE_GRACE_MS = 60_000;
 /** After a restart, how long restored watches wait for their Host sessions to register again. */
 const DEFAULT_RESTORE_GRACE_MS = 5 * 60_000;
+const MAILBOX_HEADER =
+  "[codexhost mailbox] Messages sent to you while you were busy, oldest first:";
 
 interface Watch extends PersistedWatch {
   /** Invalidates reads that overlapped an internal stop-and-resend operation. */
@@ -45,6 +54,8 @@ interface Watch extends PersistedWatch {
   deliverGraceUntil?: number;
   /** Restored while watching: the Turn that was running may have been cut off by the restart. */
   crossedRestart?: boolean;
+  /** Mailbox message: the sender's title, read when the message was kept; lost on a restart. */
+  senderTitle?: string;
 }
 
 function persisted(watch: Watch): PersistedWatch {
@@ -66,6 +77,9 @@ function persisted(watch: Watch): PersistedWatch {
     title,
     harnessId,
     refs,
+    message,
+    from,
+    watchAfterDelivery,
   } = watch;
   return {
     id,
@@ -85,11 +99,18 @@ function persisted(watch: Watch): PersistedWatch {
     ...(title ? { title } : {}),
     ...(harnessId ? { harnessId } : {}),
     ...(refs?.length ? { refs } : {}),
+    ...(message !== undefined ? { message } : {}),
+    ...(from ? { from } : {}),
+    ...(watchAfterDelivery ? { watchAfterDelivery } : {}),
   };
 }
 
 function terminal(status: DelegationThreadSnapshot["status"]): boolean {
   return status === "completed" || status === "failed" || status === "interrupted";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -142,6 +163,31 @@ function noticeNote(watch: Watch): string | undefined {
     default:
       return undefined;
   }
+}
+
+/** How a mailbox sender is named in the delivered Turn. */
+function senderLabel({ from, senderTitle }: Watch): string {
+  if (!from) return "an unidentified sender";
+  const client = originClientName(from);
+  if (client !== undefined) return `client ${client}`;
+  const label = threadWatchLabel(senderTitle, from).replace(/[[\]\n]/gu, " ");
+  return `[${label}](thread://${from})`;
+}
+
+/** Mailbox messages first, oldest first, then any watch notices due at the same time. */
+function deliveryText(pending: readonly Watch[]): string {
+  const notices = pending.filter((watch) => watch.message === undefined);
+  const messages = pending
+    .filter((watch) => watch.message !== undefined)
+    .sort((left, right) => Date.parse(left.registeredAt) - Date.parse(right.registeredAt));
+  if (messages.length === 0) return notification(notices);
+  const now = Date.now();
+  const sections = messages.map((mail) => {
+    const age = duration(Math.max(0, now - Date.parse(mail.registeredAt)));
+    return `--- From ${senderLabel(mail)}, sent ${age} ago ---\n${mail.message}`;
+  });
+  const text = [MAILBOX_HEADER, "", sections.join("\n\n")].join("\n");
+  return notices.length > 0 ? `${text}\n\n${notification(notices)}` : text;
 }
 
 function notification(watches: readonly Watch[]): string {
@@ -206,26 +252,9 @@ export class DelegationWatchService {
     if (this.#closed) throw new DelegationControlError("INTERNAL_ERROR", "Host Runtime is closing");
     if (typeof input.threadId !== "string" || !input.threadId.trim())
       throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
-    if (typeof input.notifyThreadId !== "string" || !input.notifyThreadId.trim())
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "Notified Thread is required; pass --notify <thread>",
-      );
-    if (input.threadId === input.notifyThreadId)
-      throw new DelegationControlError("INVALID_ARGUMENT", "A Thread cannot watch itself");
-    if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
-      throw new DelegationControlError("INVALID_ARGUMENT", "timeoutMs must be a positive integer");
-
-    const client = originClientName(input.notifyThreadId);
-    if (client !== undefined && (!isValidClientName(client) || !this.#clientEvents))
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "The notified client is invalid or this Runtime keeps no client events",
-      );
-    // Both reads reject unknown Threads, so a watch is never reported for a missing end.
+    // Both ends are read, so a watch is never reported for a missing end.
+    await this.#checkNotified(input.threadId, input.notifyThreadId, input.timeoutMs);
     const target = await this.#api.read({ threadId: input.threadId, view: "result" });
-    if (client === undefined)
-      await this.#api.read({ threadId: input.notifyThreadId, view: "result" });
     const result = {
       threadId: input.threadId,
       notifyThreadId: input.notifyThreadId,
@@ -251,37 +280,107 @@ export class DelegationWatchService {
         pendingQuestions: target.pendingQuestions,
       };
     }
-    const existing = this.#watches.find(
-      (watch) =>
-        watch.state === "watching" &&
-        watch.threadId === input.threadId &&
-        watch.notifyThreadId === input.notifyThreadId,
-    );
+    const existing = this.#watching(input.threadId, input.notifyThreadId);
     if (existing) return { ...result, state: "watching", timeoutMs: existing.timeoutMs };
-    if (this.#closed) throw new DelegationControlError("INTERNAL_ERROR", "Host Runtime is closing");
-    const watch: Watch = {
-      id: randomUUID(),
-      threadId: input.threadId,
-      notifyThreadId: input.notifyThreadId,
-      state: "watching",
-      registeredAt: new Date().toISOString(),
-      timeoutMs: input.timeoutMs,
-      deadline: Date.now() + input.timeoutMs,
-      ...(target.title ? { title: target.title } : {}),
-    };
-    this.#watches.push(watch);
-    try {
-      await this.#persist(watch, true);
-    } catch (error) {
-      const index = this.#watches.indexOf(watch);
-      if (index >= 0) this.#watches.splice(index, 1);
-      throw new DelegationControlError(
-        "INTERNAL_ERROR",
-        `Could not persist Thread watch: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    this.#schedule();
+    await this.#add(
+      {
+        id: randomUUID(),
+        threadId: input.threadId,
+        notifyThreadId: input.notifyThreadId,
+        state: "watching",
+        registeredAt: new Date().toISOString(),
+        timeoutMs: input.timeoutMs,
+        deadline: Date.now() + input.timeoutMs,
+        ...(target.title ? { title: target.title } : {}),
+      },
+      "Could not persist Thread watch",
+    );
     return { ...result, state: "watching" };
+  }
+
+  /**
+   * `thread send --mailbox`: send now when the Thread is free and nothing is waiting for it;
+   * otherwise keep the message until the Thread is free, then deliver everything waiting for it,
+   * watch notifications included, as one Turn. Only THREAD_BUSY keeps a message; any other send
+   * failure is returned to the sender unchanged.
+   */
+  async mail(input: {
+    threadId: string;
+    message: string;
+    from?: string;
+    watch?: { notifyThreadId: string; timeoutMs: number };
+  }): Promise<ThreadSendResult | ThreadSendMailboxResult> {
+    await this.#ready;
+    if (this.#closed) throw new DelegationControlError("INTERNAL_ERROR", "Host Runtime is closing");
+    const { threadId, message, from } = input;
+    if (typeof message !== "string" || !message.trim())
+      throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
+    // As with `send --watch`, a watch that cannot be registered does not hold the message back.
+    let watch = input.watch;
+    let refused: { state: "notRegistered"; reason: string } | undefined;
+    if (watch) {
+      try {
+        await this.#checkNotified(threadId, watch.notifyThreadId, watch.timeoutMs);
+      } catch (error) {
+        refused = { state: "notRegistered", reason: errorMessage(error) };
+        watch = undefined;
+      }
+    }
+    // Messages already waiting go first, and so does an interrupt between its stop and resend.
+    const waiting =
+      this.#cancelling.has(threadId) ||
+      this.#watches.some(
+        (pending) => pending.state === "pendingDelivery" && pending.notifyThreadId === threadId,
+      );
+    if (!waiting) {
+      try {
+        const sent = await this.#api.send({ threadId, message });
+        const registered = watch
+          ? await this.#watchDelivered(threadId, watch).catch((error: unknown) => ({
+              state: "notRegistered" as const,
+              reason: errorMessage(error),
+            }))
+          : refused;
+        return { ...sent, delivery: "started", ...(registered ? { watch: registered } : {}) };
+      } catch (error) {
+        if (errorCode(error) !== "THREAD_BUSY") throw error;
+      }
+    }
+    // Rejects unknown Threads, so a message is never kept for a missing recipient.
+    const recipient = await this.#api.read({ threadId, view: "result" });
+    const senderTitle = await this.#senderTitle(from);
+    this.#assertMailboxCapacity(threadId, message);
+    const now = Date.now();
+    await this.#add(
+      {
+        id: randomUUID(),
+        threadId,
+        notifyThreadId: threadId,
+        state: "pendingDelivery",
+        registeredAt: new Date(now).toISOString(),
+        timeoutMs: DELIVERY_WINDOW_MS,
+        deadline: now + DELIVERY_WINDOW_MS,
+        deliveryDeadline: now + DELIVERY_WINDOW_MS,
+        message,
+        ...(from ? { from } : {}),
+        ...(senderTitle ? { senderTitle } : {}),
+        ...(watch ? { watchAfterDelivery: watch } : {}),
+      },
+      "Could not keep the message",
+    );
+    this.nudge(threadId);
+    const deferred = watch ? { state: "afterDelivery" as const, ...watch } : refused;
+    return {
+      threadId,
+      harnessId: recipient.harnessId,
+      status: recipient.status,
+      delivery: "mailbox",
+      ...(deferred ? { watch: deferred } : {}),
+      next: {
+        read: `codexhost thread read ${threadId}`,
+        wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
+      },
+    };
   }
 
   async watches(): Promise<ThreadWatchListResult> {
@@ -312,6 +411,8 @@ export class DelegationWatchService {
             reason,
             registeredAt,
             title,
+            message,
+            from,
           }) => {
             const snapshot = snapshots.get(threadId);
             const taskName = snapshot?.title || title;
@@ -330,6 +431,8 @@ export class DelegationWatchService {
               ...(Number.isFinite(registeredMs)
                 ? { watchedForMs: Math.max(0, now - registeredMs) }
                 : {}),
+              ...(message !== undefined ? { message } : {}),
+              ...(from ? { from } : {}),
             };
           },
         ),
@@ -344,8 +447,9 @@ export class DelegationWatchService {
     return this.holdNotifications(threadId, async () => {
       const result = await operation();
       if (result.cancelled) {
+        // Mailbox messages to the cancelled Thread were sent by others and are still delivered.
         for (const watch of [...this.#watches]) {
-          if (watch.threadId === threadId) this.#remove(watch);
+          if (watch.threadId === threadId && watch.message === undefined) this.#remove(watch);
         }
         // Flush ordered removals before acknowledging, using the normal diagnostic-only I/O errors.
         await this.#writes;
@@ -565,15 +669,20 @@ export class DelegationWatchService {
       return;
     }
     if (!(await this.#subscriberReady(notifyThreadId, pending))) return;
-    pending = pending.filter((watch) => this.#deliverable(watch));
+    pending = this.#expirePending(pending.filter((watch) => this.#deliverable(watch)));
     if (pending.length === 0) return;
     for (const watch of pending) watch.delivering = true;
     // Recorded before sending, so a restart during the send delivers again instead of losing it.
     await Promise.all(pending.map((watch) => this.#persist(watch)));
-    pending = pending.filter((watch) => this.#deliverable(watch));
+    pending = this.#expirePending(pending.filter((watch) => this.#deliverable(watch)));
     if (pending.length === 0) return;
     try {
-      await this.#api.send({ threadId: notifyThreadId, message: notification(pending) });
+      await this.#api.send({ threadId: notifyThreadId, message: deliveryText(pending) });
+      // Registered before the messages are removed, so a restart cannot drop a promised watch.
+      for (const { watchAfterDelivery } of pending) {
+        if (!watchAfterDelivery) continue;
+        await this.#watchDelivered(notifyThreadId, watchAfterDelivery, false);
+      }
       for (const watch of pending) this.#remove(watch);
     } catch (error) {
       const failure = deliveryFailure(error);
@@ -631,6 +740,106 @@ export class DelegationWatchService {
     }
   }
 
+  /** The notified end of a watch must be another readable Thread, or a client with an event log. */
+  async #checkNotified(threadId: string, notifyThreadId: string, timeoutMs: number): Promise<void> {
+    if (typeof notifyThreadId !== "string" || !notifyThreadId.trim())
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Notified Thread is required; pass --notify <thread>",
+      );
+    if (threadId === notifyThreadId)
+      throw new DelegationControlError("INVALID_ARGUMENT", "A Thread cannot watch itself");
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+      throw new DelegationControlError("INVALID_ARGUMENT", "timeoutMs must be a positive integer");
+    const client = originClientName(notifyThreadId);
+    if (client === undefined) {
+      await this.#api.read({ threadId: notifyThreadId, view: "result" });
+    } else if (!isValidClientName(client) || !this.#clientEvents) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "The notified client is invalid or this Runtime keeps no client events",
+      );
+    }
+  }
+
+  /** Adds a watch or mailbox message, which exists only once it is saved. */
+  async #add(watch: Watch, failure: string): Promise<void> {
+    if (this.#closed) throw new DelegationControlError("INTERNAL_ERROR", "Host Runtime is closing");
+    this.#watches.push(watch);
+    try {
+      await this.#persist(watch, true);
+    } catch (error) {
+      const index = this.#watches.indexOf(watch);
+      if (index >= 0) this.#watches.splice(index, 1);
+      throw new DelegationControlError("INTERNAL_ERROR", `${failure}: ${errorMessage(error)}`);
+    }
+    this.#schedule();
+  }
+
+  /**
+   * Watches the Turn a mailbox message has just started. Nothing is read first, so a Turn that
+   * has already ended is reported by the first observation instead of counting as terminal
+   * before the watch began; if another Turn has started by then, the notification comes when
+   * that one stops.
+   */
+  async #watchDelivered(
+    threadId: string,
+    { notifyThreadId, timeoutMs }: { notifyThreadId: string; timeoutMs: number },
+    required = true,
+  ): Promise<ThreadWatchResult> {
+    const result: ThreadWatchResult = {
+      threadId,
+      notifyThreadId,
+      state: "watching",
+      status: "running",
+      timeoutMs,
+    };
+    if (this.#watching(threadId, notifyThreadId)) return result;
+    const now = Date.now();
+    const watch: Watch = {
+      id: randomUUID(),
+      threadId,
+      notifyThreadId,
+      state: "watching",
+      registeredAt: new Date(now).toISOString(),
+      timeoutMs,
+      deadline: now + timeoutMs,
+    };
+    if (required) {
+      await this.#add(watch, "Could not persist Thread watch");
+      return result;
+    }
+    if (this.#closed) {
+      // Delivery already started a Turn before shutdown; save the promised watch for the next Runtime.
+      await this.#write((store) => store.save(persisted(watch)));
+      return result;
+    }
+    this.#watches.push(watch);
+    await this.#persist(watch);
+    this.#schedule();
+    return result;
+  }
+
+  #watching(threadId: string, notifyThreadId: string): Watch | undefined {
+    return this.#watches.find(
+      (watch) =>
+        watch.state === "watching" &&
+        watch.threadId === threadId &&
+        watch.notifyThreadId === notifyThreadId,
+    );
+  }
+
+  /** A sending Thread's title for the delivered text; read once, when the message is kept. */
+  async #senderTitle(from: string | undefined): Promise<string | undefined> {
+    if (!from || originClientName(from) !== undefined) return undefined;
+    try {
+      return (await this.#api.read({ threadId: from, view: "result" })).title;
+    } catch {
+      // The ID still identifies the sender.
+      return undefined;
+    }
+  }
+
   /** Restored notifications wait until the notified Thread can be reached again. */
   async #subscriberReady(notifyThreadId: string, pending: readonly Watch[]): Promise<boolean> {
     const restored = pending.filter((watch) => watch.deliverGraceUntil !== undefined);
@@ -644,6 +853,58 @@ export class DelegationWatchService {
     }
     for (const watch of restored) delete watch.deliverGraceUntil;
     return true;
+  }
+
+  #assertMailboxCapacity(threadId: string, message: string): void {
+    const queued = this.#watches.filter(
+      (entry) =>
+        entry.state === "pendingDelivery" &&
+        entry.notifyThreadId === threadId &&
+        entry.message !== undefined,
+    );
+    const active = [
+      ...queued.filter((entry) => entry.delivering),
+      ...this.#expirePending(queued.filter((entry) => !entry.delivering)),
+    ];
+    const messageBytes = Buffer.byteLength(message, "utf8");
+    const currentMessages = active.length;
+    if (currentMessages >= MAX_MAILBOX_MESSAGES_PER_THREAD) {
+      throw new DelegationControlError(
+        "MAILBOX_FULL",
+        `Mailbox for Thread ${threadId} already has ${MAX_MAILBOX_MESSAGES_PER_THREAD} pending messages`,
+        { maxMessages: MAX_MAILBOX_MESSAGES_PER_THREAD, currentMessages },
+      );
+    }
+    let currentBytes = 0;
+    for (const entry of active) {
+      currentBytes += Buffer.byteLength(entry.message ?? "", "utf8");
+    }
+    if (currentBytes + messageBytes > MAX_MAILBOX_BYTES_PER_THREAD) {
+      throw new DelegationControlError(
+        "MAILBOX_FULL",
+        `Mailbox for Thread ${threadId} would exceed its ${MAX_MAILBOX_BYTES_PER_THREAD}-byte pending limit`,
+        { maxBytes: MAX_MAILBOX_BYTES_PER_THREAD, currentBytes, messageBytes },
+      );
+    }
+  }
+
+  #expirePending(pending: readonly Watch[]): Watch[] {
+    const now = Date.now();
+    const active: Watch[] = [];
+    let expired = false;
+    for (const watch of pending) {
+      if (watch.deliveryDeadline !== undefined && now >= watch.deliveryDeadline) {
+        delete watch.delivering;
+        watch.state = "undeliverable";
+        watch.reason = "The delivery window ended before the Thread became free";
+        void this.#persist(watch);
+        expired = true;
+      } else {
+        active.push(watch);
+      }
+    }
+    if (expired) this.#trimUndeliverable();
+    return active;
   }
 
   #deliverable(watch: Watch): boolean {

@@ -246,7 +246,7 @@ describe("event routes", () => {
     const watch = vi.fn(async (input: Record<string, unknown>) => input);
     const route = externalClientRouter({
       api: {} as never,
-      watchApi: { watch, watches: vi.fn() } as never,
+      watchApi: { watch, watches: vi.fn(), mail: vi.fn() } as never,
     });
     const call = { client: "bot", scope: "dispatch" } as Parameters<typeof route>[0];
     await route(call, "/v1/thread/watch", { threadId: "child", timeoutMs: 1 });

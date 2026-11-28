@@ -9,6 +9,7 @@ import {
   type HarnessInspectResult,
   type ThreadAnswerResult,
   type ThreadCancelResult,
+  type ThreadSendMailboxResult,
   type ThreadSendResult,
   type ThreadWatchListResult,
   type ThreadWatchResult,
@@ -29,7 +30,9 @@ function threadLink(threadId: string, hostId?: string): string {
     : `codex://threads/${threadId}`;
 }
 
-function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown } {
+function watchOutput(watch: DelegationStartResult["watch"] | ThreadSendMailboxResult["watch"]): {
+  watch?: unknown;
+} {
   if (!watch) return {};
   if (watch.state === "notRegistered") return { watch };
   return {
@@ -37,7 +40,9 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
       state: watch.state,
       notify: targetLink(watch.notifyThreadId),
       timeoutMs: watch.timeoutMs,
-      ...(watch.pendingQuestions?.length ? { pendingQuestions: watch.pendingQuestions } : {}),
+      ...("pendingQuestions" in watch && watch.pendingQuestions?.length
+        ? { pendingQuestions: watch.pendingQuestions }
+        : {}),
     },
   };
 }
@@ -180,11 +185,12 @@ export function compactDelegationOutput(
       };
     }
     case "thread send": {
-      const result = body as ThreadSendResult;
+      const result = body as ThreadSendResult | ThreadSendMailboxResult;
       return {
         thread: threadLink(result.threadId, result.hostId),
         harnessId: result.harnessId,
         status: result.status,
+        ...(result.delivery ? { delivery: result.delivery } : {}),
         ...watchOutput(result.watch),
       };
     }
@@ -235,6 +241,8 @@ export function compactDelegationOutput(
             taskName,
             threadStatus,
             watchedForMs,
+            message,
+            from,
           }) => ({
             thread: threadLink(threadId),
             notify: targetLink(notifyThreadId),
@@ -246,6 +254,8 @@ export function compactDelegationOutput(
             ...(taskName ? { taskName } : {}),
             ...(threadStatus ? { threadStatus } : {}),
             ...(watchedForMs !== undefined ? { watchedForMs } : {}),
+            ...(message !== undefined ? { message } : {}),
+            ...(from ? { from: targetLink(from) } : {}),
           }),
         ),
       };

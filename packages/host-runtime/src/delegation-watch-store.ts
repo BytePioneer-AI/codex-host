@@ -5,7 +5,10 @@ import path from "node:path";
 
 import type { ThreadWatchEntry, ThreadWatchOutcome } from "./delegation-types.js";
 
-/** A watch as kept on disk. Holds watch metadata, never Thread messages. */
+/**
+ * A watch or mailbox message as kept on disk. Holds watch metadata and the text of mailbox
+ * messages not yet delivered, never Thread transcripts.
+ */
 export interface PersistedWatch extends ThreadWatchEntry {
   id: string;
   timeoutMs: number;
@@ -21,6 +24,8 @@ export interface PersistedWatch extends ThreadWatchEntry {
   /** Recorded when the watched Thread stops, for client events. */
   harnessId?: string;
   refs?: string[];
+  /** Mailbox message: watch the Turn that delivers it, notifying this Thread. */
+  watchAfterDelivery?: { notifyThreadId: string; timeoutMs: number };
 }
 
 export interface DelegationWatchStore {
@@ -119,7 +124,12 @@ function parseWatchFile(text: string): WatchFile {
     !optionalString(watch.title) ||
     !optionalString(watch.harnessId) ||
     (watch.refs !== undefined &&
-      (!Array.isArray(watch.refs) || watch.refs.some((ref) => typeof ref !== "string")))
+      (!Array.isArray(watch.refs) || watch.refs.some((ref) => typeof ref !== "string"))) ||
+    !optionalString(watch.message) ||
+    !optionalString(watch.from) ||
+    (watch.watchAfterDelivery !== undefined &&
+      (typeof watch.watchAfterDelivery?.notifyThreadId !== "string" ||
+        !Number.isSafeInteger(watch.watchAfterDelivery.timeoutMs)))
   ) {
     throw new Error("unrecognized watch record");
   }

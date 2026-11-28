@@ -289,6 +289,63 @@ describe("delegation control server", () => {
     }
   });
 
+  it("sends mailbox messages through the watch API, naming the watch only from the resolved caller", async () => {
+    const send = vi.fn();
+    const mail = vi.fn(async () => ({
+      threadId: "coord",
+      harnessId: "pi" as const,
+      status: "running" as const,
+      delivery: "mailbox" as const,
+      next: { read: "read", wait: "wait" },
+    }));
+    const server = await startDelegationControlServer({
+      token,
+      api: {
+        listHarnesses: vi.fn(),
+        inspect: vi.fn(),
+        start: vi.fn(),
+        send,
+        cancel: vi.fn(),
+        answer: vi.fn(),
+        read: vi.fn(),
+        wait: vi.fn(),
+        list: vi.fn(),
+      },
+      watchApi: { watch: vi.fn(), watches: vi.fn(async () => ({ watches: [] })), mail },
+    });
+    try {
+      const response = await fetch(
+        `${server.endpoint}/v1/thread/send`,
+        authorized({
+          threadId: "coord",
+          message: "progress",
+          mailbox: true,
+          callerThreadId: "line",
+          notifyThreadId: "line",
+          watchTimeoutMs: 5_000,
+          watchAfterDelivery: { notifyThreadId: "elsewhere", timeoutMs: 1 },
+        }),
+      );
+      await expect(response.json()).resolves.toMatchObject({ delivery: "mailbox" });
+      expect(mail).toHaveBeenCalledWith({
+        threadId: "coord",
+        message: "progress",
+        callerThreadId: "line",
+        watch: { notifyThreadId: "line", timeoutMs: 5_000 },
+      });
+      expect(send).not.toHaveBeenCalled();
+      const combined = await fetch(
+        `${server.endpoint}/v1/thread/send`,
+        authorized({ threadId: "coord", message: "x", mailbox: true, steer: true }),
+      );
+      await expect(combined.json()).resolves.toMatchObject({
+        error: { code: "INVALID_ARGUMENT" },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("registers a watch on the delegated child for the Host-resolved parent", async () => {
     const started = {
       delegationId: "delegation-1",
@@ -324,7 +381,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api,
-      watchApi: { watch, watches: vi.fn(async () => ({ watches: [] })) },
+      watchApi: { watch, watches: vi.fn(async () => ({ watches: [] })), mail: vi.fn() },
     });
     const unsupported = await startDelegationControlServer({ token, api });
     try {

@@ -10,17 +10,23 @@ import { clientChannelEventSchema, type ClientChannelCursor } from "@codexhost/s
 export interface SubscribeHostExtensionEventsOptions {
   readonly document?: Document | undefined;
   readonly onExtensionsChanged: (revision: number) => void;
+  readonly onThreadTreeChanged?: (() => void) | undefined;
   readonly onReconnect?: (() => void) | undefined;
 }
 
 interface EventListener {
   readonly onExtensionsChanged: (revision: number) => void;
+  readonly onThreadTreeChanged?: (() => void) | undefined;
   readonly onReconnect?: (() => void) | undefined;
 }
 
 type BroadcastPayload =
   | { readonly type: "extensions-changed"; readonly revision: number }
+  | { readonly type: "thread-tree-changed" }
   | { readonly type: "reconnect" };
+
+const THREAD_TREE_EVENT_PATTERN =
+  /tree\/changed|handoff|pins\/changed|name\/updated|title|archiv|turn\/(started|completed)|status\/changed|questions\/updated|serverRequest\/resolved|thread\/start/u;
 
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -92,6 +98,24 @@ function createSharedEventStream(
     if (propagate && channel) {
       try {
         channel.postMessage({ type: "reconnect" } satisfies BroadcastPayload);
+      } catch {
+        // Ignore closed-channel races during teardown.
+      }
+    }
+  };
+
+  const emitThreadTreeChanged = (propagate: boolean): void => {
+    if (disposed) return;
+    for (const listener of [...listeners]) {
+      try {
+        listener.onThreadTreeChanged?.();
+      } catch {
+        // Isolate subscriber errors.
+      }
+    }
+    if (propagate && channel) {
+      try {
+        channel.postMessage({ type: "thread-tree-changed" } satisfies BroadcastPayload);
       } catch {
         // Ignore closed-channel races during teardown.
       }
@@ -172,6 +196,11 @@ function createSharedEventStream(
                 cursor = event.cursor;
                 if (event.type === "extensions-changed") {
                   emitExtensionsChanged(event.revision, true);
+                } else if (
+                  event.type === "changed" &&
+                  THREAD_TREE_EVENT_PATTERN.test(event.method)
+                ) {
+                  emitThreadTreeChanged(true);
                 } else if (event.type === "hello" && event.reset) {
                   emitReconnect(true);
                 }
@@ -244,6 +273,8 @@ function createSharedEventStream(
     if (!payload || typeof payload !== "object") return;
     if (payload.type === "extensions-changed" && typeof payload.revision === "number") {
       emitExtensionsChanged(payload.revision, false);
+    } else if (payload.type === "thread-tree-changed") {
+      emitThreadTreeChanged(false);
     } else if (payload.type === "reconnect") {
       emitReconnect(false);
     }
@@ -290,7 +321,7 @@ function createSharedEventStream(
 export function subscribeHostExtensionEvents(
   options: SubscribeHostExtensionEventsOptions,
 ): () => void {
-  const { onExtensionsChanged, onReconnect } = options;
+  const { onExtensionsChanged, onThreadTreeChanged, onReconnect } = options;
   const doc: StreamDocument | undefined = options.document;
   let shared = doc ? doc[STREAM_KEY] : fallbackStream;
   if (!shared) {
@@ -301,5 +332,5 @@ export function subscribeHostExtensionEvents(
     if (doc) doc[STREAM_KEY] = shared;
     else fallbackStream = shared;
   }
-  return shared.subscribe({ onExtensionsChanged, onReconnect });
+  return shared.subscribe({ onExtensionsChanged, onThreadTreeChanged, onReconnect });
 }

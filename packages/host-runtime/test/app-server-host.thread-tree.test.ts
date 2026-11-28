@@ -1,6 +1,9 @@
 import {
+  HOST_EXTENSIONS_RPC,
   harnessIdSchema,
   hostThreadIdSchema,
+  threadHandoffMetadataSchema,
+  threadTreeSnapshotSchema,
   threadTreeWatchResultSchema,
   THREAD_TREE_WATCH_METHOD,
   THREAD_TREE_SNAPSHOT_METHOD,
@@ -444,4 +447,45 @@ it("keeps an official Thread's Delegations when its deletion fails", async () =>
       ({ childHostThreadId }) => childHostThreadId,
     ),
   ).toEqual(expect.arrayContaining(["official-child", "grandchild"]));
+});
+
+it("serves handoffs and nodes through codexhost/extensions/threadTree for Web extensions", async () => {
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  const target = await startPiThread(fixture);
+  const source = hostThreadIdSchema.parse("official-handoff-source");
+  nativePins([], { [source]: { type: "idle" } });
+
+  await fixture.mappingStore.saveThreadHandoff(
+    hostThreadIdSchema.parse(target),
+    threadHandoffMetadataSchema.parse({
+      sourceThreadId: source,
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: harnessIdSchema.parse("pi"),
+      totalTurns: 2,
+      boundaryTurnNumber: 2,
+      includedTurnNumbers: [1, 2],
+      omittedTurns: 0,
+      preview: "handoff summary",
+      createdAtMs: 1_764_300_000_000,
+    }),
+  );
+
+  const reply = await fixture.host.handleClientRequest(HOST_EXTENSIONS_RPC.threadTree, {});
+  expect("result" in reply).toBe(true);
+  if (!("result" in reply)) return;
+  const snapshot = threadTreeSnapshotSchema.parse(reply.result);
+  expect(snapshot.handoffs).toEqual({
+    [target]: { sourceThreadId: source, createdAtMs: 1_764_300_000_000 },
+  });
+  expect(snapshot.nodes[hostThreadIdSchema.parse(target)]).toMatchObject({
+    harnessId: "pi",
+    status: "idle",
+    archived: false,
+  });
+  expect(snapshot.nodes[source]).toMatchObject({
+    harnessId: "codex",
+    status: "idle",
+    archived: false,
+  });
 });

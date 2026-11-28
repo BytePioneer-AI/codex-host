@@ -20,6 +20,7 @@ import {
   targetsForCapabilities,
 } from "./host-extensions.js";
 import { jsonObjectSchema, jsonValueSchema } from "./json-value.js";
+import { threadTreeSnapshotSchema } from "./thread-tree-watch.js";
 
 export const HOST_EXTENSION_ZIP_MAX_BYTES = DESKTOP_EXTENSION_ZIP_MAX_BYTES;
 export const HOST_EXTENSION_CATALOG_URL =
@@ -252,6 +253,7 @@ export const HOST_EXTENSIONS_RPC = {
   settingsGet: "codexhost/extensions/settings/get",
   settingsSet: "codexhost/extensions/settings/set",
   backendInvoke: "codexhost/extensions/backend/invoke",
+  threadTree: "codexhost/extensions/threadTree",
 } as const;
 export const HOST_EXTENSION_MANAGEMENT_METHODS = Object.freeze(Object.values(HOST_EXTENSIONS_RPC));
 export type HostExtensionManagementMethod = (typeof HOST_EXTENSION_MANAGEMENT_METHODS)[number];
@@ -354,6 +356,10 @@ export const hostExtensionsRpcSchemas = {
       params: jsonValueSchema.optional(),
     }),
     result: z.strictObject({ result: jsonValueSchema }),
+  },
+  [HOST_EXTENSIONS_RPC.threadTree]: {
+    params: noParams,
+    result: threadTreeSnapshotSchema,
   },
 } as const satisfies Record<
   HostExtensionManagementMethod,

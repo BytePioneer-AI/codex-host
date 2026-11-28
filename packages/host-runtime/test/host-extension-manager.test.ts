@@ -745,7 +745,19 @@ function buildSidebarThreadTreeArchive(version = "0.1.5") {
   ]);
 }
 
-function stubSidebarThreadTreeCatalog(
+function pinnedSidebarSeeds(zip: Buffer, version = "0.1.5") {
+  const downloadUrl = `https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/releases/download/v${version}/sidebar-thread-tree.zip`;
+  return [
+    {
+      id: "sidebar-thread-tree",
+      version,
+      sha256: createHash("sha256").update(zip).digest("hex"),
+      downloadUrl,
+    },
+  ] as const;
+}
+
+function stubPinnedSidebarDownload(
   zip: Buffer,
   options: {
     version?: string;
@@ -761,27 +773,6 @@ function stubSidebarThreadTreeCatalog(
     const href = String(input);
     options.onFetch?.(href);
     if (options.failNetwork?.()) throw new TypeError("network offline");
-    if (href === HOST_EXTENSION_CATALOG_URL || href === HOST_EXTENSION_CATALOG_MIRROR_URL) {
-      return Response.json({
-        schemaVersion: 2,
-        generatedAt: "2026-11-28T00:00:00.000Z",
-        extensions: [
-          {
-            id: "sidebar-thread-tree",
-            version,
-            format: "codexhost",
-            targets: ["desktop"],
-            apis: { desktop: 1 },
-            name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
-            description: { en: "Delegation tree", "zh-CN": "委派树" },
-            author: "sduhantao-maker",
-            repository: "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree",
-            downloadUrl,
-            sha256: createHash("sha256").update(zip).digest("hex"),
-          },
-        ],
-      });
-    }
     if (href === downloadUrl) {
       if (options.onDownload) return options.onDownload(init?.signal);
       return new Response(Uint8Array.from(zip));
@@ -790,11 +781,20 @@ function stubSidebarThreadTreeCatalog(
   });
 }
 
-it("seeds default Desktop catalog extension once and respects subsequent disable, recover, and uninstall", async () => {
-  expect(DEFAULT_DESKTOP_CATALOG_EXTENSIONS).toEqual(["sidebar-thread-tree"]);
+it("seeds pinned default Desktop extension once and respects subsequent disable, recover, and uninstall", async () => {
+  expect(DEFAULT_DESKTOP_CATALOG_EXTENSIONS).toEqual([
+    {
+      id: "sidebar-thread-tree",
+      version: "0.1.5",
+      sha256: "d304ac624a9744492682de17ff9a1aad8cd96c228346bf9687a59b57984e15a0",
+      downloadUrl:
+        "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/releases/download/v0.1.5/sidebar-thread-tree.zip",
+    },
+  ]);
   const zip = buildSidebarThreadTreeArchive();
+  const seeds = pinnedSidebarSeeds(zip);
   const fetches: string[] = [];
-  stubSidebarThreadTreeCatalog(zip, { onFetch: (href) => fetches.push(href) });
+  stubPinnedSidebarDownload(zip, { onFetch: (href) => fetches.push(href) });
 
   const changes: number[] = [];
   const firstManager = new HostExtensionManager(dataDir, (revision) => changes.push(revision));
@@ -802,10 +802,11 @@ it("seeds default Desktop catalog extension once and respects subsequent disable
 
   // Concurrent calls within the same process share one seeding run.
   await Promise.all([
-    firstManager.seedDefaultDesktopExtensions(),
-    firstManager.seedDefaultDesktopExtensions(),
+    firstManager.seedDefaultDesktopExtensions(seeds),
+    firstManager.seedDefaultDesktopExtensions(seeds),
   ]);
 
+  expect(fetches).toEqual([seeds[0].downloadUrl]);
   expect(changes).toEqual([1]);
   expect(await firstManager.list()).toMatchObject({
     configuration: { enabled: ["sidebar-thread-tree"] },
@@ -839,7 +840,7 @@ it("seeds default Desktop catalog extension once and respects subsequent disable
   const fetchesBeforeDisableRestart = fetches.length;
   const afterDisable = new HostExtensionManager(dataDir, () => undefined);
   cleanup.push(() => afterDisable.close());
-  await afterDisable.seedDefaultDesktopExtensions();
+  await afterDisable.seedDefaultDesktopExtensions(seeds);
   expect(fetches).toHaveLength(fetchesBeforeDisableRestart);
   expect((await afterDisable.list()).configuration.enabled).toEqual([]);
 
@@ -854,7 +855,7 @@ it("seeds default Desktop catalog extension once and respects subsequent disable
 
   const afterRecover = new HostExtensionManager(dataDir, () => undefined);
   cleanup.push(() => afterRecover.close());
-  await afterRecover.seedDefaultDesktopExtensions();
+  await afterRecover.seedDefaultDesktopExtensions(seeds);
   expect(fetches).toHaveLength(fetchesBeforeDisableRestart);
   expect((await afterRecover.list()).configuration.enabled).toEqual([]);
 
@@ -867,9 +868,32 @@ it("seeds default Desktop catalog extension once and respects subsequent disable
 
   const afterUninstall = new HostExtensionManager(dataDir, () => undefined);
   cleanup.push(() => afterUninstall.close());
-  await afterUninstall.seedDefaultDesktopExtensions();
+  await afterUninstall.seedDefaultDesktopExtensions(seeds);
   expect(fetches).toHaveLength(fetchesBeforeDisableRestart);
   expect((await afterUninstall.list()).extensions).toEqual([]);
+});
+
+it("rejects a pinned default Desktop extension whose archive SHA-256 does not match", async () => {
+  const zip = buildSidebarThreadTreeArchive("0.1.5");
+  const badSeeds = [
+    {
+      ...pinnedSidebarSeeds(zip)[0],
+      sha256: "0".repeat(64),
+    },
+  ] as const;
+  stubPinnedSidebarDownload(zip);
+  const diagnostics: string[] = [];
+  const manager = new HostExtensionManager(
+    dataDir,
+    () => undefined,
+    (message) => diagnostics.push(message),
+  );
+  cleanup.push(() => manager.close());
+  await manager.seedDefaultDesktopExtensions(badSeeds);
+
+  expect(diagnostics).toContainEqual(expect.stringContaining("SHA-256 mismatch"));
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
+  expect((await manager.list()).extensions).toEqual([]);
 });
 
 it("marks pre-existing local installs as seeded without overwriting or force-enabling them", async () => {
@@ -886,7 +910,7 @@ it("marks pre-existing local installs as seeded without overwriting or force-ena
     ),
   });
   const fetchSpy = vi.fn(() => {
-    throw new Error("must not fetch catalog when already installed");
+    throw new Error("must not fetch when already installed");
   });
   vi.stubGlobal("fetch", fetchSpy);
 
@@ -927,7 +951,9 @@ it("leaves default Desktop extension disabled and seeded when an enabled Desktop
     id: "custom-sidebar-layout",
   });
 
-  stubSidebarThreadTreeCatalog(buildSidebarThreadTreeArchive());
+  const zip = buildSidebarThreadTreeArchive();
+  const seeds = pinnedSidebarSeeds(zip);
+  stubPinnedSidebarDownload(zip);
   const diagnostics: string[] = [];
   const manager = new HostExtensionManager(
     dataDir,
@@ -936,7 +962,7 @@ it("leaves default Desktop extension disabled and seeded when an enabled Desktop
   );
   cleanup.push(() => manager.close());
 
-  await manager.seedDefaultDesktopExtensions();
+  await manager.seedDefaultDesktopExtensions(seeds);
 
   expect(await readSeededDefaultHostExtensions(dataDir)).toEqual(["sidebar-thread-tree"]);
   expect(diagnostics).toContainEqual(
@@ -963,6 +989,7 @@ it("leaves default Desktop extension disabled and seeded when an enabled Desktop
 
 it("retries on restart after a network failure without marking seeded, aborts cleanly on close, and honors opt-out env", async () => {
   const zip = buildSidebarThreadTreeArchive();
+  const seeds = pinnedSidebarSeeds(zip);
 
   // Opt-out via CODEXHOST_DISABLE_DEFAULT_EXTENSIONS=1 skips completely.
   const optOutFetch = vi.fn(() => {
@@ -972,7 +999,7 @@ it("retries on restart after a network failure without marking seeded, aborts cl
   vi.stubGlobal("fetch", optOutFetch);
   const disabledManager = new HostExtensionManager(dataDir, () => undefined);
   cleanup.push(() => disabledManager.close());
-  await disabledManager.seedDefaultDesktopExtensions();
+  await disabledManager.seedDefaultDesktopExtensions(seeds);
   expect(optOutFetch).not.toHaveBeenCalled();
   expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
   await disabledManager.close();
@@ -980,7 +1007,7 @@ it("retries on restart after a network failure without marking seeded, aborts cl
 
   // Network failure records a non-fatal diagnostic and does NOT mark seeded.
   let offline = true;
-  stubSidebarThreadTreeCatalog(zip, { failNetwork: () => offline });
+  stubPinnedSidebarDownload(zip, { failNetwork: () => offline });
   const offlineDiagnostics: string[] = [];
   const offlineManager = new HostExtensionManager(
     dataDir,
@@ -988,7 +1015,7 @@ it("retries on restart after a network failure without marking seeded, aborts cl
     (message) => offlineDiagnostics.push(message),
   );
   cleanup.push(() => offlineManager.close());
-  await expect(offlineManager.seedDefaultDesktopExtensions()).resolves.toBeUndefined();
+  await expect(offlineManager.seedDefaultDesktopExtensions(seeds)).resolves.toBeUndefined();
   expect(offlineDiagnostics).toContainEqual(
     expect.stringContaining("Default Desktop extension sidebar-thread-tree could not be installed"),
   );
@@ -999,7 +1026,7 @@ it("retries on restart after a network failure without marking seeded, aborts cl
   offline = false;
   const downloadStarted = Promise.withResolvers<undefined>();
   let aborted = false;
-  stubSidebarThreadTreeCatalog(zip, {
+  stubPinnedSidebarDownload(zip, {
     onDownload: (signal) =>
       new Promise<Response>((_resolve, reject) => {
         downloadStarted.resolve(undefined);
@@ -1014,7 +1041,7 @@ it("retries on restart after a network failure without marking seeded, aborts cl
       }),
   });
   const closingManager = new HostExtensionManager(dataDir, () => undefined);
-  const seedPromise = closingManager.seedDefaultDesktopExtensions();
+  const seedPromise = closingManager.seedDefaultDesktopExtensions(seeds);
   await downloadStarted.promise;
   await closingManager.close();
   await expect(seedPromise).resolves.toBeUndefined();
@@ -1022,13 +1049,13 @@ it("retries on restart after a network failure without marking seeded, aborts cl
   expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
 
   // Next manager after network recovers installs and enables cleanly.
-  stubSidebarThreadTreeCatalog(zip);
+  stubPinnedSidebarDownload(zip);
   const recoveredChanges: number[] = [];
   const recoveredManager = new HostExtensionManager(dataDir, (revision) =>
     recoveredChanges.push(revision),
   );
   cleanup.push(() => recoveredManager.close());
-  await recoveredManager.seedDefaultDesktopExtensions();
+  await recoveredManager.seedDefaultDesktopExtensions(seeds);
   expect(recoveredChanges).toEqual([1]);
   expect(await readSeededDefaultHostExtensions(dataDir)).toEqual(["sidebar-thread-tree"]);
   expect((await recoveredManager.list()).configuration.enabled).toEqual(["sidebar-thread-tree"]);

@@ -58,7 +58,11 @@ import {
   writeSectionPlacementsFile,
   type StoredSectionPlacementV1,
 } from "./section-placements.js";
-import { readThreadHandoffsFile, writeThreadHandoffsFile } from "./thread-handoffs.js";
+import {
+  readThreadHandoffsFile,
+  writeThreadHandoffsFile,
+  type StoredThreadHandoffV1,
+} from "./thread-handoffs.js";
 import {
   readSupersededSessionsFile,
   writeSupersededSessionsFile,
@@ -1132,6 +1136,15 @@ export class MappingStore {
       result = this.#sectionPlacements.map((placement) => cloneRecord(placement));
     });
     return result;
+  }
+
+  /** Lists all persisted handoff relationships (official Codex and External Harness Targets). */
+  async listThreadHandoffs(): Promise<StoredThreadHandoffV1[]> {
+    this.#requireInitialized();
+    return [...this.#threadHandoffs.entries()].map(([targetThreadId, handoff]) => ({
+      targetThreadId,
+      handoff: cloneRecord(handoff),
+    }));
   }
 
   /** Persisted handoff metadata for a target Thread (official Codex or External Harness). */

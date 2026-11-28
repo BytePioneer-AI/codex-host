@@ -5,11 +5,14 @@ import path from "node:path";
 import {
   THREAD_TREE_SNAPSHOT_METHOD,
   THREAD_TREE_WATCH_METHOD,
+  harnessIdSchema,
+  hostThreadIdSchema,
+  threadTreeSnapshotSchema,
   threadTreeWatchResultSchema,
 } from "@codexhost/shared-contracts";
 import { expect, it, vi } from "vitest";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
-import { ThreadTreeWatch } from "../src/thread-tree-watch.js";
+import { ThreadTreeWatch, limitTreeEdges } from "../src/thread-tree-watch.js";
 
 it("detects native archives on a cold watch even when status arrived first", async () => {
   vi.useFakeTimers();
@@ -201,5 +204,241 @@ it("detects archived_sessions created later and resolves symlinked thread paths"
   } finally {
     watch.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("exposes handoffs and updatedAtMs on demand via readSnapshot and bounds handoff edges", async () => {
+  const sourceId = hostThreadIdSchema.parse("official-source");
+  const targetId = hostThreadIdSchema.parse("external-target");
+  const codex = harnessIdSchema.parse("codex");
+  const claude = harnessIdSchema.parse("claude");
+  const handoffCreatedAtMs = 1_764_300_000_000;
+  const externalUpdatedIso = "2026-11-28T08:00:00.000Z";
+  const officialUpdatedSeconds = 1_764_290_000;
+
+  const watch = new ThreadTreeWatch({
+    codexHome: path.resolve("fixture-codex-home"),
+    tree: { read: async () => ({ parents: {} }) },
+    repository: {
+      listSummaries: async () => [
+        {
+          formatVersion: 1,
+          state: "ready",
+          hostThreadId: targetId,
+          harnessId: claude,
+          cwd: "/workspace",
+          title: "Handed-off task",
+          createdAt: externalUpdatedIso,
+          updatedAt: externalUpdatedIso,
+          archived: false,
+          transportModelId: "codexhost/claude",
+          ephemeral: false,
+          revision: 1,
+          historyMode: "paginated",
+        },
+      ],
+      listThreadHandoffs: async () => [
+        {
+          targetThreadId: targetId,
+          handoff: {
+            sourceThreadId: sourceId,
+            sourceHarnessId: codex,
+            targetHarnessId: claude,
+            createdAtMs: handoffCreatedAtMs,
+          },
+        },
+      ],
+    },
+    events: new ClientChannelEvents(),
+    localStatus: () => undefined,
+    waiting: () => false,
+    readOfficial: async (id) => ({
+      result: {
+        thread: {
+          id,
+          name: "Original Codex thread",
+          status: { type: "idle" },
+          updatedAt: officialUpdatedSeconds,
+        },
+      },
+    }),
+    send: async () => {},
+    diagnose: (error) => {
+      throw error;
+    },
+  });
+
+  try {
+    // On-demand readSnapshot must populate official handoff nodes even with zero Desktop watchers.
+    const snapshot = threadTreeSnapshotSchema.parse(await watch.readSnapshot());
+    expect(snapshot.handoffs).toEqual({
+      [targetId]: { sourceThreadId: sourceId, createdAtMs: handoffCreatedAtMs },
+    });
+    expect(snapshot.nodes[sourceId]).toEqual({
+      harnessId: codex,
+      title: "Original Codex thread",
+      status: "idle",
+      archived: false,
+      updatedAtMs: officialUpdatedSeconds * 1_000,
+    });
+    expect(snapshot.nodes[targetId]).toEqual({
+      harnessId: claude,
+      title: "Handed-off task",
+      status: "idle",
+      archived: false,
+      updatedAtMs: Date.parse(externalUpdatedIso),
+    });
+
+    // limitTreeEdges prefers newer handoffs when hitting the 5,000-node cap.
+    const parentEdges = Object.fromEntries(
+      Array.from({ length: 4997 }, (_, index) => [`child-${index}`, "root"]),
+    );
+    const bounded = limitTreeEdges(parentEdges, [
+      {
+        targetThreadId: hostThreadIdSchema.parse("older-target"),
+        handoff: {
+          sourceThreadId: hostThreadIdSchema.parse("older-source"),
+          sourceHarnessId: codex,
+          targetHarnessId: claude,
+          createdAtMs: 100,
+        },
+      },
+      {
+        targetThreadId: hostThreadIdSchema.parse("newer-target"),
+        handoff: {
+          sourceThreadId: hostThreadIdSchema.parse("newer-source"),
+          sourceHarnessId: codex,
+          targetHarnessId: claude,
+          createdAtMs: 200,
+        },
+      },
+    ]);
+    expect(bounded.ids.size).toBe(5000);
+    expect(bounded.truncated).toBe(true);
+    expect(Object.keys(bounded.handoffs)).toEqual(["newer-target"]);
+  } finally {
+    watch.close();
+  }
+});
+
+it("omits deleted external handoff sources and notifies when slow on-demand official reads finish", async () => {
+  vi.useFakeTimers();
+  const deletedExternalSource = hostThreadIdSchema.parse("deleted-claude-source");
+  const survivingTarget = hostThreadIdSchema.parse("surviving-codex-target");
+  const slowOfficialSource = hostThreadIdSchema.parse("slow-official-source");
+  const slowExternalTarget = hostThreadIdSchema.parse("slow-external-target");
+  const codex = harnessIdSchema.parse("codex");
+  const claude = harnessIdSchema.parse("claude");
+  const events = new ClientChannelEvents();
+  const observedEvents: Array<{ type: string; method?: string }> = [];
+  const stopEvents = events.subscribe((event) => {
+    observedEvents.push(
+      event.type === "changed" ? { type: event.type, method: event.method } : { type: event.type },
+    );
+  });
+
+  let releaseOfficialRead!: () => void;
+  const readOfficialCalls: string[] = [];
+  const watch = new ThreadTreeWatch({
+    codexHome: path.resolve("fixture-codex-home"),
+    tree: { read: async () => ({ parents: {} }) },
+    repository: {
+      listSummaries: async () => [
+        {
+          formatVersion: 1,
+          state: "ready",
+          hostThreadId: slowExternalTarget,
+          harnessId: claude,
+          cwd: "/workspace",
+          title: "Target thread",
+          createdAt: "2026-11-28T08:00:00.000Z",
+          updatedAt: "2026-11-28T08:00:00.000Z",
+          archived: false,
+          transportModelId: "codexhost/claude",
+          ephemeral: false,
+          revision: 1,
+          historyMode: "paginated",
+        },
+      ],
+      listThreadHandoffs: async () => [
+        {
+          targetThreadId: survivingTarget,
+          handoff: {
+            sourceThreadId: deletedExternalSource,
+            sourceHarnessId: claude,
+            targetHarnessId: codex,
+            createdAtMs: 1_764_300_000_000,
+          },
+        },
+        {
+          targetThreadId: slowExternalTarget,
+          handoff: {
+            sourceThreadId: slowOfficialSource,
+            sourceHarnessId: codex,
+            targetHarnessId: claude,
+            createdAtMs: 1_764_300_001_000,
+          },
+        },
+      ],
+    },
+    events,
+    localStatus: () => undefined,
+    waiting: () => false,
+    readOfficial: async (id) => {
+      readOfficialCalls.push(id);
+      await new Promise<void>((resolve) => {
+        releaseOfficialRead = resolve;
+      });
+      return {
+        result: {
+          thread: {
+            id,
+            name: "Delayed official title",
+            status: { type: "idle" },
+            updatedAt: 1_764_290_000,
+          },
+        },
+      };
+    },
+    send: async () => {},
+    diagnose: (error) => {
+      throw error;
+    },
+  });
+
+  try {
+    const firstPromise = watch.readSnapshot();
+    await vi.advanceTimersByTimeAsync(250);
+    const first = threadTreeSnapshotSchema.parse(await firstPromise);
+
+    // Deleted external source must not appear as a ghost Codex node or trigger readOfficial.
+    expect(first.handoffs).toEqual({
+      [slowExternalTarget]: { sourceThreadId: slowOfficialSource, createdAtMs: 1_764_300_001_000 },
+    });
+    expect(first.nodes[deletedExternalSource]).toBeUndefined();
+    expect(readOfficialCalls).toEqual([slowOfficialSource]);
+    expect(first.nodes[slowOfficialSource]).toMatchObject({ harnessId: codex, status: "unknown" });
+
+    // Once the slow read finishes past the 200ms budget, emit tree/changed so Web can refresh.
+    releaseOfficialRead();
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(observedEvents).toContainEqual({
+      type: "changed",
+      method: "codexhost/thread/tree/changed",
+    });
+
+    const refreshed = threadTreeSnapshotSchema.parse(await watch.readSnapshot());
+    expect(refreshed.nodes[slowOfficialSource]).toMatchObject({
+      harnessId: codex,
+      title: "Delayed official title",
+      status: "idle",
+      updatedAtMs: 1_764_290_000_000,
+    });
+  } finally {
+    stopEvents();
+    watch.close();
+    vi.useRealTimers();
   }
 });

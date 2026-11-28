@@ -7,9 +7,11 @@ import {
   HOST_EXTENSION_CATALOG_URL,
   HOST_EXTENSION_ZIP_MAX_BYTES,
   desktopExtensionHttpUrlSchema,
+  desktopExtensionZipUrlSchema,
   hostExtensionCatalogSchema,
   hostExtensionIdSchema,
   hostExtensionInstallSourceSchema,
+  hostExtensionProvenanceSchema,
   hostExtensionResourcePathSchema,
   hostExtensionsCatalogResultSchema,
   type HostExtensionInstallSource,
@@ -612,7 +614,10 @@ async function checkedLocalDirectory(file: string) {
 
 export interface HostExtensionPrepareOptions {
   dataDir: string;
-  source: HostExtensionInstallSource | { type: "zip"; zipBuffer: Buffer };
+  source:
+    | HostExtensionInstallSource
+    | { type: "zip"; zipBuffer: Buffer }
+    | { type: "pinnedUrl"; url: string; provenance: HostExtensionProvenance };
   /** Required for localZipPath. Set by the Host, never from RPC params. */
   localZipRoot?: string | undefined;
   expected?: { id: string; version?: string | undefined; sha256?: string | undefined } | undefined;
@@ -640,6 +645,19 @@ export async function prepareHostExtension({
       throw new Error("Extension ZIP exceeds 64 MiB");
     zip = Buffer.from(input.zipBuffer);
     source = { type: "zip" };
+  } else if (input.type === "pinnedUrl") {
+    if (!expected?.sha256)
+      throw new Error("Pinned extension URL requires an expected SHA-256 digest");
+    const parsedUrl = desktopExtensionZipUrlSchema.parse(input.url);
+    if (!httpsDownload(new URL(parsedUrl))) throw new Error("Pinned extension URL must use HTTPS");
+    source = hostExtensionProvenanceSchema.parse(input.provenance);
+    zip = await downloadExtensionBytes(parsedUrl, HOST_EXTENSION_ZIP_MAX_BYTES, undefined, {
+      signal,
+      allowUrl: httpsDownload,
+      timeoutMs: ZIP_TIMEOUT_MS,
+      idleTimeoutMs: ZIP_IDLE_TIMEOUT_MS,
+      retries: ZIP_RETRIES,
+    });
   } else {
     const checked = hostExtensionInstallSourceSchema.parse(input);
     switch (checked.type) {

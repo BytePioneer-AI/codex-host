@@ -12,6 +12,7 @@ import {
   type HostExtensionsSnapshotResult,
   type JsonObject,
   type JsonValue,
+  type ThreadTreeSnapshot,
 } from "@codexhost/shared-contracts";
 
 /** Structured RPC failure preserving the server's error code. */
@@ -98,6 +99,7 @@ export interface WebNativeExtensionRpcClient {
     params?: JsonValue,
     signal?: AbortSignal,
   ): Promise<JsonValue>;
+  threadTree?(signal?: AbortSignal): Promise<ThreadTreeSnapshot>;
 }
 
 /** Default same-origin RPC client backed by `HOST_EXTENSIONS_RPC` on `POST api/ch/v1/rpc`. */
@@ -124,4 +126,5 @@ export const webNativeExtensionRpcClient: WebNativeExtensionRpcClient = {
     );
     return reply.result;
   },
+  threadTree: (signal) => callHostExtensionsRpc(HOST_EXTENSIONS_RPC.threadTree, {}, signal),
 };

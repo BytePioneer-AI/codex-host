@@ -11,6 +11,7 @@ import {
   type HostExtensionRuntimeEntry,
   type JsonObject,
   type JsonValue,
+  type ThreadTreeSnapshot,
   type WebExtensionActiveSession,
   type WebExtensionApi,
   type WebExtensionDispose,
@@ -34,19 +35,49 @@ interface SessionSummaryLike {
   readonly running: boolean;
   readonly blank: boolean;
   readonly retainedBy: Readonly<{ readonly mainView?: number }>;
-  readonly projectionValues?: Readonly<{ readonly remoteHost?: unknown }>;
+  readonly projectionValues?: Readonly<{
+    readonly remoteHost?: unknown;
+    readonly harnessIdentity?: Readonly<{ readonly id: string; readonly name: string }> | null;
+  }>;
 }
 
 interface SessionListStateLike {
   readonly byId: Readonly<Record<string, SessionSummaryLike | undefined>>;
   readonly projectionsBySession?: Readonly<
-    Record<string, { readonly values?: Readonly<{ readonly remoteHost?: unknown }> } | undefined>
+    Record<
+      string,
+      | {
+          readonly values?: Readonly<{
+            readonly remoteHost?: unknown;
+            readonly harnessIdentity?: Readonly<{
+              readonly id: string;
+              readonly name: string;
+            }> | null;
+          }>;
+        }
+      | undefined
+    >
   >;
 }
 
 interface SessionsServiceLike {
   readonly list: ObservableStoreLike<SessionListStateLike>;
   subagentAddress?(id: string): { readonly parentSessionId?: string } | undefined;
+  loadSummary?(id: string): Promise<unknown>;
+}
+
+interface UiWorkspaceServiceLike {
+  openSession(sessionId: string): void;
+}
+
+interface ModelDirectoriesServiceLike {
+  readonly harnessCatalog?: {
+    getSnapshot(): {
+      readonly value?: {
+        readonly groups?: readonly { readonly id: string; readonly name: string }[];
+      };
+    };
+  };
 }
 
 interface WorkspaceItemLike {
@@ -92,6 +123,21 @@ function getLayoutService(ctx: ClientContext): LayoutServiceLike | undefined {
     typeof candidate.panelInfo.getSnapshot === "function" &&
     typeof candidate.panelInfo.subscribe === "function"
     ? (candidate as LayoutServiceLike)
+    : undefined;
+}
+
+function getUiWorkspaceService(ctx: ClientContext): UiWorkspaceServiceLike | undefined {
+  const candidate = ctx.get("uiWorkspace" as never) as Partial<UiWorkspaceServiceLike> | undefined;
+  return typeof candidate?.openSession === "function"
+    ? (candidate as UiWorkspaceServiceLike)
+    : undefined;
+}
+
+function getModelDirectoriesService(ctx: ClientContext): ModelDirectoriesServiceLike | undefined {
+  const candidate = ctx.get("modelDirectories" as never) as
+    Partial<ModelDirectoriesServiceLike> | undefined;
+  return typeof candidate?.harnessCatalog?.getSnapshot === "function"
+    ? (candidate as ModelDirectoriesServiceLike)
     : undefined;
 }
 
@@ -185,15 +231,18 @@ export function cloneJsonObject(values: JsonObject): JsonObject {
   }
 }
 
-/**
- * Resolve a Host extension asset URL relative to the document's `<base href="./">` so sub-path
- * deployments and Relay proxies keep their base prefix; falls back to the raw asset path.
- */
-export function resolveHostExtensionAssetUrl(
-  input: Parameters<typeof hostExtensionAssetUrl>[0],
+function cloneThreadTreeSnapshot(snapshot: ThreadTreeSnapshot): ThreadTreeSnapshot {
+  try {
+    return structuredClone(snapshot);
+  } catch {
+    return JSON.parse(JSON.stringify(snapshot)) as ThreadTreeSnapshot;
+  }
+}
+
+function resolveDocumentRelativeUrl(
+  rawPath: string,
   doc?: Pick<Document, "baseURI"> | null,
 ): string {
-  const rawPath = hostExtensionAssetUrl(input);
   const baseUri = doc?.baseURI;
   if (typeof baseUri === "string" && baseUri.length > 0) {
     try {
@@ -203,6 +252,17 @@ export function resolveHostExtensionAssetUrl(
     }
   }
   return rawPath;
+}
+
+/**
+ * Resolve a Host extension asset URL relative to the document's `<base href="./">` so sub-path
+ * deployments and Relay proxies keep their base prefix; falls back to the raw asset path.
+ */
+export function resolveHostExtensionAssetUrl(
+  input: Parameters<typeof hostExtensionAssetUrl>[0],
+  doc?: Pick<Document, "baseURI"> | null,
+): string {
+  return resolveDocumentRelativeUrl(hostExtensionAssetUrl(input), doc);
 }
 
 function isHtmlElement(value: unknown): value is HTMLElement {
@@ -246,6 +306,8 @@ export interface CreateWebExtensionApiOptions {
   readonly document: Document;
   readonly entry: HostExtensionRuntimeEntry;
   readonly rpc: WebNativeExtensionRpcClient;
+  readonly watchThreadTree?:
+    ((listener: (tree: ThreadTreeSnapshot) => void) => () => void) | undefined;
   readonly onSettingsRevisionObserved: (revision: number) => void;
 }
 
@@ -253,7 +315,7 @@ export interface CreateWebExtensionApiOptions {
 export function createWebExtensionApi(
   options: CreateWebExtensionApiOptions,
 ): ManagedWebExtensionResources {
-  const { ctx, document: doc, entry, rpc, onSettingsRevisionObserved } = options;
+  const { ctx, document: doc, entry, rpc, watchThreadTree, onSettingsRevisionObserved } = options;
   const { id, activationId, digest } = entry;
   const hasBackend = Boolean(entry.manifest.backend);
   const controller = new AbortController();
@@ -553,6 +615,99 @@ export function createWebExtensionApi(
             detachSessionWatchers();
           }
         };
+      },
+    },
+    threads: {
+      watchTree(listener: (tree: ThreadTreeSnapshot) => void): () => void {
+        guard();
+        if (typeof listener !== "function") {
+          throw new Error(`Web extension "${id}" threads.watchTree requires a function`);
+        }
+        let active = true;
+        const deliver = (tree: ThreadTreeSnapshot): void => {
+          if (!active || stopping || controller.signal.aborted) return;
+          try {
+            listener(cloneThreadTreeSnapshot(tree));
+          } catch (error) {
+            console.error(
+              `[web-native-extensions] threads.watchTree listener failed (${id})`,
+              error,
+            );
+          }
+        };
+        let unsubscribe: (() => void) | undefined;
+        if (watchThreadTree !== undefined) {
+          unsubscribe = watchThreadTree(deliver);
+        } else if (rpc.threadTree !== undefined) {
+          void rpc.threadTree(controller.signal).then(deliver, () => undefined);
+        }
+        const dispose = (): void => {
+          if (!active) return;
+          active = false;
+          trackedDisposers.delete(dispose);
+          unsubscribe?.();
+          unsubscribe = undefined;
+        };
+        trackedDisposers.add(dispose);
+        return dispose;
+      },
+    },
+    navigate: {
+      async openThread(threadId: string): Promise<void> {
+        guard();
+        const target = typeof threadId === "string" ? threadId.trim() : "";
+        if (!target || target.length > 256) {
+          throw new Error(`Web extension "${id}" navigate.openThread requires a valid Thread ID`);
+        }
+        const uiWorkspace = getUiWorkspaceService(ctx);
+        if (uiWorkspace === undefined) {
+          throw new Error(`Web extension "${id}" navigation is unavailable`);
+        }
+        const sessions = getSessionsService(ctx);
+        if (
+          sessions !== undefined &&
+          sessions.list.getSnapshot().byId[target] === undefined &&
+          typeof sessions.loadSummary === "function"
+        ) {
+          await sessions.loadSummary(target).catch(() => undefined);
+          guard();
+        }
+        uiWorkspace.openSession(target);
+      },
+    },
+    harnesses: {
+      describe(harnessId: string): { name: string; icon?: string } | undefined {
+        guard();
+        const normalized = typeof harnessId === "string" ? harnessId.trim() : "";
+        if (!normalized || normalized.length > 128) return undefined;
+        const iconFor = (targetId: string): string =>
+          resolveDocumentRelativeUrl(`/harness-icons/${encodeURIComponent(targetId)}`, doc);
+        if (normalized === "codex") {
+          return { name: "Codex", icon: iconFor("codex") };
+        }
+        const groups = getModelDirectoriesService(ctx)?.harnessCatalog?.getSnapshot().value?.groups;
+        const matchedGroup = groups?.find((group) => group.id === normalized);
+        if (matchedGroup !== undefined) {
+          return { name: matchedGroup.name, icon: iconFor(matchedGroup.id) };
+        }
+        const list = getSessionsService(ctx)?.list.getSnapshot();
+        if (list !== undefined) {
+          for (const row of Object.values(list.byId)) {
+            const identity = row?.projectionValues?.harnessIdentity;
+            if (identity?.id === normalized) {
+              return { name: identity.name, icon: iconFor(identity.id) };
+            }
+          }
+          if (list.projectionsBySession !== undefined) {
+            for (const entry of Object.values(list.projectionsBySession)) {
+              const identity = entry?.values?.harnessIdentity;
+              if (identity?.id === normalized) {
+                return { name: identity.name, icon: iconFor(identity.id) };
+              }
+            }
+          }
+        }
+        return undefined;
       },
     },
     settings: {

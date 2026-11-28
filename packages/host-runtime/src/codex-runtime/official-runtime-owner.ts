@@ -115,15 +115,11 @@ export class OfficialRuntimeOwner {
   }
 
   get activeThreadIds(): readonly string[] {
-    return [...this.#activeTurns];
+    return [...this.#activeTurns.keys()];
   }
 
   get hasActiveWork(): boolean {
     return this.gate.busy || this.#activeTurns.size > 0;
-  }
-
-  activeThreadIds(): string[] {
-    return [...this.#activeTurns.keys()];
   }
 
   hasActiveTurn(threadId: string): boolean {
@@ -554,7 +550,7 @@ export class OfficialRuntimeOwner {
         }
       }
       if (value.method === "thread/closed") {
-        this.#activeTurns.delete(value.params.threadId);
+        this.#clearThreadActiveTurns(value.params.threadId);
         this.#threadStartOrdinal.delete(value.params.threadId);
         client.threads.delete(value.params.threadId);
         this.#threadModelSettings.delete(value.params.threadId);
@@ -698,13 +694,7 @@ export class OfficialRuntimeOwner {
     ) {
       // Snapshot start ordinal matches the latest start, so every tracked Turn has ended.
       // Remember them so an older out-of-order active snapshot cannot resurrect them.
-      const cleared = this.#activeTurns.get(threadId);
-      if (cleared) {
-        for (const existingId of cleared.keys()) {
-          if (existingId !== null) this.#rememberCompletedTurn(threadId, existingId);
-        }
-      }
-      this.#activeTurns.delete(threadId);
+      this.#clearThreadActiveTurns(threadId);
       return;
     }
     if (statusType === "active" && snapshotActiveIds.size > 0) {
@@ -738,6 +728,15 @@ export class OfficialRuntimeOwner {
     }
   }
 
+  #clearThreadActiveTurns(threadId: string): void {
+    const active = this.#activeTurns.get(threadId);
+    if (!active) return;
+    for (const existingId of active.keys()) {
+      if (existingId !== null) this.#rememberCompletedTurn(threadId, existingId);
+    }
+    this.#activeTurns.delete(threadId);
+  }
+
   #rememberCompletedTurn(threadId: string, turnId: string): void {
     const key = `${threadId}\u0000${turnId}`;
     this.#completedTurns.delete(key);
@@ -763,7 +762,9 @@ export class OfficialRuntimeOwner {
       const turnId = turn && typeof turn.id === "string" ? turn.id : null;
       const activeStatus =
         turn !== null &&
-        (turn.status === "inProgress" || (turn.status === undefined && turnId !== null));
+        (turn.status === "inProgress" ||
+          turn.status === "running" ||
+          (turn.status === undefined && turnId !== null));
       if (
         method === "turn/start" &&
         typeof params.threadId === "string" &&
@@ -794,15 +795,14 @@ export class OfficialRuntimeOwner {
       ["thread/archive", "thread/unsubscribe", "thread/delete"].includes(method) &&
       typeof params.threadId === "string"
     ) {
-      if (method === "thread/delete") {
-        this.#activeTurns.delete(params.threadId);
-        this.#threadStartOrdinal.delete(params.threadId);
-      } else {
+      if (method === "thread/unsubscribe") {
         this.#removeObserver(client, params.threadId);
+      } else {
+        this.#clearThreadActiveTurns(params.threadId);
+        this.#threadStartOrdinal.delete(params.threadId);
       }
       client.threads.delete(params.threadId);
       this.#threadModelSettings.delete(params.threadId);
-      if (method !== "thread/unsubscribe") this.#activeTurns.delete(params.threadId);
     }
     if (
       !["thread/start", "thread/resume", "thread/fork"].includes(method) ||

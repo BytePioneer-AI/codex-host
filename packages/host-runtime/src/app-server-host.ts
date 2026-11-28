@@ -2876,7 +2876,7 @@ export class AppServerHost {
   }
 
   #activeOfficialThreadIds(): string[] {
-    return this.#officialRuntimeScope.owner.activeThreadIds();
+    return [...this.#officialRuntimeScope.owner.activeThreadIds];
   }
 
   #hasActiveOfficialTurn(threadId: string): boolean {
@@ -3565,9 +3565,6 @@ export class AppServerHost {
         (latestTurn.status === "inProgress" || latestTurn.status === "running")
       ) {
         turnId = latestTurn.id;
-        if (!this.#officialRuntimeScope.owner.isTurnCompleted(input.threadId, turnId)) {
-          this.#activeOfficialTurns.set(input.threadId, turnId);
-        }
       } else {
         return { threadId: input.threadId, turnId: null, harnessId: "codex", cancelled: false };
       }

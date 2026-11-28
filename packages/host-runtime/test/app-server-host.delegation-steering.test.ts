@@ -735,6 +735,27 @@ describe("Delegation steering through CLI and Host", () => {
       await fixture.ready;
       await vi.waitFor(() => fixture.mappingStore.listDelegations());
 
+      // 0. Cancelling another connection's active Turn via thread/read fallback must not
+      // populate this Host's connection-scoped activeOfficialTurns (no parent-inference leak).
+      threadStates.set("unsubscribed-cancel", {
+        status: "active",
+        turnId: "turn-remote-active",
+        turnStatus: "inProgress",
+      });
+      await expect(api.cancel({ threadId: "unsubscribed-cancel" })).resolves.toEqual({
+        threadId: "unsubscribed-cancel",
+        turnId: "turn-remote-active",
+        harnessId: "codex",
+        cancelled: true,
+      });
+      await expect(
+        api.start({
+          harnessId: "pi",
+          task: "must not inherit cancelled thread",
+          cwd: "/synthetic",
+        }),
+      ).rejects.toMatchObject({ code: "PARENT_THREAD_AMBIGUOUS" });
+
       // 1. Disconnected peer leaves an orphaned Turn on an already-idle Thread: send() reconciles and starts a new Turn.
       await peerSend.request("turn/start", { threadId: "orphan-send", input: [] });
       peerSend.close();

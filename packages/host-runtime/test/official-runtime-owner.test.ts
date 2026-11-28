@@ -1533,7 +1533,7 @@ describe("single official runtime owner", () => {
           params: { threadId: "thread-fast", turn: { id: "turn-fast", status: "inProgress" } },
         });
         await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-fast")).toBe(true));
-        expect(f.owner.activeThreadIds()).toContain("thread-fast");
+        expect(f.owner.activeThreadIds).toContain("thread-fast");
 
         f.connection(0, 1).emit({
           method: "turn/completed",
@@ -1551,7 +1551,7 @@ describe("single official runtime owner", () => {
         }
 
         expect(f.owner.hasActiveTurn("thread-fast")).toBe(false);
-        expect(f.owner.activeThreadIds()).toEqual([]);
+        expect(f.owner.activeThreadIds).toEqual([]);
         expect(f.owner.hasActiveWork).toBe(false);
       } finally {
         await f.owner.stop();
@@ -2069,9 +2069,12 @@ describe("single official runtime owner", () => {
       // Queue two concurrent thread/read responses sharing the same start ordinal.
       const readIds: Array<string | number> = [];
       f.connection(0, 1).setResponse((request) => {
-        if (request.method === "thread/read" && request.id !== undefined) {
+        if (
+          request.method === "thread/read" &&
+          (typeof request.id === "string" || typeof request.id === "number")
+        ) {
           readIds.push(request.id);
-          return undefined;
+          return null;
         }
         return { id: request.id ?? null, result: {} };
       });
@@ -2085,10 +2088,13 @@ describe("single official runtime owner", () => {
         includeTurns: false,
       });
       await vi.waitFor(() => expect(readIds).toHaveLength(2));
+      const [firstReadId, secondReadId] = readIds;
+      if (firstReadId === undefined || secondReadId === undefined)
+        throw new Error("Expected two thread/read request ids");
 
       // Deliver the newer idle snapshot first, then the older active snapshot.
       f.connection(0, 1).emit({
-        id: readIds[1],
+        id: secondReadId,
         result: {
           thread: { id: "thread-out-of-order", status: { type: "idle" }, turns: [] },
         },
@@ -2097,7 +2103,7 @@ describe("single official runtime owner", () => {
       expect(f.owner.hasActiveTurn("thread-out-of-order")).toBe(false);
 
       f.connection(0, 1).emit({
-        id: readIds[0],
+        id: firstReadId,
         result: {
           thread: {
             id: "thread-out-of-order",
@@ -2114,4 +2120,75 @@ describe("single official runtime owner", () => {
       b.client.close();
     }
   });
+
+  it.each(["thread/closed", "thread/delete"] as const)(
+    "remembers cleared turns on %s so an in-flight thread/read cannot resurrect them",
+    async (retirement) => {
+      const f = fixture();
+      const a = f.attach();
+      const b = f.attach();
+      try {
+        await f.owner.start();
+        await a.client.initialize(initialization);
+        await b.client.initialize(initialization);
+        f.gate.initialized();
+
+        f.connection(0, 0).setResponse((request) =>
+          request.method === "turn/start"
+            ? { id: request.id ?? null, result: { turn: { id: "turn-retire", status: "running" } } }
+            : { id: request.id ?? null, result: {} },
+        );
+        await a.client.request("turn/start", { threadId: "thread-retire", input: [] });
+        expect(f.owner.hasActiveTurn("thread-retire")).toBe(true);
+
+        let heldReadId: string | number | undefined;
+        f.connection(0, 1).setResponse((request) => {
+          if (
+            request.method === "thread/read" &&
+            (typeof request.id === "string" || typeof request.id === "number")
+          ) {
+            heldReadId = request.id;
+            return null;
+          }
+          return { id: request.id ?? null, result: {} };
+        });
+
+        const inFlightRead = b.client.request("thread/read", {
+          threadId: "thread-retire",
+          includeTurns: true,
+        });
+        await vi.waitFor(() => expect(heldReadId).toBeDefined());
+
+        if (retirement === "thread/closed") {
+          f.connection(0, 0).emit({
+            method: "thread/closed",
+            params: { threadId: "thread-retire" },
+          });
+          await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-retire")).toBe(false));
+        } else {
+          await a.client.request("thread/delete", { threadId: "thread-retire" });
+          expect(f.owner.hasActiveTurn("thread-retire")).toBe(false);
+        }
+
+        if (heldReadId === undefined) throw new Error("Expected held thread/read id");
+        f.connection(0, 1).emit({
+          id: heldReadId,
+          result: {
+            thread: {
+              id: "thread-retire",
+              status: { type: "active" },
+              turns: [{ id: "turn-retire", status: "inProgress" }],
+            },
+          },
+        });
+        await inFlightRead;
+        expect(f.owner.hasActiveTurn("thread-retire")).toBe(false);
+        expect(f.owner.isTurnCompleted("thread-retire", "turn-retire")).toBe(true);
+      } finally {
+        await f.owner.stop();
+        a.client.close();
+        b.client.close();
+      }
+    },
+  );
 });

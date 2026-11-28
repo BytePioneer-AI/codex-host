@@ -80,6 +80,8 @@ export interface TranscriptVirtualizationInput {
   readonly columnRef: RefObject<HTMLElement | null>;
   /** Flow key of the user message currently being edited inline. */
   readonly editingFlowKey?: string | null;
+  /** Flow key of the assistant answer currently holding an open selection comment card. */
+  readonly composingFlowKey?: string | null;
   /** Flow key of a response annotation target requested by `viewRequest`. */
   readonly revealTargetFlowKey?: string | null;
   /** Flow key of a saved scroll anchor being restored on initial open. */
@@ -461,6 +463,7 @@ export function useTranscriptVirtualization({
   listRef,
   columnRef,
   editingFlowKey = null,
+  composingFlowKey = null,
   revealTargetFlowKey = null,
   savedAnchorFlowKey = null,
   busyTurn = null,
@@ -894,6 +897,7 @@ export function useTranscriptVirtualization({
     };
 
     if (editingFlowKey !== null) pinned.add(editingFlowKey);
+    if (composingFlowKey !== null) pinAnchorKey(composingFlowKey, 0);
     if (focusedFlowKey !== null) pinned.add(focusedFlowKey);
     if (revealTargetFlowKey !== null) pinAnchorKey(revealTargetFlowKey, 0);
     if (savedAnchorFlowKey !== null) pinAnchorKey(savedAnchorFlowKey, JUMP_TARGET_FOLLOWING_ROWS);
@@ -908,6 +912,7 @@ export function useTranscriptVirtualization({
     return pinned;
   }, [
     busyTurn,
+    composingFlowKey,
     editingFlowKey,
     entries,
     flowKeyToIndex,

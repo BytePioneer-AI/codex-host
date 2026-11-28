@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { updateCheckResultSchema } from "@codexhost/shared-contracts";
 import type * as UpdateManager from "@codexhost/update-manager";
 
 import {
@@ -20,10 +21,14 @@ const discovery = vi.hoisted(() => ({ cli: vi.fn(), http: vi.fn() }));
 const npmRegistry = vi.hoisted(() => ({
   installable: vi.fn(async (): Promise<boolean> => true),
   prefetch: vi.fn(async (): Promise<void> => {}),
-  latest: vi.fn(async (): Promise<CodexhostLatestRelease | null> => null),
+  latest: vi.fn(
+    async (_nodePath: string, _npmCliPath: string): Promise<CodexhostLatestRelease | null> => null,
+  ),
+  realLatest: undefined as typeof UpdateManager.fetchLatestNpmRelease | undefined,
 }));
 vi.mock("@codexhost/update-manager", async (importOriginal) => {
   const original = await importOriginal<typeof UpdateManager>();
+  npmRegistry.realLatest = original.fetchLatestNpmRelease;
   return {
     ...original,
     fetchLatestGitHubReleaseWithGitHubCli: discovery.cli,
@@ -236,25 +241,27 @@ describe("Host update coordinator", () => {
     discovery.http.mockRejectedValue(
       new Error("GitHub latest Release request failed with HTTP 403"),
     );
-    npmRegistry.latest.mockResolvedValueOnce({
-      version: "1.3.0",
-      releaseNotes: null,
-      releaseNotesUrl: "",
-      assets: [],
-    });
+    npmRegistry.latest.mockImplementationOnce((nodePath, npmCliPath) =>
+      npmRegistry.realLatest!(nodePath, npmCliPath, async () => ({
+        code: 0,
+        stdout: "1.3.0\n",
+        stderr: "",
+      })),
+    );
     const coordinator = createHostUpdateCoordinator({
       ...fixture,
       platform: "darwin",
       architecture: "arm64",
     });
-    await expect(coordinator.check()).resolves.toMatchObject({
+    const result = await coordinator.check();
+    expect(updateCheckResultSchema.parse(result)).toMatchObject({
       currentVersion: "1.2.2",
       installation: "npm",
       latestVersion: "1.3.0",
       updateAvailable: true,
       installationAvailable: true,
       releaseNotes: null,
-      releaseNotesUrl: "",
+      releaseNotesUrl: null,
       error: null,
     });
     expect(npmRegistry.latest).toHaveBeenCalledWith(

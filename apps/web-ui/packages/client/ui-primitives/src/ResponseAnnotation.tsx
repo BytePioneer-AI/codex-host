@@ -4,10 +4,19 @@
  * text and comment arrive from the message that carries them.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { IconCloseFillRegular, IconCloseOutlineRegular } from "./icons/index.tsx";
+import {
+  IconCloseFillRegular,
+  IconCloseOutlineRegular,
+  IconEditOutlineRegular,
+  IconTrashOutlineRegular,
+} from "./icons/index.tsx";
 import { observeComposition } from "./keyboard-composition.ts";
 import { overlayTopMargin } from "./overlay-top-margin.ts";
 import { useDismissOnOutsidePointer } from "./useDismissOnOutsidePointer.ts";
@@ -27,6 +36,14 @@ export interface ResponseAnnotationLabels {
   railTitle: (index: number, excerpt: string) => string;
   /** Remove-button label. */
   remove: (index: number) => string;
+  /** Optional placeholder when editing a draft annotation's comment in the popover. */
+  editPlaceholder?: string;
+  /** Optional save button label when editing a draft annotation in the popover. */
+  save?: string;
+  /** Optional cancel button label when editing a draft annotation in the popover. */
+  cancel?: string;
+  /** Optional compact remove button label inside an editable popover. */
+  removeAction?: string;
 }
 
 /** One annotation's content as both the rail and the inline label show it. */
@@ -92,15 +109,149 @@ interface CardPosition {
   readonly maxHeight: number;
 }
 
+function EditableAnnotationCard({
+  annotation,
+  index,
+  labels,
+  disabled = false,
+  onSave,
+  onCancel,
+  onRemove,
+}: {
+  annotation: ResponseAnnotationView;
+  index?: number | undefined;
+  labels: ResponseAnnotationLabels;
+  disabled?: boolean | undefined;
+  onSave: (next: string | undefined) => void;
+  onCancel: () => void;
+  onRemove?: (() => void) | undefined;
+}): ReactNode {
+  const [draft, setDraft] = useState(annotation.annotation ?? "");
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const compositionRef = useRef<ReturnType<typeof observeComposition> | null>(null);
+  const multiline = annotation.text.includes("\n");
+
+  useEffect(() => {
+    setDraft(annotation.annotation ?? "");
+  }, [annotation.annotation]);
+
+  useEffect(() => {
+    const observer = observeComposition(document);
+    compositionRef.current = observer;
+    return () => {
+      observer.dispose();
+      if (compositionRef.current === observer) compositionRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const field = fieldRef.current;
+    if (field === null || disabled) return;
+    field.focus({ preventScroll: true });
+    field.setSelectionRange(field.value.length, field.value.length);
+    // Only focus on initial mount; transient disabled flips must not jump the caret.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useLayoutEffect(() => {
+    if (fieldRef.current !== null) syncAutoHeight(fieldRef.current, TRAY_EDIT_MAX_HEIGHT);
+  }, [draft]);
+
+  const commit = (): void => {
+    if (disabled) return;
+    const trimmed = draft.trim();
+    onSave(trimmed === "" ? undefined : trimmed);
+  };
+
+  return (
+    <div
+      className={css.card}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        if (compositionRef.current?.guards(event.nativeEvent) === true) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+      }}
+    >
+      <div className={css.cardSection}>
+        <div className={css.cardHeading}>{labels.selectedText}</div>
+        {multiline ? (
+          <pre className={css.cardPre} tabIndex={0}>
+            {annotation.text}
+          </pre>
+        ) : (
+          <div className={css.cardText}>{annotation.text}</div>
+        )}
+      </div>
+      <div className={css.cardSection}>
+        <div className={css.cardHeading}>{labels.userComment}</div>
+        <textarea
+          ref={fieldRef}
+          rows={1}
+          className={css.cardEditField}
+          value={draft}
+          disabled={disabled}
+          placeholder={labels.editPlaceholder}
+          aria-label={labels.userComment}
+          onChange={(event) => {
+            setDraft(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey) return;
+            if (compositionRef.current?.guards(event.nativeEvent) === true) return;
+            event.preventDefault();
+            event.stopPropagation();
+            commit();
+          }}
+        />
+      </div>
+      <div className={css.cardActions}>
+        {onRemove === undefined ? (
+          <span />
+        ) : (
+          <button
+            type="button"
+            className={css.cardRemoveBtn}
+            disabled={disabled}
+            aria-label={labels.remove(index ?? 1)}
+            onClick={onRemove}
+          >
+            <IconTrashOutlineRegular size={12} />
+            <span>{labels.removeAction ?? labels.remove(index ?? 1)}</span>
+          </button>
+        )}
+        <div className={css.cardActionGroup}>
+          <button type="button" className={css.cardCancelBtn} onClick={onCancel}>
+            {labels.cancel ?? "Cancel"}
+          </button>
+          <button type="button" className={css.cardSaveBtn} disabled={disabled} onClick={commit}>
+            <span>{labels.save ?? "Save"}</span>
+            <kbd className={css.cardKbd} aria-hidden="true">
+              ↵
+            </kbd>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Show the annotation card anchored to a trigger, dismissed by an outside
- * pointer or Escape.
+ * pointer or Escape. When `onUpdate` is supplied, the card opens an inline
+ * editor for the annotation's comment and optional remove control.
  * @param props.anchor - the trigger element (rendered in place).
  * @param props.annotation - content of the card.
  * @param props.labels - localized headings.
  * @param props.className - anchor styling from the caller.
- * @param props.open - opens the card on mount (the rail entry's first paint).
+ * @param props.open - controlled open state when paired with `onOpenChange`, or initial open state.
+ * @param props.onOpenChange - controlled open-state handler.
  * @param props.onActivate - runs when the trigger is clicked, before toggling the card.
+ * @param props.onUpdate - enables inline editing inside the popover card.
+ * @param props.onRemove - optional remove action shown inside an editable popover card.
+ * @param props.editDisabled - disables inline editing controls while the draft is locked.
+ * @param props.index - one-based annotation position for accessible labels.
  * @returns the trigger and, while open, its portaled card.
  */
 export function ResponseAnnotationPopover({
@@ -109,8 +260,13 @@ export function ResponseAnnotationPopover({
   labels,
   className,
   title,
-  open: initialOpen = false,
+  open: openProp = false,
+  onOpenChange,
   onActivate,
+  onUpdate,
+  onRemove,
+  editDisabled = false,
+  index,
 }: {
   anchor: ReactNode;
   annotation: ResponseAnnotationView;
@@ -118,20 +274,36 @@ export function ResponseAnnotationPopover({
   className?: string | undefined;
   title?: string | undefined;
   open?: boolean;
+  onOpenChange?: ((open: boolean) => void) | undefined;
   onActivate?: (() => void) | undefined;
+  onUpdate?: ((annotation: string | undefined) => void) | undefined;
+  onRemove?: (() => void) | undefined;
+  editDisabled?: boolean | undefined;
+  index?: number | undefined;
 }): ReactNode {
-  const [open, setOpen] = useState(initialOpen);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(openProp);
+  const controlled = onOpenChange !== undefined;
+  const open = controlled ? openProp : uncontrolledOpen;
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  const controlledRef = useRef(controlled);
+  controlledRef.current = controlled;
   const anchorRef = useRef<HTMLSpanElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<CardPosition | null>(null);
   const close = useCallback(() => {
-    setOpen(false);
+    if (controlledRef.current) onOpenChangeRef.current?.(false);
+    else setUncontrolledOpen(false);
   }, []);
+  const toggle = useCallback(() => {
+    if (controlledRef.current) onOpenChangeRef.current?.(!open);
+    else setUncontrolledOpen((current) => !current);
+  }, [open]);
   useDismissOnOutsidePointer(anchorRef, open, close, cardRef);
   useEffect(() => {
     if (!open) return;
     const dismiss = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing) close();
     };
     window.addEventListener("keydown", dismiss);
     return () => {
@@ -166,13 +338,21 @@ export function ResponseAnnotationPopover({
       });
     };
     place();
+    let resizeObserver: ResizeObserver | null = null;
     // The card's measured height feeds the placement, so place again once it
-    // is in the DOM rather than guessing a height up front.
-    const settle = requestAnimationFrame(place);
+    // is in the DOM and observe height changes while editing.
+    const settle = requestAnimationFrame(() => {
+      place();
+      if (cardRef.current !== null && typeof ResizeObserver !== "undefined") {
+        resizeObserver = new ResizeObserver(place);
+        resizeObserver.observe(cardRef.current);
+      }
+    });
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
       cancelAnimationFrame(settle);
+      resizeObserver?.disconnect();
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
@@ -186,7 +366,7 @@ export function ResponseAnnotationPopover({
         aria-expanded={open}
         onClick={() => {
           onActivate?.();
-          setOpen((current) => !current);
+          toggle();
         }}
       >
         {anchor}
@@ -199,6 +379,7 @@ export function ResponseAnnotationPopover({
             className={css.popover}
             role="dialog"
             aria-label={labels.selectedText}
+            data-selection-actions=""
             style={{
               left: position.left,
               top: position.top,
@@ -206,7 +387,29 @@ export function ResponseAnnotationPopover({
               maxHeight: position.maxHeight,
             }}
           >
-            <ResponseAnnotationCard annotation={annotation} labels={labels} />
+            {onUpdate !== undefined ? (
+              <EditableAnnotationCard
+                annotation={annotation}
+                index={index}
+                labels={labels}
+                disabled={editDisabled}
+                onSave={(next) => {
+                  if (next !== annotation.annotation) onUpdate(next);
+                  close();
+                }}
+                onCancel={close}
+                onRemove={
+                  onRemove === undefined
+                    ? undefined
+                    : () => {
+                        close();
+                        onRemove();
+                      }
+                }
+              />
+            ) : (
+              <ResponseAnnotationCard annotation={annotation} labels={labels} />
+            )}
           </div>,
           document.body,
         )}
@@ -406,9 +609,24 @@ export function ResponseAnnotationTray({
     };
   }, [editingId]);
 
+  const draftNoteRef = useRef(draftNote);
+  draftNoteRef.current = draftNote;
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+
   useEffect(() => {
     if (editingId === null) return;
-    if (disabled || !annotations.some((item) => item.id === editingId)) {
+    const active = annotations.find((item) => item.id === editingId);
+    if (active === undefined) {
+      skipBlurCommitRef.current = true;
+      setEditingId(null);
+      return;
+    }
+    if (disabled) {
+      // Preserve typed text across transient lock transitions (e.g. history resync).
+      const trimmed = draftNoteRef.current.trim();
+      const next = trimmed === "" ? undefined : trimmed;
+      if (next !== active.annotation) onUpdateRef.current?.(active.id, next);
       skipBlurCommitRef.current = true;
       setEditingId(null);
     }
@@ -420,6 +638,33 @@ export function ResponseAnnotationTray({
   }, [editingId, draftNote]);
 
   if (annotations.length === 0) return null;
+
+  const beginEditFromPointer = (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    item: ResponseAnnotationTrayItem,
+  ): void => {
+    if (event.button !== 0 || editingId === null || editingId === item.id || onUpdate === undefined)
+      return;
+    // Commit the active row and switch directly so textarea collapse
+    // cannot shift the target button away before click fires.
+    event.preventDefault();
+    const active = annotations.find((entry) => entry.id === editingId);
+    if (active !== undefined) {
+      const trimmed = draftNote.trim();
+      const next = trimmed === "" ? undefined : trimmed;
+      if (next !== active.annotation) onUpdate(active.id, next);
+    }
+    skipBlurCommitRef.current = true;
+    setDraftNote(item.annotation ?? "");
+    setEditingId(item.id);
+  };
+
+  const beginEditOnClick = (item: ResponseAnnotationTrayItem): void => {
+    if (editingId === item.id) return;
+    skipBlurCommitRef.current = false;
+    setDraftNote(item.annotation ?? "");
+    setEditingId(item.id);
+  };
 
   const commitEdit = (item: ResponseAnnotationTrayItem, restoreFocus = false): void => {
     const trimmed = draftNote.trim();
@@ -562,25 +807,10 @@ export function ResponseAnnotationTray({
                     aria-label={labels.editHint(number)}
                     title={labels.editHint(number)}
                     onMouseDown={(event) => {
-                      if (event.button !== 0 || editingId === null || editingId === item.id) return;
-                      // Commit the active row and switch directly so textarea collapse
-                      // cannot shift the target button away before click fires.
-                      event.preventDefault();
-                      const active = annotations.find((entry) => entry.id === editingId);
-                      if (active !== undefined) {
-                        const trimmed = draftNote.trim();
-                        const next = trimmed === "" ? undefined : trimmed;
-                        if (next !== active.annotation) onUpdate(active.id, next);
-                      }
-                      skipBlurCommitRef.current = true;
-                      setDraftNote(item.annotation ?? "");
-                      setEditingId(item.id);
+                      beginEditFromPointer(event, item);
                     }}
                     onClick={() => {
-                      if (editingId === item.id) return;
-                      skipBlurCommitRef.current = false;
-                      setDraftNote(item.annotation ?? "");
-                      setEditingId(item.id);
+                      beginEditOnClick(item);
                     }}
                   >
                     {item.annotation ?? labels.emptyComment}
@@ -596,25 +826,45 @@ export function ResponseAnnotationTray({
                   </div>
                 )}
               </div>
-              {canRemove && (
-                <button
-                  type="button"
-                  className={css.trayRemove}
-                  aria-label={labels.remove(number)}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                  }}
-                  onClick={() => {
-                    if (editingId === item.id) {
-                      skipBlurCommitRef.current = true;
-                      setEditingId(null);
-                    }
-                    if (hoveredId === item.id) setHovered(null);
-                    onRemove(item.id);
-                  }}
-                >
-                  <IconCloseOutlineRegular size={12} />
-                </button>
+              {(canEdit || canRemove) && (
+                <div className={css.trayActions}>
+                  {canEdit && !isEditing && (
+                    <button
+                      type="button"
+                      className={css.trayEditBtn}
+                      aria-label={labels.editHint(number)}
+                      title={labels.editHint(number)}
+                      onMouseDown={(event) => {
+                        beginEditFromPointer(event, item);
+                      }}
+                      onClick={() => {
+                        beginEditOnClick(item);
+                      }}
+                    >
+                      <IconEditOutlineRegular size={12} />
+                    </button>
+                  )}
+                  {canRemove && (
+                    <button
+                      type="button"
+                      className={css.trayRemove}
+                      aria-label={labels.remove(number)}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                      }}
+                      onClick={() => {
+                        if (editingId === item.id) {
+                          skipBlurCommitRef.current = true;
+                          setEditingId(null);
+                        }
+                        if (hoveredId === item.id) setHovered(null);
+                        onRemove(item.id);
+                      }}
+                    >
+                      <IconCloseOutlineRegular size={12} />
+                    </button>
+                  )}
+                </div>
               )}
             </li>
           );

@@ -2444,7 +2444,9 @@ describe("Pi RPC Turn aggregation", () => {
         {
           cwd: process.cwd(),
           command: piExecutable,
-          environment: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+          environment: {
+            PATH: [path.join(root, "empty-a"), path.join(root, "empty-b")].join(path.delimiter),
+          },
           commandTimeoutMs: 2_000,
           closeTimeoutMs: 500,
         },

@@ -255,6 +255,11 @@ fn serve_command(options: &Options, node_ready: &Path) -> Result<Command, Box<dy
         .env("CODEXHOST_UPDATE_SERVICE", "1")
         // Host-side fetch (for example voice transcription) follows the system proxy.
         .envs(codexhost_platform::proxy_environment());
+    if let Some(shell) =
+        crate::installation_layout::InstalledResources::from_current_executable()?.desktop_shell
+    {
+        command.env("CODEXHOST_DESKTOP_SHELL_PATH", shell);
+    }
     if let Some(path) = codexhost_platform::user_shell_path() {
         command.env("PATH", path);
     }

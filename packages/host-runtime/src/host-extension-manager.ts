@@ -24,6 +24,8 @@ import {
 } from "@codexhost/harness-plugin-files";
 import {
   jsonObjectSchema,
+  type ExtensionActivitySnapshot,
+  type ExtensionHarnessPresentation,
   type HostExtensionListItem,
   type HostExtensionsRpcParams,
   type HostExtensionsRpcResult,
@@ -67,6 +69,7 @@ function formatDiagnosticError(error: unknown, depth = 0): string {
 /** One owner for every unified install, regardless of attached frontend sessions. */
 export class HostExtensionManager {
   readonly #instances = new Map<string, Instance>();
+  readonly #activityConsumers = new Set<Instance>();
   readonly #closeController = new AbortController();
   readonly #inFlightOperations = new Set<Promise<unknown>>();
   #queue = Promise.resolve();
@@ -81,6 +84,12 @@ export class HostExtensionManager {
     private readonly dataDir: string,
     private readonly changed: (revision: number) => void,
     private readonly diagnose: (message: string) => void = () => undefined,
+    private readonly services: {
+      readActivity?(): Promise<ExtensionActivitySnapshot>;
+      releaseActivity?(): void;
+      describeHarness?(id: string): Promise<ExtensionHarnessPresentation | null>;
+      desktopShell?: string | undefined;
+    } = {},
   ) {}
 
   diagnoseOperationError(method: string, error: unknown): void {
@@ -416,6 +425,7 @@ export class HostExtensionManager {
       const wasRunning = instance.state === "running";
       instance.state = "failed";
       instance.error = "Extension backend stopped or could not start";
+      this.#releaseActivityConsumer(instance);
       this.diagnose(`Host extension backend (${id}): ${message}`);
       if (wasRunning) this.#publish();
     };
@@ -425,8 +435,21 @@ export class HostExtensionManager {
       const dataDir = await hostExtensionDataDirectory(location, true);
       const info = await stat(entry.directory, { bigint: true });
       if (this.#closing) return true;
+      const readActivity = this.services.readActivity;
       const process = new ExtensionBackendProcess({
         diagnose: fail,
+        ...(readActivity
+          ? {
+              readActivity: async () => {
+                assertCurrent();
+                this.#activityConsumers.add(instance);
+                return readActivity();
+              },
+            }
+          : {}),
+        ...(this.services.describeHarness
+          ? { describeHarness: this.services.describeHarness }
+          : {}),
         readSettings: async () => {
           assertCurrent();
           return (await readHostExtensionSettings(location)).values;
@@ -444,6 +467,8 @@ export class HostExtensionManager {
         url: pathToFileURL(entry.scriptPath).href,
         hash: entry.hash,
         installation: `${info.dev}:${info.ino}`,
+        desktopShell: this.services.desktopShell,
+        hostDataDir: this.dataDir,
       });
       assertCurrent();
       instance.state = "running";
@@ -466,6 +491,13 @@ export class HostExtensionManager {
       this.diagnose(`Host extension backend (${id} dispose): ${errorMessage(error)}`);
     } finally {
       this.#instances.delete(id);
+      if (instance) this.#releaseActivityConsumer(instance);
+    }
+  }
+
+  #releaseActivityConsumer(instance: Instance): void {
+    if (this.#activityConsumers.delete(instance) && this.#activityConsumers.size === 0) {
+      this.services.releaseActivity?.();
     }
   }
 

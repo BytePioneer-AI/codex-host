@@ -52,6 +52,7 @@ import {
   cursorConfiguredModelRef,
   cursorModelSelection,
   cursorModels,
+  normalizeStoredCursorModelRef,
 } from "./models.js";
 import {
   CursorTransport,
@@ -105,6 +106,7 @@ function rejected(code: HarnessError["code"], message: string): { ok: false; err
 }
 const openingSessions = new WeakSet<CursorSession>();
 export class CursorAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredCursorModelRef;
   readonly commandCatalog = CURSOR_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
   readonly subagents: HarnessSubagentCapability = {
@@ -472,7 +474,7 @@ export class CursorSession implements HarnessSession {
   get capabilities() {
     return cursorCapabilities(this.info);
   }
-  /** The live Session catalog, including parameters the inspection Session does not pin. */
+  /** The live Session catalog from the active Cursor ACP session. */
   modelCatalog() {
     return cursorCatalog(this.info);
   }

@@ -29,7 +29,7 @@ mod macos {
     use std::path::{Component, Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, OnceLock};
+    use std::sync::{Arc, OnceLock, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -65,6 +65,23 @@ mod macos {
                 )
             })
             .clone()
+    }
+
+    fn dedup_posix_path(path: &Path) -> Option<PathBuf> {
+        if !path.is_absolute() {
+            return None;
+        }
+        let mut key = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::RootDir => key.push(component.as_os_str()),
+                Component::CurDir => {}
+                Component::ParentDir => key.push(".."),
+                Component::Normal(segment) => key.push(segment),
+                Component::Prefix(_) => return None,
+            }
+        }
+        Some(key)
     }
 
     fn normalize_posix_path(path: &Path) -> Option<PathBuf> {
@@ -225,8 +242,13 @@ mod macos {
         let stdout = child.stdout.take()?;
         let overflowed = Arc::new(AtomicBool::new(false));
         let reader_overflow = Arc::clone(&overflowed);
+        let (tx, rx) = mpsc::channel();
         let reader = thread::spawn(move || {
-            read_bounded_stdout(stdout, MAX_PROBE_STDOUT_BYTES, reader_overflow)
+            let _ = tx.send(read_bounded_stdout(
+                stdout,
+                MAX_PROBE_STDOUT_BYTES,
+                reader_overflow,
+            ));
         });
 
         let deadline = Instant::now() + timeout;
@@ -239,11 +261,25 @@ mod macos {
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let bytes = reader.join().ok().flatten()?;
-                    return status
-                        .success()
-                        .then(|| parse_probe_stdout(&bytes))
-                        .flatten();
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    match rx.recv_timeout(remaining) {
+                        Ok(Some(bytes)) => {
+                            let _ = reader.join();
+                            return status
+                                .success()
+                                .then(|| parse_probe_stdout(&bytes))
+                                .flatten();
+                        }
+                        Ok(None) => {
+                            let _ = reader.join();
+                            return None;
+                        }
+                        Err(_) => {
+                            kill_process_group(&mut child);
+                            let _ = reader.join();
+                            return None;
+                        }
+                    }
                 }
                 Ok(None) => {
                     let now = Instant::now();
@@ -281,12 +317,15 @@ mod macos {
                 if entry.as_os_str().is_empty() {
                     continue;
                 }
+                let Some(dedup_key) = dedup_posix_path(&entry) else {
+                    continue;
+                };
+                if !seen.insert(dedup_key) {
+                    continue;
+                }
                 let Some(normalized) = normalize_posix_path(&entry) else {
                     continue;
                 };
-                if !seen.insert(normalized.clone()) {
-                    continue;
-                }
                 if is_cua_node_bin(&normalized) {
                     cua_node.push(entry);
                 } else {
@@ -552,6 +591,55 @@ printf '\0CODEXHOST_LOGIN_PATH_V1\0/opt/homebrew/bin:/Users/example/.local/bin:/
                 ),
                 Some(OsString::from("/usr/bin:/bin:/usr/sbin:/sbin"))
             );
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+
+        #[test]
+        fn times_out_when_shell_exits_but_background_job_holds_stdout() {
+            let root = temporary_directory("codexhost-shell-bg-stdout");
+            let pid_file = root.join("bg.pid");
+            let shell = write_fake_shell(
+                &root,
+                "zsh",
+                &format!(
+                    r#"
+/bin/sleep 30 &
+echo $! > "{pid_file}"
+exit 0
+"#,
+                    pid_file = pid_file.display()
+                ),
+            );
+
+            let started = Instant::now();
+            assert_eq!(
+                probe_shell_once(
+                    &shell,
+                    root.as_os_str(),
+                    Some(OsStr::new("/usr/bin:/bin")),
+                    true,
+                    Duration::from_millis(200),
+                ),
+                None
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "stdout wait must obey probe deadline after shell exits"
+            );
+
+            if let Ok(raw_pid) = fs::read_to_string(&pid_file)
+                && let Ok(pid) = raw_pid.trim().parse::<u32>()
+            {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while crate::process_exists(pid) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert!(
+                    !crate::process_exists(pid),
+                    "background descendant holding stdout must be killed on timeout"
+                );
+            }
 
             fs::remove_dir_all(root).expect("cleanup");
         }

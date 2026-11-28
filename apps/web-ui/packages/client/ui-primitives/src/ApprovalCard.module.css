@@ -72,6 +72,8 @@
   font-weight: 500;
   line-height: 20px;
   overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .body {
@@ -80,6 +82,8 @@
   padding: 0 14px;
   min-width: 0;
   outline: none;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .body:focus-visible {
@@ -260,6 +264,7 @@
   text-align: right;
   color: var(--dsw-alias-label-tertiary);
   opacity: 0.6;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -306,6 +311,7 @@
   line-height: 16px;
   cursor: pointer;
   touch-action: manipulation;
+  -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
   transition:
@@ -351,6 +357,8 @@
   color: var(--dsw-alias-state-error-primary);
   font-size: 12px;
   line-height: 18px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Codex Desktop monochrome pill footer (outline Deny + solid Primary / SplitButton) */

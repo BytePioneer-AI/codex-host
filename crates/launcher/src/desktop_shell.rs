@@ -88,14 +88,25 @@ fn read_record(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     }
 }
 
+fn live_owner(bytes: &[u8]) -> Option<ProcessIdentity> {
+    serde_json::from_slice::<ReadyOwner>(bytes)
+        .ok()
+        .and_then(|record| process_instance(record.pid, record.started_at_micros))
+}
+
+pub fn running(data: &Path) -> std::io::Result<bool> {
+    Ok(read_record(&data.join(READY))?
+        .as_deref()
+        .and_then(live_owner)
+        .is_some())
+}
+
 pub fn stop(data: &Path) -> Result<bool, Box<dyn Error>> {
     let path = data.join(READY);
     let Some(bytes) = read_record(&path)? else {
         return Ok(false);
     };
-    let owner = serde_json::from_slice::<ReadyOwner>(&bytes)
-        .ok()
-        .and_then(|record| process_instance(record.pid, record.started_at_micros));
+    let owner = live_owner(&bytes);
     if let Some(owner) = owner {
         stop_instance(owner)?;
     }
@@ -119,6 +130,7 @@ mod tests {
         let data =
             std::env::temp_dir().join(format!("codexhost-shell-stop-{}", std::process::id()));
         fs::create_dir(&data).unwrap();
+        assert!(!running(&data).unwrap());
         assert!(!stop(&data).unwrap());
 
         let current = codexhost_platform::process_identity(std::process::id()).unwrap();
@@ -132,6 +144,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&record).unwrap(), fixture);
         let path = data.join(READY);
         fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(!running(&data).unwrap());
         assert!(!stop(&data).unwrap());
         assert!(!path.exists());
         assert!(process_instance(current.id, current.started_at_micros).is_some());
@@ -146,6 +159,7 @@ mod tests {
         let path = data.join(READY);
         fs::write(&path, b"{\"pid\":").unwrap();
 
+        assert!(!running(&data).unwrap());
         assert!(!stop(&data).unwrap());
         assert!(!path.exists());
         fs::remove_dir_all(data).unwrap();
@@ -181,9 +195,11 @@ mod tests {
         };
         let path = data.join(READY);
         fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(running(&data).unwrap());
         let reaper = thread::spawn(move || shell.wait().unwrap());
         assert!(stop(&data).unwrap());
         assert!(reaper.join().unwrap().success());
+        assert!(!running(&data).unwrap());
         assert!(!path.exists());
         fs::remove_dir_all(data).unwrap();
     }

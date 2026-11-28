@@ -137,7 +137,7 @@ describe("fetchLatestNpmRelease", () => {
     expect(version).toEqual({
       version: "1.3.0",
       releaseNotes: null,
-      releaseNotesUrl: "",
+      releaseNotesUrl: null,
       assets: [],
     });
     expect(asked).toEqual([["view", "@codexhost/cli", "dist-tags.latest"]]);

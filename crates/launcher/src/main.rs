@@ -185,10 +185,10 @@ const USAGE: &str = "usage:
   codexhost project list ...
   codexhost harness list|inspect ...
   codexhost delegate start ...
-  codexhost thread send|cancel|read|wait|watch|watches|list|file ...
+  codexhost thread send|cancel|read|wait|answer|watch|watches|list|file ...
   codexhost thread export <thread> (rarely needed)
-  codexhost client status|on|off|create|list|revoke ...
-  codexhost events pull|ack ...";
+  codexhost client add|list|set|remove ...
+  codexhost events ...";
 
 fn usage() {
     eprintln!("{USAGE}");
@@ -1773,15 +1773,13 @@ fn desktop_route(
     codex_installed: bool,
     shell_available: bool,
 ) -> DesktopRoute {
-    if shell_available {
-        return DesktopRoute::Onboarding;
-    }
     match preferences.filter(|prefs| prefs.onboarding_completed) {
         Some(prefs) => match prefs.default_desktop_surface {
             Surface::NativeShell => DesktopRoute::App,
             Surface::CodexDesktop if codex_installed => DesktopRoute::CodexDesktop,
             Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
         },
+        None if shell_available => DesktopRoute::Onboarding,
         None if !codex_installed => DesktopRoute::RememberNative,
         None => DesktopRoute::CodexDesktop,
     }
@@ -2166,12 +2164,15 @@ mod tests {
             (None, true, true, Onboarding),
             (None, true, false, CodexDesktop),
             (incomplete, false, true, Onboarding),
+            (incomplete, false, false, RememberNative),
             (incomplete, true, true, Onboarding),
-            (native, true, true, Onboarding),
+            (incomplete, true, false, CodexDesktop),
+            (native, false, true, App),
+            (native, true, true, App),
             (native, true, false, App),
-            (codex, true, true, Onboarding),
+            (codex, true, true, CodexDesktop),
             (codex, true, false, CodexDesktop),
-            (codex, false, true, Onboarding),
+            (codex, false, true, CodexUnavailable),
             (codex, false, false, CodexUnavailable),
         ] {
             assert_eq!(desktop_route(prefs, installed, shell), expected);

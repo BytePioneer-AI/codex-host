@@ -247,6 +247,7 @@ export class ConversationController extends Service implements IConversation {
     attachmentIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal?: AbortSignal,
+    onRequestId?: (requestId: string) => void,
   ): Promise<SubmitOutcome> {
     const reference =
       attachmentIds.length === 0
@@ -317,6 +318,7 @@ export class ConversationController extends Service implements IConversation {
           finishRetirement?.(settlement);
         },
       });
+      onRequestId?.(submission.requestId);
       let content: Parameters<SessionFace["prompt"]>[0];
       try {
         await nextPaint();

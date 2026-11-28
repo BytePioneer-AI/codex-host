@@ -139,17 +139,19 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 /usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
-/usr/bin/codesign --force --sign - "$RESOURCES/runtime/node"
-/usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shim"
-/usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-updater"
+SIGN_IDENTITY="${CODEXHOST_MACOS_SIGN_IDENTITY:--}"
+
+/usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$RESOURCES/runtime/node"
+/usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$RESOURCES/libexec/codexhost-shim"
+/usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$RESOURCES/libexec/codexhost-updater"
 if [[ -d "$CONTENTS/Helpers/CodexHost.app" ]]; then
-  /usr/bin/codesign --force --sign - "$CONTENTS/Helpers/CodexHost.app/Contents/MacOS/CodexHost"
-  /usr/bin/codesign --force --sign - "$CONTENTS/Helpers/CodexHost.app"
+  /usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$CONTENTS/Helpers/CodexHost.app/Contents/MacOS/CodexHost"
+  /usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$CONTENTS/Helpers/CodexHost.app"
 elif [[ -f "$RESOURCES/libexec/codexhost-shell" ]]; then
-  /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shell"
+  /usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$RESOURCES/libexec/codexhost-shell"
 fi
-/usr/bin/codesign --force --sign - "$CONTENTS/MacOS/codexhost"
-/usr/bin/codesign --force --sign - "$APP_PATH"
+/usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$CONTENTS/MacOS/codexhost"
+/usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$APP_PATH"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 "$RESOURCES/runtime/node" -e 'if (process.version !== "v24.22.1") process.exit(1)'
 

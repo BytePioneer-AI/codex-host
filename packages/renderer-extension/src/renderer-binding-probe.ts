@@ -1519,7 +1519,6 @@ export function installRendererBindingProbe(
         if (!client.inspectHarnessAccount) return;
         const result = await client.inspectHarnessAccount({
           harnessId: harnessIdSchema.parse(agent),
-          refresh: true,
         });
         if (!isCurrent() || result.harnessId !== agent) return;
         mounted.accountCredits = result.account?.credits ?? null;

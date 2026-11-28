@@ -401,7 +401,10 @@ export function SidebarRoot({
               onClick={togglePanelsExpanded}
             >
               <svg
-                className={clsx(css.panelToggleChevron, panelsExpanded && css.panelToggleChevronOpen)}
+                className={clsx(
+                  css.panelToggleChevron,
+                  panelsExpanded && css.panelToggleChevronOpen,
+                )}
                 width="14"
                 height="14"
                 viewBox="0 0 14 14"

@@ -11,6 +11,7 @@ export const remoteThreadRowSchema = z
     modelProvider: z.string(),
     createdAt: z.number(),
     updatedAt: z.number(),
+    recencyAt: z.number().nullable().optional(),
     status: z.object({ type: z.string() }),
   })
   .passthrough();

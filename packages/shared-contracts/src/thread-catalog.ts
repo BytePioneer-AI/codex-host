@@ -40,7 +40,7 @@ export const threadCatalogReadParamsSchema = z
   .strict();
 export type ThreadCatalogReadParams = z.infer<typeof threadCatalogReadParamsSchema>;
 
-/** Rows and ownership have the same order: updatedAt descending, external first on ties. */
+/** Rows and ownership have the same order: conversation recency descending (updatedAt when absent), external first on ties. */
 export const threadCatalogReadResultSchema = z
   .object({
     threads: z.array(jsonObjectSchema),

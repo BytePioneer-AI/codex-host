@@ -60,7 +60,7 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 | Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
 | Triage a batch of PRs: overview table with 1–5 score, real-test plan, merge/close/label after approval | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
 | Reviewing a PR or local diff for correctness and boundaries | [codexhost-code-review](.agents/skills/codexhost-code-review/SKILL.md) |
-| Quickly trying a feature in a Web or Desktop run with its own data directory | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
+| Isolated Web/Desktop testing, CDP automation/mocking, and UI screenshot verification | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
 | Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
 | Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
 | Developing, packaging, or troubleshooting a Desktop UI extension | [codexhost-add-desktop-extension](.agents/skills/codexhost-add-desktop-extension/SKILL.md) |
@@ -110,5 +110,5 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 
 - Use concise, imperative commit subjects. Conventional Commit prefixes such as `feat:`, `fix:`, `docs:`, and `test:` are preferred.
 - Pull requests should explain purpose, affected requirements, validation performed, and linked issues.
-- Any PR with visible UI changes (Web UI, Desktop shell, Android shell, Renderer extension, or Console UI) must include sanitized demo screenshots or short recordings showing key states (or before/after) in the PR description. Agents working on visible UI changes must capture and inspect rendered screenshots before handing off or opening the PR; if a change under UI paths has no visible change, state `No visual changes: <reason>` instead of attaching screenshots.
+- Any PR with visible UI changes (Web UI, Desktop shell, Android shell, Renderer extension, or Console UI) must include sanitized demo screenshots or short recordings showing key states (or before/after) in the PR description. Agents working on visible UI changes must capture and inspect rendered screenshots using [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) before handing off or opening the PR; if a change under UI paths has no visible change, state `No visual changes: <reason>` instead of attaching screenshots.
 - Never commit ignored reference repositories, secrets, logs, downloads, or local environment files.

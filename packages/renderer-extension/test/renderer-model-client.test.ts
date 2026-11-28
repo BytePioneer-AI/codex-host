@@ -536,6 +536,7 @@ describe("Renderer fixed Model request client", () => {
       "patchHarnessPreferences",
       "readDelegationThread",
       "readHostExtensionAsset",
+      "readHostExtensionCatalogIcon",
       "readUpdateStatus",
       "recoverHostExtensions",
       "refreshCodexAccounts",

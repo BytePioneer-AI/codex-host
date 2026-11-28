@@ -21,12 +21,14 @@ import {
   hostExtensionDataRoot,
   hostExtensionsRoot,
   installHostExtension,
+  markDefaultHostExtensionSeeded,
   prepareHostExtension,
   readHostExtension,
   readHostExtensionAsset,
   readHostExtensionBackend,
   readHostExtensionConfiguration,
   readHostExtensionSettings,
+  readSeededDefaultHostExtensions,
   reportHostExtensionInstall,
   resolveHostExtensionStatsUrl,
   rollbackHostExtension,
@@ -728,6 +730,28 @@ it("retries transient download errors and falls back to cached catalog during fo
     (error: unknown) =>
       error instanceof ExtensionDownloadError && error.message === "Download timed out",
   );
+});
+
+it("persists one-time default extension seed markers invisibly to extension discovery", async () => {
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
+  await expect(markDefaultHostExtensionSeeded(dataDir, "../invalid")).rejects.toThrow();
+
+  expect(await markDefaultHostExtensionSeeded(dataDir, "sidebar-thread-tree")).toEqual([
+    "sidebar-thread-tree",
+  ]);
+  expect(await markDefaultHostExtensionSeeded(dataDir, "sidebar-thread-tree")).toEqual([
+    "sidebar-thread-tree",
+  ]);
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual(["sidebar-thread-tree"]);
+  expect(
+    JSON.parse(
+      await readFile(path.join(hostExtensionsRoot(dataDir), ".default-extensions.json"), "utf8"),
+    ),
+  ).toEqual({ version: 1, seeded: ["sidebar-thread-tree"] });
+  expect(await discoverHostExtensions(dataDir)).toMatchObject({
+    extensions: [],
+    diagnostics: [],
+  });
 });
 
 it("caches catalog icons to disk with signature validation and supports stripping screenshots from list discovery", async () => {

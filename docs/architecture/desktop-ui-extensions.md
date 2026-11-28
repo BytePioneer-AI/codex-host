@@ -12,6 +12,7 @@ codexhost 扩展是可选的受信任代码，由共享 `codexhost Host`（`host
 $CODEXHOST_DATA_DIR/                       # 默认 ~/.codexhost/
   host-extensions/                         # 唯一插件安装根
     enabled.json                           # 启用顺序与配置修订号（原子替换）
+    .default-extensions.json               # 默认 Desktop 目录扩展一次性种子安装标记（原子替换）
     <id>/
       current.json                         # 当前激活代次 { activationId, digest, installedAt, source? }
       generations/<activationId>/          # 不可变代次内容目录（原子切换）
@@ -32,6 +33,11 @@ $CODEXHOST_DATA_DIR/                       # 默认 ~/.codexhost/
 - `host-extensions/` 独立于 Harness 插件目录，发现和安装不执行任何扩展代码；必须显式启用才会激活。
 - 安装、更新与卸载都在代次目录上原子完成；更新生成新的 `activationId` 与 `digest`，保留已有启用状态与 `host-extension-data/<id>/` 中的独立设置和数据。
 - 路径穿越、`..`、符号链接越界和 POSIX 组/他用户可写权限均会被发现和安装校验拒绝。
+- **Codex Desktop 默认目录扩展一次性种子安装**：本机 Codex Desktop 首次连接或启动 Host 时，Host 在后台非阻塞地按标准市场目录（`source: { type: "catalog", id }`）安装并启用默认扩展（当前为 `sidebar-thread-tree`），完成后发布变更通知供运行中的 Desktop 窗口即时热注入，并把已处理 ID 记录在 `$CODEXHOST_DATA_DIR/host-extensions/.default-extensions.json`。该流程遵循以下约束：
+  - 仅在已记录标记前执行一次；用户手动禁用、卸载、恢复（`disableAll`）或磁盘已存在同名安装时，记录为已处理且不覆写、不强启。
+  - 若目标扩展声明的 `manifest.slots` 与当前已启用的 Desktop 扩展冲突，保留为已安装未启用状态并记录已处理，不抢占已有槽位。
+  - 下载或网络失败仅记诊断日志，不写已处理标记，等待下次启动重试；Host 关闭时会中止在途下载。
+  - 纯 Web 模式与远端 SSH 托管 Host 不触发该流程；设置环境变量 `CODEXHOST_DISABLE_DEFAULT_EXTENSIONS=1` 可显式关闭自动种子安装。
 
 ## 清单格式（`manifestVersion: 2`）
 

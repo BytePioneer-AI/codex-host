@@ -39,6 +39,15 @@ export const hostExtensionConfigurationSchema = z.strictObject({
 });
 export type HostExtensionConfiguration = z.infer<typeof hostExtensionConfigurationSchema>;
 
+export const hostExtensionDefaultSeedsSchema = z.strictObject({
+  version: z.literal(1),
+  seeded: z
+    .array(hostExtensionIdSchema)
+    .max(DESKTOP_EXTENSION_LIMIT)
+    .refine((ids) => new Set(ids).size === ids.length, "Duplicate extension IDs"),
+});
+export type HostExtensionDefaultSeeds = z.infer<typeof hostExtensionDefaultSeedsSchema>;
+
 const { downloadUrl, ...catalogMetadata } = desktopExtensionCatalogEntrySchema.shape;
 export const hostExtensionCatalogEntrySchema = z
   .object({

@@ -96,10 +96,10 @@ it("waits for an organization read before satisfying a concurrent full refresh",
   const b = await setup(t);
   const projects = b.host.projects.bind(b.host);
   let release = () => {};
-  let reads = 0;
-  b.host.projects = async () => {
-    reads++;
-    if (reads === 1)
+  const reads: (string[] | undefined)[] = [];
+  b.host.projects = async (ids?: string[]) => {
+    reads.push(ids);
+    if (reads.length === 1)
       await new Promise<void>((resolve) => {
         release = resolve;
       });
@@ -110,11 +110,11 @@ it("waits for an organization read before satisfying a concurrent full refresh",
   await settle();
   assert.equal(b.directoryReads().length, 0);
   await b.tick(10_000);
-  assert.equal(reads, 1, "a pending organization read does not overlap another poll");
+  assert.equal(reads.length, 1, "a pending organization read does not overlap another poll");
   release();
   assert.ok((await full).ok);
   assert.equal(b.directoryReads().length, 1);
-  assert.equal(reads, 3, "the requested head refresh reads definitions and loaded-ID assignments");
+  assert.deepEqual(reads, [[b.row.id], [b.row.id]], "the head refresh rereads the loaded Thread");
 });
 
 it("retains confirmed organization on failure and ignores a read after close", async (t) => {
@@ -127,6 +127,11 @@ it("retains confirmed organization on failure and ignores a read after close", a
   await b.tick(10_000);
   assert.deepEqual(b.workspaces.ownerOf("thread"), owner);
   assert.equal(b.directoryReads().length, 0);
+  const move = await b.rpc.dispatch("workspace/moveSessionToProject", {
+    args: { request: { sessionId: "thread", projectId: "project-thread" } },
+  });
+  assert.ok(!move.ok);
+  assert.equal(move.error.code, "workspace/project-unavailable");
   b.host.projects = original;
   b.host.pinnedIds = ["thread"];
   await b.tick(10_000);

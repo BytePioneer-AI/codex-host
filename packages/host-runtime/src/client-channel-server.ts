@@ -13,6 +13,7 @@ import {
   type ClientThreadSnapshot,
   type ClientChannelResponse,
   CLIENT_REQUEST_LIMIT_BYTES,
+  THREAD_SECTION_CAPABILITY,
 } from "@codexhost/shared-contracts";
 import type { JsonValue } from "@codexhost/protocol-core";
 import type { ClientChannelEvents } from "./client-channel-events.js";
@@ -87,6 +88,7 @@ export async function startClientChannelServer(options: {
               sequence: Number(url.searchParams.get("after")),
             })
           : undefined;
+        const supportsSections = url.searchParams.get(THREAD_SECTION_CAPABILITY) === "1";
         response.writeHead(200, {
           "content-type": "application/x-ndjson",
           "cache-control": "no-store",
@@ -96,7 +98,12 @@ export async function startClientChannelServer(options: {
             response.destroy();
             throw new Error("Slow client detached");
           }
-          response.write(JSON.stringify(event) + "\n");
+          // A legacy client still needs to advance past the hidden sequence.
+          const frame =
+            event.type === "sections-changed" && !supportsSections
+              ? { type: "hello", version: 1, cursor: event.cursor, reset: true }
+              : event;
+          response.write(JSON.stringify(frame) + "\n");
         }, after);
         const heartbeat = setInterval(() => response.write("\n"), 15_000);
         heartbeat.unref();

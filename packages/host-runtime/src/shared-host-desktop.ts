@@ -74,6 +74,7 @@ export function sharedHostDesktop(
     owner: SharedThreadOwner;
     hostExtensions?: HostExtensionManager | undefined;
     store: ExternalThreadStore;
+    clearDeletedProjectAssignments(projectId: string): Promise<void>;
     prices: ModelPriceCatalog;
     updateCoordinator?: HostUpdateCoordinator;
     releaseAnnouncement?: HostReleaseAnnouncement;
@@ -108,6 +109,7 @@ export function sharedHostDesktop(
       accountControl: options.official.accountControl,
       mappingStore: options.store,
       closeMappingStoreOnExit: false,
+      clearDeletedProjectAssignments: options.clearDeletedProjectAssignments,
       modelPrices: options.prices,
       sharedThreads: new SharedThreadBridge({
         connect: async () => options.owner.connect(),

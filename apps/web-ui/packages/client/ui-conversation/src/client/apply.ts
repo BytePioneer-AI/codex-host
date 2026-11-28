@@ -139,6 +139,7 @@ function hostPathBridge(): HostPathBridge | undefined {
 }
 
 interface WorkspaceNavigation {
+  readonly sessionMoves: { isMoving(id: SessionId): boolean };
   openSession(sessionId: SessionId): void;
   openWorkspace(
     workspaceId: Parameters<ConversationInjected["selectWorkspace"]>[0],
@@ -450,6 +451,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
         },
         inject: (sessionId: SessionId | undefined): ConversationInjected => ({
           referenceEditor: sessionId === undefined ? undefined : inputHub.shell(sessionId).editor,
+          isSessionMoving: (id) => workspaceNavigation.sessionMoves.isMoving(id),
           retrySessionCreation: () => {
             workspaceNavigation.retryCreating?.();
           },

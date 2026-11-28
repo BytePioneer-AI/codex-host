@@ -163,6 +163,7 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
         official,
         owner: f.owner,
         store: f.store,
+        clearDeletedProjectAssignments: (id) => f.host.clearDeletedProjectAssignments(id),
         prices: new ModelPriceCatalog({
           directory: path.join(f.root, "prices"),
           diagnose: () => {},
@@ -238,6 +239,7 @@ it.each([true, false])("forwards current Desktop runtime context (%s)", async (e
         official,
         owner: f.owner,
         store: f.store,
+        clearDeletedProjectAssignments: (id) => f.host.clearDeletedProjectAssignments(id),
         prices: new ModelPriceCatalog({
           directory: path.join(f.root, "prices"),
           diagnose: () => {},
@@ -606,6 +608,10 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   writeFileSync(file, JSON.stringify(sectioned));
   expect((await readNativeWorkspaceSnapshot(environment)).sectionProjects).toEqual({
     "official-papers": ["selected", "first"],
+    "official-threads": [],
+    empty: [],
+  });
+  expect((await readNativeWorkspaceSnapshot(environment, [selected])).sectionProjects).toEqual({
     "official-threads": [],
     empty: [],
   });

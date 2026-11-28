@@ -47,7 +47,9 @@ export function registerThreadReferenceAction(ctx: Context): void {
         reference() === undefined
       )
         expired = true;
-      return !expired && insertion.getSnapshot();
+      return (
+        !expired && !ctx.uiWorkspace.sessionMoves.isMoving(sourceId) && insertion.getSnapshot()
+      );
     };
     return {
       getSnapshot: available,
@@ -61,6 +63,7 @@ export function registerThreadReferenceAction(ctx: Context): void {
           ctx.sessions.list.subscribe(changed),
           ctx.uiSession.adapter.current.subscribe(changed),
           ctx.workspaces.list.subscribe(changed),
+          ctx.uiWorkspace.sessionMoves.movingSessionIds.subscribe(changed),
           ctx.layout.panelInfo.subscribe(changed),
           insertion.subscribe(changed),
         ];

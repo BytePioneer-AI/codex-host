@@ -2,10 +2,13 @@ import { readdir, open } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import {
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
   clientChannelDescriptorSchema,
   clientChannelEventSchema,
   clientThreadSnapshotSchema,
   harnessInstallationRequestTimeoutMs,
+  THREAD_SECTION_CAPABILITY,
+  jsonRpcErrorSchema,
   type ClientChannelDescriptor,
   type ClientChannelCursor,
   type ClientChannelEvent,
@@ -117,6 +120,7 @@ export class HostClientChannel {
       if (!descriptor) throw new Error("Host unavailable");
       this.descriptor = descriptor;
       const url = new URL(`http://127.0.0.1:${descriptor.port}/v1/events`);
+      url.searchParams.set(THREAD_SECTION_CAPABILITY, "1");
       if (this.cursor) {
         url.searchParams.set("epoch", this.cursor.epoch);
         url.searchParams.set("after", String(this.cursor.sequence));
@@ -189,7 +193,12 @@ export class HostClientChannel {
   }
   private async post<T>(route: string, body: unknown, timeoutMs = 120_000): Promise<T> {
     if (this.stopped || !this.online)
-      throw new Error("CH is disconnected; reconnect before submitting an operation");
+      throw Object.assign(
+        new Error("CH is disconnected; reconnect before submitting an operation"),
+        {
+          code: -32090,
+        },
+      );
     const generation = this.generation;
     let response: Response;
     let value: { result?: T; error?: { code?: number; message?: string } };
@@ -220,15 +229,22 @@ export class HostClientChannel {
       throw Object.assign(new Error("Obsolete Host reply; resynchronize after reconnecting"), {
         code: -32094,
       });
-    if (value.error || !response.ok)
-      throw Object.assign(new Error(value.error?.message ?? "Host request failed"), {
-        code: value.error?.code ?? -32603,
+    if (Object.hasOwn(value, "error") && !Object.hasOwn(value, "result")) {
+      const error = jsonRpcErrorSchema.safeParse(value.error);
+      if (error.success)
+        throw Object.assign(new Error(error.data.message), { code: error.data.code });
+    }
+    if (!response.ok || Object.hasOwn(value, "error") || !Object.hasOwn(value, "result"))
+      throw Object.assign(new Error("Invalid Host reply; operation outcome may be unknown"), {
+        code: -32093,
       });
-    if (!Object.hasOwn(value, "result"))
-      throw new Error("Invalid Host reply; operation outcome may be unknown");
     return value.result as T;
   }
   request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    if (method === CLIENT_THREAD_PROJECT_MOVE_METHOD && this.descriptor.owner !== "service")
+      return Promise.reject(
+        Object.assign(new Error("Project moves require the shared local Host"), { code: -32601 }),
+      );
     return this.post(
       "/v1/rpc",
       { method, params },
@@ -240,6 +256,9 @@ export class HostClientChannel {
   }
   get epoch(): string {
     return this.descriptor.epoch;
+  }
+  get owner(): ClientChannelDescriptor["owner"] {
+    return this.descriptor.owner;
   }
   /** Options are opt-in; an older Host ignores them and returns full Turns. */
   async snapshot(

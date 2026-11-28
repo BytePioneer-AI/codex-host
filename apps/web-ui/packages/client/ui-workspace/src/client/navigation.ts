@@ -29,6 +29,7 @@ import { pinOrderAccounts, pinOrderSource } from "./pin-order.ts";
 import type { WorkspaceViewStoreActions } from "./stores.ts";
 import { SessionKeepalive } from "./session-keepalive.ts";
 import { RecentVisits } from "./recent-visits.ts";
+import { SessionMoveLock } from "./session-move-lock.ts";
 
 interface MainSelection {
   readonly sessionId?: SessionId;
@@ -67,6 +68,7 @@ export type SessionCreationState =
 
 /** Workspace archive and directory operations consumed by Client UI domains. */
 export interface UiWorkspace {
+  readonly sessionMoves: Pick<SessionMoveLock, "movingSessionIds" | "isMoving">;
   /**
    * Select a Session and show its Conversation as one UI navigation action.
    * Unknown IDs resolve through their own summary read; failures surface in `opening`.
@@ -134,13 +136,15 @@ export interface UiWorkspace {
    * reads the memberships current at completion, so reorders that landed
    * while the Host call was pending keep their positions.
    * @param sessionId - Session to pin.
+   * @returns `"busy"` if another placement operation owns the Session; nothing is sent.
    */
-  pinSession(sessionId: SessionId): Promise<void>;
+  pinSession(sessionId: SessionId): Promise<"applied" | "busy">;
   /**
    * Unpin a Session on the Host; saved positions stay as they are.
    * @param sessionId - Session to unpin.
+   * @returns `"busy"` if another placement operation owns the Session; nothing is sent.
    */
-  unpinSession(sessionId: SessionId): Promise<void>;
+  unpinSession(sessionId: SessionId): Promise<"applied" | "busy">;
   /**
    * Open the Host-native directory picker.
    * @returns the selected directory, or null when cancelled.
@@ -181,6 +185,7 @@ export class DirectoryBrowseError extends Error {
 
 /** Implements Workspace archive and directory UI operations. */
 class UiWorkspaceService extends Service implements UiWorkspace {
+  readonly sessionMoves = new SessionMoveLock();
   private readonly connecting = new Map<WorkspaceId, Promise<SessionId>>();
   private readonly lifetime = new AbortController();
   private readonly selection = createSnapshotStore<MainSelection>(
@@ -635,21 +640,33 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     await this.workspaces.unarchiveSession(sessionId);
   }
 
-  async pinSession(sessionId: SessionId): Promise<void> {
-    await this.workspaces.pinSession(sessionId);
-    const { items, pinnedSessionIds, archivedSessionIds } = this.workspaces.list.getSnapshot();
-    this.view.pinSessionOrder(
-      sessionId,
-      pinOrderAccounts(items, sessionId),
-      pinOrderSource(items, this.sessions.list.getSnapshot(), {
-        pinnedSessionIds,
-        archivedSessionIds,
-      }),
-    );
+  async pinSession(sessionId: SessionId): Promise<"applied" | "busy"> {
+    if (!this.sessionMoves.tryAcquire(sessionId)) return "busy";
+    try {
+      await this.workspaces.pinSession(sessionId);
+      const { items, pinnedSessionIds, archivedSessionIds } = this.workspaces.list.getSnapshot();
+      this.view.pinSessionOrder(
+        sessionId,
+        pinOrderAccounts(items, sessionId),
+        pinOrderSource(items, this.sessions.list.getSnapshot(), {
+          pinnedSessionIds,
+          archivedSessionIds,
+        }),
+      );
+      return "applied";
+    } finally {
+      this.sessionMoves.release(sessionId);
+    }
   }
 
-  async unpinSession(sessionId: SessionId): Promise<void> {
-    await this.workspaces.unpinSession(sessionId);
+  async unpinSession(sessionId: SessionId): Promise<"applied" | "busy"> {
+    if (!this.sessionMoves.tryAcquire(sessionId)) return "busy";
+    try {
+      await this.workspaces.unpinSession(sessionId);
+      return "applied";
+    } finally {
+      this.sessionMoves.release(sessionId);
+    }
   }
 
   async pickDirectory(): Promise<string | null> {

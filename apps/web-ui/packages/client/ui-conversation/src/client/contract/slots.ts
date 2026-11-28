@@ -468,6 +468,7 @@ export interface PendingDraftFace {
 export interface ConversationInjected {
   /** Borrowed current Composer editor for the package-owned native reference drop target. */
   referenceEditor: LexicalEditor | undefined;
+  isSessionMoving: (id: SessionId) => boolean;
   /** Connect a blank Session; null explicitly selects no project on a supporting Host. */
   selectWorkspace: (workspaceId: WorkspaceId | null) => Promise<void>;
   /** Retry a failed New Session creation without clearing the pending draft. */

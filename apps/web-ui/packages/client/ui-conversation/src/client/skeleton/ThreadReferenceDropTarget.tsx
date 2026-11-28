@@ -17,11 +17,13 @@ import css from "./ThreadReferenceDropTarget.module.css";
 export function ThreadReferenceDropTarget({
   container,
   editor,
+  isSessionMoving,
   useSessions,
   t,
 }: {
   container: HTMLDivElement | null;
   editor: LexicalEditor | undefined;
+  isSessionMoving: ConversationContentProps["isSessionMoving"];
   useSessions: ConversationContentProps["useSessions"];
   t: ConversationContentProps["t"];
 }) {
@@ -47,7 +49,11 @@ export function ThreadReferenceDropTarget({
     const supported = (candidate: ThreadReference | undefined) => {
       const id = candidate === undefined ? undefined : localThreadId(threadReferenceUri(candidate));
       const session = id === undefined ? undefined : catalog.current[id];
-      return session !== undefined && threadReferenceOf(session) !== undefined;
+      return (
+        session !== undefined &&
+        !isSessionMoving(session.id) &&
+        threadReferenceOf(session) !== undefined
+      );
     };
     const inside = (target: EventTarget | null) => {
       if (!(target instanceof Node) || !container.contains(target)) return false;
@@ -135,7 +141,7 @@ export function ThreadReferenceDropTarget({
       window.removeEventListener("blur", reset);
       window.removeEventListener("keydown", cancel, true);
     };
-  }, [container, editor]);
+  }, [container, editor, isSessionMoving]);
 
   if (reference === null) return null;
   return (

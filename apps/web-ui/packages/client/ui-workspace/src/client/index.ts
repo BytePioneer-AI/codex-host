@@ -71,12 +71,27 @@ import {
 import { ArchiveChildrenDialog } from "./session-actions/ArchiveChildrenDialog.tsx";
 import { derive } from "./session-actions/derived.ts";
 import {
+  MoveThreadProjectDialog,
+  MoveThreadProjectMenuItem,
+  type ThreadProjectMenuInjected,
+  type ThreadProjectMoveInjected,
+  type ThreadProjectMoveRequest,
+} from "./session-actions/MoveThreadProject.tsx";
+import {
+  createProjectMoveCoordinator,
+  resolveMoveProjectDialogState,
+} from "./session-actions/project-move.ts";
+import {
   MoveThreadSectionDialog,
   MoveThreadSectionMenuItem,
   type ThreadSectionMenuInjected,
   type ThreadSectionMoveInjected,
-  type ThreadSectionMoveRequest,
 } from "./session-actions/MoveThreadSection.tsx";
+import {
+  ManageThreadSectionDialog,
+  type ThreadSectionManageInjected,
+  type ThreadSectionManageRequest,
+} from "./session-actions/ManageThreadSection.tsx";
 import { ForkSessionMenuItem } from "./session-actions/ForkSession.tsx";
 import {
   MarkChildThreadsReadMenuItem,
@@ -263,54 +278,126 @@ export function apply(ctx: Context): void {
     );
     if (!result.ok) throw new Error(result.error.message);
   };
-  const nativeThreadIds = derive(
-    sessions.list,
-    (snapshot) =>
-      new Set(
-        Object.values(snapshot.byId)
-          .filter(
-            (row) =>
-              !row.blank &&
-              row.origin !== "subagent" &&
-              !row.projectionValues?.remoteHost &&
-              row.projectionValues?.harnessIdentity?.id === "codex",
-          )
-          .map((row) => row.id),
-      ),
-  );
-  const threadSectionMove = createSnapshotStore<ThreadSectionMoveRequest | null>(null);
-  const threadSectionMenu = (): ThreadSectionMenuInjected => ({
-    hooks: { nativeThreads: nativeThreadIds, sectionWorkspace: workspaces.list },
-    requestMove: (request) => threadSectionMove.set(request),
+  const sectionMoveHarnesses = derive(sessions.list, (snapshot) => {
+    const harnesses = new Map<SessionId, string>();
+    for (const row of Object.values(snapshot.byId)) {
+      const harnessId = row.projectionValues?.harnessIdentity?.id;
+      if (
+        harnessId &&
+        !row.blank &&
+        row.origin !== "subagent" &&
+        !row.projectionValues?.remoteHost
+      ) {
+        harnesses.set(row.id, harnessId);
+      }
+    }
+    return harnesses;
   });
-  const threadSectionDialog = (): ThreadSectionMoveInjected => ({
-    hooks: { threadSectionMove },
-    dismiss: () => threadSectionMove.set(null),
-    move: (sessionId, sectionId) => {
-      if (!workspaces.moveSessionToSection)
-        return Promise.reject(new Error("Section moves are unavailable"));
-      return workspaces.moveSessionToSection(sessionId, sectionId);
+  const threadProjectMove = createSnapshotStore<ThreadProjectMoveRequest | null>(null);
+  const projectMoveCoordinator = createProjectMoveCoordinator({
+    lock: uiWorkspace.sessionMoves,
+    execute: (sessionId, projectId) => {
+      const state = resolveMoveProjectDialogState({
+        sessionId,
+        workspace: workspaces.list.getSnapshot(),
+        summary: sessions.list.getSnapshot().byId[sessionId],
+        selectedTarget: projectId ?? "",
+        busy: false,
+      });
+      if (!workspaces.moveSessionToProject || !state.canSubmit)
+        return Promise.reject(new Error("Project move is no longer available"));
+      return workspaces.moveSessionToProject(sessionId, projectId);
     },
   });
+  const threadProjectMenu = (): ThreadProjectMenuInjected => ({
+    hooks: {
+      projectWorkspace: workspaces.list,
+      projectSessions: sessions.list,
+      movingProjectSessions: projectMoveCoordinator.movingSessionIds,
+    },
+    canMove: workspaces.moveSessionToProject !== undefined,
+    requestMove: (request) => threadProjectMove.set(request),
+  });
+  const threadProjectDialog = (): ThreadProjectMoveInjected => ({
+    hooks: {
+      threadProjectMove,
+      projectWorkspace: workspaces.list,
+      projectSessions: sessions.list,
+      movingProjectSessions: projectMoveCoordinator.movingSessionIds,
+    },
+    dismiss: () => threadProjectMove.set(null),
+    move: projectMoveCoordinator.move,
+  });
+  const threadSectionMove = createSnapshotStore<SessionId | null>(null);
+  const threadSectionMenu = (): ThreadSectionMenuInjected => ({
+    hooks: { sectionMoveHarnesses, sectionWorkspace: workspaces.list },
+    requestMove: (sessionId) => threadSectionMove.set(sessionId),
+  });
+  const threadSectionDialog = (): ThreadSectionMoveInjected => ({
+    hooks: { threadSectionMove, sectionWorkspace: workspaces.list },
+    dismiss: () => threadSectionMove.set(null),
+    move: async (sessionId, sectionId) => {
+      if (!workspaces.moveSessionToSection) throw new Error("Section moves are unavailable");
+      if (!uiWorkspace.sessionMoves.tryAcquire(sessionId))
+        throw new Error("A session placement operation is already in progress.");
+      try {
+        await workspaces.moveSessionToSection(sessionId, sectionId);
+      } finally {
+        uiWorkspace.sessionMoves.release(sessionId);
+      }
+    },
+  });
+  const threadSectionManage = createSnapshotStore<ThreadSectionManageRequest | null>(null);
+  const threadSectionManageDialog = (): ThreadSectionManageInjected => ({
+    hooks: { threadSectionManage },
+    dismiss: () => threadSectionManage.set(null),
+    createSection: async (name) => {
+      if (!workspaces.createThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.createThreadSection(name);
+    },
+    updateSection: async (sectionId, name) => {
+      if (!workspaces.updateThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.updateThreadSection(sectionId, name);
+    },
+    deleteSection: async (sectionId) => {
+      if (!workspaces.deleteThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.deleteThreadSection(sectionId);
+    },
+    notifySyncPending: () => notify({ kind: "sectionSyncPending" }),
+  });
   const pinInjected = (): PinSessionInjected => ({
-    hooks: { pinned: pinnedSet, archived: archivedSet },
+    hooks: {
+      pinned: pinnedSet,
+      archived: archivedSet,
+      movingSessions: uiWorkspace.sessionMoves.movingSessionIds,
+    },
     // Pin failures surface as a notice: nothing else on the surface moves, so
     // a silent failure would read as a dead action.
     pinSession: (sessionId) => {
-      uiWorkspace.pinSession(sessionId).catch((error: unknown) => {
-        notify({
-          kind: "pinFailed",
-          message: error instanceof Error ? error.message : String(error),
+      uiWorkspace
+        .pinSession(sessionId)
+        .then((result) => {
+          if (result === "busy") notify({ kind: "pinBusy" });
+        })
+        .catch((error: unknown) => {
+          notify({
+            kind: "pinFailed",
+            message: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
     },
     unpinSession: (sessionId) => {
-      uiWorkspace.unpinSession(sessionId).catch((error: unknown) => {
-        notify({
-          kind: "unpinFailed",
-          message: error instanceof Error ? error.message : String(error),
+      uiWorkspace
+        .unpinSession(sessionId)
+        .then((result) => {
+          if (result === "busy") notify({ kind: "pinBusy" });
+        })
+        .catch((error: unknown) => {
+          notify({
+            kind: "unpinFailed",
+            message: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
     },
   });
   const runArchive = async (
@@ -458,6 +545,7 @@ export function apply(ctx: Context): void {
       uiWorkspace.startSession(workspaceId);
     },
     open: openSession,
+    isSessionMoving: uiWorkspace.sessionMoves.isMoving,
     markCompletionsRead: (sessionIds) => {
       ctx.get("uiSession")?.markCompletionsRead(sessionIds);
     },
@@ -488,6 +576,12 @@ export function apply(ctx: Context): void {
       await uiWorkspace.unarchiveSession(sessionId);
     },
     createWorkspace: (input) => workspaces.create(input),
+    requestManageThreadSection:
+      workspaces.createThreadSection &&
+      workspaces.updateThreadSection &&
+      workspaces.deleteThreadSection
+        ? (request) => threadSectionManage.set(request)
+        : undefined,
     requestSearch: shortcutControls.search,
     requestAddWorkspace: shortcutControls.add,
     closeAddWorkspace: shortcutControls.closeAdd,
@@ -551,6 +645,16 @@ export function apply(ctx: Context): void {
         inject: pinInjected,
       },
       PinSessionMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "move-to-project",
+        order: 140,
+        locale: NS,
+        inject: threadProjectMenu,
+      },
+      MoveThreadProjectMenuItem,
     );
     yield ctx.slots.register(
       {
@@ -650,11 +754,29 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register(
       {
         name: "shell.overlay",
+        id: "workspace.move-to-project",
+        locale: NS,
+        inject: threadProjectDialog,
+      },
+      MoveThreadProjectDialog,
+    );
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
         id: "workspace.move-to-section",
         locale: NS,
         inject: threadSectionDialog,
       },
       MoveThreadSectionDialog,
+    );
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "workspace.manage-thread-section",
+        locale: NS,
+        inject: threadSectionManageDialog,
+      },
+      ManageThreadSectionDialog,
     );
     yield ctx.slots.register(
       {

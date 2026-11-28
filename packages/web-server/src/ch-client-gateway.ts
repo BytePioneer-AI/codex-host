@@ -4,6 +4,7 @@ import {
   clientChannelResponseSchema,
   clientSnapshotRequestSchema,
   CLIENT_REQUEST_LIMIT_BYTES,
+  THREAD_SECTION_CAPABILITY,
   isHostExtensionManagementMethod,
   PEER_DELEGATION_CHANNEL_METHOD,
   PRODUCT_TELEMETRY_SET_METHOD,
@@ -57,6 +58,7 @@ export async function serveChClientGateway(
             sequence: Number(url.searchParams.get("after")),
           })
         : undefined;
+      const supportsSections = url.searchParams.get(THREAD_SECTION_CAPABILITY) === "1";
       const stop = channel.subscribe((event) => {
         if (event.type === "connection") {
           if (!event.online && !response.writableEnded && !response.destroyed) {
@@ -81,7 +83,12 @@ export async function serveChClientGateway(
           response.destroy();
           return;
         }
-        response.write(JSON.stringify(event) + "\n");
+        // Legacy clients still need to advance the cursor for hidden section invalidations.
+        const frame =
+          event.type === "sections-changed" && !supportsSections
+            ? { type: "hello", version: 1, cursor: event.cursor, reset: true }
+            : event;
+        response.write(JSON.stringify(frame) + "\n");
       }, after);
       const heartbeat = setInterval(() => {
         if (response.headersSent && !response.writableEnded) response.write("\n");

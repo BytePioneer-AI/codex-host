@@ -8,6 +8,8 @@ import {
 } from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
+  clientThreadProjectMoveParamsSchema,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   threadArchiveConfirmParamsSchema,
   clientThreadSnapshotSchema,
@@ -40,6 +42,7 @@ import type {
   ExternalThreadLocation,
 } from "./external-thread-runtime.js";
 import { ownTurns } from "./external-thread-side-chat.js";
+import { threadSectionFields } from "./external-thread-repository.js";
 import { readExternalWorkspaceSnapshot } from "./native-workspace-snapshot.js";
 import { listNativeProjects } from "./native-project-list.js";
 import {
@@ -77,7 +80,6 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "codexhost/thread/commands/inspect": "host",
   "codexhost/thread/command/execute": "host",
   "codexhost/thread/pins/set": "host",
-  "codexhost/thread/sections/move": "host",
   "codexhost/thread/usage/inspect": "host",
   "codexhost/thread/inspect": "native",
 };
@@ -121,6 +123,10 @@ export interface ClientChannelHostDependencies {
   onNativeTurnStart?(): void;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
+  moveThreadToProject?(threadId: string, projectId: string | null): Promise<ConsoleHostReply>;
+  readNativeProjectIds?(
+    threadIds: readonly string[],
+  ): Promise<ReadonlyMap<string, string | null | undefined>>;
   diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
   /** Runs one client request through the shared Desktop request handling. */
   submit(
@@ -255,9 +261,20 @@ export class ClientChannelHost {
             await this.#host.listSectionPlacements(),
             nativeThreadIds,
             projects,
+            this.#host.readNativeProjectIds,
+            this.#host.moveThreadToProject !== undefined,
           ),
         ),
       };
+    }
+    if (method === CLIENT_THREAD_PROJECT_MOVE_METHOD) {
+      const move = clientThreadProjectMoveParamsSchema.safeParse(params);
+      if (!move.success) return { error: { code: -32602, message: "Invalid Thread project move" } };
+      return (
+        this.#host.moveThreadToProject?.(move.data.threadId, move.data.projectId) ?? {
+          error: { code: -32078, message: "Thread project moves require the local shared Host" },
+        }
+      );
     }
     let native = method.startsWith("project/");
     if (method === "thread/start") {
@@ -271,7 +288,7 @@ export class ClientChannelHost {
           },
         };
     }
-    if (typeof params.threadId === "string") {
+    if (typeof params.threadId === "string" && method !== "codexhost/thread/sections/move") {
       const location = await this.#host.locateExternalThread(params.threadId);
       const official = location.kind === "official" ? OFFICIAL_METHODS[method] : undefined;
       native = native || official === "native";
@@ -430,9 +447,7 @@ export class ClientChannelHost {
       : operation();
   }
 
-  /** Absolute, bounded state; capture fields and delivery cursor without yielding.
-   * Notifications are invalidations, not text deltas to replay over this snapshot.
-   */
+  /** Absolute, bounded state; notifications invalidate fields rather than replaying text deltas. */
   async clientSnapshot(
     threadId: string,
     options: ClientSnapshotOptions = {},
@@ -528,6 +543,17 @@ export class ClientChannelHost {
     }
     if (!thread) throw new Error("Thread is not owned by this local Host");
     const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
+    // Keep section changes that arrive during the placement read replayable.
+    const cursor = this.clientEvents.cursor;
+    let placements: readonly StoredSectionPlacementV1[] | undefined;
+    try {
+      placements = await this.#host.listSectionPlacements();
+    } catch {
+      // Unavailable placement data is not a confirmed removal.
+    }
+    const sectionFields = placements
+      ? threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId))
+      : undefined;
     const interactions = [
       ...[...this.#host.interactions.approvals]
         .filter(([, pending]) => pending.thread === thread)
@@ -557,7 +583,7 @@ export class ClientChannelHost {
     const effectivePermissionModeId = state.effectivePermissionModeId ?? saved?.permissionModeId;
     const snapshot = clientThreadSnapshotSchema.parse(
       copyAsJson({
-        cursor: this.clientEvents.cursor,
+        cursor,
         activeTurnId: thread.activeTurnId,
         command: thread.clientCommand
           ? {
@@ -569,7 +595,12 @@ export class ClientChannelHost {
                   : thread.clientCommand.turn,
             }
           : undefined,
-        thread: { ...thread.thread, turns: [] },
+        thread: {
+          ...thread.thread,
+          section: sectionFields?.section,
+          sectionEnteredAt: sectionFields?.sectionEnteredAt,
+          turns: [],
+        },
         turnsPage: listExternalTurns(this.#host.clientHistoryTurns(thread), {
           limit: 5,
           sortDirection: "desc",

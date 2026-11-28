@@ -12,7 +12,9 @@ import {
 } from "@codexhost/desktop-control";
 import { decodeExternalTransportSelection } from "@codexhost/protocol-core";
 import {
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
   THREAD_STEER_STRICT_TARGET_PARAM,
+  clientChannelEventSchema,
   clientThreadSnapshotSchema,
   harnessModelRefIdSchema,
   harnessPermissionModeIdSchema,
@@ -20,6 +22,7 @@ import {
   hostThreadIdSchema,
   hostTurnIdSchema,
   jsonObjectSchema,
+  type ClientChannelCursor,
   type ClientChannelEvent,
 } from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
@@ -29,6 +32,7 @@ import { ClientCommandReceipts } from "../src/client-command-receipts.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import { compactClientSnapshot } from "../src/client-snapshot-compaction.js";
 import type { ExternalHistoryPage } from "../src/external-thread-history.js";
+import { PINNED_THREAD_SECTION_ID } from "../src/external-thread-pins.js";
 import {
   createOwnedConnectionBackend,
   OfficialRuntimeScope,
@@ -82,6 +86,15 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
+  it("does not send a project move through a Desktop-owned transport", async () => {
+    const { a, fixture } = await setup();
+    const received = vi.spyOn(fixture.host, "handleClientRequest");
+    await expect(
+      a.request(CLIENT_THREAD_PROJECT_MOVE_METHOD, { threadId: "thread", projectId: "target" }),
+    ).rejects.toMatchObject({ code: -32601 });
+    expect(received).not.toHaveBeenCalled();
+  });
+
   it("rejects non-Codex draft command inspection before reading the Adapter catalog", async () => {
     const { fixture, a } = await setup();
     const readCatalog = vi.fn(() => ({ commands: [] }));
@@ -475,6 +488,82 @@ describe("public authenticated owner channel", () => {
     expect(first.cursor.epoch).toBe(second.cursor.epoch);
     expect(fixture.adapter.sessions).toHaveLength(1);
     current(fixture).succeedTurn();
+  });
+  it("serves history, queue, and pending approvals when section placement cannot be read", async () => {
+    const { fixture, a } = await setup();
+    const threadId = await startPiThread(fixture);
+    current(fixture).requestApprovalOnNextTurn("Allow test action?");
+    const turnId = await startPiTurn(fixture, threadId);
+    await fixture.collector.waitFor((value) => value.method === "mcpServer/elicitation/request");
+    await a.request("turn/start", {
+      threadId,
+      delivery: "queue",
+      clientUserMessageId: "queued-after-approval",
+      input: [{ type: "text", text: "wait for approval" }],
+    });
+
+    vi.spyOn(fixture.mappingStore, "listSectionPlacements").mockRejectedValueOnce(
+      new Error("Section placements unavailable"),
+    );
+    const snapshot = await a.snapshot(threadId);
+    expect(snapshot.thread).not.toHaveProperty("section");
+    expect(snapshot.thread).not.toHaveProperty("sectionEnteredAt");
+    expect(snapshot.turnsPage.data.map((turn) => turn.id)).toContain(turnId);
+    expect(snapshot.queue?.items).toMatchObject([{ clientUserMessageId: "queued-after-approval" }]);
+    expect(snapshot.interactions).toHaveLength(1);
+    const request = snapshot.interactions[0];
+    assert(request);
+    expect(request).toMatchObject({ threadId, kind: "approval" });
+    await a.respond({
+      epoch: snapshot.cursor.epoch,
+      threadId,
+      requestId: request.requestId,
+      result: { action: "accept", content: {} },
+    });
+    current(fixture).succeedTurn();
+  });
+  it("keeps a section change replayable when a snapshot returns an older placement", async () => {
+    const { fixture, a } = await setup();
+    const threadId = hostThreadIdSchema.parse(await startPiThread(fixture));
+    const section = { id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null };
+    await fixture.mappingStore.replaceSectionPlacements([
+      {
+        hostThreadId: threadId,
+        section,
+        enteredAt: "2026-01-01T00:00:00.000Z",
+        beforeThreadId: null,
+      },
+    ]);
+    const readPlacements = fixture.mappingStore.listSectionPlacements.bind(fixture.mappingStore);
+    const read = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    vi.spyOn(fixture.mappingStore, "listSectionPlacements").mockImplementationOnce(async () => {
+      const placements = await readPlacements();
+      read.resolve(undefined);
+      await release.promise;
+      return placements;
+    });
+
+    const pending = a.snapshot(threadId);
+    await read.promise;
+    const journal = fixture.host.clientEvents;
+    const method = "codexhost/thread/tree/changed";
+    try {
+      await fixture.mappingStore.replaceSectionPlacements([]);
+      journal.changed(threadId, method);
+    } finally {
+      release.resolve(undefined);
+    }
+
+    const snapshot = await pending;
+    expect(snapshot.thread).toMatchObject({ section });
+    const replayed: ClientChannelEvent[] = [];
+    journal.subscribe((event) => replayed.push(event), snapshot.cursor)();
+    expect(replayed).toContainEqual(expect.objectContaining({ type: "changed", threadId, method }));
+    expect((await a.snapshot(threadId)).thread).toMatchObject({
+      section: null,
+      sectionEnteredAt: null,
+    });
   });
   it("includes in-progress reasoning and tool output, not Desktop's partial pending-Turn shape", async () => {
     const { fixture, a } = await setup();
@@ -1033,6 +1122,69 @@ describe("public authenticated owner channel", () => {
       expect.arrayContaining([expect.objectContaining({ type: "userMessage", clientId: "same" })]),
     );
   });
+  it("negotiates section invalidations without leaving cursor gaps in legacy streams", async () => {
+    const { fixture, server, events } = await setup();
+    const hub = fixture.host.clientEvents;
+    const controller = new AbortController();
+    cleanup.push(() => controller.abort());
+    async function* legacyEvents(after?: ClientChannelCursor) {
+      const url = new URL(`http://127.0.0.1:${server.descriptor.port}/v1/events`);
+      if (after) {
+        url.searchParams.set("epoch", after.epoch);
+        url.searchParams.set("after", String(after.sequence));
+      }
+      const response = await fetch(url, {
+        headers: { authorization: `Bearer ${server.descriptor.token}` },
+        signal: controller.signal,
+      });
+      assert.equal(response.status, 200);
+      assert.ok(response.body);
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for await (const chunk of response.body) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          if (line) yield clientChannelEventSchema.parse(JSON.parse(line));
+        }
+      }
+    }
+
+    const live = legacyEvents();
+    const hello = (await live.next()).value;
+    assert.ok(hello?.type === "hello");
+    hub.sectionsChanged();
+    const sectionCursor = hub.cursor;
+    hub.changed("a", "thread/name/updated");
+    const changed = {
+      type: "changed",
+      cursor: hub.cursor,
+      threadId: "a",
+      method: "thread/name/updated",
+    };
+    const reset = { type: "hello", version: 1, cursor: sectionCursor, reset: true };
+    expect((await live.next()).value).toEqual(reset);
+    expect((await live.next()).value).toEqual(changed);
+
+    const replay = legacyEvents(hello.cursor);
+    expect((await replay.next()).value).toEqual({
+      type: "hello",
+      version: 1,
+      cursor: changed.cursor,
+      reset: false,
+    });
+    expect((await replay.next()).value).toEqual(reset);
+    expect((await replay.next()).value).toEqual(changed);
+    await vi.waitFor(() =>
+      expect(events.slice(-2)).toEqual([
+        { type: "sections-changed", cursor: sectionCursor },
+        changed,
+      ]),
+    );
+  });
+
   it("rediscovers a restarted owner and emits a new epoch/reset without replaying writes", async () => {
     const { fixture, server, directory, a, events } = await setup();
     const oldEpoch = server.descriptor.epoch;

@@ -18,7 +18,15 @@ export class FakeChHost implements ChHostClient {
   readonly modes = new Map<string, string>();
   readonly projectSnapshot: ChProjectSnapshot = { projects: [], assignments: {}, projectless: [] };
   async projects(): Promise<ChProjectSnapshot> {
-    return structuredClone(this.projectSnapshot);
+    const snapshot = structuredClone(this.projectSnapshot);
+    snapshot.projectMoveBindings ??= {
+      projectIds: snapshot.projects.map(({ id }) => id),
+      assignments: {
+        ...Object.fromEntries(snapshot.projectless.map((id) => [id, null])),
+        ...snapshot.assignments,
+      },
+    };
+    return snapshot;
   }
   pinnedIds: string[] = [];
   pinError: string | undefined;
@@ -111,7 +119,7 @@ export class FakeChHost implements ChHostClient {
         value = { parents: {} };
         break;
       case "codexhost/workspace/read":
-        value = { ...structuredClone(this.projectSnapshot), pinned: [...this.pinnedIds] };
+        value = { ...(await this.projects()), pinned: [...this.pinnedIds] };
         break;
       case "codexhost/thread/pins/list":
         value = { threadIds: await this.pins() };

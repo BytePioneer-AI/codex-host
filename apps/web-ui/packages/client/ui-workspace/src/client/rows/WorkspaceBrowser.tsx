@@ -45,6 +45,7 @@ import {
   IconFolderCloseRegular,
   IconGlobeOutlineRegular,
   IconNewChatOutlineRegular,
+  IconPlusOutlineRegular,
   IconProjectAddOutlineRegular,
   IconQueueOutlineRegular,
   IconSearchOutlineRegular,
@@ -67,6 +68,10 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
+import {
+  ThreadSectionActions,
+  type ThreadSectionManageRequest,
+} from "../session-actions/ManageThreadSection.tsx";
 import type {
   ArchivedFilter,
   GroupNode,
@@ -412,11 +417,12 @@ type SessionTreeProps = Pick<
     /** Persist one section's fold. */
     setSectionExpanded: (key: string, expanded: boolean) => void;
     /** Save a drag order and select Manual. */
-    setSessionOrder: (accountKey: string, order: readonly string[]) => void;
+    setSessionOrder: (sessionId: SessionId, accountKey: string, order: readonly string[]) => void;
     pinnedWorkspaceIds: readonly string[];
     /** Registry-global pin and archive sets plus the archived-visibility choice. */
     rowState: SessionRowState;
     nativeSections: readonly WorkspaceThreadSection[];
+    manageThreadSection?: (request: ThreadSectionManageRequest) => void;
     /** Switch the archived filter back to the default hide-archived view. */
     onLeaveArchivedOnly: () => void;
     /** Open the browser-owned rename dialog for a real Workspace group. */
@@ -480,6 +486,7 @@ function SessionTree({
   ungroupedSessionIds,
   rowState,
   nativeSections,
+  manageThreadSection,
   onLeaveArchivedOnly,
   workspaceReady,
   canStartProjectless,
@@ -692,7 +699,8 @@ function SessionTree({
       activeDrag,
       over,
     );
-    if (nextOrder !== undefined) setSessionOrder(activeDrag.accountKey, nextOrder);
+    if (nextOrder !== undefined)
+      setSessionOrder(activeDrag.sessionId, activeDrag.accountKey, nextOrder);
   };
   const commitWorkspaceDrag = (
     activeDrag: WorkspaceDragState,
@@ -1237,6 +1245,7 @@ function SessionTree({
           sections={nativeLayout}
           groupRows={sectionGroupRows}
           projectSectionDrop={projectSectionDrop}
+          manageThreadSection={manageThreadSection}
           currentId={current}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
@@ -1309,7 +1318,8 @@ function nativeSectionLayout(
     precomputedRoots ??
     new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const placed = new Set<SessionId>();
-  return sections.map(({ id, name, threadIds }) => {
+  return sections.map((section) => {
+    const { id, threadIds } = section;
     const key = `native-section:${id}`;
     const rows = threadIds.flatMap((threadId) => {
       const row = roots.get(threadId);
@@ -1317,7 +1327,7 @@ function nativeSectionLayout(
       placed.add(threadId);
       return [row];
     });
-    return { id, key, name, rows, expanded: sectionExpanded(expansion, key) };
+    return { id, section, key, rows, expanded: sectionExpanded(expansion, key) };
   });
 }
 
@@ -1335,24 +1345,31 @@ function NativeSections({
   sections,
   groupRows,
   projectSectionDrop,
+  manageThreadSection,
   setSectionExpanded,
   ...rowProps
 }: Omit<
   ComponentProps<typeof PinnedSection>,
-  "rows" | "expanded" | "onToggle" | "customSection" | "children"
+  "rows" | "expanded" | "onToggle" | "customSection" | "headingActions" | "children"
 > & {
   sections: ReturnType<typeof nativeSectionLayout>;
+  manageThreadSection?: SessionTreeProps["manageThreadSection"];
   /** Rendered Workspace groups of each expanded section, keyed by section layout key. */
   groupRows?: ReadonlyMap<string, ReactNode[]>;
   projectSectionDrop?: (sectionId: string) => SectionHeadingProps["projectDrop"];
   setSectionExpanded: SessionTreeProps["setSectionExpanded"];
 }) {
-  return sections.map(({ id, key, name, rows, expanded }) => (
+  return sections.map(({ key, section, rows, expanded }) => (
     <PinnedSection
       key={key}
       {...rowProps}
       rows={rows}
-      customSection={{ key, name, projectDrop: projectSectionDrop?.(id) }}
+      customSection={{ key, name: section.name, projectDrop: projectSectionDrop?.(section.id) }}
+      headingActions={
+        manageThreadSection && (
+          <ThreadSectionActions section={section} request={manageThreadSection} t={rowProps.t} />
+        )
+      }
       expanded={expanded}
       onToggle={() => setSectionExpanded(key, !expanded)}
     >
@@ -1366,6 +1383,7 @@ function FlatList({
   sessionIds,
   rowState,
   nativeSections,
+  manageThreadSection,
   onLeaveArchivedOnly,
   useSessionStatus,
   open,
@@ -1400,6 +1418,7 @@ function FlatList({
   | "onSessionRevealed"
   | "rowState"
   | "nativeSections"
+  | "manageThreadSection"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
   | "hostScopeFiltered"
@@ -1446,7 +1465,8 @@ function FlatList({
     dropCommitted.current = true;
     setDrag(null);
     const nextOrder = sessionDragOrder(sessionIds, rows, activeDrag, over);
-    if (nextOrder !== undefined) setSessionOrder(FLAT_SESSION_ORDER_KEY, nextOrder);
+    if (nextOrder !== undefined)
+      setSessionOrder(activeDrag.sessionId, FLAT_SESSION_ORDER_KEY, nextOrder);
   };
   const now = Date.now();
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
@@ -1492,6 +1512,7 @@ function FlatList({
         />
         <NativeSections
           sections={nativeLayout}
+          manageThreadSection={manageThreadSection}
           currentId={currentId}
           showHost={!singleRemoteHostScoped}
           onOpen={open}
@@ -1747,6 +1768,8 @@ function WorkspaceBrowserContent({
   setWorkspacePinned,
   unarchiveSession,
   createWorkspace,
+  requestManageThreadSection,
+  isSessionMoving,
   searchSessions,
   searchResultLimit,
   useDirectoryFlow,
@@ -1797,6 +1820,10 @@ function WorkspaceBrowserContent({
     (state) => state.pinnedWorkspaceIds ?? NO_PINNED_WORKSPACE_IDS,
   );
   const threadSections = useWorkspaces((state) => state.threadSections ?? NO_THREAD_SECTIONS);
+  const canManageThreadSections = useWorkspaces(
+    (state) => state.state === "idle" && state.threadSectionsV1 === true,
+  );
+  const manageThreadSection = canManageThreadSections ? requestManageThreadSection : undefined;
   // Live occupancy of this surface's directory-flow hole (the same source the
   // flow reads): a composition without a picking affordance can add nothing.
   const directoryFlowAvailable = useDirectoryFlow((occupied) => occupied);
@@ -1996,7 +2023,12 @@ function WorkspaceBrowserContent({
     orderSource,
     workspaceReady,
   ]);
-  const saveSessionOrder = (accountKey: string, order: readonly string[]): void => {
+  const saveSessionOrder = (
+    sessionId: SessionId,
+    accountKey: string,
+    order: readonly string[],
+  ): void => {
+    if (isSessionMoving(sessionId)) return;
     actions.setSessionOrder(accountKey, order, activeSessionOrders, orderSource);
   };
   // The query outlives the tree and the input (both wide-only) so collapsing
@@ -2581,6 +2613,18 @@ function WorkspaceBrowserContent({
           </div>
         )}
         <div className={clsx(css.headerActions, wide && searchExpanded && css.headerActionsHidden)}>
+          {wide && manageThreadSection && (
+            <Tooltip label={t("section.create.title")} side="bottom" delayMs={500}>
+              <button
+                type="button"
+                className={clsx(css.iconButton, css.wide)}
+                aria-label={t("section.create.title")}
+                onClick={() => manageThreadSection({ mode: "create" })}
+              >
+                <IconPlusOutlineRegular size={16} />
+              </button>
+            </Tooltip>
+          )}
           {wide && (
             <ViewOptionsMenu
               groupBy={groupBy}
@@ -2790,6 +2834,7 @@ function WorkspaceBrowserContent({
               sessionIds={scopedFlatSessionIds}
               rowState={rowState}
               nativeSections={nativeSections}
+              manageThreadSection={manageThreadSection}
               onLeaveArchivedOnly={leaveArchivedOnly}
               workspaceReady={workspaceReady}
               animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}/${hostScopeResetKey}`}
@@ -2833,6 +2878,7 @@ function WorkspaceBrowserContent({
               setWorkspacePinned={setWorkspacePinned}
               rowState={rowState}
               nativeSections={nativeSections}
+              manageThreadSection={manageThreadSection}
               onLeaveArchivedOnly={leaveArchivedOnly}
               startSession={startSession}
               open={guardedOpen}

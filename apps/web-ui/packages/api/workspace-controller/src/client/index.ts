@@ -25,7 +25,22 @@ export type {
   SessionActivityItem,
   SessionActivityKind,
   SessionActivityKindMap,
+  WorkspaceCreateThreadSectionRequest,
+  WorkspaceCreateThreadSectionValue,
+  WorkspaceDeleteThreadSectionRequest,
+  WorkspaceDeleteThreadSectionValue,
   WorkspaceId,
+  WorkspaceLocalProject,
+  WorkspaceMoveSessionToProjectRequest,
+  WorkspaceMoveSessionToProjectValue,
+  WorkspaceMoveSessionToSectionRequest,
+  WorkspaceMoveSessionToSectionValue,
+  WorkspaceThreadSection,
+  WorkspaceThreadSectionAppearance,
+  WorkspaceThreadSectionDefinition,
+  WorkspaceThreadSectionMutationValue,
+  WorkspaceUpdateThreadSectionRequest,
+  WorkspaceUpdateThreadSectionValue,
   WorkspaceView,
 } from "../types.ts";
 
@@ -94,7 +109,7 @@ export function createWorkspaceStateStream(
 ): WorkspaceStateStream {
   const stream = remote.$stream<WorkspaceFollowFrame>({
     name: "Workspace state stream",
-    open: (signal) => remote.workspace.follow(signal),
+    open: (signal) => remote.workspace.follow(true, signal),
     ended: (accepted) =>
       accepted
         ? new RemoteStreamCarrierError("Workspace state stream ended without a terminal result")
@@ -135,7 +150,10 @@ function acceptIncrement(accept: WorkspaceFollowSink, frame: WorkspaceFollowIncr
       accept.replacePinnedWorkspaces(frame.pinnedWorkspaceIds);
       return;
     case "threadSections":
-      accept.replaceThreadSections(frame.threadSections);
+      accept.replaceThreadSections(frame.threadSections, frame.threadSectionsV1);
+      return;
+    case "localProjects":
+      accept.replaceLocalProjects(frame.localProjects, frame.projectlessSessionIds);
       return;
     /* v8 ignore next -- the generated Remote codec validates this closed union */
     default:

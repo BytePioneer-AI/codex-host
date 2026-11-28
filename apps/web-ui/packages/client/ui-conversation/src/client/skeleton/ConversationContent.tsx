@@ -294,6 +294,7 @@ export function ConversationContent(props: ConversationContentProps) {
         key={sessionId}
         container={body}
         editor={referenceEditor}
+        isSessionMoving={props.isSessionMoving}
         useSessions={useSessions}
         t={t}
       />

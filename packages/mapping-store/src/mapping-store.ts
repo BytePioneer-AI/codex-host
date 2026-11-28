@@ -197,6 +197,13 @@ function withoutUnparsedUrlCredentials(value: string): string {
   return value.slice(0, authorityStart) + kept + value.slice(authorityStart + at + 1);
 }
 
+const THREAD_METADATA_FILE_FIELDS: ReadonlySet<string> = new Set([
+  "formatVersion",
+  "hostThreadId",
+  "metadataCommit",
+  ...THREAD_METADATA_FIELDS,
+]);
+
 /** The Desktop metadata file content for a record, or null when it carries none. */
 function threadMetadataOf(record: StoredThreadRecordV1): StoredThreadMetadataV1 | null {
   const fields = Object.fromEntries(
@@ -223,6 +230,11 @@ function withThreadMetadata(
   const core = withoutThreadMetadata(record);
   for (const name of THREAD_METADATA_FIELDS) {
     if (metadata[name] !== undefined) Object.assign(core, { [name]: metadata[name] });
+  }
+  const commit = metadata.metadataCommit;
+  if (commit && commit.revision > core.revision) {
+    core.revision = commit.revision;
+    core.updatedAt = commit.updatedAt;
   }
   return core;
 }
@@ -1066,7 +1078,7 @@ export class MappingStore {
   async updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
-    options: { ifProjectId?: string } = {},
+    options: { ifProjectId?: string; beforeWrite?: () => void } = {},
   ): Promise<StoredThreadRecordV1> {
     return this.#update(
       hostThreadId,
@@ -1079,6 +1091,8 @@ export class MappingStore {
       },
       // Backfilling a display hint is not new conversation activity.
       Object.keys(patch).every((key) => key === "preview"),
+      undefined,
+      options.beforeWrite,
     );
   }
 
@@ -1279,6 +1293,7 @@ export class MappingStore {
     preserveUpdatedAt:
       boolean | ((current: StoredThreadRecordV1, next: StoredThreadRecordV1) => boolean) = false,
     mode?: "antigravityBoundaryRepair",
+    beforeMetadataWrite?: () => void,
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1301,19 +1316,25 @@ export class MappingStore {
         updatedAt: preserve ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
       this.#validateGlobal(next, hostThreadId, mode === "antigravityBoundaryRepair");
-      await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
       const metadata = threadMetadataOf(next);
-      if (!sameJson(threadMetadataOf(current), metadata)) {
-        // Only a metadata patch changes metadata, and it changes nothing else in the record
-        // besides Revision and updatedAt. Restoring the previous record therefore makes a failed
-        // metadata write leave disk equal to memory; the metadata file itself is replaced atomically.
-        try {
-          await this.#writeMetadataFile(hostThreadId, metadata);
-        } catch (error) {
-          await this.#replaceFile(this.#recordPath(hostThreadId), current, false).catch(
-            () => undefined,
-          );
-          throw error;
+      if (beforeMetadataWrite) {
+        // Publish guarded metadata and its revision together; cancellation needs no core rollback.
+        await this.#writeMetadataFile(hostThreadId, metadata, {
+          record: next,
+          beforeWrite: beforeMetadataWrite,
+        });
+      } else {
+        await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
+        if (!sameJson(threadMetadataOf(current), metadata)) {
+          // Only metadata and the record stamp changed. Restore the core if the sidecar write fails.
+          try {
+            await this.#writeMetadataFile(hostThreadId, metadata);
+          } catch (error) {
+            await this.#replaceFile(this.#recordPath(hostThreadId), current, false).catch(
+              () => undefined,
+            );
+            throw error;
+          }
         }
       }
       this.#records.set(hostThreadId, next);
@@ -1410,30 +1431,40 @@ export class MappingStore {
   async #writeMetadataFile(
     hostThreadId: HostThreadId,
     metadata: StoredThreadMetadataV1 | null,
+    guard?: { record: StoredThreadRecordV1; beforeWrite: () => void },
   ): Promise<void> {
     const target = this.#metadataPath(hostThreadId);
     const temp = `${target}.tmp-${randomUUID()}`;
     let handle: FileHandle | null = null;
     try {
+      if (guard) {
+        await this.#beforeReplace?.(cloneRecord(guard.record));
+        guard.beforeWrite();
+      }
+      const previous = await this.#readMetadata(hostThreadId);
+      const metadataCommit = guard
+        ? { revision: guard.record.revision, updatedAt: guard.record.updatedAt }
+        : previous?.metadataCommit;
       const retained = Object.fromEntries(
-        Object.entries((await this.#readMetadata(hostThreadId)) ?? {}).filter(
-          ([name]) => !["formatVersion", "hostThreadId", ...THREAD_METADATA_FIELDS].includes(name),
-        ),
+        Object.entries(previous ?? {}).filter(([name]) => !THREAD_METADATA_FILE_FIELDS.has(name)),
       );
-      if (!metadata && Object.keys(retained).length === 0) {
+      if (!metadata && !metadataCommit && Object.keys(retained).length === 0) {
         await rm(target, { force: true });
         return;
       }
-      const next = { ...retained, formatVersion: 1, hostThreadId, ...metadata };
+      const next = { ...retained, formatVersion: 1, hostThreadId, ...metadata, metadataCommit };
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
       await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
       await handle.sync();
       await handle.close();
       handle = null;
+      // Admission can change while the replacement is staged.
+      guard?.beforeWrite();
       await rename(temp, target);
     } catch (error) {
       await handle?.close().catch(() => undefined);
       await rm(temp, { force: true }).catch(() => undefined);
+      if (error instanceof MappingStoreError) throw error;
       throw new MappingStoreError("IO_ERROR", "Thread metadata atomic replacement failed", {
         cause: error,
       });

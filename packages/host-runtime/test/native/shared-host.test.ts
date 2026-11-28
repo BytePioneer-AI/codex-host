@@ -269,6 +269,7 @@ for (const first of ["Web", "Desktop", "CLI"])
       assert.deepEqual(await reopened.request("codexhost/workspace/read", {}), {
         projects: [{ id: "p", name: "Existing Project", rootPaths: [root] }],
         assignments: { [id]: "p" },
+        projectMoveBindings: { projectIds: ["p"], assignments: {} },
         projectless: [],
         pinned: [],
       });

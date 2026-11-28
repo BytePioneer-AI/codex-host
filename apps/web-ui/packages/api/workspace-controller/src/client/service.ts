@@ -4,7 +4,13 @@ import { Service, type Context } from "@deepseek-ai/cordis";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { RemoteFailure } from "@deepseek-ai/dsh-typert-protocol";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
-import type { WorkspaceView } from "../types.ts";
+import type {
+  WorkspaceCreateThreadSectionValue,
+  WorkspaceDeleteThreadSectionValue,
+  WorkspaceMoveSessionToProjectValue,
+  WorkspaceUpdateThreadSectionValue,
+  WorkspaceView,
+} from "../types.ts";
 import type { ClientWorkspaceModel, WorkspaceSnapshot } from "./model.ts";
 
 /** Structured create failure for callers that distinguish Host business errors. */
@@ -108,6 +114,18 @@ export interface IWorkspaces {
   /** Place a local project in a sidebar section, or return it to Workspaces. */
   moveWorkspaceToSection?(workspaceId: WorkspaceId, sectionId: string | null): Promise<void>;
   moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
+
+  /** Change or clear a Session's native project without changing section, pin, or cwd. */
+  moveSessionToProject?(
+    sessionId: SessionId,
+    projectId: string | null,
+  ): Promise<WorkspaceMoveSessionToProjectValue>;
+  /** Create a custom Thread section with a non-empty name. */
+  createThreadSection?(name: string): Promise<WorkspaceCreateThreadSectionValue>;
+  /** Rename a custom Thread section while omitting appearance to preserve existing styling. */
+  updateThreadSection?(sectionId: string, name: string): Promise<WorkspaceUpdateThreadSectionValue>;
+  /** Delete a custom Thread section without deleting or archiving its Threads. */
+  deleteThreadSection?(sectionId: string): Promise<WorkspaceDeleteThreadSectionValue>;
   /**
    * Move a Session within one Workspace account.
    * @param workspaceId - owning Workspace.
@@ -184,6 +202,21 @@ export class WorkspaceController extends Service implements IWorkspaces {
     if (!result.ok) throw commandError("session pin", result.error);
   }
 
+  async moveSessionToProject(
+    sessionId: SessionId,
+    projectId: string | null,
+  ): Promise<WorkspaceMoveSessionToProjectValue> {
+    const result = await this.model.moveSessionToProject({ sessionId, projectId });
+    if (!result.ok) {
+      if (result.error.code === "gateway/internal" || result.error.code === "gateway/cancelled")
+        return { status: "unknown" };
+      throw commandError("move to project", result.error);
+    }
+    if (result.value.status === "confirmed" && result.value.projectId !== projectId)
+      return { status: "unknown" };
+    return result.value;
+  }
+
   async moveSessionToSection(sessionId: SessionId, sectionId: string | null): Promise<void> {
     const result = await this.model.moveSessionToSection({ sessionId, sectionId });
     if (!result.ok) throw commandError("move to section", result.error);
@@ -196,6 +229,27 @@ export class WorkspaceController extends Service implements IWorkspaces {
     if (!result.ok) throw commandError("move project to section", result.error);
     if (result.value.sectionId !== sectionId)
       throw new Error("The requested section change was not confirmed.");
+  }
+
+  async createThreadSection(name: string): Promise<WorkspaceCreateThreadSectionValue> {
+    const result = await this.model.createThreadSection({ name });
+    if (!result.ok) throw commandError("create thread section", result.error);
+    return result.value;
+  }
+
+  async updateThreadSection(
+    sectionId: string,
+    name: string,
+  ): Promise<WorkspaceUpdateThreadSectionValue> {
+    const result = await this.model.updateThreadSection({ sectionId, name });
+    if (!result.ok) throw commandError("update thread section", result.error);
+    return result.value;
+  }
+
+  async deleteThreadSection(sectionId: string): Promise<WorkspaceDeleteThreadSectionValue> {
+    const result = await this.model.deleteThreadSection({ sectionId });
+    if (!result.ok) throw commandError("delete thread section", result.error);
+    return result.value;
   }
 
   async unpinSession(sessionId: SessionId): Promise<void> {

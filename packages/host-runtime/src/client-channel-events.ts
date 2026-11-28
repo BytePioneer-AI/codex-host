@@ -27,6 +27,12 @@ export class ClientChannelEvents {
       cursor: { epoch: this.epoch, sequence: ++this.sequence },
     });
   }
+  sectionsChanged(): void {
+    this.publish({
+      type: "sections-changed",
+      cursor: { epoch: this.epoch, sequence: ++this.sequence },
+    });
+  }
   skillsChanged(cwd?: string): void {
     this.publish({
       type: "skills-changed",

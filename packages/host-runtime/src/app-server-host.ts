@@ -29,6 +29,8 @@ import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { readThreadCatalog } from "./thread-catalog.js";
 import { readOfficialImportTimes, type OfficialImportTimes } from "./official-import-duplicates.js";
 import { confirmNativeThreadArchived } from "./native-thread-archive-confirm.js";
+import { readWorkspaceProjects } from "./native-workspace-snapshot.js";
+import { listNativeProjects } from "./native-project-list.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
@@ -106,8 +108,10 @@ import type {
   HarnessUsageStatisticsAdapter,
 } from "@codexhost/harness-adapter/plugin";
 import {
+  MappingStoreError,
   storedThreadMetadataV1Schema,
   type StoredSectionPlacementV1,
+  type StoredThreadSection,
   type StoredThreadRecordV1,
   type StoredThreadSummaryV1,
 } from "@codexhost/mapping-store";
@@ -119,6 +123,10 @@ import {
   externalThreadForkParamsSchema,
   clientThreadPinParamsSchema,
   clientThreadSectionMoveSchema,
+  CLIENT_THREAD_SECTION_MUTATIONS,
+  THREAD_SECTION_CAPABILITY,
+  type ClientThreadSectionMutationResult,
+  jsonRpcErrorSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   type HarnessCommandDescriptor,
@@ -300,6 +308,9 @@ import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
+const SECTION_RECONCILE_RETRY_MS = 100;
+const SECTION_RECONCILE_MAX_RETRY_MS = 30_000;
+type SectionMutation = keyof typeof CLIENT_THREAD_SECTION_MUTATIONS;
 
 import { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelHost } from "./client-channel-host.js";
@@ -372,6 +383,11 @@ import {
 import {
   listSectionThreads,
   moveThreadSection,
+  sameProjectedSections,
+  officialSectionDefinition,
+  SectionDefinitions,
+  SHARED_SECTIONS_CHANGED_METHOD,
+  SHARED_SECTIONS_RECONCILE_METHOD,
   officialThreadSections,
   listAllOfficialRows,
 } from "./external-thread-sections.js";
@@ -431,10 +447,14 @@ export interface AppServerHostOptions {
   hostExtensions?: HostExtensionManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
+  /** Only the independent local service owns client project moves. */
+  localProjectMoves?: boolean;
   /** Shared service's live Desktop connection count, not native client subscriptions. */
   desktopConnected?(): boolean;
   /** GUI connection to the single external-session owner. */
   sharedThreads?: SharedThreadBridge;
+  /** Shared Desktop connections clear assignments on the owner that serializes project moves. */
+  clearDeletedProjectAssignments?(projectId: string): Promise<void>;
   /** In-process SSH fronts send external Delegations to the same owner as GUI requests. */
   sharedDelegation?: DelegationControlRegistration;
   stockCodexPath: string;
@@ -1034,6 +1054,12 @@ export class AppServerHost {
   readonly #threadTree: ThreadTree;
   readonly #treeWatch: ThreadTreeWatch;
   #sectionOperations: Promise<unknown> = Promise.resolve();
+  #nativeProjectGeneration = 0;
+  #nativeProjectIds = new Map<string, Promise<string | null | undefined>>();
+  #projectMoveTarget: { nativeId: string; invalidated: boolean } | undefined;
+  #sectionReconcileTimer: NodeJS.Timeout | undefined;
+  #sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
+  readonly #sectionDefinitions = new SectionDefinitions(PINNED_THREAD_SECTION_ID);
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
@@ -1136,7 +1162,7 @@ export class AppServerHost {
       environment: () => this.#options.environment ?? process.env,
       waitForPlugins: () => this.#waitForPlugins(),
       listRecords: () => this.#repository.list(),
-      listSectionPlacements: () => this.#repository.listSectionPlacements(),
+      listSectionPlacements: () => this.#projectSectionPlacements(),
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
       readColdExternalThread: (threadId) =>
@@ -1151,6 +1177,20 @@ export class AppServerHost {
       onNativeTurnStart: () => this.#options.productTelemetry?.recordHarness("codex"),
       ...(this.#options.externalOnly
         ? {
+            ...(options.localProjectMoves
+              ? {
+                  moveThreadToProject: (threadId: string, projectId: string | null) => {
+                    // A cold owner can start generation one; a queued move cannot adopt a replacement.
+                    const generation = this.#officialRuntimeScope.owner.generation || 1;
+                    return this.#desktopRequests.run(threadId, () =>
+                      this.#externalRuntime.idleRelease.runOperation(threadId, () =>
+                        this.#moveClientThreadToProject(threadId, projectId, generation),
+                      ),
+                    );
+                  },
+                }
+              : {}),
+            readNativeProjectIds: (ids: readonly string[]) => this.#readNativeProjectIds(ids),
             native: {
               events: this.clientEvents,
               asyncQuestions: this.#asyncQuestions,
@@ -1257,6 +1297,7 @@ export class AppServerHost {
         const replaced = readyGeneration !== undefined && readyGeneration !== owner.generation;
         readyGeneration = owner.generation;
         if (replaced) this.clientEvents.harnessInspectionChanged("codex");
+        if (replaced) this.#scheduleSectionReconciliation();
         return;
       }
       const snapshot = this.#accountControl.snapshot();
@@ -1636,6 +1677,7 @@ export class AppServerHost {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
     this.#releaseExtensionActivity();
+    clearTimeout(this.#sectionReconcileTimer);
     if (!this.#options.hostExtensions) void this.hostExtensions?.close();
     this.#skills?.dispose();
     this.#options.sharedThreads?.close();
@@ -1817,8 +1859,13 @@ export class AppServerHost {
     // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
     this.#options.sharedThreads?.start((message) => {
+      if (message.method === SHARED_SECTIONS_CHANGED_METHOD) {
+        this.clientEvents.sectionsChanged();
+        return;
+      }
       void this.#writer.json(message).catch((error: unknown) => this.#diagnose(error));
     });
+    this.#scheduleSectionReconciliation();
     if (this.#closeRequested) await this.#closeOfficialRuntime();
     try {
       // The Scope proves official exit (and optionally restarts it); this native
@@ -1831,6 +1878,8 @@ export class AppServerHost {
       await this.#closeOfficialRuntime();
       return this.#closeRequested ? 0 : 1;
     } finally {
+      this.#desktopInputEnded = true;
+      clearTimeout(this.#sectionReconcileTimer);
       this.#skills?.dispose();
       this.#treeWatch.close();
       this.#releaseExtensionActivity();
@@ -2250,6 +2299,7 @@ export class AppServerHost {
           if (!isRecord(response.error)) this.#observedSessionUsage.initialized(nativeParams);
           await this.#writer.json({ ...response, id: request.id });
           this.#nativeAccountObserver?.initialized(nativeGeneration);
+          this.#scheduleSectionReconciliation();
         } catch (error) {
           await this.#writer.json(rpcError(request, -32087, errorMessage(error)));
         }
@@ -2278,6 +2328,7 @@ export class AppServerHost {
       );
     }
     this.#desktopInputEnded = true;
+    clearTimeout(this.#sectionReconcileTimer);
     this.#externalRuntime.idleRelease.disable();
     // Cancel loading before draining requests that may be waiting for it.
     this.#pluginLoadAbort.abort();
@@ -2420,9 +2471,40 @@ export class AppServerHost {
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {
-          result: jsonValueSchema.parse(await this.#repository.listSectionPlacements()),
+          result: jsonValueSchema.parse(await this.#projectSectionPlacements()),
         }),
       );
+      return;
+    }
+    if (this.#options.externalOnly && request.method === SHARED_SECTIONS_RECONCILE_METHOD) {
+      await this.#runSectionOperation(async () => {
+        const syncPending = await this.#reconcileSectionPlacements({
+          readOnly: requestObject(request).readOnly === true,
+          refreshEmpty: true,
+        });
+        await this.#publishSectionsChanged();
+        await this.#writer.json(rpcEnvelope(request, { result: { syncPending } }));
+      });
+      return;
+    }
+    const sectionMethod = request.method;
+    const sectionOperation = sectionMethod.startsWith("threadSection/")
+      ? sectionMethod.slice("threadSection/".length)
+      : sectionMethod.startsWith("codexhost/thread/sections/")
+        ? sectionMethod.slice("codexhost/thread/sections/".length)
+        : undefined;
+    if (
+      sectionOperation === "create" ||
+      sectionOperation === "update" ||
+      sectionOperation === "delete"
+    ) {
+      this.#dispatchDesktopReply(request, () =>
+        this.#handleSectionMutation(request, sectionOperation),
+      );
+      return;
+    }
+    if (sectionMethod === "codexhost/thread/sections/move") {
+      this.#dispatchDesktopReply(request, () => this.#handleCustomSectionMove(request));
       return;
     }
     if (
@@ -2434,7 +2516,15 @@ export class AppServerHost {
         this.#options.sharedThreads.handlesControl(request.method))
     ) {
       try {
-        const reply = await this.#options.sharedThreads.route(request);
+        const shared = this.#options.sharedThreads;
+        const ownerMove =
+          !this.#options.externalOnly &&
+          shared.options.delegateCreates &&
+          (request.method === "thread/section/move" ||
+            request.method === "codexhost/thread/pins/set");
+        const reply = ownerMove
+          ? { ...(await shared.request(request.method, requestObject(request))), id: request.id }
+          : await shared.route(request);
         if (reply) {
           await this.#writer.json(reply);
           return;
@@ -2520,83 +2610,63 @@ export class AppServerHost {
       this.#dispatchDesktopReply(request, () => this.#handleThreadPins(request));
       return;
     }
-    if (request.method === "codexhost/thread/sections/move") {
-      const move = clientThreadSectionMoveSchema.safeParse(request.params);
-      if (!move.success || move.data.sectionId === PINNED_THREAD_SECTION_ID) {
-        await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section move"));
-        return;
-      }
-      const params = { ...move.data, beforeThreadId: null };
-      this.#dispatchDesktopReply(request, () =>
-        this.#runSectionOperation(async () => {
-          const location = await this.#locateExternalThread(params.threadId);
-          if (await this.#writeResolutionError(request, location)) return;
-          if (location.kind !== "official") {
-            await this.#writer.json(
-              rpcError(
-                request,
-                -32078,
-                "Only native Codex Threads can change custom sections in Web",
-              ),
-            );
-            return;
-          }
-          const current = await this.#requestOfficial("thread/read", {
-            threadId: params.threadId,
-            includeTurns: false,
-          });
-          const thread = (current.result as JsonObject | undefined)?.thread;
-          if (
-            !isRecord(thread) ||
-            thread.id !== params.threadId ||
-            thread.archived === true ||
-            typeof thread.parentThreadId === "string" ||
-            (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID)
-          ) {
-            await this.#writer.json(
-              rpcError(request, -32078, "An active, unpinned Codex Thread is required"),
-            );
-            return;
-          }
-          const sectionId = isRecord(thread.section) ? (thread.section.id ?? null) : null;
-          if (sectionId === params.sectionId) {
-            await this.#writer.json(rpcEnvelope(request, { result: {} }));
-            return;
-          }
-          await this.#moveThreadSection(
-            {
-              id: request.id,
-              ...(request.jsonrpc ? { jsonrpc: request.jsonrpc } : {}),
-              method: "thread/section/move",
-              params,
-            },
-            params,
-          );
-        }),
-      );
-      return;
-    }
     if (request.method === "codexhost/thread/sections/list") {
       this.#dispatchDesktopReply(request, async () => {
         try {
           const requestOfficial = (method: string, params: JsonObject) =>
             this.#requestOfficial(method, params);
-          const sections = [];
-          for await (const { id, name } of officialThreadSections(requestOfficial)) {
-            if (id !== PINNED_THREAD_SECTION_ID && name) sections.push({ id, name });
+          const definitions = await this.#readSectionDefinitions();
+          const supportsSections =
+            isRecord(request.params) && request.params[THREAD_SECTION_CAPABILITY] === true;
+          const capability = supportsSections ? { [THREAD_SECTION_CAPABILITY]: true } : {};
+          const sections = [...definitions.values()]
+            .filter((section) => section.id !== PINNED_THREAD_SECTION_ID)
+            .map((section) =>
+              supportsSections ? section : { id: section.id, name: section.name },
+            );
+          if (sections.length === 0) {
+            await this.#writer.json(rpcEnvelope(request, { result: { ...capability, sections } }));
+            return;
+          }
+          // Match the live catalog query so the shared Host walk can be reused.
+          const query = decodeThreadListRequest({
+            id: request.id,
+            method: "thread/list",
+            params: { archived: false, sortKey: "updated_at", sortDirection: "desc" },
+          });
+          if (!query) throw new Error("Section Thread list query could not be decoded");
+          const { placements, externalRows } = await this.#sectionThreadCatalog(query, definitions);
+          const placementsBySection = new Map<string, StoredSectionPlacementV1[]>();
+          for (const placement of placements) {
+            const inSection = placementsBySection.get(placement.section.id);
+            if (inSection) inSection.push(placement);
+            else placementsBySection.set(placement.section.id, [placement]);
           }
           const sectionRows = await Promise.all(
-            sections.map(async (section) => ({
-              ...section,
-              threads: await listAllOfficialRows(requestOfficial, {
+            sections.map(async (section) => {
+              const officialRows = await listAllOfficialRows(requestOfficial, {
                 sectionId: section.id,
                 sortKey: "section_position",
                 modelProviders: [],
                 useStateDbOnly: true,
-              }),
-            })),
+              });
+              const inSection = placementsBySection.get(section.id);
+              return {
+                ...section,
+                threads: inSection
+                  ? [
+                      ...officialRows,
+                      ...inSection.flatMap(
+                        ({ hostThreadId }) => externalRows.get(hostThreadId) ?? [],
+                      ),
+                    ]
+                  : officialRows,
+              };
+            }),
           );
-          await this.#writer.json(rpcEnvelope(request, { result: { sections: sectionRows } }));
+          await this.#writer.json(
+            rpcEnvelope(request, { result: { ...capability, sections: sectionRows } }),
+          );
         } catch (error) {
           this.#diagnose(error);
           await this.#writer.json(
@@ -2738,9 +2808,25 @@ export class AppServerHost {
   }): Promise<void> {
     for (const listener of this.#nativeSettingsNotifications) listener(input.value);
     this.#treeWatch.observe(input.value, true);
+    const deletedProjectId = observeDeletedProject(input.value);
+    if (deletedProjectId) {
+      // The current section operation may be waiting for another frame from this connection.
+      this.#dispatchDesktopRequest(() =>
+        this.#options.clearDeletedProjectAssignments
+          ? this.#options.clearDeletedProjectAssignments(deletedProjectId)
+          : this.clearDeletedProjectAssignments(deletedProjectId),
+      );
+    }
     if (this.#options.externalOnly) {
+      const value = input.value;
+      if (
+        isRecord(value) &&
+        (value.method === "thread/project/updated" || value.method === "thread/deleted") &&
+        isRecord(value.params) &&
+        typeof value.params.threadId === "string"
+      )
+        this.#nativeProjectIds.delete(value.params.threadId);
       this.#observeOfficialUsage(input.value, Date.now());
-      await this.#observeDeletedProject(input.value);
       this.#client.observeNativeMessage(input.value);
       // Native children created through Delegation still have a native owner
       // and lifecycle. Their rendering stays on the GUI's native connection.
@@ -2802,16 +2888,6 @@ export class AppServerHost {
       this.#finishOfficialTurn(parsed);
     }
     this.#nativeAccountObserver?.observe(parsed);
-    await this.#observeDeletedProject(parsed);
-  }
-
-  async #observeDeletedProject(value: JsonValue): Promise<void> {
-    const deletedProjectId = observeDeletedProject(value);
-    if (deletedProjectId) {
-      await this.#clearDeletedProjectAssignments(deletedProjectId).catch((error: unknown) =>
-        this.#diagnose(error),
-      );
-    }
   }
 
   #observeOfficialUsage(value: JsonValue, observedAtMs: number): void {
@@ -2873,9 +2949,15 @@ export class AppServerHost {
     return this.#officialRuntime.request(method, options ? { ...params, ...options } : params);
   }
 
-  async #requestClientNative(method: string, params: JsonObject): Promise<ConsoleHostReply> {
+  async #requestClientNative(
+    method: string,
+    params: JsonObject,
+    beforeDispatch?: () => void,
+  ): Promise<ConsoleHostReply> {
     try {
-      const response = await this.#requestOfficial(method, params, false);
+      const response = beforeDispatch
+        ? await this.#officialRuntime.request(method, params, beforeDispatch)
+        : await this.#requestOfficial(method, params, false);
       if (isRecord(response.error)) {
         return {
           error: {
@@ -2899,6 +2981,293 @@ export class AppServerHost {
           message: "Native request outcome may be unknown; do not retry automatically",
         },
       };
+    }
+  }
+
+  #isProjectOwner(generation: number): boolean {
+    const { gate, owner } = this.#officialRuntimeScope;
+    return owner.running && gate.phase === "ready" && owner.generation === generation;
+  }
+
+  async #readNativeProjectThread(
+    threadId: string,
+    beforeDispatch: () => void,
+  ): Promise<JsonObject> {
+    const reply = await this.#officialRuntime.request(
+      "thread/read",
+      { threadId, includeTurns: false },
+      beforeDispatch,
+    );
+    const thread = !("error" in reply) && isRecord(reply.result) ? reply.result.thread : undefined;
+    if (!isRecord(thread) || thread.id !== threadId) throw new Error("Native Thread read failed");
+    return thread;
+  }
+
+  async #readNativeProjectIds(ids: readonly string[]) {
+    const projects = new Map<string, string | null | undefined>();
+    if (ids.length === 0) return projects;
+    try {
+      await this.#initializeSharedOfficial();
+    } catch {
+      return projects;
+    }
+    const generation = this.#officialRuntimeScope.owner.generation;
+    if (generation !== this.#nativeProjectGeneration) {
+      this.#nativeProjectGeneration = generation;
+      this.#nativeProjectIds = new Map();
+    }
+    const cache = this.#nativeProjectIds;
+    const reads = new Map<string, Promise<string | null | undefined>>();
+    const checkOwner = () => {
+      if (!this.#isProjectOwner(generation)) throw new OfficialAdmissionError("unavailable");
+    };
+    for (let i = 0; i < ids.length && this.#isProjectOwner(generation); i += 16) {
+      await Promise.all(
+        ids.slice(i, i + 16).map(async (id) => {
+          let read = cache.get(id);
+          if (!read) {
+            read = this.#readNativeProjectThread(id, checkOwner).then(({ projectId }) => {
+              if (projectId === null || typeof projectId === "string" || projectId === undefined)
+                return projectId;
+              throw new Error("Invalid native project identity");
+            });
+            cache.set(id, read);
+          }
+          try {
+            const projectId = await read;
+            if (cache.get(id) !== read) return;
+            projects.set(id, projectId);
+            reads.set(id, read);
+          } catch {
+            // Failed rows cannot supply a binding or the legacy navigation assignment.
+            if (cache.get(id) === read) cache.delete(id);
+          }
+        }),
+      );
+    }
+    const ownerCurrent = this.#isProjectOwner(generation);
+    for (const [id, read] of reads) {
+      if (cache.get(id) !== read) {
+        projects.delete(id);
+        continue;
+      }
+      if (projects.get(id) === undefined) cache.delete(id);
+    }
+    if (!ownerCurrent) projects.clear();
+    return projects;
+  }
+
+  #moveClientThreadToProject(
+    threadId: string,
+    projectId: string | null,
+    generation: number,
+  ): Promise<ConsoleHostReply> {
+    return this.#runSectionOperation(async () => {
+      const unavailable = {
+        error: { code: -32078, message: "A local, active, unpinned top-level Thread is required" },
+      };
+      const confirmed = { result: { status: "confirmed", projectId } };
+      const unknown = { result: { status: "unknown" } };
+      let attemptedWrite = false;
+      const checkOwner = () => {
+        if (!this.#isProjectOwner(generation)) throw new OfficialAdmissionError("unavailable");
+      };
+      const checkTarget = () => {
+        checkOwner();
+        if (this.#projectMoveTarget?.invalidated)
+          throw new Error("Project move target was deleted");
+      };
+      const confirmTarget = async (nativeId: string | null) => {
+        const exists = nativeId === null || (await this.#projectExists(nativeId, checkTarget));
+        if (exists && this.#isProjectOwner(generation) && !this.#projectMoveTarget?.invalidated)
+          return confirmed;
+        return attemptedWrite ? unknown : unavailable;
+      };
+      const beforeWrite = () => {
+        checkTarget();
+        attemptedWrite = true;
+      };
+      try {
+        if (threadId.startsWith("web-remote:") || threadId.startsWith("draft-")) return unavailable;
+        if (this.#officialRuntimeScope.owner.generation !== 0 && !this.#isProjectOwner(generation))
+          return unavailable;
+        await this.#initializeSharedOfficial();
+        checkOwner();
+        await this.#waitForPlugins();
+        const environment = this.#options.environment ?? process.env;
+        const nativeProjects = await listNativeProjects({
+          request: (method, params) => this.#requestClientNative(method, params, checkOwner),
+        });
+        checkOwner();
+        const { legacyAssignedThreads, nativeByGui, guiByNative } = await readWorkspaceProjects(
+          environment,
+          projectId === null || nativeProjects?.some(({ id }) => id === projectId)
+            ? nativeProjects
+            : undefined,
+        );
+        const nativeId = projectId === null ? null : nativeByGui.get(projectId);
+        if (nativeId) this.#projectMoveTarget = { nativeId, invalidated: false };
+        if (
+          nativeId === undefined ||
+          (nativeId !== null && !(await this.#projectExists(nativeId, checkTarget)))
+        ) {
+          return { error: { code: -32602, message: "Local project is unavailable" } };
+        }
+        checkTarget();
+        const location = await this.#locateExternalThread(threadId);
+        if (location.kind === "error") return { error: location.error };
+        if (await this.#repository.getDelegationByChild(hostThreadIdSchema.parse(threadId)))
+          return unavailable;
+        if (location.kind === "external") {
+          const id = location.record.hostThreadId;
+          const record = await this.#repository.find(id);
+          if (
+            !record ||
+            record.state !== "ready" ||
+            (record.projectId === undefined
+              ? legacyAssignedThreads.has(id)
+              : record.projectId !== "" && !guiByNative.has(record.projectId)) ||
+            record.archived ||
+            record.ephemeral ||
+            record.subagent ||
+            record.attachedToThreadId ||
+            location.thread?.unsubmittedPrewarm ||
+            (await this.#repository.listSectionPlacements()).some(
+              (entry) => entry.hostThreadId === id && entry.section.id === PINNED_THREAD_SECTION_ID,
+            )
+          )
+            return unavailable;
+          checkTarget();
+          const storedProjectId = nativeId ?? "";
+          if (record.projectId === storedProjectId) return await confirmTarget(nativeId);
+          try {
+            await this.#repository.updateMetadata(
+              id,
+              { projectId: storedProjectId },
+              { beforeWrite },
+            );
+          } catch (error) {
+            if (!attemptedWrite) throw error;
+            this.#diagnose(error);
+          }
+          const actual = await this.#repository.find(id);
+          checkTarget();
+          if (actual) {
+            const loaded = this.#externalRuntime.get(id);
+            if (loaded) this.#syncLoadedExternalThread(loaded, actual);
+            if (actual.projectId !== record.projectId) {
+              await this.#writer.json({
+                method: "thread/project/updated",
+                params: { threadId, projectId: actual.projectId || null },
+              });
+              return actual.projectId === storedProjectId ? await confirmTarget(nativeId) : unknown;
+            }
+          }
+          this.clientEvents.changed(threadId, "thread/project/updated");
+          return unknown;
+        }
+
+        const thread = await this.#readNativeProjectThread(threadId, checkTarget);
+        if (
+          (thread.projectId !== null &&
+            (typeof thread.projectId !== "string" || !guiByNative.has(thread.projectId))) ||
+          thread.ephemeral === true ||
+          thread.canAcceptDirectInput === false ||
+          thread.isPinned === true ||
+          typeof thread.parentThreadId === "string" ||
+          typeof thread.attachedToThreadId === "string" ||
+          (typeof thread.source === "string" && thread.source.startsWith("subAgent")) ||
+          (isRecord(thread.source) && "subAgent" in thread.source) ||
+          (typeof thread.threadSource === "string" && thread.threadSource.startsWith("subAgent")) ||
+          (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID) ||
+          !(await this.#isActiveProjectMoveThread(threadId, thread, checkTarget))
+        )
+          return unavailable;
+        checkTarget();
+        if (thread.projectId === nativeId) return await confirmTarget(nativeId);
+        let write: JsonObject | undefined;
+        try {
+          write = await this.#officialRuntime.request(
+            "thread/metadata/update",
+            { threadId, projectId: nativeId ?? "" },
+            beforeWrite,
+          );
+        } catch (error) {
+          if (!attemptedWrite) throw error;
+          this.#diagnose(error);
+        }
+        checkTarget();
+        if (
+          isRecord(write?.error) &&
+          typeof write.error.code === "number" &&
+          typeof write.error.message === "string" &&
+          ![-32090, -32093, -32094, -32603].includes(write.error.code)
+        )
+          return { error: { code: write.error.code, message: write.error.message } };
+        const actual = await this.#readNativeProjectThread(threadId, checkTarget);
+        this.#nativeProjectIds.delete(threadId);
+        this.clientEvents.changed(threadId, "thread/project/updated");
+        return actual.projectId === nativeId ? await confirmTarget(nativeId) : unknown;
+      } catch (error) {
+        this.#diagnose(error);
+        if (!attemptedWrite) return unavailable;
+        this.#nativeProjectIds.delete(threadId);
+        this.clientEvents.changed(threadId, "thread/project/updated");
+        return unknown;
+      } finally {
+        this.#projectMoveTarget = undefined;
+      }
+    });
+  }
+
+  async #isActiveProjectMoveThread(
+    threadId: string,
+    thread: JsonObject,
+    checkOwner: () => void,
+  ): Promise<boolean> {
+    const section = thread.section;
+    if (
+      section !== undefined &&
+      section !== null &&
+      !(isRecord(section) && typeof section.id === "string")
+    )
+      return false;
+    if (thread.archived === true) return false;
+    if (
+      section === undefined &&
+      !(await this.#absentFromProjectMoveList(
+        threadId,
+        { sectionId: PINNED_THREAD_SECTION_ID },
+        checkOwner,
+      ))
+    )
+      return false;
+    if (thread.archived === false) return true;
+    return this.#absentFromProjectMoveList(threadId, { archived: true }, checkOwner);
+  }
+
+  async #absentFromProjectMoveList(
+    threadId: string,
+    filter: JsonObject,
+    checkOwner: () => void,
+  ): Promise<boolean> {
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    for (;;) {
+      const result = officialThreadListPageFromResponse(
+        await this.#officialRuntime.request(
+          "thread/list",
+          { ...filter, includedThreadIds: [threadId], limit: 100, cursor },
+          checkOwner,
+        ),
+      );
+      checkOwner();
+      if (result.data.some(({ id }) => id === threadId)) return false;
+      if (result.nextCursor === null) return true;
+      // Older app-servers may ignore includedThreadIds. Follow their finite page chain.
+      if (seen.has(result.nextCursor)) return false;
+      seen.add(result.nextCursor);
+      cursor = result.nextCursor;
     }
   }
 
@@ -3914,7 +4283,7 @@ export class AppServerHost {
    * keep a copy from before the Thread was shared; the shared Host's row is canonical even when
    * the current query excludes it (archived, moved out of a section).
    */
-  async #localThreadCatalog(): Promise<{
+  async #localThreadCatalog(definitions?: ReadonlyMap<string, StoredThreadSection>): Promise<{
     records: StoredThreadSummaryV1[];
     placements: StoredSectionPlacementV1[];
     officialImportTimes: OfficialImportTimes;
@@ -3922,7 +4291,7 @@ export class AppServerHost {
   }> {
     const [records, placements] = await Promise.all([
       this.#repository.listSummaries(),
-      this.#repository.listSectionPlacements(),
+      this.#projectSectionPlacements(undefined, definitions),
     ]);
     // Matched against every local record, so a shared-owned Thread still hides its official import.
     const officialImportTimes = await readOfficialImportTimes(
@@ -3968,6 +4337,46 @@ export class AppServerHost {
       : null;
   }
 
+  async #sectionThreadCatalog(
+    query: DecodedThreadListRequest,
+    definitions?: ReadonlyMap<string, StoredThreadSection>,
+  ): Promise<{
+    placements: StoredSectionPlacementV1[];
+    externalRows: Map<string, JsonObject>;
+  }> {
+    const shared = this.#options.sharedThreads;
+    const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
+      await Promise.all([
+        this.#localThreadCatalog(definitions),
+        shared?.placements() ?? [],
+        shared?.list(query.params) ?? [],
+      ]);
+    const placementById = new Map<string, StoredSectionPlacementV1>();
+    for (const placement of localPlacements) placementById.set(placement.hostThreadId, placement);
+    for (const placement of sharedPlacements) placementById.set(placement.hostThreadId, placement);
+    const placements = await this.#projectSectionPlacements(
+      [...placementById.values()],
+      definitions,
+    );
+    placementById.clear();
+    for (const placement of placements) placementById.set(placement.hostThreadId, placement);
+    const externalRows = new Map(
+      externalThreadListEntries({
+        records,
+        query,
+        runtimeFor: (threadId) => this.#listRuntimeState(threadId),
+        placementOf: (threadId) => placementById.get(threadId),
+      }).map((entry) => [String(entry.thread.id), entry.thread]),
+    );
+    for (const thread of sharedThreads) {
+      const id = String(thread.id);
+      // Older owners may still return the stored mirror. The section order is
+      // built from the same definitions as the row fields.
+      externalRows.set(id, { ...thread, ...threadSectionFields(placementById.get(id)) });
+    }
+    return { placements, externalRows };
+  }
+
   /** `section_position` lists merge External section placements into the official order. */
   async #listSectionThreads(
     request: JsonRpcRequest,
@@ -3975,35 +4384,11 @@ export class AppServerHost {
     query: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
-        await Promise.all([
-          this.#localThreadCatalog(),
-          this.#options.sharedThreads?.placements() ?? [],
-          this.#options.sharedThreads?.list(query.params) ?? [],
-        ]);
-      const sharedIds = new Set(sharedPlacements.map((p) => p.hostThreadId));
-      const placements = [
-        ...localPlacements.filter((p) => !sharedIds.has(p.hostThreadId)),
-        ...sharedPlacements,
-      ];
-      const placementById = new Map(
-        placements.map((entry) => [entry.hostThreadId as string, entry]),
-      );
-      const externalRows = new Map(
-        externalThreadListEntries({
-          records,
-          query,
-          runtimeFor: (threadId) => this.#listRuntimeState(threadId),
-          placementOf: (threadId) => placementById.get(threadId),
-        }).map((entry) => [String(entry.thread.id), entry.thread]),
-      );
+      const { placements, externalRows } = await this.#sectionThreadCatalog(query);
       const page = await listSectionThreads({
         query,
         placements,
-        externalRows: new Map([
-          ...externalRows,
-          ...sharedThreads.map((thread) => [String(thread.id), thread] as const),
-        ]),
+        externalRows,
         requestOfficial: (method, params) => this.#requestOfficial(method, params),
       });
       if (!page) {
@@ -4025,6 +4410,239 @@ export class AppServerHost {
     const next = this.#sectionOperations.then(run);
     this.#sectionOperations = next.catch(() => undefined);
     return next;
+  }
+
+  async #readSectionDefinitions(): Promise<Map<string, StoredThreadSection>> {
+    let generation: number | undefined;
+    const definitions = new Map<string, StoredThreadSection>();
+    const owner = this.#officialRuntimeScope.owner;
+    for await (const section of officialThreadSections(async (method, params) => {
+      const response = await this.#requestOfficial(method, params);
+      generation ??= owner.generation;
+      if (generation !== owner.generation)
+        throw new Error("Official generation changed while listing Thread sections");
+      return response;
+    }))
+      definitions.set(section.id, section);
+    return definitions;
+  }
+
+  async #projectSectionPlacements(
+    placements?: StoredSectionPlacementV1[],
+    definitions?: ReadonlyMap<string, StoredThreadSection>,
+  ): Promise<StoredSectionPlacementV1[]> {
+    placements ??= await this.#repository.listSectionPlacements();
+    if (!placements.some(({ section }) => section.id !== PINNED_THREAD_SECTION_ID))
+      return placements;
+    if (!definitions) {
+      try {
+        definitions = await this.#readSectionDefinitions();
+      } catch {
+        // Never treat an unavailable or incomplete list as evidence of deletion.
+        return this.#sectionDefinitions.project(placements);
+      }
+    }
+    return this.#sectionDefinitions.project(placements, definitions);
+  }
+
+  #scheduleSectionReconciliation(): void {
+    if (
+      this.#closeRequested ||
+      this.#desktopInputEnded ||
+      (!this.#options.externalOnly && this.#options.sharedThreads?.options.delegateCreates)
+    )
+      return;
+    this.#dispatchDesktopRequest(() =>
+      this.#desktopRequests.run(undefined, () =>
+        this.#runSectionOperation(async () => {
+          await this.#reconcileSectionPlacements({ notifyClients: true });
+        }),
+      ),
+    );
+  }
+
+  #updateSectionReconcileRetry(pending: boolean): void {
+    if (!pending) {
+      clearTimeout(this.#sectionReconcileTimer);
+      this.#sectionReconcileTimer = undefined;
+      this.#sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
+    } else if (!this.#sectionReconcileTimer && !this.#closeRequested && !this.#desktopInputEnded) {
+      this.#sectionReconcileTimer = setTimeout(() => {
+        this.#sectionReconcileTimer = undefined;
+        this.#scheduleSectionReconciliation();
+      }, this.#sectionReconcileDelay);
+      this.#sectionReconcileTimer.unref();
+      this.#sectionReconcileDelay = Math.min(
+        this.#sectionReconcileDelay * 2,
+        SECTION_RECONCILE_MAX_RETRY_MS,
+      );
+    }
+  }
+
+  /** Runs on the MappingStore owner, inside the same serial boundary as moves. */
+  async #reconcileSectionPlacements({
+    readOnly = false,
+    refreshEmpty = false,
+    confirmed,
+    notifyClients = false,
+  }: {
+    readOnly?: boolean;
+    refreshEmpty?: boolean;
+    confirmed?: { id: string; section: StoredThreadSection | null };
+    notifyClients?: boolean;
+  } = {}): Promise<boolean> {
+    let placements: StoredSectionPlacementV1[] | undefined;
+    let previous: StoredSectionPlacementV1[] | undefined;
+    let projected: StoredSectionPlacementV1[] | undefined;
+    let pending = false;
+    try {
+      placements = await this.#repository.listSectionPlacements();
+      if (
+        !refreshEmpty &&
+        !confirmed &&
+        !placements.some(({ section }) => section.id !== PINNED_THREAD_SECTION_ID)
+      )
+        return false;
+      previous = this.#sectionDefinitions.project(placements);
+      if (confirmed) this.#sectionDefinitions.confirm(confirmed.id, confirmed.section);
+      const definitions = await this.#readSectionDefinitions();
+      this.#sectionDefinitions.replace(definitions);
+      projected = this.#sectionDefinitions.project(placements);
+      if (!readOnly && projected !== placements)
+        await this.#repository.replaceSectionPlacements(projected);
+      return false;
+    } catch (error) {
+      this.#diagnose(error);
+      if (!placements && confirmed)
+        this.#sectionDefinitions.confirm(confirmed.id, confirmed.section);
+      if (placements) projected ??= this.#sectionDefinitions.project(placements);
+      pending =
+        !placements || placements.some(({ section }) => section.id !== PINNED_THREAD_SECTION_ID);
+      return pending;
+    } finally {
+      if (!readOnly) this.#updateSectionReconcileRetry(pending);
+      if (notifyClients && previous && projected && !sameProjectedSections(previous, projected)) {
+        await this.#publishSectionsChanged();
+      }
+    }
+  }
+
+  async #publishSectionsChanged(): Promise<void> {
+    this.clientEvents.sectionsChanged();
+    if (this.#options.externalOnly) {
+      await this.#writer
+        .json({ method: SHARED_SECTIONS_CHANGED_METHOD, params: {} })
+        .catch((error: unknown) => this.#diagnose(error));
+    }
+  }
+
+  async #handleSectionMutation(request: JsonRpcRequest, operation: SectionMutation): Promise<void> {
+    const contract = CLIENT_THREAD_SECTION_MUTATIONS[operation];
+    const native = request.method !== contract.method;
+    const raw = requestObject(request);
+    const parsed = native ? undefined : contract.params.safeParse(raw);
+    if (parsed?.success === false || raw.sectionId === PINNED_THREAD_SECTION_ID) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section change"));
+      return;
+    }
+    const params = parsed?.data ?? raw;
+    const shared = this.#options.externalOnly ? undefined : this.#options.sharedThreads;
+    if (shared?.options.delegateCreates) {
+      try {
+        const reply = await shared.request(request.method, params);
+        await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+      } catch (error) {
+        this.#diagnose(error);
+        try {
+          this.#sectionDefinitions.replace(await this.#readSectionDefinitions());
+        } catch (refreshError) {
+          this.#diagnose(refreshError);
+        }
+        await this.#publishSectionsChanged();
+        await this.#writeUnknownSectionMutation(request, native);
+      }
+      return;
+    }
+
+    await this.#runSectionOperation(async () => {
+      let reply: JsonObject | undefined;
+      try {
+        reply = await this.#requestOfficial(`threadSection/${operation}`, params);
+      } catch (error) {
+        this.#diagnose(error);
+      }
+      if (
+        reply &&
+        !Object.hasOwn(reply, "result") &&
+        jsonRpcErrorSchema.safeParse(reply.error).success
+      ) {
+        await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+        return;
+      }
+      const section =
+        operation === "delete" || !isRecord(reply?.result)
+          ? null
+          : officialSectionDefinition(reply.result.section);
+      const sectionId = operation === "create" ? section?.id : raw.sectionId;
+      if (
+        !reply ||
+        Object.hasOwn(reply, "error") ||
+        !isRecord(reply.result) ||
+        typeof sectionId !== "string" ||
+        !sectionId ||
+        sectionId === PINNED_THREAD_SECTION_ID ||
+        (operation !== "delete" && section?.id !== sectionId)
+      ) {
+        // A new snapshot cannot attribute the result of this particular write.
+        await this.#reconcileSectionPlacements({ refreshEmpty: true });
+        if (shared) await this.#refreshSharedSectionPlacements(shared);
+        await this.#publishSectionsChanged();
+        await this.#writeUnknownSectionMutation(request, native);
+        return;
+      }
+
+      let syncPending = await this.#reconcileSectionPlacements({
+        confirmed: { id: sectionId, section },
+      });
+      await this.#publishSectionsChanged();
+      if (shared) {
+        // This Desktop has a separate local store and may also show shared rows.
+        syncPending = (await this.#refreshSharedSectionPlacements(shared)) || syncPending;
+      }
+      const result: ClientThreadSectionMutationResult = {
+        status: "confirmed",
+        sectionId,
+        section,
+        syncPending,
+      };
+      await this.#writer.json(
+        rpcEnvelope(request, native ? { ...reply, id: request.id } : { result }),
+      );
+    });
+  }
+
+  async #refreshSharedSectionPlacements(shared: SharedThreadBridge): Promise<boolean> {
+    try {
+      const reply = await shared.request(SHARED_SECTIONS_RECONCILE_METHOD, {});
+      return (
+        reply.error !== undefined || !isRecord(reply.result) || reply.result.syncPending !== false
+      );
+    } catch (error) {
+      this.#diagnose(error);
+      return true;
+    }
+  }
+
+  #writeUnknownSectionMutation(request: JsonRpcRequest, native: boolean): Promise<void> {
+    return this.#writer.json(
+      native
+        ? rpcError(
+            request,
+            -32093,
+            "Native section change outcome is unknown; do not retry automatically",
+          )
+        : rpcEnvelope(request, { result: { status: "unknown" } }),
+    );
   }
 
   async #handleThreadPins(request: JsonRpcRequest): Promise<void> {
@@ -4052,6 +4670,114 @@ export class AppServerHost {
     }
   }
 
+  async #handleCustomSectionMove(request: JsonRpcRequest): Promise<void> {
+    const parsed = clientThreadSectionMoveSchema.safeParse(request.params);
+    if (!parsed.success || parsed.data.sectionId === PINNED_THREAD_SECTION_ID) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section move"));
+      return;
+    }
+    const { threadId, sectionId } = parsed.data;
+    const shared = this.#options.sharedThreads;
+    if (shared) {
+      try {
+        const reply =
+          shared.options.delegateCreates && !this.#options.externalOnly
+            ? await shared.request(request.method, parsed.data)
+            : await shared.route(request);
+        if (reply) {
+          await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+          return;
+        }
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+        return;
+      }
+    }
+
+    await this.#runSectionOperation(async () => {
+      const location = await this.#locateExternalThread(threadId);
+      if (location.kind === "error") {
+        await this.#writeResolutionError(request, location);
+        return;
+      }
+      const inactive = rpcError(
+        request,
+        -32078,
+        "An active, unpinned top-level Thread is required",
+      );
+      if (location.kind === "external") {
+        const { record } = location;
+        const placements = await this.#repository.listSectionPlacements();
+        const existing = placements.find((entry) => entry.hostThreadId === threadId);
+        if (
+          record.archived ||
+          record.subagent !== undefined ||
+          record.attachedToThreadId !== undefined ||
+          existing?.section.id === PINNED_THREAD_SECTION_ID
+        ) {
+          await this.#writer.json(inactive);
+          return;
+        }
+        const section =
+          sectionId === null ? null : (await this.#readSectionDefinitions()).get(sectionId);
+        if (section === undefined) {
+          await this.#writer.json(rpcError(request, -32602, "Thread section does not exist"));
+          return;
+        }
+        if ((existing?.section.id ?? null) === sectionId) {
+          await this.#writer.json(rpcEnvelope(request, { result: {} }));
+          return;
+        }
+        const next = placements.filter((entry) => entry.hostThreadId !== threadId);
+        if (section !== null) {
+          next.push({
+            hostThreadId: record.hostThreadId,
+            section,
+            enteredAt: new Date().toISOString(),
+            beforeThreadId: null,
+          });
+        }
+        await this.#repository.replaceSectionPlacements(next);
+      } else {
+        const current = await this.#requestOfficial("thread/read", {
+          threadId,
+          includeTurns: false,
+        });
+        const thread = isRecord(current.result) ? current.result.thread : undefined;
+        const currentSectionId =
+          isRecord(thread) && isRecord(thread.section) && typeof thread.section.id === "string"
+            ? thread.section.id
+            : null;
+        if (
+          !isRecord(thread) ||
+          thread.id !== threadId ||
+          thread.archived === true ||
+          typeof thread.parentThreadId === "string" ||
+          currentSectionId === PINNED_THREAD_SECTION_ID
+        ) {
+          await this.#writer.json(inactive);
+          return;
+        }
+        if (currentSectionId === sectionId) {
+          await this.#writer.json(rpcEnvelope(request, { result: {} }));
+          return;
+        }
+        const reply = await this.#requestOfficial("thread/section/move", {
+          threadId,
+          sectionId,
+          beforeThreadId: null,
+        });
+        if (isRecord(reply.error)) {
+          await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+          return;
+        }
+      }
+      this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
+      await this.#publishSectionsChanged();
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    });
+  }
+
   async #moveThreadSection(
     request: JsonRpcRequest,
     move: DecodedThreadSectionMoveRequest,
@@ -4061,7 +4787,7 @@ export class AppServerHost {
       if (await this.#writeResolutionError(request, location)) return;
       const [records, placements] = await Promise.all([
         this.#repository.list(),
-        this.#repository.listSectionPlacements(),
+        this.#projectSectionPlacements(),
       ]);
       const outcome = await moveThreadSection({
         move,
@@ -4084,6 +4810,7 @@ export class AppServerHost {
         return;
       } else await this.#writer.json(rpcEnvelope(request, { result: {} }));
       this.clientEvents.changed(move.threadId, "codexhost/thread/tree/changed");
+      await this.#publishSectionsChanged();
     } catch (error) {
       await this.#writer.json(rpcError(request, -32081, "Thread section could not be moved"));
       this.#diagnose(error);
@@ -4091,8 +4818,12 @@ export class AppServerHost {
   }
 
   async #externalSectionFields(threadId: string) {
-    const placements = await this.#repository.listSectionPlacements();
-    return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
+    const placement = (await this.#repository.listSectionPlacements()).find(
+      (entry) => entry.hostThreadId === threadId,
+    );
+    return threadSectionFields(
+      placement ? (await this.#projectSectionPlacements([placement]))[0] : undefined,
+    );
   }
 
   /** Cached External Thread projections predate section moves; responses read the placement. */
@@ -4146,11 +4877,11 @@ export class AppServerHost {
       return;
     }
     const patch = {
-      ...(update.projectId !== undefined ? { projectId: update.projectId } : {}),
+      ...(update.projectId !== undefined ? { projectId: update.projectId ?? "" } : {}),
       ...(update.daybreakEnabled !== undefined ? { daybreakEnabled: update.daybreakEnabled } : {}),
       ...(update.gitInfo !== undefined ? { gitInfo: update.gitInfo } : {}),
     };
-    const previousProjectId = location.record.projectId ?? null;
+    const previousProjectId = location.record.projectId;
     const updated = await this.#persistExternalThreadRecord(
       request,
       location,
@@ -4160,17 +4891,20 @@ export class AppServerHost {
     );
     if (!updated) return;
     await this.#writer.json(rpcEnvelope(request, { result: { thread: updated.thread } }));
-    const projectId = updated.record.projectId ?? null;
+    const projectId = updated.record.projectId;
     if (projectId !== previousProjectId) {
       await this.#writer.json({
         method: "thread/project/updated",
-        params: { threadId: updated.record.hostThreadId, projectId },
+        params: { threadId: updated.record.hostThreadId, projectId: projectId || null },
       });
     }
   }
 
-  #projectExists(projectId: string): Promise<boolean> {
-    return this.#requestOfficial("project/read", { projectId }).then(
+  #projectExists(projectId: string, beforeDispatch?: () => void): Promise<boolean> {
+    const result = beforeDispatch
+      ? this.#officialRuntime.request("project/read", { projectId }, beforeDispatch)
+      : this.#requestOfficial("project/read", { projectId });
+    return result.then(
       (response) =>
         !isRecord(response.error) &&
         isRecord(response.result) &&
@@ -4181,24 +4915,34 @@ export class AppServerHost {
   }
 
   /** Clear External assignments to a project official Codex reported as deleted. */
-  async #clearDeletedProjectAssignments(projectId: string): Promise<void> {
-    const records = await this.#repository.list();
-    for (const record of records) {
-      if (record.projectId !== projectId) continue;
-      // A concurrent Desktop update may have reassigned the Thread since the listing.
-      const updated = await this.#repository.updateMetadata(
-        record.hostThreadId,
-        { projectId: null },
-        { ifProjectId: projectId },
-      );
-      if (updated.projectId !== undefined) continue;
-      const loaded = this.#externalRuntime.get(updated.hostThreadId);
-      if (loaded) this.#syncLoadedExternalThread(loaded, updated);
-      await this.#writer.json({
-        method: "thread/project/updated",
-        params: { threadId: updated.hostThreadId, projectId: null },
-      });
-    }
+  clearDeletedProjectAssignments(projectId: string): Promise<void> {
+    if (this.#projectMoveTarget?.nativeId === projectId) this.#projectMoveTarget.invalidated = true;
+    this.#nativeProjectIds.clear();
+    return this.#runSectionOperation(async () => {
+      const records = await this.#repository.list();
+      for (const record of records) {
+        if (record.projectId !== projectId) continue;
+        // A concurrent Desktop update may have reassigned the Thread since the listing.
+        let updated: StoredThreadRecordV1;
+        try {
+          updated = await this.#repository.updateMetadata(
+            record.hostThreadId,
+            { projectId: null },
+            { ifProjectId: projectId },
+          );
+        } catch (error) {
+          if (error instanceof MappingStoreError && error.code === "THREAD_NOT_FOUND") continue;
+          throw error;
+        }
+        if (updated.projectId !== undefined) continue;
+        const loaded = this.#externalRuntime.get(updated.hostThreadId);
+        if (loaded) this.#syncLoadedExternalThread(loaded, updated);
+        await this.#writer.json({
+          method: "thread/project/updated",
+          params: { threadId: updated.hostThreadId, projectId: null },
+        });
+      }
+    });
   }
 
   #syncLoadedExternalThread(thread: ExternalThread, record: StoredThreadRecordV1): JsonObject {

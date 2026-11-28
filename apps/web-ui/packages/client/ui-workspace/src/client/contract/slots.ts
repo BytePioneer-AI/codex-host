@@ -55,17 +55,23 @@ import type {
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-layout/client";
-import type { SessionSearchResultItem } from "@deepseek-ai/dsh-api-session-controller/client";
+import type {
+  SessionListState,
+  SessionSearchResultItem,
+} from "@deepseek-ai/dsh-api-session-controller/client";
 import type { RemoteHostFacts } from "@deepseek-ai/dsh-api-remotes/client";
 import type {
   SessionActivity,
   WorkspaceId,
+  WorkspaceSnapshot,
   WorkspaceView,
 } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
 import type { WorkspaceShortcutState } from "../shortcuts.ts";
+import type { ProjectMoveOutcome, ProjectMovePayload } from "../session-actions/project-move.ts";
 import type { createWorkspaceViewStore } from "../stores.ts";
+import type { ThreadSectionManageRequest } from "../session-actions/ManageThreadSection.tsx";
 
 /**
  * Owner share of the directory-flow holes: the complete conversation between
@@ -260,12 +266,20 @@ export type DirectoryPickingInjected = {
 /** Component-side view of the picking share: the bound occupancy selector hook. */
 export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected["hooks"]>;
 
+export interface ProjectDragSnapshot {
+  readonly workspace: WorkspaceSnapshot;
+  readonly sessions: SessionListState;
+}
+
 /**
  * Browser-private injected share (arrives via the register inject factory).
  * Data reads use the global framework hooks; these are the Host actions the
  * browsing region drives.
  */
 export type WorkspaceBrowserInjected = {
+  isSessionMoving: (id: SessionId) => boolean;
+  /** Read both authorities at the gesture event, not from a prior render. */
+  getProjectDragSnapshot: () => ProjectDragSnapshot;
   setThreadTreeCollapseStyle: (style: ThreadTreeCollapseStyle) => Promise<boolean>;
   hooks: DirectoryPickingInjected["hooks"] & {
     workspacePreferences: HostObservable<ConfigFormSnapshot<WorkspacePreferences>>;
@@ -341,6 +355,9 @@ export type WorkspaceBrowserInjected = {
   unarchiveSession: (sessionId: SessionId) => Promise<void>;
   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>;
+  requestManageThreadSection?: (request: ThreadSectionManageRequest) => void;
+  /** Move a local native session to an existing local native project under a per-session lock. */
+  moveSessionToProject?: (payload: ProjectMovePayload) => Promise<ProjectMoveOutcome>;
 };
 
 /** The browser's declared viewing store handle, shared with the row actions that write view state. */
@@ -365,10 +382,12 @@ export type RowToast =
   | { kind: "unarchiveFailed"; message: string }
   | { kind: "pinFailed"; message: string }
   | { kind: "unpinFailed"; message: string }
+  | { kind: "pinBusy" }
   | { kind: "archivedNotOpenable" }
   | { kind: "defaultWorkspaceFailed" }
   | { kind: "sessionLinkCopied" }
   | { kind: "sessionLinkCopyFailed" }
+  | { kind: "sectionSyncPending" }
   /**
    * An explicit New Session request that failed. `message` is untranslated:
    * a Host refusal as `code: message` — the stable code stays in the copy so
@@ -376,7 +395,9 @@ export type RowToast =
    */
   | { kind: "createFailed"; message: string }
   | { kind: "forkFailed"; message: string }
-  | { kind: "recentVisitsStorageFailed" };
+  | { kind: "recentVisitsStorageFailed" }
+  | { kind: "projectMoveFailed"; message: string }
+  | { kind: "projectMoveUnknown" };
 
 /** The notice on display; `seq` keys remounts so a repeated notice restarts its hold. */
 export type RowToastState = RowToast & { seq: number };
@@ -393,6 +414,7 @@ export interface PinSessionInjected {
     pinned: HostObservable<ReadonlySet<SessionId>>;
     /** Archived Session ids (pin does not apply to an archived row). */
     archived: HostObservable<ReadonlySet<SessionId>>;
+    movingSessions: HostObservable<ReadonlySet<SessionId>>;
   };
   /** Pin a Session; on success it leads its accounts' saved orders, on failure the notice says so. */
   pinSession: (sessionId: SessionId) => void;

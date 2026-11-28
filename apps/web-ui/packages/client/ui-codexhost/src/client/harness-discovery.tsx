@@ -26,11 +26,6 @@ import { HARNESS_COMMAND_SOURCE, harnessCommandReference } from "./harness-comma
 import { registerRemoteHostDelegation } from "./remote-host-delegation.tsx";
 import type {} from "./HostConnectionStatus.tsx";
 
-declare module "@deepseek-ai/dsh-session-projection/types" {
-  interface SessionProjectionMap {
-    nativeDiscovery: boolean | null;
-  }
-}
 const AGENTS = "codexhost-delegation";
 
 export function registerHarnessDiscovery(ctx: Context): void {

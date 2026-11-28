@@ -277,6 +277,7 @@ export function createFixture(
     sharedThreads?: SharedThreadBridge;
     sharedDelegation?: DelegationControlRegistration;
     externalOnly?: boolean;
+    localProjectMoves?: boolean;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     codexUsage?: boolean;
@@ -346,6 +347,7 @@ export function createFixture(
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
     ...(options.externalOnly !== undefined ? { externalOnly: options.externalOnly } : {}),
+    ...(options.localProjectMoves ? { localProjectMoves: true } : {}),
     desktopInput,
     desktopOutput,
     diagnosticOutput,

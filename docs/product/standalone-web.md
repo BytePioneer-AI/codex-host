@@ -638,11 +638,27 @@ Web 的「按工作区」和「工作区树」视图支持置顶本机与远程�
 
 共享来源统一调用 Host 的 `codexhost/thread/pins/list` / `codexhost/thread/pins/set`，不调用 Renderer 的置顶服务。Host 复用原生 `threadSection/list`、`thread/list(section_position)` 和既有外部 Thread 分区移动逻辑；内置 Pinned 分区使用原生协议的保留标识，并通过原生查询确认存在，不按显示名称猜测或自行创建分区。官方 Codex Thread 的分区成员与顺序由官方 app-server 持久化，Host 通过 `thread/read` 确认当前分区，通过 `thread/section/move` 修改；外部 Thread 的归属与排序锚点只保存于 Mapping Store 的分区记录。`pins/list` 始终读取官方 Pinned 分区并合并可见外部成员，即使没有任何外部置顶也返回官方成员，和 Desktop 的原生 Thread 查询共用同一混合顺序；不修改 `.codex-global-state.json`，不创建镜像会话。展示未归档的本机官方 Codex 与 canonical external Threads 的置顶，不聚合远程 Threads。
 
-Web 侧栏读取本机 Codex Desktop 的自定义分区，并按原生成员顺序显示。置顶仍由内置分区管理。可通过会话菜单把未置顶、未归档的本机 Codex 会话移入自定义分区或移回无分区。分区名称在 Desktop 管理，Web 在刷新会话目录时同步。翻页首次读到的分区成员摘要会推送给其他已连接浏览器，普通分页新行只返回给发起请求的浏览器。
+Web 侧栏同步本机 Codex Desktop 的自定义分区。未置顶、未归档的本机官方和外部 Harness 顶层 Thread 可通过会话菜单移入分区或移回无分区，项目归属不变。官方成员仍由 app-server 保存，外部成员由 Mapping Store 保存。翻页首次读到的分区成员摘要会推送给其他已连接浏览器，普通分页新行只返回给发起请求的浏览器。
+
+项目归属与自定义分区分别保存。`workspace/moveSessionToProject {sessionId, projectId}` 接受已有的本机 Codex 项目 ID，或用 `null` 明确设为「无项目」；不接受省略目标、空字符串、工作区行 ID 或路径。Host 向原生 app-server 发送 `projectId: ""` 清除原生 Thread 的项目；外部 Thread 在自身映射的元数据中记录明确无项目。刷新时两者都不回退到旧分配或目录匹配。仅未归档、未置顶的本机顶层会话可操作；远程会话、子 Agent 和未绑定草稿拒绝。会话可从最近列表移入项目；分区直属会话更改项目后仍留在原分区。执行 cwd、文件、worktree、权限、输出目录及后代归属均不变。
+
+同一归属不会再次写入。RPC 返回 `{status:"confirmed", projectId}` 或 `{status:"unknown"}`；明确拒绝返回 RPC 错误。Web 通过权威读侧刷新 `workspace/follow`，未知结果只读对账、不重发写入，不保存第二份项目归属。
+
+桌面壳和 Web 都可从会话菜单打开「移动到项目」，选择本机原生项目或「无项目」；选中的项目被删除时不会自动改选。只有已确认归属某项目或明确无项目的会话才能移动。旧 Host、未完成的读取、无法映射的项目 ID 都不等于“无项目”。
+
+`workspace/follow` 的 `localProjects` 列出本机原生项目 `{id, name, sessionIds}`，包括没有已加载成员的项目。`projectlessSessionIds` 只列出已明确无项目的本机会话。`localProjects` 增量同时替换两份成员列表；没有确认归属的会话不会出现在任一列表中。属于哪个项目以 Host 的显式归属为准，即使两个项目共用根目录、工作区行没有变化，也会发布归属变更。
+
+每个项目还可携带 `workspaceIds`。Host 明确登记的根目录在 Web 生成或复用 Workspace 行时，后端把当前行的 ID 绑定到该原生项目；同名、改名和会话数量不影响绑定。多根项目按原生根目录顺序返回绑定，隐藏或删除的行、多个项目共用的行不作为拖放目标。工作区行新增或移除时，项目绑定在同一轮流更新中同步。
+
+桌面端可把符合条件的会话拖到另一个本机项目的标题或会话行；项目高亮表示移动归属，同项目内的蓝线表示只调整顺序。拖动中来源不再符合条件时取消项目拖放，落点失效时撤下高亮。分区落点沿用分区移动，Composer 落点只复制引用。拖动中按 Esc、窗口失焦或在有效落点外松开，不提交项目移动。
+
+支持 `threadSectionsV1` 的 Host 提供新建、重命名和删除分区；重命名保留原外观，删除仅移除分区和成员归属，不删除或归档 Thread。Web 客户端在 `workspace/follow` 显式声明 `threadSectionsV1: true` 后才接收外观字段和 Host 能力标记。未协商该能力的客户端沿用原分区投影；未声明该能力的 Host 不显示管理入口，只有官方 Codex Thread 保留移动到分区的入口。
 
 Desktop 也能把项目放进自定义分区。官方 app-server 只保存分区本身和其中的会话，项目成员保存在 Desktop 当前登录身份的 `electron-owner-atoms:<owner>` → `sidebar-custom-sections-v3` 中，以 `hostSectionIds.local` 对应官方分区。Host 从 `.codex-global-state.sqlite` 读取这份状态，仅在 SQLite 文件不存在或尚未迁移（版本 0）时读取旧版 `.codex-global-state.json`。共享 Host 在 `codexhost/workspace/read` 的 `sectionProjects` 中只读返回各分区的项目 ID；这份状态是 Desktop 私有、带版本号的格式，缺失或结构变化时不返回项目分区，项目列表照常读取。Web 把这些项目的根目录工作区放进对应分区，在分组与树形模式下显示在分区自身的会话之后，顺序跟随 Desktop 分区内的项目顺序，不再出现在“工作区”段；以某项目命名的目录（该项目的第一个根目录）跟随该项目，其余目录归入第一个列出它的分区项目。树形嵌套限于同一分区，平铺模式只显示分区自身的会话。
 
 在 CodexHost 自有桌面窗口和 Web 的分组或树形视图中，可在本机项目菜单选「移动到分区」，或将项目拖到分区标题。选择或拖到「工作区」可移出自定义分区。整个项目随之显示在新位置，磁盘目录和项目内的会话归属保持原样。CodexHost 将这项侧栏偏好保存在本机 Web 数据目录，同一 Host 的各窗口共用。官方 Codex Desktop 仍管理自己的项目布局。如果官方客户端随后移动这个项目，或删除目标分区，CodexHost 在目录刷新时采用最新的官方布局。刚启动时，如果分区数据尚未读全，也没有上次确认的项目位置，移动会提示重试。等侧栏刷新后即可再次操作。
+
+「移动到项目」只改变一个会话的项目归属，不改变项目的侧栏分区覆盖。Desktop 快照中的分区成员缺失或项目 ID 尚无法映射时，本机 Web 保留已有的项目位置；明确读到空成员列表才表示该分区没有项目。
 
 ![从项目菜单将 Atlas 移入 Design 分区，展开后可看到原有会话](../imgs/project-section-move.png)
 

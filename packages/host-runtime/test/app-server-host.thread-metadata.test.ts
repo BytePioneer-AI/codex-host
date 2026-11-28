@@ -551,6 +551,15 @@ describe("External Thread metadata updates", () => {
     await expect(listIds(fixture, 13, { projectId: "project-b" })).resolves.toEqual([]);
     await expect(listIds(fixture, 14, {})).resolves.toEqual([threadId]);
 
+    for (const [id, patch] of [
+      [140, {}],
+      [141, { projectId: null }],
+    ] as const) {
+      await expect(updateMetadata(fixture, id, { threadId, ...patch })).resolves.toMatchObject({
+        result: { thread: { projectId: "project-a" } },
+      });
+    }
+
     // An empty projectId clears the assignment.
     await expect(updateMetadata(fixture, 15, { threadId, projectId: "" })).resolves.toMatchObject({
       result: { thread: { projectId: null } },

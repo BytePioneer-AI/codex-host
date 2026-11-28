@@ -588,6 +588,12 @@
   position: relative;
 }
 
+.projectDropTarget {
+  border-radius: var(--dsw-radius-md);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, transparent);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-state-business-primary);
+}
+
 .groupSection + .groupSection {
   margin-top: 4px;
 }

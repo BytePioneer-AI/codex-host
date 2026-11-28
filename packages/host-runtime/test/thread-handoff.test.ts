@@ -24,6 +24,7 @@ import { AppServerHost } from "../src/app-server-host.js";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { ClientChannelHost } from "../src/client-channel-host.js";
 import { withInjectedText } from "../src/external-thread-side-chat.js";
+import { SHARED_SECTIONS_WATCH_METHOD } from "../src/external-thread-sections.js";
 import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { SharedThreadPeer } from "../src/shared-thread-peer.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
@@ -1184,6 +1185,7 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
     const ended = Promise.withResolvers<undefined>();
     const peer: SharedThreadPeer = {
       request: async (method, params) => {
+        if (method === SHARED_SECTIONS_WATCH_METHOD) return { result: {} };
         if (method === "codexhost/thread/ownership/list") {
           const ids = Array.isArray(params.threadIds) ? params.threadIds : [];
           return {
@@ -1217,7 +1219,12 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
       params: { sourceThreadId: sharedSourceId, targetHarnessId: "claude-code" },
     });
     expect(routedShared).toEqual({ id: 1, result: { threadId: "new-shared-target" } });
-    expect(forwarded).toHaveLength(1);
+    expect(forwarded).toEqual([
+      {
+        method: THREAD_HANDOFF_METHOD,
+        params: { sourceThreadId: sharedSourceId, targetHarnessId: "claude-code" },
+      },
+    ]);
 
     const routedOfficial = await bridge.route({
       id: 2,

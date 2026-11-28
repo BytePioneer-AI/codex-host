@@ -22,10 +22,9 @@ export function MoveSectionForm({
 }) {
   const [choice, setChoice] = useState<string>();
   // A refreshed sidebar can move the project or remove a destination while this dialog is open.
-  const target =
-    choice === undefined || (choice !== "" && !sections.some(({ id }) => id === choice))
-      ? current
-      : choice;
+  const target = choice ?? current;
+  const targetMissing = target !== "" && !sections.some(({ id }) => id === target);
+  const canMove = target !== current && !targetMissing;
   const [moving, setMoving] = useState(false);
   const [failed, setFailed] = useState(false);
   const pending = useRef(false);
@@ -33,7 +32,7 @@ export function MoveSectionForm({
     if (!pending.current) dismiss();
   };
   const submit = async () => {
-    if (pending.current || target === current) return;
+    if (pending.current || !canMove) return;
     pending.current = true;
     setMoving(true);
     setFailed(false);
@@ -59,11 +58,7 @@ export function MoveSectionForm({
           <Button variant="outline" disabled={moving} onClick={close}>
             {t("cancel")}
           </Button>
-          <Button
-            variant="primary"
-            disabled={moving || target === current}
-            onClick={() => void submit()}
-          >
+          <Button variant="primary" disabled={moving || !canMove} onClick={() => void submit()}>
             {t("section.move")}
           </Button>
         </>
@@ -77,6 +72,11 @@ export function MoveSectionForm({
         data-modal-autofocus
         onChange={({ target }) => setChoice(target.value)}
       >
+        {targetMissing && (
+          <option value={target} disabled>
+            {t("section.destination")}
+          </option>
+        )}
         <option value="">{defaultLabel}</option>
         {sections.map(({ id, name }) => (
           <option key={id} value={id}>

@@ -87,6 +87,17 @@ export function RowActionToast({
       />
     );
   }
+  if (toast.kind === "projectMoveUnknown") {
+    return (
+      <Toast
+        key={`toast-${String(toast.seq)}`}
+        text={t("toast.projectMoveUnknown")}
+        icon={<IconWarningOutlineRegular />}
+        holdMs={LONG_TOAST_HOLD_MS}
+        onDone={dismissToast}
+      />
+    );
+  }
   return (
     <Toast
       key={`toast-${String(toast.seq)}`}
@@ -101,7 +112,10 @@ export function RowActionToast({
 function plainNoticeText(
   toast: Exclude<
     RowToastState,
-    { kind: "archived" | "stoppedAndArchived" | "createFailed" | "forkFailed" }
+    {
+      kind:
+        "archived" | "stoppedAndArchived" | "createFailed" | "forkFailed" | "projectMoveUnknown";
+    }
   >,
   t: RowToastProps["t"],
 ): string {
@@ -114,6 +128,8 @@ function plainNoticeText(
       return t("toast.pinFailed", { message: toast.message });
     case "unpinFailed":
       return t("toast.unpinFailed", { message: toast.message });
+    case "pinBusy":
+      return t("toast.pinBusy");
     case "defaultWorkspaceFailed":
       return t("defaultWorkspace.failed");
     case "archivedNotOpenable":
@@ -122,6 +138,10 @@ function plainNoticeText(
       return t("toast.sessionLinkCopied");
     case "sessionLinkCopyFailed":
       return t("toast.sessionLinkCopyFailed");
+    case "sectionSyncPending":
+      return t("toast.sectionSyncPending");
+    case "projectMoveFailed":
+      return t("toast.projectMoveFailed", { message: toast.message });
     case "recentVisitsStorageFailed":
       return t("recent.cache.error");
     /* v8 ignore next 2 -- closed-union backstop; only reached if a notice kind is forged */

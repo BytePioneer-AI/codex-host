@@ -336,6 +336,10 @@ it("keeps cross-project ancestors in the scoped reply and publishes section disc
   f.host.projectSnapshot.projects.push({ id: "child", name: "Child project", rootPaths: [root] });
   child.cwd = root;
   child.projectId = "child";
+  f.host.projectSnapshot.assignments[child.id] = "child";
+  f.host.projectSnapshot.projectless = f.host.projectSnapshot.projectless.filter(
+    (id) => id !== child.id,
+  );
   const { nextCursor } = await f.list();
   const inclusiveCursor = (await f.list({ includeArchived: true })).nextCursor;
   const workspace = f.workspaces.byPath(root);

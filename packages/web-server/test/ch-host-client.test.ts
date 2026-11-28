@@ -60,7 +60,7 @@ it("uses only the running Host's projects even when Web has a different CODEX_HO
     launch: { launcher: "/unused", runtime: "/unused", dataDirectory, codexHome: root },
   });
   t.after(() => client.close());
-  assert.deepEqual(await client.projects(["imported"]), { ...host.projectSnapshot, pinned: [] });
+  assert.deepEqual(await client.projects(["imported"]), { ...(await host.projects()), pinned: [] });
 });
 
 it("reads legacy CDP projects in Desktop order, omitting missing and repeated IDs", async (t) => {

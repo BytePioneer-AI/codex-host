@@ -16,6 +16,8 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
+  CLIENT_THREAD_SECTION_MUTATIONS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_HANDOFF_METHOD,
   clientThreadPinsSchema,
@@ -52,16 +54,7 @@ export interface ChPinChange {
   pinned: boolean;
 }
 
-export interface ChProjectSnapshot {
-  projects: ClientWorkspaceSnapshot["projects"];
-  nativeProjects?: true | undefined;
-  assignments: Record<string, string>;
-  projectless: string[];
-  /** Projects in each native custom section, keyed by official section ID; shared Host only. */
-  sectionProjects?: Record<string, string[]> | undefined;
-  /** Projects pinned in Codex Desktop (`pinned-project-ids`), in Desktop order; shared Host only. */
-  pinnedProjects?: string[] | undefined;
-}
+export type ChProjectSnapshot = Omit<ClientWorkspaceSnapshot, "pinned">;
 
 const exec = promisify(execFile);
 const METHODS = new Set([
@@ -70,6 +63,9 @@ const METHODS = new Set([
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",
   "codexhost/thread/sections/move",
+  CLIENT_THREAD_SECTION_MUTATIONS.create.method,
+  CLIENT_THREAD_SECTION_MUTATIONS.update.method,
+  CLIENT_THREAD_SECTION_MUTATIONS.delete.method,
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",
@@ -321,24 +317,30 @@ export async function createChHostClient(
       );
     }
   }
-  const request: ChHostClient["request"] = (method, params) =>
-    hostOperation(channel.request(method, params));
-  const realtimeRequest = <T = unknown>(
+  const request = <T = unknown>(
     method: string,
     params: Record<string, unknown>,
     timeoutMs?: number,
-  ): Promise<T> => hostOperation(channel.request<T>(method, params, timeoutMs));
+  ): Promise<T> => {
+    if (method === CLIENT_THREAD_PROJECT_MOVE_METHOD && channel.owner !== "service")
+      return Promise.reject(
+        new RpcError("host/method-unavailable", "Project moves require the shared local Host.", {
+          hostCode: -32601,
+        }),
+      );
+    return hostOperation(channel.request<T>(method, params, timeoutMs));
+  };
   return {
     realtime: {
       subscribe: (listener, after) => channel.subscribe(listener, after),
-      request: realtimeRequest,
+      request,
       snapshot: (threadId, options) => hostOperation(channel.snapshot(threadId, options)),
       respond: (input) => hostOperation(channel.respond(input)),
       peerDelegationSupported: () => channel.peerDelegationSupported,
     },
     request,
     projects: (ids) =>
-      endpoint?.owner === "service"
+      channel.owner === "service"
         ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {
             threadIds: ids,
             nativeProjects: true,

@@ -54,6 +54,7 @@ import {
   threadActivitySegments,
   threadTreeSummary,
 } from "./thread-tree-presentation.ts";
+import type { ProjectDropHandlers } from "./use-project-drag.ts";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -128,7 +129,7 @@ function WorkspaceHoverContent({
  */
 export interface RowDragProps {
   /** Start dragging this row. */
-  start: () => void;
+  start: (element: HTMLElement) => void;
   /** A compatible row drag is in flight. */
   active: boolean;
   /** Current marker on this row: insert line above, below, or none. */
@@ -198,6 +199,7 @@ export function ProjectRowItem({
   pin,
   actions: suppliedActions,
   drag: suppliedDrag,
+  projectDrop,
   showHost = true,
   home,
   newShortcut,
@@ -214,6 +216,7 @@ export function ProjectRowItem({
   actions?: { rename: () => void; moveToSection?: () => void; delete: () => void } | undefined;
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined;
+  projectDrop?: ProjectDropHandlers | undefined;
   /** Whether to show remote host accent rail and tag when viewing multiple hosts. */
   showHost?: boolean | undefined;
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
@@ -269,6 +272,7 @@ export function ProjectRowItem({
     <div
       className={clsx(css.projectRow, menuOpen && css.menuOpen)}
       data-row-key={`workspace:${group.key}`}
+      {...projectDrop}
       role="treeitem"
       aria-expanded={row.expanded}
       tabIndex={-1}
@@ -622,6 +626,7 @@ export function SessionNodeItem({
   renderSlot,
   onReveal,
   drag: suppliedDrag,
+  projectDrop,
   showHost = true,
   t,
 }: {
@@ -638,6 +643,7 @@ export function SessionNodeItem({
   onReveal?: (() => void) | undefined;
   /** Present on reorderable-list rows so every row can remain a drop target. */
   drag?: RowDragProps | undefined;
+  projectDrop?: ProjectDropHandlers | undefined;
   t: RowTranslate;
 } & PropsRenderSlots<
   | "sidebar.workspaces.session.menu.item"
@@ -755,28 +761,33 @@ export function SessionNodeItem({
               );
               if (reference !== undefined)
                 e.dataTransfer.setData(THREAD_REFERENCE_MIME, JSON.stringify(reference));
-              if (reorderable) drag?.start();
+              if (reorderable) drag?.start(e.currentTarget);
             }
       }
       onDragEnd={!draggable ? undefined : (e) => drag?.end(e.dataTransfer.dropEffect === "copy")}
       onDragOver={
-        drag === undefined
-          ? undefined
-          : (e) => {
-              if (!drag.active) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              drag.hover(rowHalf(e));
-            }
+        projectDrop !== undefined
+          ? projectDrop.onDragOver
+          : !drag?.active
+            ? undefined
+            : (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "move";
+                drag.hover(rowHalf(e));
+              }
       }
       onDrop={
-        drag === undefined
-          ? undefined
-          : (e) => {
-              if (!drag.active) return;
-              e.preventDefault();
-              drag.drop(rowHalf(e));
-            }
+        projectDrop !== undefined
+          ? projectDrop.onDrop
+          : !drag?.active
+            ? undefined
+            : (e) => {
+                if (e.dataTransfer.dropEffect === "copy") return;
+                e.preventDefault();
+                e.stopPropagation();
+                drag.drop(rowHalf(e));
+              }
       }
     >
       <div className={css.sessionMain}>

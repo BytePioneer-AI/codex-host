@@ -13,6 +13,7 @@ type RowProps = ComponentProps<typeof SessionNodeItem>;
 export function PinnedSection({
   rows,
   customSection,
+  headingActions,
   currentId,
   onOpen,
   onRenameRequest,
@@ -32,6 +33,7 @@ export function PinnedSection({
     name: string;
     projectDrop?: ComponentProps<typeof SectionHeading>["projectDrop"];
   };
+  headingActions?: ReactNode;
   revealSessionId?: RowProps["currentId"];
   onSessionRevealed: (id: SessionNode["id"]) => void;
   showHost?: boolean;
@@ -56,6 +58,7 @@ export function PinnedSection({
       <SectionHeading
         label={label}
         icon={customSection ? undefined : <IconPinOutlineRegular size={14} />}
+        trailing={headingActions}
         expanded={expanded}
         onToggle={onToggle}
         rowKey={`section:${customSection?.key ?? PINNED_SECTION_KEY}`}

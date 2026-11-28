@@ -3,7 +3,7 @@ export class DesktopRequestQueue {
   readonly #threads = new Map<string, Promise<void>>();
   readonly #pending = new Set<Promise<void>>();
 
-  run(threadId: string | undefined, operation: () => Promise<void>): Promise<void> {
+  run<T>(threadId: string | undefined, operation: () => Promise<T>): Promise<T> {
     const previous = threadId === undefined ? undefined : this.#threads.get(threadId);
     const task = (previous ?? Promise.resolve()).then(operation);
     // A failed request must not poison the Thread's queue. The caller still receives its error.

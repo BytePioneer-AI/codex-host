@@ -2748,6 +2748,7 @@ export class RemoteSessions {
 
   install(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.routeSessions(async (method, args, next) => {
+      if (method === "workspace/moveSessionToProject") return next();
       if (method === "session/create") {
         const request = requestOf<{ workspaceId?: string; cwd?: string; sessionId?: string }>(args);
         if (

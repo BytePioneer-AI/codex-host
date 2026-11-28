@@ -246,12 +246,13 @@ export class OfficialRuntimeClient {
       },
     };
   }
-  request(method: string, params: JsonObject): Promise<JsonObject> {
+  request(method: string, params: JsonObject, beforeDispatch?: () => void): Promise<JsonObject> {
     if (this.#refreshBeforeRequests) {
       const refreshing = this.#scope.refreshBeforeRequest();
-      if (refreshing) return refreshing.then(() => this.#session.request(method, params));
+      if (refreshing)
+        return refreshing.then(() => this.#session.request(method, params, beforeDispatch));
     }
-    return this.#session.request(method, params);
+    return this.#session.request(method, params, beforeDispatch);
   }
   send(value: JsonObject): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Official Codex is unavailable"));

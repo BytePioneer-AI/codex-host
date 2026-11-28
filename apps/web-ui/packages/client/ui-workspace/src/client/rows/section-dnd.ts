@@ -6,7 +6,7 @@
  * concurrency guarantees can be verified directly by focused logic tests.
  */
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
-import { notifySubscribers } from "@deepseek-ai/dsh-client-store";
+import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-controller/types";
 import type { HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -87,19 +87,10 @@ export interface VisibleSectionMemberContext {
   readonly visibleSessionIds?: ReadonlySet<SessionId> | null;
 }
 
-export interface MoveSectionDialogState {
-  readonly manageableSections: readonly WorkspaceThreadSection[];
-  readonly currentSectionId: string;
-  /** Effective `<select>` value: live current section before user choice, then user choice. */
-  readonly effectiveTarget: string;
-  /** True when the user explicitly selected a custom section that no longer exists in the live list. */
-  readonly targetDeleted: boolean;
-  readonly canSubmit: boolean;
-}
-
 export type SectionMoveOutcome =
   | { readonly status: "committed" }
   | { readonly status: "skipped-in-flight" }
+  | { readonly status: "unknown" }
   | { readonly status: "failed"; readonly error: unknown };
 
 export interface SectionMoveCoordinator {
@@ -189,34 +180,18 @@ export function visibleCustomSectionThreadIds(
   return result;
 }
 
-/**
- * Derive live options, current ownership, and submission validity for the move-to-section dialog.
- * Before the user makes a selection (`selectedTarget === null`), tracks the session's live
- * ownership and keeps submission disabled. Once the user picks a target, preserves that choice;
- * if a selected custom section is deleted while open, keeps the selection intact (without
- * auto-switching to unsectioned) and blocks submission until a valid destination is chosen.
- */
-export function resolveMoveSectionDialogState(input: {
-  readonly sessionId: SessionId;
-  readonly sections: readonly WorkspaceThreadSection[] | undefined;
-  /** `null` before user selection; `""` for explicit unsectioned; section ID otherwise. */
-  readonly selectedTarget: string | null;
-  readonly busy: boolean;
-}): MoveSectionDialogState {
-  const manageableSections = (input.sections ?? []).filter(isManageableCustomSection);
-  const currentSectionId =
-    manageableSections.find((section) => section.threadIds.includes(input.sessionId))?.id ?? "";
-  const effectiveTarget = input.selectedTarget ?? currentSectionId;
+/** Keep explicit choices across live updates; never silently replace a missing target. */
+export function resolveMoveSectionDialogState(
+  current: string,
+  sections: readonly WorkspaceThreadSection[],
+  choice: string | undefined,
+  blocked: boolean,
+) {
+  const effectiveTarget = choice ?? current;
   const targetDeleted =
-    input.selectedTarget !== null &&
-    input.selectedTarget !== "" &&
-    !manageableSections.some((section) => section.id === input.selectedTarget);
-  const canSubmit =
-    !input.busy &&
-    input.selectedTarget !== null &&
-    !targetDeleted &&
-    input.selectedTarget !== currentSectionId;
-  return { manageableSections, currentSectionId, effectiveTarget, targetDeleted, canSubmit };
+    effectiveTarget !== "" && !sections.some(({ id }) => id === effectiveTarget);
+  const canSubmit = !blocked && choice !== undefined && !targetDeleted && choice !== current;
+  return { effectiveTarget, targetDeleted, canSubmit };
 }
 
 /** Return the row immediately above the pointer's gap, within the same pinned block. */
@@ -398,27 +373,12 @@ export function createSectionMoveCoordinator(options: {
     sectionId: string | null,
     beforeSessionId?: SessionId | null,
     expectedSourceSectionId?: string,
-  ) => Promise<void>;
+  ) => Promise<void | { status: "unknown" }>;
   readonly onError?: (error: unknown) => void;
+  readonly onUnknown?: () => void;
 }): SectionMoveCoordinator {
   const inFlight = new Set<SessionId>();
-  let snapshot: ReadonlySet<SessionId> = new Set();
-  const listeners = new Set<() => void>();
-
-  const emit = (): void => {
-    snapshot = new Set(inFlight);
-    notifySubscribers(listeners, "[section-move]");
-  };
-
-  const movingSessionIds: HostObservable<ReadonlySet<SessionId>> = {
-    getSnapshot: () => snapshot,
-    subscribe: (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-  };
+  const movingSessionIds = createSnapshotStore<ReadonlySet<SessionId>>(new Set());
 
   return {
     movingSessionIds,
@@ -428,21 +388,23 @@ export function createSectionMoveCoordinator(options: {
         return { status: "skipped-in-flight" };
       }
       inFlight.add(payload.sessionId);
-      emit();
+      movingSessionIds.set(new Set(inFlight));
       try {
-        await options.execute(
+        const outcome = await options.execute(
           payload.sessionId,
           payload.sectionId,
           payload.beforeSessionId,
           payload.expectedSourceSectionId,
         );
-        return { status: "committed" };
+        if (outcome?.status === "unknown" && moveOptions.notifyOnError !== false)
+          options.onUnknown?.();
+        return outcome ?? { status: "committed" };
       } catch (error) {
         if (moveOptions.notifyOnError !== false) options.onError?.(error);
         return { status: "failed", error };
       } finally {
         inFlight.delete(payload.sessionId);
-        emit();
+        movingSessionIds.set(new Set(inFlight));
       }
     },
   };

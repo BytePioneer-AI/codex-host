@@ -118,7 +118,7 @@ export interface IWorkspaces {
     sectionId: string | null,
     beforeSessionId?: SessionId | null,
     expectedSourceSectionId?: string,
-  ): Promise<void>;
+  ): Promise<void | { status: "unknown" }>;
   /** Create a custom Thread section with a non-empty name. */
   createThreadSection?(name: string): Promise<WorkspaceCreateThreadSectionValue>;
   /** Rename a custom Thread section while omitting appearance to preserve existing styling. */
@@ -206,14 +206,29 @@ export class WorkspaceController extends Service implements IWorkspaces {
     sectionId: string | null,
     beforeSessionId?: SessionId | null,
     expectedSourceSectionId?: string,
-  ): Promise<void> {
+  ): Promise<void | { status: "unknown" }> {
     const result = await this.model.moveSessionToSection({
       sessionId,
       sectionId,
       ...(beforeSessionId === undefined ? {} : { beforeSessionId }),
       ...(expectedSourceSectionId === undefined ? {} : { expectedSourceSectionId }),
     });
-    if (!result.ok) throw commandError("move to section", result.error);
+    if (!result.ok) {
+      // The Web gateway also forwards Host codes that aren't declared in this client package.
+      const code: string = result.error.code;
+      const details = result.error.details;
+      const hostCode = "hostCode" in details ? details.hostCode : undefined;
+      if (
+        code === "gateway/internal" ||
+        code === "gateway/cancelled" ||
+        code === "host/disconnected" ||
+        code === "host/resync" ||
+        code === "remote/offline" ||
+        (code === "host/rejected" && (hostCode === -32093 || hostCode === -32094))
+      )
+        return { status: "unknown" };
+      throw commandError("move to section", result.error);
+    }
     if (result.value.sectionId !== sectionId)
       throw new Error("The requested section change was not confirmed.");
   }

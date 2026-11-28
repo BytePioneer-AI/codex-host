@@ -310,6 +310,7 @@ export function apply(ctx: Context): void {
         message: reason instanceof Error ? reason.message : String(reason),
       });
     },
+    onUnknown: () => notify({ kind: "sectionMoveUnknown" }),
   });
   const threadSectionMenu = (): ThreadSectionMenuInjected => ({
     hooks: {

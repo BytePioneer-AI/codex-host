@@ -124,6 +124,8 @@ function plainNoticeText(
       return t("toast.sessionLinkCopyFailed");
     case "sectionSyncPending":
       return t("toast.sectionSyncPending");
+    case "sectionMoveUnknown":
+      return t("section.outcomeUnknown");
     case "sectionMoveFailed":
       return t("toast.sectionMoveFailed", { message: toast.message });
     case "recentVisitsStorageFailed":

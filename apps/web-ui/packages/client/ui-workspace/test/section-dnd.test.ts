@@ -17,11 +17,13 @@ import {
 import {
   canCommitSectionDrop,
   createSectionMoveCoordinator,
+  findSessionCustomSection,
+  isManageableCustomSection,
   localReorderGapTarget,
   isSectionMovableSession,
   isSectionRowMoving,
   PINNED_THREAD_SECTION_ID,
-  resolveMoveSectionDialogState,
+  resolveMoveSectionDialogState as resolveFormState,
   resolveSectionDropMove,
   resolveSectionStepMove,
   visibleCustomSectionThreadIds,
@@ -511,6 +513,26 @@ describe("localReorderGapTarget", () => {
 });
 
 describe("resolveMoveSectionDialogState", () => {
+  function resolveMoveSectionDialogState({
+    sessionId,
+    sections,
+    selectedTarget,
+    busy,
+  }: {
+    sessionId: SessionId;
+    sections: readonly WorkspaceThreadSection[];
+    selectedTarget: string | null;
+    busy: boolean;
+  }) {
+    const manageableSections = sections.filter(isManageableCustomSection);
+    const currentSectionId = findSessionCustomSection(sessionId, manageableSections)?.id ?? "";
+    return {
+      manageableSections,
+      currentSectionId,
+      ...resolveFormState(currentSectionId, manageableSections, selectedTarget ?? undefined, busy),
+    };
+  }
+
   it("tracks live ownership with submit disabled until the user selects, then preserves user choice", () => {
     const initial: readonly WorkspaceThreadSection[] = [
       { id: "sec-a", name: "Alpha", threadIds: [sid("s1")] },
@@ -699,6 +721,30 @@ describe("createSectionMoveCoordinator", () => {
     assert.equal(errors[0], failure);
     assert.ok(notifications >= 4);
     stop();
+  });
+
+  it("returns an unknown write outcome without replaying it or keeping the in-flight lock", async () => {
+    const writes: SessionId[] = [];
+    let notices = 0;
+    const coordinator = createSectionMoveCoordinator({
+      execute: async (id) => {
+        writes.push(id);
+        return { status: "unknown" };
+      },
+      onUnknown: () => {
+        notices++;
+      },
+    });
+    const payload = { sessionId: sid("a"), sectionId: "sec-1" };
+    assert.deepEqual(await coordinator.move(payload), { status: "unknown" });
+    assert.deepEqual(writes, [payload.sessionId]);
+    assert.equal(coordinator.isMoving(payload.sessionId), false);
+    assert.equal(notices, 1);
+    assert.deepEqual(await coordinator.move(payload, { notifyOnError: false }), {
+      status: "unknown",
+    });
+    assert.deepEqual(writes, [payload.sessionId, payload.sessionId]);
+    assert.equal(notices, 1, "a dialog displays its own unknown notice");
   });
 
   it("keeps moves and other subscribers working when a subscriber throws", async (t) => {

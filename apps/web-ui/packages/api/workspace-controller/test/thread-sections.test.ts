@@ -338,6 +338,30 @@ describe("workspace-controller thread section contracts", () => {
     expect(model.getSnapshot().threadSections?.[0]?.threadIds).toEqual(["t-1", "t-2"]);
   });
 
+  it.each([
+    { code: "gateway/internal", details: {} },
+    { code: "gateway/cancelled", details: {} },
+    { code: "host/disconnected", details: {} },
+    { code: "host/resync", details: {} },
+    { code: "remote/offline", details: {} },
+    { code: "host/rejected", details: { hostCode: -32093 } },
+    { code: "host/rejected", details: { hostCode: -32094 } },
+  ])("preserves unknown move outcomes after $code ($details)", async ({ code, details }) => {
+    const moves: WorkspaceMoveSessionToSectionRequest[] = [];
+    const model = new ClientWorkspaceModel({
+      async moveSessionToSection(request: WorkspaceMoveSessionToSectionRequest) {
+        moves.push(request);
+        return { ok: false, error: new RemoteError(code as never, "No write receipt", details) };
+      },
+    } as WorkspaceRemote);
+    const controller = new WorkspaceController(new Context(), model);
+    const sessionId = "t-1" as SessionId;
+    await expect(controller.moveSessionToSection(sessionId, "sec-1")).resolves.toEqual({
+      status: "unknown",
+    });
+    expect(moves).toEqual([{ sessionId, sectionId: "sec-1" }]);
+  });
+
   it("preserves prior threadSections projection across workspace upserts, carrier drops, and stream errors until an authoritative baseline arrives", () => {
     const model = new ClientWorkspaceModel({} as WorkspaceRemote);
     const sections = [

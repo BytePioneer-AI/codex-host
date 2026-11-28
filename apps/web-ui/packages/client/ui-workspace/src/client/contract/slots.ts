@@ -389,6 +389,7 @@ export type RowToast =
   | { kind: "createFailed"; message: string }
   | { kind: "forkFailed"; message: string }
   | { kind: "recentVisitsStorageFailed" }
+  | { kind: "sectionMoveUnknown" }
   | { kind: "sectionMoveFailed"; message: string };
 
 /** The notice on display; `seq` keys remounts so a repeated notice restarts its hold. */

@@ -1154,6 +1154,18 @@ describe("External Thread sections through AppServerHost", () => {
       };
       await expect(retry(sectionId === null)).resolves.toMatchObject(partial);
       expect(await readPlacements()).toEqual(original);
+      if (sectionId === "Research") {
+        await expect(sectionRpc(fixture, "list", {})).resolves.toMatchObject({
+          result: {
+            sections: expect.arrayContaining([
+              expect.objectContaining({
+                id: "Research",
+                threads: [external, "N2", "N1", "N3"].map((id) => expect.objectContaining({ id })),
+              }),
+            ]),
+          },
+        });
+      }
 
       if (changed === "native") {
         await expect(
@@ -1181,7 +1193,11 @@ describe("External Thread sections through AppServerHost", () => {
         save.mockRejectedValue(new Error("Storage offline again"));
         await expect(retry()).resolves.toEqual({ result: {} });
       }
-      expect(native.moves.filter(({ threadId }) => threadId === "N2")).toEqual([
+      const moves =
+        changed === "native"
+          ? native.moves.filter(({ threadId }) => threadId === "N2")
+          : native.moves;
+      expect(moves).toEqual([
         { threadId: "N2", sectionId, beforeThreadId: beforeThreadId ?? null },
       ]);
     } finally {
@@ -1274,37 +1290,6 @@ describe("External Thread sections through AppServerHost", () => {
       }
     },
   );
-
-  it("reports a native move with unsaved external anchors as partial without replaying it", async () => {
-    const fixture = createFixture();
-    const native = serveOfficialSections(fixture, [], { Research: ["N1", "N2"] });
-    try {
-      const threadId = await startPiThread(fixture);
-      await expect(
-        sectionRpc(fixture, "move", { threadId, sectionId: "Research", beforeThreadId: "N2" }),
-      ).resolves.toEqual({ result: {} });
-      vi.spyOn(fixture.mappingStore, "replaceSectionPlacements").mockRejectedValue(
-        new Error("Cannot save the external anchors"),
-      );
-      await expect(
-        sectionRpc(fixture, "move", {
-          threadId: "N2",
-          sectionId: "Research",
-          beforeThreadId: "N1",
-        }),
-      ).resolves.toMatchObject({
-        error: { message: expect.stringContaining("Native Thread moved") },
-      });
-      expect(native.moves).toEqual([
-        { threadId: "N2", sectionId: "Research", beforeThreadId: "N1" },
-      ]);
-      await expect(sectionRpc(fixture, "list", {})).resolves.toMatchObject({
-        result: { sections: [{ threads: [{ id: threadId }, { id: "N2" }, { id: "N1" }] }] },
-      });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
 
   it("rejects split-owner anchors and source or destination members before either owner writes", async () => {
     const ownerFixture = createFixture({ externalOnly: true });

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { JsonObject } from "@codexhost/protocol-core";
+import { THREAD_SECTION_CAPABILITY } from "@codexhost/shared-contracts";
 import { tsImport } from "tsx/esm/api";
 import { expect, it } from "vitest";
 import { SharedThreadBridge } from "../../packages/host-runtime/src/shared-thread-bridge.js";
@@ -22,6 +23,7 @@ import {
   RpcError,
   RpcRegistry,
   StreamRegistry,
+  type StreamHandler,
 } from "../../packages/web-server/src/transport.ts";
 import { Workspaces } from "../../packages/web-server/src/workspaces.ts";
 
@@ -66,7 +68,7 @@ function serveNative({ official }: { official: FakeOfficialProcess }, root: stri
   return { head, older };
 }
 
-it("keeps shared section members when a scoped page cannot confirm them", async () => {
+it("keeps shared section members and follower order across incomplete reads and moves", async () => {
   // Match the Web server runner for ChSessions and its Web-only dependencies.
   const { ChSessions } = (await tsImport(
     "../../packages/web-server/src/ch-sessions.ts",
@@ -126,7 +128,36 @@ it("keeps shared section members when a scoped page cannot confirm them", async 
   const workspaces = new Workspaces(new DataDir(webRoot), webRoot, true);
   const sessions = new ChSessions(client, workspaces, new EventHub(webRoot));
   const rpc = new RpcRegistry();
-  sessions.register(rpc, new StreamRegistry());
+  const streams = new StreamRegistry();
+  let follow: StreamHandler | undefined;
+  const register = streams.register.bind(streams);
+  streams.register = (name, handler) => {
+    if (name === "workspace/follow") follow = handler;
+    register(name, handler);
+  };
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+
+  const closers: Array<() => void> = [];
+  const openFollower = async (id: string) => {
+    if (!follow) throw new Error("workspace/follow handler was not registered");
+    const frames: Array<{ type: string }> = [];
+    await follow(
+      { [THREAD_SECTION_CAPABILITY]: true },
+      {
+        id,
+        closed: false,
+        push: (frame) => frames.push(frame as (typeof frames)[number]),
+        end() {},
+        fail: (code, message) => {
+          throw new Error(`${code}: ${message}`);
+        },
+        onClose: (close) => closers.push(close),
+      },
+    );
+    return frames;
+  };
+
   const list = async (request: object = {}) => {
     const reply = await rpc.dispatch("session/list", { args: { request } });
     expect(reply).toMatchObject({ ok: true });
@@ -143,6 +174,7 @@ it("keeps shared section members when a scoped page cannot confirm them", async 
     const second = await start(2);
     const archived = await start(3);
     const pin = await start(4);
+    const unsectioned = await start(5);
     for (const threadId of [first, second, archived]) {
       expect(await peer.request(moveMethod, { threadId, sectionId: section.id })).toHaveProperty(
         "result",
@@ -152,40 +184,99 @@ it("keeps shared section members when a scoped page cannot confirm them", async 
     expect(
       await peer.request("thread/section/move", { threadId: pin, sectionId: pinned.id }),
     ).toHaveProperty("result");
-    const expected = [head.id, first, second].sort();
+    const initialOrder = [head.id, first, second];
+    const expected = [...initialOrder].sort();
     const baseline = await list();
     expect(baseline.items.map(({ sessionId }) => sessionId).sort()).toEqual(
-      [...expected, pin].sort(),
+      [...expected, pin, unsectioned].sort(),
     );
     expect(members()).toEqual(expected);
     const project = workspaces.ownerOf(first);
     expect(project?.path).toBe(root);
     if (!project || !baseline.nextCursor) throw new Error("Missing project or native cursor");
     const scope = { cursor: baseline.nextCursor, workspaceId: project.workspaceId };
+    const followers = [await openFollower("browser-a"), await openFollower("browser-b")];
+    const expectBaseline = (frame: unknown, order: string[], projectRows: string[]) => {
+      expect(frame).toMatchObject({
+        type: "baseline",
+        value: {
+          [THREAD_SECTION_CAPABILITY]: true,
+          threadSections: [{ ...section, threadIds: order }],
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              workspaceId: project.workspaceId,
+              path: root,
+              sessionIds: expect.arrayContaining(projectRows),
+            }),
+          ]),
+        },
+      });
+    };
+    for (const frames of followers) expectBaseline(frames[0], initialOrder, [unsectioned]);
+    const sectionFrames = (frames: ReadonlyArray<{ type: string }>) =>
+      frames.filter(({ type }) => type === "threadSections");
     const persisted = await source.mappingStore.listSectionPlacements();
 
     unavailableMethod = placementsMethod;
     const page = await list(scope);
     unavailableMethod = undefined;
     expect(page.items).toContainEqual(expect.objectContaining({ sessionId: older.id }));
-    const afterScopedPage = members();
+    expect(members(), "a failed read must not unsection either external member").toEqual(expected);
     expect(workspaces.ownerOf(first)?.sessionIds).toEqual(expect.arrayContaining([first, second]));
     expect(await source.mappingStore.listSectionPlacements()).toEqual(persisted);
+    for (const frames of followers) {
+      const updates = frames.slice(1);
+      expect(sectionFrames(updates)).toEqual([]);
+      expect(updates).not.toContainEqual(
+        expect.objectContaining({ type: "remove", workspaceId: project.workspaceId }),
+      );
+      expect(updates.findLast(({ type }) => type === "upsert")).toMatchObject({
+        workspace: {
+          workspaceId: project.workspaceId,
+          sessionIds: expect.arrayContaining([older.id, unsectioned]),
+        },
+      });
+    }
 
-    const move = (sectionId: string | null) =>
+    const move = (sectionId: string | null, beforeSessionId?: string) =>
       rpc.dispatch("workspace/moveSessionToSection", {
-        args: { request: { sessionId: first, sectionId } },
+        args: {
+          request: {
+            sessionId: first,
+            sectionId,
+            ...(beforeSessionId === undefined ? {} : { beforeSessionId }),
+          },
+        },
       });
     expect(await move(section.id)).toEqual({ ok: true, value: { sectionId: section.id } });
     expect(members()).toEqual(expected);
     expect(await source.mappingStore.listSectionPlacements()).toEqual(persisted);
-    expect(afterScopedPage, "a failed read must not unsection either external member").toEqual(
-      expected,
-    );
+    for (const frames of followers) {
+      for (const frame of sectionFrames(frames))
+        expect(frame).toMatchObject({
+          [THREAD_SECTION_CAPABILITY]: true,
+          threadSections: [{ ...section, threadIds: initialOrder }],
+        });
+    }
+    const beforeMove = followers.map((frames) => frames.length);
+
+    expect(await move(section.id, head.id)).toEqual({ ok: true, value: { sectionId: section.id } });
+    const movedOrder = [first, head.id, second];
+    for (const [index, frames] of followers.entries()) {
+      expect(sectionFrames(frames.slice(beforeMove[index]))).toEqual([
+        {
+          type: "threadSections",
+          [THREAD_SECTION_CAPABILITY]: true,
+          threadSections: [{ ...section, threadIds: movedOrder }],
+        },
+      ]);
+    }
+    const browserC = await openFollower("browser-c");
+    expectBaseline(browserC[0], movedOrder, [older.id, unsectioned]);
 
     unavailableMethod = placementsMethod;
     expect((await list()).items.map(({ sessionId }) => sessionId).sort()).toEqual(
-      [...expected, pin].sort(),
+      [...expected, pin, unsectioned].sort(),
     );
     expect(members()).toEqual(expected);
 
@@ -204,6 +295,7 @@ it("keeps shared section members when a scoped page cannot confirm them", async 
     expect(members()).toEqual([head.id, second].sort());
     expect(workspaces.ownerOf(first)?.workspaceId).toBe(project.workspaceId);
   } finally {
+    for (const close of closers) close();
     await sessions.close();
     await stopFixture(viewer);
     owner.close();

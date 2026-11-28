@@ -320,3 +320,125 @@ it("exposes handoffs and updatedAtMs on demand via readSnapshot and bounds hando
     watch.close();
   }
 });
+
+it("omits deleted external handoff sources and notifies when slow on-demand official reads finish", async () => {
+  vi.useFakeTimers();
+  const deletedExternalSource = hostThreadIdSchema.parse("deleted-claude-source");
+  const survivingTarget = hostThreadIdSchema.parse("surviving-codex-target");
+  const slowOfficialSource = hostThreadIdSchema.parse("slow-official-source");
+  const slowExternalTarget = hostThreadIdSchema.parse("slow-external-target");
+  const codex = harnessIdSchema.parse("codex");
+  const claude = harnessIdSchema.parse("claude");
+  const events = new ClientChannelEvents();
+  const observedEvents: Array<{ type: string; method?: string }> = [];
+  const stopEvents = events.subscribe((event) => {
+    observedEvents.push(
+      event.type === "changed" ? { type: event.type, method: event.method } : { type: event.type },
+    );
+  });
+
+  let releaseOfficialRead!: () => void;
+  const readOfficialCalls: string[] = [];
+  const watch = new ThreadTreeWatch({
+    codexHome: path.resolve("fixture-codex-home"),
+    tree: { read: async () => ({ parents: {} }) },
+    repository: {
+      listSummaries: async () => [
+        {
+          formatVersion: 1,
+          state: "ready",
+          hostThreadId: slowExternalTarget,
+          harnessId: claude,
+          cwd: "/workspace",
+          title: "Target thread",
+          createdAt: "2026-11-28T08:00:00.000Z",
+          updatedAt: "2026-11-28T08:00:00.000Z",
+          archived: false,
+          transportModelId: "codexhost/claude",
+          ephemeral: false,
+          revision: 1,
+          historyMode: "paginated",
+        },
+      ],
+      listThreadHandoffs: async () => [
+        {
+          targetThreadId: survivingTarget,
+          handoff: {
+            sourceThreadId: deletedExternalSource,
+            sourceHarnessId: claude,
+            targetHarnessId: codex,
+            createdAtMs: 1_764_300_000_000,
+          },
+        },
+        {
+          targetThreadId: slowExternalTarget,
+          handoff: {
+            sourceThreadId: slowOfficialSource,
+            sourceHarnessId: codex,
+            targetHarnessId: claude,
+            createdAtMs: 1_764_300_001_000,
+          },
+        },
+      ],
+    },
+    events,
+    localStatus: () => undefined,
+    waiting: () => false,
+    readOfficial: async (id) => {
+      readOfficialCalls.push(id);
+      await new Promise<void>((resolve) => {
+        releaseOfficialRead = resolve;
+      });
+      return {
+        result: {
+          thread: {
+            id,
+            name: "Delayed official title",
+            status: { type: "idle" },
+            updatedAt: 1_764_290_000,
+          },
+        },
+      };
+    },
+    send: async () => {},
+    diagnose: (error) => {
+      throw error;
+    },
+  });
+
+  try {
+    const firstPromise = watch.readSnapshot();
+    await vi.advanceTimersByTimeAsync(250);
+    const first = threadTreeSnapshotSchema.parse(await firstPromise);
+
+    // Deleted external source must not appear as a ghost Codex node or trigger readOfficial.
+    expect(first.handoffs).toEqual({
+      [slowExternalTarget]: { sourceThreadId: slowOfficialSource, createdAtMs: 1_764_300_001_000 },
+    });
+    expect(first.nodes[deletedExternalSource]).toBeUndefined();
+    expect(readOfficialCalls).toEqual([slowOfficialSource]);
+    expect(first.nodes[slowOfficialSource]).toMatchObject({ harnessId: codex, status: "unknown" });
+
+    // Once the slow read finishes past the 200ms budget, emit tree/changed so Web can refresh.
+    releaseOfficialRead();
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(observedEvents).toContainEqual({
+      type: "changed",
+      method: "codexhost/thread/tree/changed",
+    });
+
+    const refreshed = threadTreeSnapshotSchema.parse(await watch.readSnapshot());
+    expect(refreshed.nodes[slowOfficialSource]).toMatchObject({
+      harnessId: codex,
+      title: "Delayed official title",
+      status: "idle",
+      updatedAtMs: 1_764_290_000_000,
+    });
+  } finally {
+    stopEvents();
+    watch.close();
+    vi.useRealTimers();
+  }
+});

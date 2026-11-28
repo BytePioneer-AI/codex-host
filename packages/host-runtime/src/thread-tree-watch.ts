@@ -367,7 +367,21 @@ export class ThreadTreeWatch {
       this.options.repository.listSummaries(),
       this.options.repository.listThreadHandoffs?.() ?? Promise.resolve([]),
     ]);
-    const handoffRecords: ThreadTreeHandoffEdgeInput[] = [...storedHandoffs];
+    const external = new Map(records.map((record) => [String(record.hostThreadId), record]));
+    const isDeletedExternalEndpoint = (id: string, harnessId: string | undefined): boolean =>
+      harnessId !== undefined &&
+      harnessId !== "codex" &&
+      !external.has(id) &&
+      !this.options.shared?.knowsTreeOwner(id) &&
+      !(this.#owner && Object.hasOwn(this.#owner.nodes, id));
+    const handoffRecords: ThreadTreeHandoffEdgeInput[] = storedHandoffs.filter((entry) => {
+      const target = String(entry.targetThreadId);
+      const source = String(entry.handoff.sourceThreadId);
+      return (
+        !isDeletedExternalEndpoint(source, entry.handoff.sourceHarnessId) &&
+        !isDeletedExternalEndpoint(target, entry.handoff.targetHarnessId)
+      );
+    });
     if (this.#owner?.handoffs) {
       const seen = new Set(handoffRecords.map((entry) => String(entry.targetThreadId)));
       for (const [target, info] of Object.entries(this.#owner.handoffs)) {
@@ -382,24 +396,40 @@ export class ThreadTreeWatch {
       }
     }
     const bounded = limitTreeEdges(parents, handoffRecords);
-    const external = new Map(records.map((record) => [String(record.hostThreadId), record]));
     if (!this.options.externalOnly) {
       const candidates = [...bounded.ids].filter(
         (id) =>
           !external.has(id) && !this.options.shared?.knowsTreeOwner(id) && !this.#read.has(id),
       );
-      const reads = this.#readInitial(candidates, onDemand);
+      let budgetExceeded = false;
+      let lateUpdatedId: string | undefined;
+      const reads = this.#readInitial(candidates, onDemand, (id) => {
+        if (budgetExceeded) lateUpdatedId = id;
+      });
       if (initial) {
         let timer: NodeJS.Timeout | undefined;
         try {
           await Promise.race([
             reads,
             new Promise<void>((resolve) => {
-              timer = setTimeout(resolve, INITIAL_REPLY_BUDGET_MS);
+              timer = setTimeout(() => {
+                budgetExceeded = true;
+                resolve();
+              }, INITIAL_REPLY_BUDGET_MS);
             }),
           ]);
         } finally {
           clearTimeout(timer);
+        }
+        if (onDemand && budgetExceeded) {
+          void reads.then(
+            () => {
+              if (lateUpdatedId && this.#subscriptions.size === 0 && !this.#closed) {
+                this.options.events.changed(lateUpdatedId, "codexhost/thread/tree/changed");
+              }
+            },
+            () => undefined,
+          );
         }
       }
     }
@@ -467,7 +497,11 @@ export class ThreadTreeWatch {
     if (resolvedDirectory !== null && compare(resolvedDirectory) === target) return true;
   }
 
-  async #readInitial(ids: string[], allowEmptySubscriptions = false): Promise<void> {
+  async #readInitial(
+    ids: string[],
+    allowEmptySubscriptions = false,
+    onUpdated?: (id: string) => void,
+  ): Promise<void> {
     const generation = this.#officialGeneration;
     const batch = ids.slice(0, INITIAL_READ_LIMIT);
     const count = Math.max(0, INITIAL_READ_CONCURRENCY - this.#readsInFlight);
@@ -503,6 +537,7 @@ export class ThreadTreeWatch {
               ...before,
               status: before?.status ?? officialStatus(thread.status),
             });
+            onUpdated?.(id);
             if (this.#subscriptions.size > 0) this.changed();
           }
         } finally {

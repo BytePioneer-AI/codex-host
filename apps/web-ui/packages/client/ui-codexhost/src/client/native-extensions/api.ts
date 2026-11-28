@@ -44,7 +44,19 @@ interface SessionSummaryLike {
 interface SessionListStateLike {
   readonly byId: Readonly<Record<string, SessionSummaryLike | undefined>>;
   readonly projectionsBySession?: Readonly<
-    Record<string, { readonly values?: Readonly<{ readonly remoteHost?: unknown }> } | undefined>
+    Record<
+      string,
+      | {
+          readonly values?: Readonly<{
+            readonly remoteHost?: unknown;
+            readonly harnessIdentity?: Readonly<{
+              readonly id: string;
+              readonly name: string;
+            }> | null;
+          }>;
+        }
+      | undefined
+    >
   >;
 }
 
@@ -678,12 +690,20 @@ export function createWebExtensionApi(
         if (matchedGroup !== undefined) {
           return { name: matchedGroup.name, icon: iconFor(matchedGroup.id) };
         }
-        const sessions = getSessionsService(ctx)?.list.getSnapshot().byId;
-        if (sessions !== undefined) {
-          for (const row of Object.values(sessions)) {
+        const list = getSessionsService(ctx)?.list.getSnapshot();
+        if (list !== undefined) {
+          for (const row of Object.values(list.byId)) {
             const identity = row?.projectionValues?.harnessIdentity;
             if (identity?.id === normalized) {
               return { name: identity.name, icon: iconFor(identity.id) };
+            }
+          }
+          if (list.projectionsBySession !== undefined) {
+            for (const entry of Object.values(list.projectionsBySession)) {
+              const identity = entry?.values?.harnessIdentity;
+              if (identity?.id === normalized) {
+                return { name: identity.name, icon: iconFor(identity.id) };
+              }
             }
           }
         }

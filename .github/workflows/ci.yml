@@ -224,15 +224,15 @@ jobs:
         run: npm run test:web
 
   # Release and repository maintenance require these existing Check job names.
-  # Native Rust checks and packaging smoke tests run when Rust/release files change
-  # or on manual dispatch; TS unit tests run once on Linux to avoid cross-OS timing noise.
+  # Native Rust checks and packaging smoke tests run on main, manual dispatch, or
+  # PRs touching Rust/release files; cross-OS TS tests run on main and manual dispatch.
   check:
     name: Check ${{ matrix.os }}
     needs: changes
     if: >-
       needs.changes.outputs.skip != 'true' &&
       needs.changes.outputs.docs_only != 'true' &&
-      (needs.changes.outputs.rust == 'true' || github.event_name == 'workflow_dispatch')
+      (needs.changes.outputs.rust == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -269,6 +269,20 @@ jobs:
       - name: Check Rust formatting
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
+
+      # Run OS-sensitive TS tests on macOS/Windows for main pushes and manual dispatch.
+      - name: Test TypeScript (cross-platform)
+        if: runner.os != 'Linux' && github.event_name != 'pull_request'
+        env:
+          CODEXHOST_TEST_SCOPE: platform
+        run: >
+          npm run build:typescript &&
+          npx vitest run --config tests/vitest.config.js
+          --exclude 'packages/repository-automation/test/**'
+          --exclude 'packages/shared-contracts/test/**'
+          --exclude 'packages/renderer-extension/test/**'
+          --exclude 'tools/gate-claude-code/run.test.mjs'
+          && npm run test:web
 
       # Real Launcher + Node service, with isolated HOME/data and fake Harnesses.
       - name: Test independent Host lifecycle
@@ -309,7 +323,7 @@ jobs:
     if: >-
       needs.changes.outputs.skip != 'true' &&
       needs.changes.outputs.docs_only != 'true' &&
-      (needs.changes.outputs.rust == 'true' || (github.event_name == 'workflow_dispatch' && inputs.platform == 'all'))
+      (needs.changes.outputs.rust == 'true' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.platform == 'all'))
     runs-on: ubuntu-22.04-arm
     steps:
       - name: Checkout

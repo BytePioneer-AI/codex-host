@@ -282,7 +282,9 @@ fn help_prints_usage_to_stdout_and_succeeds() {
             "codexhost host info|list ...",
             "codexhost project list ...",
             "codexhost harness list|inspect ...",
-            "codexhost thread send|cancel|read|wait|watch|watches|list|file ...",
+            "codexhost thread send|cancel|read|wait|answer|watch|watches|list|file ...",
+            "codexhost client add|list|set|remove ...",
+            "codexhost events ...",
             "codexhost broker install|status|stop|uninstall",
         ] {
             assert!(stdout.contains(command), "{argument}: {command}");

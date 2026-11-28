@@ -997,7 +997,7 @@ describe("Renderer fixed Model request client", () => {
     await expect(client.checkUpdate()).resolves.toBeNull();
   });
 
-  it("rejects update results that expose privileged artifact data", async () => {
+  it("strips undeclared privileged artifact fields from update results", async () => {
     const sendRequest = vi.fn(async () => ({
       currentVersion: "1.2.2",
       installation: "npm",
@@ -1013,7 +1013,9 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Synthetic update client was not created");
 
-    await expect(client.checkUpdate()).rejects.toThrow();
+    const result = await client.checkUpdate();
+    expect(result).not.toBeNull();
+    expect(result).not.toHaveProperty("artifactUrl");
   });
 
   it("rejects a response that leaks undeclared native Model fields", async () => {

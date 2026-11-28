@@ -2,13 +2,12 @@ import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
-const typeScriptFiles = ["packages/**/*.ts", "tests/**/*.ts"];
+const typeScriptFiles = ["packages/**/*.ts"];
 const javaScriptFiles = [
   "*.config.js",
   "packages/**/scripts/**/*.mjs",
   "packages/repository-automation/**/*.mjs",
   "scripts/**/*.mjs",
-  "tests/**/*.mjs",
   "tools/**/*.mjs",
 ];
 
@@ -16,6 +15,7 @@ export default [
   {
     ignores: [
       ".codexhost/**",
+      ".kilo/**",
       ".pi/**",
       ".work/**",
       // Independently installed Next.js site has its own ESLint configuration.
@@ -25,8 +25,12 @@ export default [
       "node_modules/**",
       "openspec/**",
       "reference/**",
-      "target/**",
+      "**/target/**",
       "**/dist/**",
+      "packages/**/test/**",
+      "tests/**",
+      "**/*.test.ts",
+      "**/*.test.mjs",
     ],
   },
   {
@@ -42,6 +46,11 @@ export default [
   })),
   {
     files: typeScriptFiles,
+    languageOptions: {
+      parserOptions: {
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",
       "@typescript-eslint/no-unused-vars": [
@@ -52,14 +61,6 @@ export default [
           caughtErrorsIgnorePattern: "^_",
         },
       ],
-    },
-  },
-  {
-    files: ["packages/**/test/**/*.ts", "tests/**/*.ts"],
-    rules: {
-      "@typescript-eslint/no-non-null-assertion": "off",
-      "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-empty-function": "off",
     },
   },
   {

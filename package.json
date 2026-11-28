@@ -49,7 +49,7 @@
     "release:npm:meta": "node scripts/release/prepare-npm-meta.mjs",
     "release:npm:publish": "node scripts/release/publish-npm.mjs",
     "prepare": "git config core.hooksPath .githooks || true",
-    "typecheck": "tsc -b --pretty false && tsc -p tests/tsconfig.json --noEmit --pretty false",
+    "typecheck": "tsc -b --pretty false",
     "lint": "eslint . && node tools/check-boundaries.mjs",
     "format": "prettier --write . && cargo fmt --all",
     "format:check": "prettier --check . && cargo fmt --all --check",

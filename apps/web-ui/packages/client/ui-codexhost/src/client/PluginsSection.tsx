@@ -158,6 +158,7 @@ export function PluginsSection({
           selectContentLocale={selectContentLocale}
           selectedPage={selectedPage}
           selectPage={navigation.selectPage}
+          hasPageTabs={hasTabs}
           onUpdatesChange={navigation.setHasUpdates}
         />
       </div>

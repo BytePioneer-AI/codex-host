@@ -24,6 +24,7 @@ import {
   IconNewChatOutlineRegular,
   IconPinFillRegular,
   IconPinOutlineRegular,
+  IconQueueOutlineRegular,
   IconTrashOutlineRegular,
   IconUnarchiveOutlineRegular,
   Menu,
@@ -44,6 +45,7 @@ import { SessionRowContent } from "./SessionRowContent.tsx";
 import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
+import { isRemoteFallbackWorkspace } from "./host-scope-filter.ts";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadTreeSummary, useThreadChildGroup } from "./ThreadTreeControls.tsx";
 import { ThreadTreeRing } from "./ThreadTreeRing.tsx";
@@ -228,8 +230,15 @@ export function ProjectRowItem({
         ];
   const actions = group.remote ? undefined : suppliedActions;
   const drag = suppliedDrag;
-  // The ungrouped bucket has no workspace title: its label is dictionary copy.
-  const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
+  const isRemoteFallback = isRemoteFallbackWorkspace(row);
+  // The ungrouped bucket has no workspace title; remote fallback groups use the
+  // localized "Uncategorized" label instead of repeating the remote host name.
+  const label =
+    row.workspaceId === undefined
+      ? t("group.ungrouped")
+      : isRemoteFallback
+        ? t("group.remoteOtherSessions")
+        : row.label;
   const remoteColor =
     row.remote !== undefined
       ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
@@ -291,7 +300,13 @@ export function ProjectRowItem({
       onDragEnd={drag?.end}
     >
       <span className={clsx(css.slot, row.expanded && css.folderExpanded)}>
-        {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
+        {isRemoteFallback ? (
+          <IconQueueOutlineRegular size={16} />
+        ) : row.expanded ? (
+          <IconFolderOpenRegular />
+        ) : (
+          <IconFolderCloseRegular />
+        )}
         {showRemoteIndicator && row.remote && remoteColor !== undefined && (
           <RemoteFolderGlobe color={remoteColor} state={row.remote.state} />
         )}
@@ -364,7 +379,7 @@ export function ProjectRowItem({
             }
           />
         )}
-        {(!row.remote || (row.remote.state === "connected" && !!group.cwd)) && (
+        {(!row.remote || (row.remote.state === "connected" && !isRemoteFallback)) && (
           <Tooltip
             label={t("actions.newSession")}
             shortcutKeys={newShortcut?.keys}
@@ -414,7 +429,7 @@ export function ProjectRowItem({
       anchor={ownRow}
       content={
         <WorkspaceHoverContent
-          label={row.label}
+          label={label}
           cwd={cwd === undefined ? undefined : abbreviateHomePath(cwd, home)}
           createdAt={row.createdAt}
           t={t}

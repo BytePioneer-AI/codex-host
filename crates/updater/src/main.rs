@@ -85,13 +85,22 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
         write_status(&request, "restarting", None, service_stop_output.as_deref())?;
         restart::restore(&request, Some(&request.version))?;
         write_status(&request, "succeeded", None, service_stop_output.as_deref())?;
+        if request.restart_desktop_shell
+            && let Err(shell_error) = restart::relaunch_desktop_shell(&request)
+        {
+            eprintln!("codexhost updater: desktop shell relaunch failed: {shell_error}");
+        }
         Ok(())
     })();
     if let Err(error) = &result {
         let mut message = error.to_string();
+        let mut recovered = false;
         if stopping_started {
             match restart::restore(&request, None) {
-                Ok(()) => message.push_str("; service recovery succeeded"),
+                Ok(()) => {
+                    recovered = true;
+                    message.push_str("; service recovery succeeded");
+                }
                 Err(recovery) => {
                     message.push_str(&format!("; service recovery failed: {recovery}"))
                 }
@@ -103,6 +112,12 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
             Some(&message),
             service_stop_output.as_deref(),
         );
+        if recovered
+            && request.restart_desktop_shell
+            && let Err(shell_error) = restart::relaunch_desktop_shell(&request)
+        {
+            eprintln!("codexhost updater: desktop shell recovery failed: {shell_error}");
+        }
     }
     result
 }
@@ -163,6 +178,7 @@ mod tests {
             wait_executable: wrong_executable.clone(),
             runtime_descriptor_path: directory.join("runtime.json"),
             restart_target: Default::default(),
+            restart_desktop_shell: false,
             data_directory: None,
             service_managed: false,
             status_path: status_path.clone(),

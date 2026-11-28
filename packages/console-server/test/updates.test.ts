@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 
+import { updateCheckResultSchema } from "@codexhost/shared-contracts";
 import { createBackgroundUpdateManager } from "@codexhost/update-manager";
 import type * as UpdateManager from "@codexhost/update-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,10 +15,17 @@ import { createConsoleUpdates, type ConsoleUpdateTarget } from "../src/updates.j
 const npmRegistry = vi.hoisted(() => ({
   installable: vi.fn(async (): Promise<boolean> => true),
   prefetch: vi.fn(async (): Promise<void> => {}),
-  latest: vi.fn(async (): Promise<UpdateManager.CodexhostLatestRelease | null> => null),
+  latest: vi.fn(
+    async (
+      _nodePath: string,
+      _npmCliPath: string,
+    ): Promise<UpdateManager.CodexhostLatestRelease | null> => null,
+  ),
+  realLatest: undefined as typeof UpdateManager.fetchLatestNpmRelease | undefined,
 }));
 vi.mock("@codexhost/update-manager", async (importOriginal) => {
   const original = await importOriginal<typeof UpdateManager>();
+  npmRegistry.realLatest = original.fetchLatestNpmRelease;
   return {
     ...original,
     createNpmReleaseAvailability: () => ({ installable: npmRegistry.installable }),
@@ -123,11 +131,13 @@ describe("console updates", () => {
 
   it("falls back to the npm registry when GitHub Release discovery fails", async () => {
     const { target, environment } = await npmLayout();
-    npmRegistry.latest.mockResolvedValueOnce({
-      ...release,
-      releaseNotes: null,
-      releaseNotesUrl: "",
-    });
+    npmRegistry.latest.mockImplementationOnce((nodePath, npmCliPath) =>
+      npmRegistry.realLatest!(nodePath, npmCliPath, async () => ({
+        code: 0,
+        stdout: "1.1.0\n",
+        stderr: "",
+      })),
+    );
     const updates = createConsoleUpdates({
       onHandedOff: vi.fn(),
       environment,
@@ -136,19 +146,83 @@ describe("console updates", () => {
         throw new Error("GitHub latest Release request failed with HTTP 403");
       },
     });
-    await expect(updates.check(target)).resolves.toMatchObject({
+    const result = await updates.check(target);
+    expect(updateCheckResultSchema.parse(result)).toMatchObject({
       currentVersion: "1.0.0",
       installation: "npm",
       latestVersion: "1.1.0",
       updateAvailable: true,
       installationAvailable: true,
       releaseNotes: null,
-      releaseNotesUrl: "",
+      releaseNotesUrl: null,
       error: null,
     });
     expect(npmRegistry.latest).toHaveBeenCalledWith(
       environment.CODEXHOST_NPM_NODE_PATH,
       environment.CODEXHOST_NPM_CLI_PATH,
+    );
+  });
+
+  it("discovers npm runtime paths from a global installation when CODEXHOST_NPM_* env vars are absent", async () => {
+    const prefix = path.join(root, "prefix");
+    const modules = path.join(prefix, "lib", "node_modules");
+    const packageRoot = path.join(modules, "@codexhost", "cli-darwin-arm64");
+    const appDirectory = path.join(packageRoot, "app");
+    const nodePath = path.join(prefix, "bin", "node");
+    const npmCliPath = path.join(modules, "npm", "bin", "npm-cli.js");
+    const launcherPath = path.join(modules, "@codexhost", "cli", "bin", "codexhost.js");
+    await Promise.all([
+      mkdir(appDirectory, { recursive: true }),
+      mkdir(path.join(packageRoot, "libexec"), { recursive: true }),
+      mkdir(path.dirname(nodePath), { recursive: true }),
+      mkdir(path.dirname(npmCliPath), { recursive: true }),
+      mkdir(path.dirname(launcherPath), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(path.join(packageRoot, "libexec", "codexhost-updater"), "updater"),
+      writeFile(nodePath, "node"),
+      writeFile(npmCliPath, "npm"),
+      writeFile(launcherPath, "launcher"),
+    ]);
+    npmRegistry.latest.mockImplementationOnce((node, npmCli) =>
+      npmRegistry.realLatest!(node, npmCli, async () => ({
+        code: 0,
+        stdout: "1.1.0\n",
+        stderr: "",
+      })),
+    );
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment: { HOME: path.join(root, "home") },
+      platform: "darwin",
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => {
+        throw new Error("GitHub latest Release request failed with HTTP 403");
+      },
+    });
+    const result = await updates.check({
+      distribution: {
+        schemaVersion: 1,
+        version: "1.0.0",
+        distribution: "npm",
+        target: "macos-arm64",
+      },
+      appDirectory,
+      runtimeDescriptorPath: path.join(root, "runtime", "desktop-runtime-v1.json"),
+      codexhostRunning: false,
+    });
+    expect(updateCheckResultSchema.parse(result)).toMatchObject({
+      currentVersion: "1.0.0",
+      installation: "npm",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      installationAvailable: true,
+      releaseNotesUrl: null,
+      error: null,
+    });
+    expect(npmRegistry.latest).toHaveBeenCalledWith(
+      await realpath(nodePath),
+      await realpath(npmCliPath),
     );
   });
 

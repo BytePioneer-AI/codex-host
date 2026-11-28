@@ -418,15 +418,9 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
       uninstallHostExtension,
     }));
 
-    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (2)"));
-    const marketTab = must(
-      descendants(mounted.content).find(
-        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
-      ),
-    );
-    marketTab.dispatch("click");
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("极光配色"));
 
-    // Marketplace shows both cross-platform and Web+Backend entries with capability badges.
+    // Marketplace opens directly on All showing both cross-platform and Web+Backend entries.
     const findMarketCards = () =>
       descendants(mounted.content).filter(
         (el) => el.tagName === "article" && el.dataset.cardKind === "marketplace",
@@ -624,12 +618,7 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
       ),
     }));
 
-    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (2)"));
-    must(
-      descendants(mounted.content).find(
-        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
-      ),
-    ).dispatch("click");
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("热门插件"));
 
     const zeroCard = must(
       descendants(mounted.content).find(
@@ -738,12 +727,7 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
       installHostExtension,
     }));
 
-    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (2)"));
-    must(
-      descendants(mounted.content).find(
-        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
-      ),
-    ).dispatch("click");
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("极光配色"));
 
     const findButton = (action: string, id: string) =>
       must(
@@ -884,6 +868,11 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
     }));
 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("已安装 (2)"));
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "installed",
+      ),
+    ).dispatch("click");
 
     const findSwitch = (id: string) => {
       const card = must(

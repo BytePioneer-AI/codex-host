@@ -13,6 +13,7 @@ import {
   DEFAULT_HOST_EXTENSION_STATS_URL,
   discoverHostExtensions,
   ExtensionDownloadError,
+  fetchCachedCatalogIcon,
   fetchHostExtensionCatalog,
   HostExtensionInstallConflict,
   HostExtensionRevisionConflict,
@@ -751,4 +752,47 @@ it("persists one-time default extension seed markers invisibly to extension disc
     extensions: [],
     diagnostics: [],
   });
+});
+
+it("caches catalog icons to disk with signature validation and supports stripping screenshots from list discovery", async () => {
+  await installHostExtension({
+    dataDir,
+    source: zipSource(
+      manifest("with-shots", { page, icon: "icon.png", screenshots: ["shot.png"] }),
+      {
+        [page.entry]: script,
+        [page.style]: "body {}",
+        "icon.png": png,
+        "shot.png": png,
+      },
+    ),
+  });
+  const slim = await discoverHostExtensions(dataDir, { includeScreenshots: false });
+  const entry = slim.extensions.find((item) => item.id === "with-shots");
+  expect(entry).toMatchObject({
+    state: "valid",
+    iconDataUrl: `data:image/png;base64,${png.toString("base64")}`,
+  });
+  expect(entry && entry.state === "valid" ? entry.screenshotDataUrls : undefined).toBeUndefined();
+
+  const iconUrl = `https://cdn.example.com/icons/${Date.now()}-valid.png`;
+  const badIconUrl = `https://cdn.example.com/icons/${Date.now()}-bad.png`;
+  let fetches = 0;
+  vi.stubGlobal("fetch", async (request: string) => {
+    fetches += 1;
+    if (request === iconUrl) return new Response(Uint8Array.from(png));
+    if (request === badIconUrl) return new Response("not-a-png");
+    throw new Error(`Unexpected URL ${request}`);
+  });
+
+  const first = await fetchCachedCatalogIcon({ dataDir, iconUrl });
+  expect(first.mimeType).toBe("image/png");
+  expect(first.bytes.equals(png)).toBe(true);
+  const second = await fetchCachedCatalogIcon({ dataDir, iconUrl });
+  expect(second.bytes.equals(png)).toBe(true);
+  expect(fetches).toBe(1);
+
+  await expect(fetchCachedCatalogIcon({ dataDir, iconUrl: badIconUrl })).rejects.toThrow(
+    "Unsupported catalog icon image signature",
+  );
 });

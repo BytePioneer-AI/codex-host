@@ -5,7 +5,15 @@ import type {
 } from "@codexhost/shared-contracts";
 
 export interface DesktopExtensionsMessages {
+  readonly subtitle: string;
   readonly moreActions: string;
+  readonly filterButton: string;
+  readonly tabAll: string;
+  readonly sectionFeatured: string;
+  readonly sectionCommunity: string;
+  readonly sectionInstalled: string;
+  readonly refreshMarket: string;
+  readonly platformWebOnlyShort: string;
   readonly contentLocaleLabel: string;
   readonly contentLocaleFollowSystem: string;
   readonly contentLocaleZh: string;
@@ -187,7 +195,15 @@ export interface DesktopExtensionsMessages {
 }
 
 export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze({
+  subtitle: "Themes, widgets, pages, and tools for Codex Desktop and CH Web.",
   moreActions: "More actions",
+  filterButton: "Filter",
+  tabAll: "All",
+  sectionFeatured: "Featured",
+  sectionCommunity: "Community",
+  sectionInstalled: "Installed",
+  refreshMarket: "Refresh catalog",
+  platformWebOnlyShort: "Web only",
   contentLocaleLabel: "Extension language",
   contentLocaleFollowSystem: "Follow system",
   contentLocaleZh: "简体中文",
@@ -266,7 +282,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   pageLoadFailed: "{message}",
   pageClosedDisabled: "Closed the extension page because the plugin was disabled or removed.",
   pageNoBackend: "Extension “{id}” does not declare a backend.",
-  searchPlaceholder: "Search name, author, category, or description…",
+  searchPlaceholder: "Search plugins…",
   searchLabel: "Search plugins",
   clearSearch: "Clear search",
   noMatchesTitle: "No matching plugins",
@@ -417,7 +433,15 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
 });
 
 export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze({
+  subtitle: "为 Codex Desktop 与 CH Web 打造的主题、挂件、独立页面与效率工具。",
   moreActions: "更多操作",
+  filterButton: "筛选",
+  tabAll: "全部",
+  sectionFeatured: "精选推荐",
+  sectionCommunity: "社区扩展",
+  sectionInstalled: "已安装",
+  refreshMarket: "刷新市场目录",
+  platformWebOnlyShort: "仅 Web 端",
   contentLocaleLabel: "插件内容语言",
   contentLocaleFollowSystem: "跟随系统",
   contentLocaleZh: "简体中文",
@@ -493,7 +517,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   pageLoadFailed: "{message}",
   pageClosedDisabled: "插件已被禁用或卸载，已关闭独立页面。",
   pageNoBackend: "插件“{id}”未声明后台服务。",
-  searchPlaceholder: "搜索名称、作者、分类或描述…",
+  searchPlaceholder: "搜索插件…",
   searchLabel: "搜索插件",
   clearSearch: "清除搜索",
   noMatchesTitle: "未找到匹配的插件",

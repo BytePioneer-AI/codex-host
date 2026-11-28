@@ -8,6 +8,7 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 import { createExtensionPlatformBadgeElement } from "./desktop-extensions-card.js";
+import type { DesktopCatalogIconLoader } from "./desktop-extensions-catalog-icons.js";
 import { renderSafeMarkdown } from "./desktop-extensions-markdown.js";
 import {
   blockedToggleReason,
@@ -79,6 +80,15 @@ export interface DesktopExtensionDetailSettingsClient {
   ): Promise<HostExtensionSettings>;
 }
 
+export interface DesktopExtensionDetailAssetClient {
+  readAsset(input: {
+    id: string;
+    activationId?: string | undefined;
+    digest?: string | undefined;
+    path: string;
+  }): Promise<{ mimeType: string; base64: string; digest: string }>;
+}
+
 function fieldDefaultValue(field: DesktopExtensionSettingField): JsonValue {
   if (field.default !== undefined) return field.default;
   switch (field.type) {
@@ -141,6 +151,8 @@ export function createDesktopExtensionDetailModal(options: {
   readonly signal: AbortSignal;
   readonly messages: RendererSettingsMessages;
   readonly settingsClient?: DesktopExtensionDetailSettingsClient | undefined;
+  readonly assetClient?: DesktopExtensionDetailAssetClient | undefined;
+  readonly catalogIconLoader?: DesktopCatalogIconLoader | undefined;
   readonly onSettingsSaved?:
     ((extensionId: string, values: JsonObject, revision: number) => void) | undefined;
   readonly onToggle: (item: HostExtensionListItem, enable: boolean) => void;
@@ -156,6 +168,8 @@ export function createDesktopExtensionDetailModal(options: {
     signal,
     messages,
     settingsClient,
+    assetClient,
+    catalogIconLoader,
     onSettingsSaved,
     onToggle,
     onInstall,
@@ -174,6 +188,9 @@ export function createDesktopExtensionDetailModal(options: {
   let renderedDetailsKey = "";
   let renderedSettingsKey = "";
   let settingsLoadToken = 0;
+  let screenshotsLoadToken = 0;
+  let fetchedScreenshotsKey = "";
+  let fetchedLocalScreenshots: readonly string[] = [];
   let confirmingUninstall = false;
   let currentItem: HostExtensionListItem | undefined;
   let currentCatalogEntry: HostExtensionCatalogEntry | undefined;
@@ -365,14 +382,12 @@ export function createDesktopExtensionDetailModal(options: {
     syncThumbPressed();
   };
 
-  const renderScreenshots = (
+  const renderScreenshotList = (
     extensionId: string,
-    installed: HostExtensionListItem | undefined,
-    catalogEntry: HostExtensionCatalogEntry | undefined,
+    urls: readonly string[],
     displayName: string,
   ): void => {
     if (!screenshotsSection || !galleryGrid) return;
-    const urls = safeScreenshotUrls(installed, catalogEntry);
     currentScreenshots = urls;
     currentDisplayName = displayName;
     if (urls.length === 0) {
@@ -427,6 +442,67 @@ export function createDesktopExtensionDetailModal(options: {
     }
     galleryGrid.replaceChildren(...thumbs);
     if (activeScreenshotIndex !== null) syncLightbox();
+  };
+
+  const renderScreenshots = (
+    extensionId: string,
+    installed: HostExtensionListItem | undefined,
+    catalogEntry: HostExtensionCatalogEntry | undefined,
+    displayName: string,
+  ): void => {
+    if (!screenshotsSection || !galleryGrid) return;
+    const inlineLocal =
+      installed?.state === "valid" && (installed.screenshotDataUrls?.length ?? 0) > 0;
+    const manifestPaths =
+      installed?.state === "valid" ? (installed.manifest.screenshots ?? []) : [];
+    const fetchKey =
+      !inlineLocal && manifestPaths.length > 0 && installed?.state === "valid"
+        ? `${installed.id}\0${installed.activationId}\0${installed.digest}\0${manifestPaths.join("\0")}`
+        : "";
+
+    if (fetchKey && fetchedScreenshotsKey === fetchKey && fetchedLocalScreenshots.length > 0) {
+      renderScreenshotList(extensionId, fetchedLocalScreenshots, displayName);
+      return;
+    }
+
+    renderScreenshotList(extensionId, safeScreenshotUrls(installed, catalogEntry), displayName);
+
+    if (
+      fetchKey &&
+      assetClient &&
+      installed?.state === "valid" &&
+      fetchedScreenshotsKey !== fetchKey
+    ) {
+      fetchedScreenshotsKey = fetchKey;
+      fetchedLocalScreenshots = [];
+      const token = ++screenshotsLoadToken;
+      void Promise.all(
+        manifestPaths.map((assetPath) =>
+          assetClient
+            .readAsset({
+              id: installed.id,
+              activationId: installed.activationId,
+              digest: installed.digest,
+              path: assetPath,
+            })
+            .then(({ mimeType, base64 }) =>
+              /^image\/(?:png|jpeg|webp)$/u.test(mimeType)
+                ? `data:${mimeType};base64,${base64}`
+                : null,
+            )
+            .catch(() => null),
+        ),
+      ).then((loaded) => {
+        if (token !== screenshotsLoadToken || signal.aborted || openExtensionId !== extensionId) {
+          return;
+        }
+        const validUrls = loaded.filter((value): value is string => value !== null);
+        if (validUrls.length > 0) {
+          fetchedLocalScreenshots = validUrls;
+          renderScreenshotList(extensionId, validUrls, displayName);
+        }
+      });
+    }
   };
 
   const renderInlineSettings = (
@@ -1019,15 +1095,29 @@ export function createDesktopExtensionDetailModal(options: {
     const categories =
       (installed?.state === "valid" ? installed.manifest.categories : undefined) ??
       catalogEntry?.categories;
-    const iconUrl = resolveInstalledExtensionIconUrl(installed, catalogEntry);
+    const localIconUrl = installed?.state === "valid" ? installed.iconDataUrl : undefined;
+    const cachedProxyIcon =
+      !localIconUrl && catalogEntry?.icon && catalogIconLoader
+        ? catalogIconLoader.getCached(catalogEntry)
+        : undefined;
+    const iconUrl = cachedProxyIcon ?? resolveInstalledExtensionIconUrl(installed, catalogEntry);
+    const shouldLoadViaRpc =
+      !localIconUrl &&
+      !cachedProxyIcon &&
+      Boolean(catalogEntry?.icon) &&
+      Boolean(catalogIconLoader?.isAvailable());
     const primaryIconCategory = resolveExtensionIconCategory(categories);
-    const iconKey = `${extensionId}\0${iconUrl ?? ""}\0${primaryIconCategory}`;
+    const iconKey = `${extensionId}\0${iconUrl ?? ""}\0${primaryIconCategory}\0${String(shouldLoadViaRpc)}`;
     if (iconKey !== renderedIconKey) {
       renderedIconKey = iconKey;
       iconSlot.replaceChildren(
         createExtensionIconElement({
           document,
           iconUrl,
+          resolveIconUrl:
+            shouldLoadViaRpc && catalogEntry && catalogIconLoader
+              ? () => catalogIconLoader.load(catalogEntry)
+              : undefined,
           categories,
           size: "detail",
           alt: displayName,
@@ -1273,6 +1363,9 @@ export function createDesktopExtensionDetailModal(options: {
     signal.removeEventListener("abort", cleanup);
     closeLightbox();
     settingsLoadToken += 1;
+    screenshotsLoadToken += 1;
+    fetchedScreenshotsKey = "";
+    fetchedLocalScreenshots = [];
     const previous = dialog;
     dialog = null;
     openExtensionId = null;

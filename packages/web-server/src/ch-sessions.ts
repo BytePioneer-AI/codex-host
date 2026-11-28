@@ -1428,6 +1428,7 @@ export class ChSessions {
       this.workspaces.setReferenceArchives(archived.filter((item) => item !== id));
     const pinned = this.workspaces.localPinnedSessionIds();
     if (pinned.includes(id)) this.workspaces.setReferencePins(pinned.filter((item) => item !== id));
+    this.workspaces.forgetSession(id);
     this.publishedCatalog?.delete(id);
     this.events.emit("api-session/removed", id);
   }

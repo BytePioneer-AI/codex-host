@@ -689,8 +689,8 @@ it("routes thread/delete to native Codex and external Host and emits thread/dele
     interactions: {
       approvals: new Map(),
       questions: () => new Map(),
-      isApprovalRequestId: () => false,
-      isQuestionRequestId: () => false,
+      isApprovalRequestId: (_value): _value is number => false,
+      isQuestionRequestId: (_value): _value is number => false,
       respondApproval: async () => false,
       respondQuestion: async () => false,
     },

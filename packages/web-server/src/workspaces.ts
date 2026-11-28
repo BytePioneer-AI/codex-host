@@ -1382,6 +1382,31 @@ export class Workspaces {
     }
   }
 
+  /** Removes a deleted Session ID from persisted workspace lists, pins, and archives. */
+  forgetSession(sessionId: string): void {
+    if (!sessionId) return;
+    let changed = false;
+    const nextArchived = this.state.archivedSessionIds.filter((id) => id !== sessionId);
+    if (nextArchived.length !== this.state.archivedSessionIds.length) {
+      this.state.archivedSessionIds = nextArchived;
+      this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
+      changed = true;
+    }
+    const nextPinned = this.state.pinnedSessionIds.filter((id) => id !== sessionId);
+    if (nextPinned.length !== this.state.pinnedSessionIds.length) {
+      this.state.pinnedSessionIds = nextPinned;
+      this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
+      changed = true;
+    }
+    for (const workspace of this.state.items) {
+      if (workspace.sessionIds.includes(sessionId)) {
+        workspace.sessionIds = workspace.sessionIds.filter((id) => id !== sessionId);
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
   register(rpc: RpcRegistry, streams: StreamRegistry, commands?: ProjectCommands): void {
     rpc.register("workspace/create", async (args) => {
       const { path } = requestOf<{ path: string }>(args);
@@ -1506,24 +1531,7 @@ export class Workspaces {
     );
     rpc.register("workspace/deleteSession", (args) => {
       const sessionId = String(requestOf<{ sessionId?: string }>(args).sessionId ?? "");
-      if (sessionId) {
-        const nextArchived = this.state.archivedSessionIds.filter((id) => id !== sessionId);
-        if (nextArchived.length !== this.state.archivedSessionIds.length) {
-          this.state.archivedSessionIds = nextArchived;
-          this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
-        }
-        const nextPinned = this.state.pinnedSessionIds.filter((id) => id !== sessionId);
-        if (nextPinned.length !== this.state.pinnedSessionIds.length) {
-          this.state.pinnedSessionIds = nextPinned;
-          this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
-        }
-        for (const workspace of this.state.items) {
-          if (workspace.sessionIds.includes(sessionId)) {
-            workspace.sessionIds = workspace.sessionIds.filter((id) => id !== sessionId);
-          }
-        }
-        this.save();
-      }
+      if (sessionId) this.forgetSession(sessionId);
       return {};
     });
     rpc.register("workspace/pinSession", setMembership("pinnedSessionIds", "pinned", true));

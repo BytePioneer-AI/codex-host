@@ -107,7 +107,11 @@ async function openReal() {
         closeTimeoutMs: 100,
       })),
   });
-  const opened = await adapter.open({ kind: "create", cwd: root, environment: { HOME: root } });
+  const opened = await adapter.open({
+    kind: "create",
+    cwd: root,
+    environment: { HOME: root, USERPROFILE: root, CODEXHOST_DATA_DIR: root },
+  });
   assert(opened.ok);
   const outputs: HarnessOutput[] = [];
   void (async () => {

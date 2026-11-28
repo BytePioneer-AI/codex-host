@@ -2,6 +2,7 @@ import type { HostTurnSnapshot } from "@codexhost/harness-adapter";
 import { projectReplayedEventsToTurns } from "./acp-projection.js";
 import { readNativeDbFingerprint } from "./native-db-fingerprint.js";
 import { readNativeHistory } from "./native-replay.js";
+import type { AntigravityPromptWindow } from "./prompt-windows.js";
 import { nativeConversationDbPath } from "./native-turn-boundaries.js";
 
 export const WAKE_COMMIT_POLL_DELAYS_MS = [150, 250, 400, 600, 1000] as const;
@@ -30,6 +31,10 @@ export class AntigravityWakeObserver {
       cursor: number;
       outputLimit: number | undefined;
       canPublish(): boolean;
+      promptWindows?():
+        | Promise<readonly AntigravityPromptWindow[] | (() => readonly AntigravityPromptWindow[])>
+        | readonly AntigravityPromptWindow[]
+        | (() => readonly AntigravityPromptWindow[]);
       /** Whether output that started at this native time was streamed into a live prompt's Turn. */
       streamedIntoPrompt(startedAtMs: number | undefined): boolean;
       publish(snapshot: HostTurnSnapshot): void;
@@ -109,7 +114,12 @@ export class AntigravityWakeObserver {
         this.#pollAttempt = 0;
       }
       const { nativeSessionId, home, cwd, outputLimit } = this.options;
-      const { events, wakeWatermark } = await this.#readHistory(nativeSessionId, home);
+      const promptWindows = await this.options.promptWindows?.();
+      const { events, wakeWatermark } = await this.#readHistory(
+        nativeSessionId,
+        home,
+        promptWindows ? { promptWindows } : undefined,
+      );
       if (this.#closed || !this.options.canPublish()) return;
       if (fingerprint !== null) this.#lastFingerprint = fingerprint;
       if (wakeWatermark <= this.#cursor) return;

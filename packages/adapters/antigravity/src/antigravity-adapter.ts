@@ -107,6 +107,13 @@ import {
 import { normalizeAntigravityNativeTitle, readNativeSessionTitle } from "./native-title.js";
 import { observeNativeTurnCount, readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
+  isTimestampInPromptWindows,
+  mergePromptWindows,
+  readPromptWindows,
+  savePromptWindows,
+  type AntigravityPromptWindow,
+} from "./prompt-windows.js";
+import {
   ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
@@ -372,9 +379,11 @@ export class AntigravitySession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #wakes: AntigravityWakeObserver | undefined;
   #postPromptWake = false;
-  // Intervals during which a prompt was in flight on ACP; wakes started inside
-  // any window streamed into that user Turn and must not be republished.
-  readonly #promptWindows: Array<{ submittedAtMs: number; returnedAtMs: number }> = [];
+  // Intervals during which a prompt chain was in flight on ACP; wakes started inside
+  // any window streamed into that user Turn and must not be split or republished.
+  #promptWindows: AntigravityPromptWindow[] = [];
+  #unsavedPromptWindows: AntigravityPromptWindow[] = [];
+  #promptWindowWrites: Promise<void> = Promise.resolve();
   #toolOwners = new Map<string, ActiveTurn>();
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
@@ -444,6 +453,55 @@ export class AntigravitySession implements HarnessSession {
       this.#pending.size > 0 ||
       [...this.#toolOwners.values()].some((turn) => turn.detachedToolCallIds.size > 0)
     );
+  }
+  currentPromptWindows(): AntigravityPromptWindow[] {
+    const turn = this.#active;
+    const activeWindow =
+      turn?.promptPhase === "submitted" &&
+      turn.submittedAtMs !== undefined &&
+      turn.returnedAtMs === undefined
+        ? [{ submittedAtMs: turn.submittedAtMs, returnedAtMs: Number.POSITIVE_INFINITY }]
+        : undefined;
+    return mergePromptWindows(this.#promptWindows, activeWindow);
+  }
+  async #readPersistedPromptWindows(nativeSessionId: string): Promise<AntigravityPromptWindow[]> {
+    try {
+      return await readPromptWindows(nativeSessionId, this.#options.environment);
+    } catch {
+      // Prompt windows are auxiliary replay metadata; degrade to unmerged wakes instead of failing open/history.
+      return [];
+    }
+  }
+  async #preparePromptWindows(nativeSessionId: string): Promise<() => AntigravityPromptWindow[]> {
+    const persisted = await this.#readPersistedPromptWindows(nativeSessionId);
+    return () => mergePromptWindows(persisted, this.currentPromptWindows());
+  }
+  #recordPromptWindow(turn: ActiveTurn, nativeSessionId: string): boolean {
+    if (turn.returnedAtMs !== undefined || turn.submittedAtMs === undefined) return false;
+    const returnedAtMs = Math.max(Date.now(), turn.lastSubmittedAtMs ?? turn.submittedAtMs);
+    turn.returnedAtMs = returnedAtMs;
+    const window = { submittedAtMs: turn.submittedAtMs, returnedAtMs };
+    this.#promptWindows.push(window);
+    this.#unsavedPromptWindows.push(window);
+    void this.#flushPromptWindows(nativeSessionId);
+    return true;
+  }
+  #flushPromptWindows(
+    nativeSessionId: string,
+    options?: { propagateError?: boolean },
+  ): Promise<void> {
+    const attempt = this.#promptWindowWrites.then(async () => {
+      const batch = mergePromptWindows(this.#unsavedPromptWindows);
+      if (!batch.length) return;
+      await savePromptWindows(nativeSessionId, batch, this.#options.environment);
+      const saved = new Set(batch.map((entry) => `${entry.submittedAtMs}:${entry.returnedAtMs}`));
+      this.#unsavedPromptWindows = this.#unsavedPromptWindows.filter(
+        (entry) => !saved.has(`${entry.submittedAtMs}:${entry.returnedAtMs}`),
+      );
+    });
+    // Keep the shared queue healthy across transient write failures; callers like close() can still observe failure.
+    this.#promptWindowWrites = attempt.catch(() => undefined);
+    return options?.propagateError ? attempt : this.#promptWindowWrites;
   }
   activeForkTurnIndex(checkpointId: string, home: string): number | undefined {
     if (
@@ -607,8 +665,16 @@ export class AntigravitySession implements HarnessSession {
       this.#initializeUsage(opened.sessionId);
       if (!this.#wakes) {
         const home = antigravityHome(this.#options.environment);
+        const persistedWindows = ref
+          ? await this.#readPersistedPromptWindows(opened.sessionId)
+          : [];
+        if (this.#closed || this.#faulted) return;
+        if (persistedWindows.length)
+          this.#promptWindows = mergePromptWindows(persistedWindows, this.#promptWindows);
         const cursor = ref
-          ? await readNativeHistory(opened.sessionId, home).then(
+          ? await readNativeHistory(opened.sessionId, home, {
+              promptWindows: () => this.currentPromptWindows(),
+            }).then(
               (value) => value.wakeWatermark,
               () => -1,
             )
@@ -621,19 +687,9 @@ export class AntigravitySession implements HarnessSession {
           cursor,
           outputLimit: this.#options.adapter.toolOutputLimit,
           canPublish: () => this.#active?.promptPhase !== "returned",
-          streamedIntoPrompt: (startedAtMs) => {
-            if (startedAtMs === undefined) return false;
-            const turn = this.#active;
-            if (
-              turn?.promptPhase === "submitted" &&
-              turn.submittedAtMs !== undefined &&
-              startedAtMs >= turn.submittedAtMs
-            )
-              return true;
-            return this.#promptWindows.some(
-              (window) => startedAtMs >= window.submittedAtMs && startedAtMs <= window.returnedAtMs,
-            );
-          },
+          promptWindows: () => this.#preparePromptWindows(opened.sessionId),
+          streamedIntoPrompt: (startedAtMs) =>
+            isTimestampInPromptWindows(startedAtMs, this.currentPromptWindows()),
           publish: (snapshot) => this.#emit({ type: "turn.autonomous.completed", snapshot }),
         });
       }
@@ -1104,9 +1160,11 @@ export class AntigravitySession implements HarnessSession {
     if (!nativeRef) return ok({ turns: [], state: { ...this.#state } });
     const { nativeSessionId } = nativeRef;
     try {
+      const promptWindows = await this.#preparePromptWindows(nativeSessionId);
       const { events, turnCount } = await readNativeHistory(
         nativeSessionId,
         antigravityHome(this.#options.environment),
+        { promptWindows },
       );
       if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
       const turns = projectReplayedEventsToTurns({
@@ -1481,13 +1539,8 @@ export class AntigravitySession implements HarnessSession {
       this.#usage?.beginTurn(submittedAtMs, turn.turnId);
       this.#usageTurnId = turn.turnId;
       turn.promptPhase = "submitted";
-      let windowRecorded = false;
       const recordPromptWindow = () => {
-        if (windowRecorded) return;
-        windowRecorded = true;
-        const returnedAtMs = Date.now();
-        turn.returnedAtMs = returnedAtMs;
-        this.#promptWindows.push({ submittedAtMs, returnedAtMs });
+        void this.#recordPromptWindow(turn, ref.nativeSessionId);
       };
       // Keep the wire response time: later output is idle, not part of this Turn.
       const responded = () => {
@@ -1559,11 +1612,10 @@ export class AntigravitySession implements HarnessSession {
           }
         }
       } finally {
-        recordPromptWindow();
+        responded();
       }
       if (hasLatestError || !result) throw latestError;
       if (turn.steered) mayWriteInput = true;
-      responded();
       const completedAtMs = Date.now();
       if (!this.#isCurrent(turn)) return;
       outcome =
@@ -1631,6 +1683,7 @@ export class AntigravitySession implements HarnessSession {
         : { status: "failed", error: normalizeAntigravityError(error) };
     } finally {
       this.#usage?.endTurn();
+      await this.#promptWindowWrites;
     }
     if (turn.cancelled && outcome.status === "succeeded")
       outcome = { ...outcome, status: "cancelled" };
@@ -2005,8 +2058,16 @@ export class AntigravitySession implements HarnessSession {
     this.#wakes?.close();
     this.#postPromptWake = false;
     this.#closeInteractions("cancelled");
-    if (this.#active)
-      this.#finish(this.#active, { status: "failed", error: normalizeAntigravityError(error) });
+    const active = this.#active;
+    if (this.nativeRef) {
+      const recorded = active
+        ? this.#recordPromptWindow(active, this.nativeRef.nativeSessionId)
+        : false;
+      if (!recorded && this.#unsavedPromptWindows.length) {
+        void this.#flushPromptWindows(this.nativeRef.nativeSessionId);
+      }
+    }
+    if (active) this.#finish(active, { status: "failed", error: normalizeAntigravityError(error) });
     this.#settleDetachedOwners({ status: "failed", error: normalizeAntigravityError(error) });
     this.#emit({ type: "session.faulted", error: normalizeAntigravityError(error) });
     this.#channel.end();
@@ -2029,6 +2090,7 @@ export class AntigravitySession implements HarnessSession {
     this.#pendingTitle = undefined;
     this.#closeInteractions("cancelled");
     const active = this.#active;
+    if (active && this.nativeRef) this.#recordPromptWindow(active, this.nativeRef.nativeSessionId);
     if (active) this.#finish(active, { status: "cancelled", reason: "Session closed" });
     this.#settleDetachedOwners({ status: "cancelled", reason: "Session closed" });
     this.#channel.end();
@@ -2036,6 +2098,10 @@ export class AntigravitySession implements HarnessSession {
     this.#transport?.setSessionInteractionHandler(null);
     if (active?.promptPhase === "submitted") await this.#transport?.cancel().catch(() => undefined);
     await Promise.all([this.#transport?.close(), this.#subagents.close()]);
+    await this.#promptWindowWrites;
+    if (this.nativeRef && this.#unsavedPromptWindows.length) {
+      await this.#flushPromptWindows(this.nativeRef.nativeSessionId, { propagateError: true });
+    }
     this.#options.onClosed(this);
   }
 }
@@ -2222,6 +2288,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       const common = {
         harnessId,
         adapterEnvironment: this.#environment,
+        ...(source ? { sourcePromptWindows: () => source.currentPromptWindows() } : {}),
         openSession: async (resume: Extract<OpenSessionInput, { kind: "resume" }>) => {
           const result = await this.open(resume);
           if (!result.ok || !(result.value instanceof AntigravitySession)) return result;
@@ -2321,9 +2388,14 @@ export class AntigravityAdapter implements HarnessAdapter {
           if (value !== undefined) environment[key] = value;
         }
       }
+      const promptWindows = await readPromptWindows(
+        input.nativeRef.nativeSessionId,
+        environment,
+      ).catch(() => []);
       const { events } = await readNativeHistory(
         input.nativeRef.nativeSessionId,
         antigravityHome(environment),
+        { promptWindows },
       );
       const turns = projectReplayedEventsToTurns({
         nativeSessionId: input.nativeRef.nativeSessionId,

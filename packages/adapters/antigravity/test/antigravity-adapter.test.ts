@@ -40,6 +40,8 @@ import * as nativeFork from "../src/fork.js";
 import { readNativeDbFingerprint } from "../src/native-db-fingerprint.js";
 import { readNativeHistory } from "../src/native-replay.js";
 import * as nativeBoundaries from "../src/native-turn-boundaries.js";
+import * as promptWindowsStore from "../src/prompt-windows.js";
+const { promptWindowsDirectory, promptWindowsPath, readPromptWindows } = promptWindowsStore;
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import { AntigravityWakeObserver, WAKE_COMMIT_POLL_DELAYS_MS } from "../src/wake-observer.js";
 import {
@@ -3032,6 +3034,18 @@ describe("Antigravity idle wake Turns", () => {
       expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
         "wake-3",
       ]);
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(
+        snapshot.value.turns.map(({ nativeTurnRef, items }) => ({
+          key: nativeTurnRef.nativeTurnKey,
+          texts: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+        })),
+      ).toEqual([
+        { key: "turn-0", texts: ["hello there"] },
+        { key: "turn-1", texts: ["in-prompt report"] },
+        { key: "wake-3", texts: ["idle report"] },
+      ]);
     } finally {
       await session.close();
       db.close();
@@ -3457,6 +3471,106 @@ describe("Antigravity idle wake Turns", () => {
     }
   });
 
+  it("keeps in-prompt wakes merged across refresh, cold reopen, Fork, Rollback, and live compaction", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec(`
+        ALTER TABLE steps ADD COLUMN metadata BLOB;
+        CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+        CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);
+      `);
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
+        "trajectory-1",
+        nativeRef.nativeSessionId,
+      );
+      const inPromptWakeAtMs = Date.now();
+      stampStep(db, 0, inPromptWakeAtMs);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stampStep(db, 2, inPromptWakeAtMs);
+      checkpointStep(db, 3, { status: 3, run: "in-prompt-wake", summary: "Compacted" });
+      answerStep(db, 4, "WAKE_RESULT: AGY_WAKE_DONE", "in-prompt-wake");
+      stampStep(db, 4, inPromptWakeAtMs);
+      handler.onEvent({ type: "agent.text", text: "hello there" });
+      handler.onEvent({ type: "usage.context", used: 12_000, size: 200_000 });
+      await vi.waitFor(() =>
+        expect(
+          events(outputs).filter(
+            (event) =>
+              event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+          ),
+        ).toHaveLength(1),
+      );
+      handler.onEvent({ type: "agent.text", text: "\n\nWAKE_RESULT: AGY_WAKE_DONE" });
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+
+      const liveSnapshot = await session.readSnapshot();
+      assert(liveSnapshot.ok);
+      expect(liveSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+      ]);
+      expect(liveSnapshot.value.turns[0]?.items).toMatchObject([
+        { item: { type: "agentMessage", text: "hello there" } },
+        { item: { type: "contextCompaction", itemId: "checkpoint-3" } },
+        { item: { type: "agentMessage", text: "WAKE_RESULT: AGY_WAKE_DONE" } },
+      ]);
+
+      // Simulate a Host restart with a fresh Adapter instance reading only persisted state.
+      await session.close();
+      const restarted = fixture({ environment: { HOME: home, USERPROFILE: home } }).adapter;
+      try {
+        const reopened = await restarted.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(coldSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+        ]);
+        expect(coldSnapshot.value.turns[0]?.items).toMatchObject([
+          { item: { type: "agentMessage", text: "hello there" } },
+          { item: { type: "contextCompaction", itemId: "checkpoint-3" } },
+          { item: { type: "agentMessage", text: "WAKE_RESULT: AGY_WAKE_DONE" } },
+        ]);
+
+        const forked = await restarted.open({
+          kind: "fork",
+          cwd: home,
+          sourceRef: nativeRef,
+          checkpoint: required(coldSnapshot.value.turns[0]?.checkpoint),
+        });
+        assert(forked.ok);
+        const forkedSnapshot = await forked.value.readSnapshot();
+        assert(forkedSnapshot.ok);
+        expect(forkedSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+        ]);
+        expect(forkedSnapshot.value.turns[0]?.items).toMatchObject([
+          { item: { type: "agentMessage", text: "hello there" } },
+          { item: { type: "contextCompaction", itemId: "checkpoint-3" } },
+          { item: { type: "agentMessage", text: "WAKE_RESULT: AGY_WAKE_DONE" } },
+        ]);
+
+        const rolledBack = await restarted.open({
+          kind: "rollbackLastTurn",
+          cwd: home,
+          sourceRef: nativeRef,
+        });
+        assert(rolledBack.ok);
+        const rolledBackSnapshot = await rolledBack.value.readSnapshot();
+        assert(rolledBackSnapshot.ok);
+        expect(rolledBackSnapshot.value.turns).toEqual([]);
+      } finally {
+        await restarted.close();
+      }
+      await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
+
   it("skips redundant SQLite reads when unchanged, backs off wake polling, and catches same-ms in-page writes", async () => {
     expect(WAKE_COMMIT_POLL_DELAYS_MS).toEqual([150, 250, 400, 600, 1000]);
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-wake-fp-"));
@@ -3668,6 +3782,492 @@ describe("Antigravity idle wake Turns", () => {
     });
     expect(JSON.stringify(result)).toContain("cold agy answer");
     expect(transports).toHaveLength(0);
+  });
+
+  it.each(["next-prompt", "close"] as const)(
+    "retries failed prompt-window persistence on %s and keeps in-prompt wakes merged after cold reopen",
+    async (trigger) => {
+      const { home, adapter, session, outputs, transport, db } = await setup();
+      try {
+        db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+        const env = { HOME: home, USERPROFILE: home };
+        const blockingPath = promptWindowsDirectory(env);
+        await mkdir(path.dirname(blockingPath), { recursive: true });
+        await writeFile(blockingPath, "block-save");
+
+        const handler = required(transport.handler);
+        const nativeRef = required(session.initialState.nativeRef);
+        const inPromptAtMs = Date.now();
+        stampStep(db, 0, inPromptAtMs);
+        systemStep(db, 2, "in-prompt-wake", "task_notification");
+        stampStep(db, 2, inPromptAtMs);
+        answerStep(db, 3, "WAKE_RESULT", "in-prompt-wake");
+        stampStep(db, 3, inPromptAtMs);
+        handler.onResponse?.();
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs);
+
+        // Initial persistence failed; nothing is on disk yet.
+        expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toEqual([]);
+
+        await rm(blockingPath);
+        if (trigger === "next-prompt") {
+          transport.result = deferred();
+          await start(session, [transport], "t2");
+          await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+          userStep(db, 4, "follow up", "p2");
+          answerStep(db, 5, "done", "p2");
+          transport.handler?.onResponse?.();
+          transport.result.resolve({ stopReason: "end_turn" });
+          await completed(outputs, "t2");
+        }
+        await session.close();
+
+        expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toHaveLength(
+          trigger === "next-prompt" ? 2 : 1,
+        );
+
+        const restarted = fixture({ environment: env }).adapter;
+        const reopened = await restarted.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(coldSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual(
+          trigger === "next-prompt" ? ["turn-0", "turn-1"] : ["turn-0"],
+        );
+        expect(coldSnapshot.value.turns[0]?.items).toMatchObject([
+          { item: { type: "agentMessage", text: "hello there\n\nWAKE_RESULT" } },
+        ]);
+        await adapter.close();
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("evaluates active prompt windows after opening the SQLite snapshot in readSnapshot", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, 1_000);
+      stampStep(db, 1, 1_050);
+      const handler = required(transport.handler);
+
+      const actualExec = DatabaseSync.prototype.exec;
+      let injected = false;
+      vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+        this: DatabaseSync,
+        sql: string,
+      ) {
+        if (!injected && sql === "BEGIN") {
+          injected = true;
+          now = 2_000;
+          handler.onResponse?.();
+          transport.result.resolve({ stopReason: "end_turn" });
+          now = 3_000;
+          systemStep(db, 2, "idle-wake", "task_notification");
+          stampStep(db, 2, 3_000);
+          answerStep(db, 3, "IDLE_WAKE_DONE", "idle-wake");
+          stampStep(db, 3, 3_100);
+        }
+        return actualExec.call(this, sql);
+      });
+
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+        "wake-2",
+      ]);
+      expect(snapshot.value.turns[1]?.items).toMatchObject([
+        { item: { type: "agentMessage", text: "IDLE_WAKE_DONE" } },
+      ]);
+      await completed(outputs);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("evaluates active prompt windows after opening SQLite in AntigravityWakeObserver", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, 1_000);
+      stampStep(db, 1, 1_050);
+      const handler = required(transport.handler);
+
+      // End Turn 1 and start wake observation while idle so its poll timer overlaps Turn 2.
+      now = 2_000;
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      transport.eventHandler?.({ type: "agent.text", text: "wake ping" });
+
+      // Start Turn 2; while Turn 2 is submitted, an active wake-observer poll runs and Turn 2
+      // responds right before the observer opens its SQLite snapshot.
+      let turn2Submitted = false;
+      const actualExec = DatabaseSync.prototype.exec;
+      let injected = false;
+      vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+        this: DatabaseSync,
+        sql: string,
+      ) {
+        if (turn2Submitted && !injected && sql === "BEGIN") {
+          injected = true;
+          now = 4_000;
+          required(transport.handler).onResponse?.();
+          transport.result.resolve({ stopReason: "end_turn" });
+          now = 5_000;
+          systemStep(db, 4, "post-turn2-idle", "task_notification");
+          stampStep(db, 4, 5_000);
+          answerStep(db, 5, "POST_TURN2_WAKE", "post-turn2-idle");
+          stampStep(db, 5, 5_100);
+        }
+        return actualExec.call(this, sql);
+      });
+
+      now = 3_000;
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      userStep(db, 2, "second", "p2");
+      stampStep(db, 2, 3_000);
+      answerStep(db, 3, "second reply", "p2");
+      stampStep(db, 3, 3_050);
+      turn2Submitted = true;
+
+      await completed(outputs, "t2");
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs)[0]?.snapshot.nativeTurnRef.nativeTurnKey).toBe("wake-4");
+      expect(wakes(outputs)[0]?.snapshot.items).toMatchObject([
+        { item: { type: "agentMessage", text: "POST_TURN2_WAKE" } },
+      ]);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("persists a prompt-chain window spanning turn.steer so an in-prompt wake after steer stays merged on cold reopen", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      stampStep(db, 0, 1_000);
+      stampStep(db, 1, 1_050);
+
+      now = 2_000;
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "steered follow-up" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      // Initial prompt settles early; the prompt chain stays open while the steered prompt runs.
+      now = 2_100;
+      transport.result.resolve({ stopReason: "end_turn" });
+      await setImmediate();
+
+      userStep(db, 2, "steered follow-up", "run-b");
+      stampStep(db, 2, 2_050);
+      answerStep(db, 3, "steered reply", "run-b");
+      stampStep(db, 3, 2_200);
+      // In-prompt wake begins after the initial prompt returned, while the steered prompt is still open.
+      systemStep(db, 4, "in-prompt-after-steer", "task_notification");
+      stampStep(db, 4, 2_500);
+      answerStep(db, 5, "TIMER_DONE_AFTER_STEER", "in-prompt-after-steer");
+      stampStep(db, 5, 2_600);
+
+      now = 3_000;
+      handler.onResponse?.();
+      required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      await session.close();
+
+      const env = { HOME: home, USERPROFILE: home };
+      expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toEqual([
+        { submittedAtMs: 1_000, returnedAtMs: 3_000 },
+      ]);
+
+      const restarted = fixture({ environment: env }).adapter;
+      try {
+        const reopened = await restarted.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(
+          coldSnapshot.value.turns.map(({ nativeTurnRef, items }) => ({
+            key: nativeTurnRef.nativeTurnKey,
+            texts: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+          })),
+        ).toEqual([
+          { key: "turn-0", texts: ["hello there"] },
+          { key: "turn-1", texts: ["steered reply\n\nTIMER_DONE_AFTER_STEER"] },
+        ]);
+      } finally {
+        await restarted.close();
+      }
+      await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("flushes unsaved prompt windows on transport fault during post-response turn settlement", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const blockingPath = promptWindowsDirectory(env);
+      await mkdir(path.dirname(blockingPath), { recursive: true });
+      await writeFile(blockingPath, "block-save");
+
+      const nativeRef = required(session.initialState.nativeRef);
+      const countGate = deferred<number>();
+      const observeSpy = vi
+        .spyOn(nativeBoundaries, "observeNativeTurnCount")
+        .mockReturnValue(countGate.promise);
+
+      required(transport.handler).onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await vi.waitFor(() => expect(observeSpy).toHaveBeenCalledOnce());
+      // Initial save failed while turn accounting is still pending (promptPhase === "returned").
+      expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toEqual([]);
+
+      await rm(blockingPath);
+      transport.options.onFault?.(new AntigravityTransportError("processExited", "ACP exited"));
+      await vi.waitFor(() =>
+        expect(events(outputs).some((event) => event.type === "session.faulted")).toBe(true),
+      );
+
+      // Fault path must flush the unsaved window without waiting for an explicit close().
+      await vi.waitFor(async () =>
+        expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toHaveLength(1),
+      );
+      countGate.resolve(1);
+      await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("surfaces final close persistence failure without forgetting unsaved windows, then persists on retry", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const blockingPath = promptWindowsDirectory(env);
+      await mkdir(path.dirname(blockingPath), { recursive: true });
+      await writeFile(blockingPath, "block-save");
+
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      const inPromptAtMs = Date.now();
+      stampStep(db, 0, inPromptAtMs);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stampStep(db, 2, inPromptAtMs);
+      answerStep(db, 3, "WAKE_RESULT", "in-prompt-wake");
+      stampStep(db, 3, inPromptAtMs);
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+
+      // Keep storage blocked across close(): close must reject instead of silently dropping windows.
+      await expect(session.close()).rejects.toThrow();
+
+      // Once storage recovers, retrying close() persists the window and keeps cold reopen merged.
+      await rm(blockingPath);
+      await session.close();
+      expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toHaveLength(1);
+
+      const restarted = fixture({ environment: env }).adapter;
+      try {
+        const reopened = await restarted.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(coldSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+        ]);
+        expect(coldSnapshot.value.turns[0]?.items).toMatchObject([
+          { item: { type: "agentMessage", text: "hello there\n\nWAKE_RESULT" } },
+        ]);
+      } finally {
+        await restarted.close();
+      }
+      await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("degrades gracefully on resume and readSnapshot when persisted prompt windows file is unreadable", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      const inPromptAtMs = Date.now();
+      stampStep(db, 0, inPromptAtMs);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stampStep(db, 2, inPromptAtMs);
+      answerStep(db, 3, "WAKE_RESULT", "in-prompt-wake");
+      stampStep(db, 3, inPromptAtMs);
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      await session.close();
+      await adapter.close();
+
+      // Replace the persisted prompt-windows file with a directory so readFile fails with EISDIR.
+      const windowsFile = promptWindowsPath(nativeRef.nativeSessionId, env);
+      await rm(windowsFile, { recursive: true, force: true });
+      await mkdir(windowsFile, { recursive: true });
+
+      const restarted = fixture({ environment: env });
+      try {
+        const reopened = await restarted.adapter.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(coldSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+          "wake-2",
+        ]);
+
+        // Materializing the live transport (#open) must also degrade instead of failing session init.
+        const nextTurn = hostTurnIdSchema.parse("11111111-1111-4111-8111-111111111199");
+        const started = await reopened.value.execute({
+          type: "turn.start",
+          turnId: nextTurn,
+          input: [{ type: "text", text: "follow-up" }],
+        });
+        expect(started.ok).toBe(true);
+        await vi.waitFor(() => expect(restarted.transports[0]?.prompt).toHaveBeenCalled());
+        // Restore the path so the final prompt-window save during close can succeed.
+        await rm(windowsFile, { recursive: true, force: true });
+        restarted.transports[0]?.result.resolve({ stopReason: "end_turn" });
+        await reopened.value.close();
+      } finally {
+        await restarted.adapter.close();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses persisted prompt windows in AntigravityAdapter.readSnapshot() and degrades when unreadable", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      const inPromptAtMs = Date.now();
+      stampStep(db, 0, inPromptAtMs);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stampStep(db, 2, inPromptAtMs);
+      answerStep(db, 3, "WAKE_RESULT", "in-prompt-wake");
+      stampStep(db, 3, inPromptAtMs);
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      await session.close();
+      await adapter.close();
+
+      const coldAdapter = fixture({ environment: env }).adapter;
+      try {
+        const merged = await coldAdapter.readSnapshot({ cwd: home, nativeRef });
+        assert(merged.ok);
+        expect(merged.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+        ]);
+        expect(merged.value.turns[0]?.items).toMatchObject([
+          { item: { type: "agentMessage", text: "hello there\n\nWAKE_RESULT" } },
+        ]);
+
+        const windowsFile = promptWindowsPath(nativeRef.nativeSessionId, env);
+        await rm(windowsFile, { recursive: true, force: true });
+        await mkdir(windowsFile, { recursive: true });
+
+        const degraded = await coldAdapter.readSnapshot({ cwd: home, nativeRef });
+        assert(degraded.ok);
+        expect(degraded.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+          "wake-2",
+        ]);
+      } finally {
+        await coldAdapter.close();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("closes the active prompt window and disables steering before awaiting persistence on prompt error", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, 1_000);
+      stampStep(db, 1, 1_050);
+      const nativeRef = required(session.initialState.nativeRef);
+      const saveGate = deferred<undefined>();
+      const actualSave = promptWindowsStore.savePromptWindows;
+      const saveSpy = vi
+        .spyOn(promptWindowsStore, "savePromptWindows")
+        .mockImplementation(async (...args) => {
+          await saveGate.promise;
+          return actualSave(...args);
+        });
+
+      now = 2_000;
+      transport.result.reject(new AntigravityTransportError("unavailable", "temporary failure"));
+      await vi.waitFor(() => expect(saveSpy).toHaveBeenCalledOnce());
+
+      expect((session as AntigravitySession).currentPromptWindows()).toEqual([
+        { submittedAtMs: 1_000, returnedAtMs: 2_000 },
+      ]);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "steer after failure" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+
+      now = 3_000;
+      systemStep(db, 2, "post-error-idle", "task_notification");
+      stampStep(db, 2, 3_000);
+      answerStep(db, 3, "IDLE_AFTER_ERROR", "post-error-idle");
+      stampStep(db, 3, 3_100);
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+        "wake-2",
+      ]);
+
+      saveGate.resolve(undefined);
+      await completed(outputs, "t1");
+      expect(
+        await readPromptWindows(nativeRef.nativeSessionId, { HOME: home, USERPROFILE: home }),
+      ).toEqual([{ submittedAtMs: 1_000, returnedAtMs: 2_000 }]);
+      await session.close();
+      await adapter.close();
+    } finally {
+      db.close();
+    }
   });
 });
 

@@ -33,11 +33,29 @@ import {
   type HostExtensionListItem,
   type HostExtensionsRpcParams,
   type HostExtensionsRpcResult,
+  type ThreadTreeSnapshot,
   type HOST_EXTENSIONS_RPC as RPC,
 } from "@codexhost/shared-contracts";
 import { errorMessage } from "./desktop-rpc.js";
 
-export const DEFAULT_DESKTOP_CATALOG_EXTENSIONS = Object.freeze(["sidebar-thread-tree"] as const);
+export interface DefaultDesktopCatalogExtension {
+  readonly id: string;
+  readonly version: string;
+  readonly sha256: string;
+  readonly downloadUrl: string;
+}
+
+/** Audited, pinned default Desktop extension seeds so unreviewed upstream releases are never auto-installed. */
+export const DEFAULT_DESKTOP_CATALOG_EXTENSIONS: readonly DefaultDesktopCatalogExtension[] =
+  Object.freeze([
+    Object.freeze({
+      id: "sidebar-thread-tree",
+      version: "0.1.5",
+      sha256: "d304ac624a9744492682de17ff9a1aad8cd96c228346bf9687a59b57984e15a0",
+      downloadUrl:
+        "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/releases/download/v0.1.5/sidebar-thread-tree.zip",
+    }),
+  ]);
 const DISABLE_DEFAULT_EXTENSIONS_ENV = "CODEXHOST_DISABLE_DEFAULT_EXTENSIONS";
 
 type Valid = Extract<HostExtensionListItem, { state: "valid" }>;
@@ -80,7 +98,9 @@ export class HostExtensionManager {
   readonly #closeController = new AbortController();
   readonly #inFlightOperations = new Set<Promise<unknown>>();
   readonly #userTouchedIds = new Set<string>();
-  readonly #defaultSeedIds = new Set<string>(DEFAULT_DESKTOP_CATALOG_EXTENSIONS);
+  readonly #defaultSeedIds = new Set<string>(
+    DEFAULT_DESKTOP_CATALOG_EXTENSIONS.map(({ id }) => id),
+  );
   #userRecovered = false;
   #defaultSeedTask: Promise<void> | undefined;
   #queue = Promise.resolve();
@@ -99,6 +119,7 @@ export class HostExtensionManager {
       readActivity?(): Promise<ExtensionActivitySnapshot>;
       releaseActivity?(): void;
       describeHarness?(id: string): Promise<ExtensionHarnessPresentation | null>;
+      readThreadTree?(): Promise<ThreadTreeSnapshot>;
       desktopShell?: string | undefined;
     } = {},
   ) {}
@@ -134,25 +155,25 @@ export class HostExtensionManager {
   }
 
   seedDefaultDesktopExtensions(
-    ids: readonly string[] = DEFAULT_DESKTOP_CATALOG_EXTENSIONS,
+    seeds: readonly DefaultDesktopCatalogExtension[] = DEFAULT_DESKTOP_CATALOG_EXTENSIONS,
     environment: NodeJS.ProcessEnv = process.env,
   ): Promise<void> {
     if (
       this.#closing ||
-      ids.length === 0 ||
+      seeds.length === 0 ||
       (environment[DISABLE_DEFAULT_EXTENSIONS_ENV] ??
         process.env[DISABLE_DEFAULT_EXTENSIONS_ENV]) === "1"
     ) {
       return Promise.resolve();
     }
-    for (const id of ids) this.#defaultSeedIds.add(id);
+    for (const { id } of seeds) this.#defaultSeedIds.add(id);
     return (this.#defaultSeedTask ??= this.#trackInFlight(async () => {
       try {
         await this.start();
         if (this.#closing) return;
-        for (const id of ids) {
+        for (const seed of seeds) {
           if (this.#closing) return;
-          await this.#seedDefaultDesktopExtension(id, environment);
+          await this.#seedDefaultDesktopExtension(seed, environment);
         }
       } catch (error) {
         if (!this.#closing && !this.#closeController.signal.aborted) {
@@ -480,7 +501,19 @@ export class HostExtensionManager {
     return pending;
   }
 
-  async #seedDefaultDesktopExtension(id: string, environment: NodeJS.ProcessEnv): Promise<void> {
+  async threadTree(): Promise<ThreadTreeSnapshot> {
+    this.#assertOpen();
+    if (!this.services.readThreadTree) {
+      return { revision: 0, parents: {}, handoffs: {}, nodes: {}, truncated: false };
+    }
+    return this.services.readThreadTree();
+  }
+
+  async #seedDefaultDesktopExtension(
+    seed: DefaultDesktopCatalogExtension,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    const { id } = seed;
     try {
       const shouldPrepare = await this.#run(async () => {
         const seeded = await readSeededDefaultHostExtensions(this.dataDir);
@@ -500,8 +533,12 @@ export class HostExtensionManager {
 
       const staged = await prepareHostExtension({
         dataDir: this.dataDir,
-        source: { type: "catalog", id },
-        expected: { id },
+        source: {
+          type: "pinnedUrl",
+          url: seed.downloadUrl,
+          provenance: { type: "catalog", id },
+        },
+        expected: { id, version: seed.version, sha256: seed.sha256 },
         signal: this.#closeController.signal,
       });
       let reportInstall = false;

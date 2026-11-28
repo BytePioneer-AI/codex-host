@@ -112,6 +112,7 @@ export { createHostUpdateCoordinator } from "./update-coordinator.js";
 export {
   DEFAULT_DESKTOP_CATALOG_EXTENSIONS,
   HostExtensionManager,
+  type DefaultDesktopCatalogExtension,
 } from "./host-extension-manager.js";
 export type {
   CreateHostUpdateCoordinatorOptions,

@@ -1520,6 +1520,7 @@ export class AppServerHost {
                     }
                   : null;
               },
+              readThreadTree: () => this.#treeWatch.readSnapshot(),
               desktopShell: desktopEnvironment.CODEXHOST_DESKTOP_SHELL_PATH,
             },
           ));
@@ -5971,6 +5972,7 @@ export class AppServerHost {
     await this.#writer.json(
       rpcEnvelope(request, { result: jsonValueSchema.parse(execution.result) }),
     );
+    this.clientEvents.changed(execution.result.threadId, "codexhost/thread/tree/changed");
     if (execution.externalStartedThread) {
       await this.#notifyExternalThreadStarted(execution.externalStartedThread);
     } else if (execution.officialStartedThread) {

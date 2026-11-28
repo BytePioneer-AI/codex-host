@@ -105,6 +105,12 @@ describe("Mapping Store thread handoffs", () => {
     const second = await openStore(directory, "second");
     await expect(second.getThreadHandoff(externalTarget)).resolves.toEqual(externalHandoff);
     await expect(second.getThreadHandoff(officialTarget)).resolves.toEqual(officialHandoff);
+    await expect(second.listThreadHandoffs()).resolves.toEqual(
+      expect.arrayContaining([
+        { targetThreadId: externalTarget, handoff: externalHandoff },
+        { targetThreadId: officialTarget, handoff: officialHandoff },
+      ]),
+    );
     await expect(
       second.getThreadHandoff(hostThreadIdSchema.parse("unknown-thread")),
     ).resolves.toBeNull();

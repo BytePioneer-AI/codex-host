@@ -7,6 +7,7 @@ import {
   THREAD_TREE_SNAPSHOT_METHOD,
   THREAD_TREE_UNWATCH_METHOD,
   THREAD_TREE_WATCH_METHOD,
+  threadTreeSnapshotSchema,
   threadTreeUnwatchParamsSchema,
   threadTreeWatchParamsSchema,
   type ThreadTreeSnapshot,
@@ -25,9 +26,21 @@ const INITIAL_READ_LIMIT = 32;
 const INITIAL_READ_CONCURRENCY = 4;
 const INITIAL_REPLY_BUDGET_MS = 200;
 
-export function limitTreeParents(parents: Readonly<Record<string, string>>) {
+export interface ThreadTreeHandoffEdgeInput {
+  readonly targetThreadId: string;
+  readonly handoff: {
+    readonly sourceThreadId: string;
+    readonly createdAtMs: number;
+  };
+}
+
+export function limitTreeEdges(
+  parents: Readonly<Record<string, string>>,
+  handoffs: readonly ThreadTreeHandoffEdgeInput[] = [],
+) {
   const ids = new Set<string>();
   const edges: Array<[string, string]> = [];
+  const boundedHandoffs: Array<[string, { sourceThreadId: string; createdAtMs: number }]> = [];
   let truncated = false;
   for (const [child, parent] of Object.entries(parents)) {
     const added = Number(!ids.has(child)) + Number(child !== parent && !ids.has(parent));
@@ -39,7 +52,54 @@ export function limitTreeParents(parents: Readonly<Record<string, string>>) {
     ids.add(parent);
     edges.push([child, parent]);
   }
-  return { ids, parents: Object.fromEntries(edges), truncated };
+  const sortedHandoffs = [...handoffs].sort(
+    (left, right) =>
+      right.handoff.createdAtMs - left.handoff.createdAtMs ||
+      String(left.targetThreadId).localeCompare(String(right.targetThreadId)),
+  );
+  const seenTargets = new Set<string>();
+  for (const entry of sortedHandoffs) {
+    const target = String(entry.targetThreadId);
+    const source = String(entry.handoff.sourceThreadId);
+    if (!target || !source || target === source || seenTargets.has(target)) continue;
+    const added = Number(!ids.has(target)) + Number(!ids.has(source));
+    if (ids.size + added > THREAD_TREE_MAX_NODES) {
+      truncated = true;
+      continue;
+    }
+    seenTargets.add(target);
+    ids.add(target);
+    ids.add(source);
+    boundedHandoffs.push([
+      target,
+      {
+        sourceThreadId: source,
+        createdAtMs: Math.max(0, Math.trunc(entry.handoff.createdAtMs)),
+      },
+    ]);
+  }
+  return {
+    ids,
+    parents: Object.fromEntries(edges),
+    handoffs: Object.fromEntries(boundedHandoffs),
+    truncated,
+  };
+}
+
+export function limitTreeParents(parents: Readonly<Record<string, string>>) {
+  const { ids, parents: boundedParents, truncated } = limitTreeEdges(parents);
+  return { ids, parents: boundedParents, truncated };
+}
+
+function normalizeTimestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.trunc(value < 1e12 ? value * 1_000 : value);
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.trunc(parsed);
+  }
+  return undefined;
 }
 
 function officialStatus(status: unknown): ThreadTreeStatus {
@@ -56,6 +116,7 @@ type OfficialNode = {
   status?: ThreadTreeStatus;
   title?: string;
   archived?: boolean;
+  updatedAtMs?: number;
   turnId?: string;
 };
 
@@ -82,7 +143,8 @@ export class ThreadTreeWatch {
     private readonly options: {
       codexHome: string;
       tree: Pick<ThreadTree, "read">;
-      repository: Pick<ExternalThreadRepository, "listSummaries">;
+      repository: Pick<ExternalThreadRepository, "listSummaries"> &
+        Partial<Pick<ExternalThreadRepository, "listThreadHandoffs">>;
       events: ClientChannelEvents;
       shared?: SharedThreadBridge | undefined;
       externalOnly?: boolean | undefined;
@@ -117,15 +179,20 @@ export class ThreadTreeWatch {
     if (official) {
       const before = this.#official.get(id) ?? {};
       if (method === "thread/status/changed") {
-        this.#official.set(id, { ...before, status: officialStatus(params.status) });
+        this.#official.set(id, {
+          ...before,
+          status: officialStatus(params.status),
+          updatedAtMs: Date.now(),
+        });
       } else if (method === "turn/started") {
         this.#official.set(id, {
           ...before,
           status: "running",
+          updatedAtMs: Date.now(),
           ...(typeof turn.id === "string" ? { turnId: turn.id } : {}),
         });
       } else if (method === "turn/completed" && (!before.turnId || before.turnId === turn.id)) {
-        const next: OfficialNode = { ...before, status: "idle" };
+        const next: OfficialNode = { ...before, status: "idle", updatedAtMs: Date.now() };
         delete next.turnId;
         this.#official.set(id, next);
         for (const [requestId, threadId] of this.#interactions)
@@ -239,6 +306,20 @@ export class ThreadTreeWatch {
     this.#stopEvents();
   }
 
+  /** On-demand read for Web extension clients without creating a long-lived desktop subscription. */
+  async readSnapshot(): Promise<ThreadTreeSnapshot> {
+    if (this.#closed) {
+      return {
+        revision: this.#revision,
+        parents: {},
+        handoffs: {},
+        nodes: {},
+        truncated: false,
+      };
+    }
+    return threadTreeSnapshotSchema.parse(await this.#snapshot(true, true));
+  }
+
   changed(): void {
     if (!this.#subscriptions.size || this.#timer) return;
     if (this.#pushInFlight) {
@@ -280,19 +361,34 @@ export class ThreadTreeWatch {
     );
   }
 
-  async #snapshot(initial: boolean) {
-    const [{ parents }, records] = await Promise.all([
+  async #snapshot(initial: boolean, onDemand = false) {
+    const [{ parents }, records, storedHandoffs] = await Promise.all([
       this.options.tree.read(),
       this.options.repository.listSummaries(),
+      this.options.repository.listThreadHandoffs?.() ?? Promise.resolve([]),
     ]);
-    const bounded = limitTreeParents(parents);
+    const handoffRecords: ThreadTreeHandoffEdgeInput[] = [...storedHandoffs];
+    if (this.#owner?.handoffs) {
+      const seen = new Set(handoffRecords.map((entry) => String(entry.targetThreadId)));
+      for (const [target, info] of Object.entries(this.#owner.handoffs)) {
+        if (seen.has(target)) continue;
+        handoffRecords.push({
+          targetThreadId: target,
+          handoff: {
+            sourceThreadId: String(info.sourceThreadId),
+            createdAtMs: info.createdAtMs,
+          },
+        });
+      }
+    }
+    const bounded = limitTreeEdges(parents, handoffRecords);
     const external = new Map(records.map((record) => [String(record.hostThreadId), record]));
     if (!this.options.externalOnly) {
       const candidates = [...bounded.ids].filter(
         (id) =>
           !external.has(id) && !this.options.shared?.knowsTreeOwner(id) && !this.#read.has(id),
       );
-      const reads = this.#readInitial(candidates);
+      const reads = this.#readInitial(candidates, onDemand);
       if (initial) {
         let timer: NodeJS.Timeout | undefined;
         try {
@@ -327,6 +423,8 @@ export class ThreadTreeWatch {
           : waiting.has(id) || this.options.waiting(id)
             ? "waiting"
             : (local ?? (record ? "idle" : (observed?.status ?? "unknown")));
+        const updatedAtMs =
+          normalizeTimestampMs(record?.updatedAt) ?? owner?.updatedAtMs ?? observed?.updatedAtMs;
         return [
           id,
           {
@@ -334,6 +432,7 @@ export class ThreadTreeWatch {
             ...(title ? { title } : {}),
             status,
             archived: record?.archived ?? (shared ? owner?.archived : observed?.archived) ?? false,
+            ...(updatedAtMs !== undefined ? { updatedAtMs } : {}),
           },
         ];
       }),
@@ -341,6 +440,7 @@ export class ThreadTreeWatch {
     return {
       revision: ++this.#revision,
       parents: bounded.parents,
+      handoffs: bounded.handoffs,
       nodes,
       truncated: bounded.truncated,
     };
@@ -367,7 +467,7 @@ export class ThreadTreeWatch {
     if (resolvedDirectory !== null && compare(resolvedDirectory) === target) return true;
   }
 
-  async #readInitial(ids: string[]): Promise<void> {
+  async #readInitial(ids: string[], allowEmptySubscriptions = false): Promise<void> {
     const generation = this.#officialGeneration;
     const batch = ids.slice(0, INITIAL_READ_LIMIT);
     const count = Math.max(0, INITIAL_READ_CONCURRENCY - this.#readsInFlight);
@@ -375,7 +475,11 @@ export class ThreadTreeWatch {
       Array.from({ length: Math.min(count, batch.length) }, async () => {
         this.#readsInFlight++;
         try {
-          while (this.#subscriptions.size && generation === this.#officialGeneration) {
+          while (
+            !this.#closed &&
+            (this.#subscriptions.size > 0 || allowEmptySubscriptions) &&
+            generation === this.#officialGeneration
+          ) {
             const id = batch.shift();
             if (!id) break;
             if (this.#read.has(id)) continue;
@@ -390,18 +494,22 @@ export class ThreadTreeWatch {
             if (!this.#read.has(id) || this.#closed || generation !== this.#officialGeneration)
               continue;
             const before = this.#official.get(id);
+            const updatedAtMs =
+              normalizeTimestampMs(thread.updatedAt) ?? normalizeTimestampMs(thread.createdAt);
             this.#official.set(id, {
               ...(typeof thread.name === "string" ? { title: thread.name } : {}),
               ...(archived === undefined ? {} : { archived }),
+              ...(updatedAtMs === undefined ? {} : { updatedAtMs }),
               ...before,
               status: before?.status ?? officialStatus(thread.status),
             });
-            this.changed();
+            if (this.#subscriptions.size > 0) this.changed();
           }
         } finally {
           this.#readsInFlight--;
           // A scan after reconnect may have found all read slots still occupied.
-          if (generation !== this.#officialGeneration) this.changed();
+          if (generation !== this.#officialGeneration && this.#subscriptions.size > 0)
+            this.changed();
         }
       }),
     );

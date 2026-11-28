@@ -119,6 +119,9 @@ async function dispatch(
       return manager.settingsSet(params(method, input));
     case RPC.backendInvoke:
       return { result: await manager.invoke(params(method, input)) };
+    case RPC.threadTree:
+      params(method, input);
+      return manager.threadTree();
   }
 }
 

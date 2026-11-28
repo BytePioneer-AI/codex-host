@@ -9,11 +9,18 @@ export const THREAD_TREE_MAX_NODES = 5000;
 export const threadTreeStatusSchema = z.enum(["running", "waiting", "idle", "unknown"]);
 export type ThreadTreeStatus = z.infer<typeof threadTreeStatusSchema>;
 
+export const threadTreeHandoffSchema = z.strictObject({
+  sourceThreadId: hostThreadIdSchema,
+  createdAtMs: z.number().int().nonnegative(),
+});
+export type ThreadTreeHandoff = z.infer<typeof threadTreeHandoffSchema>;
+
 export const threadTreeNodeSchema = z.strictObject({
   harnessId: harnessIdSchema,
   title: z.string().optional(),
   status: threadTreeStatusSchema,
   archived: z.boolean(),
+  updatedAtMs: z.number().int().nonnegative().optional(),
 });
 export type ThreadTreeNode = z.infer<typeof threadTreeNodeSchema>;
 
@@ -21,6 +28,7 @@ export const threadTreeSnapshotSchema = z
   .strictObject({
     revision: z.int().nonnegative(),
     parents: z.record(hostThreadIdSchema, hostThreadIdSchema),
+    handoffs: z.record(hostThreadIdSchema, threadTreeHandoffSchema).optional(),
     nodes: z.record(hostThreadIdSchema, threadTreeNodeSchema),
     truncated: z.boolean(),
   })
@@ -29,9 +37,13 @@ export const threadTreeSnapshotSchema = z
     "Too many Thread tree nodes",
   )
   .refine(
-    ({ parents, nodes }) =>
+    ({ parents, handoffs, nodes }) =>
       Object.entries(parents).every(
         ([child, parent]) => Object.hasOwn(nodes, child) && Object.hasOwn(nodes, parent),
+      ) &&
+      Object.entries(handoffs ?? {}).every(
+        ([target, { sourceThreadId }]) =>
+          Object.hasOwn(nodes, target) && Object.hasOwn(nodes, sourceThreadId),
       ),
     "Missing Thread tree node",
   );

@@ -33,7 +33,7 @@ $CODEXHOST_DATA_DIR/                       # 默认 ~/.codexhost/
 - `host-extensions/` 独立于 Harness 插件目录，发现和安装不执行任何扩展代码；必须显式启用才会激活。
 - 安装、更新与卸载都在代次目录上原子完成；更新生成新的 `activationId` 与 `digest`，保留已有启用状态与 `host-extension-data/<id>/` 中的独立设置和数据。
 - 路径穿越、`..`、符号链接越界和 POSIX 组/他用户可写权限均会被发现和安装校验拒绝。
-- **Codex Desktop 默认目录扩展一次性种子安装**：本机 Codex Desktop 首次连接或启动 Host 时，Host 在后台非阻塞地按标准市场目录（`source: { type: "catalog", id }`）安装并启用默认扩展（当前为 `sidebar-thread-tree`），完成后发布变更通知供运行中的 Desktop 窗口即时热注入，并把已处理 ID 记录在 `$CODEXHOST_DATA_DIR/host-extensions/.default-extensions.json`。该流程遵循以下约束：
+- **Codex Desktop 默认目录扩展一次性种子安装**：本机 Codex Desktop 首次连接或启动 Host 时，Host 在后台非阻塞地下载并校验经审核锁定的发布包（固定版本号与 SHA-256，当前为 `sidebar-thread-tree` `0.1.5`；安装来源仍记录为 `source: { type: "catalog", id }` 以便用户后续主动在市场中手动升级），安装并启用后发布变更通知供运行中的 Desktop 窗口即时热注入，并把已处理 ID 记录在 `$CODEXHOST_DATA_DIR/host-extensions/.default-extensions.json`。该流程遵循以下约束：
   - 仅在已记录标记前执行一次；用户手动禁用、卸载、恢复（`disableAll`）或磁盘已存在同名安装时，记录为已处理且不覆写、不强启。
   - 若目标扩展声明的 `manifest.slots` 与当前已启用的 Desktop 扩展冲突，保留为已安装未启用状态并记录已处理，不抢占已有槽位。
   - 下载或网络失败仅记诊断日志，不写已处理标记，等待下次启动重试；Host 关闭时会中止在途下载。
@@ -136,7 +136,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 ### Web 注入（`web`）
 
 - ESM 模块（导出 `activate(api)`）与可选样式表，运行在 Web/PWA 宿主（`apps/web-ui/packages/client/ui-codexhost/src/client/native-extensions/`）。
-- 宿主提供区域挂载 `api.dom.mount`（稳定区域 `app`、`topbar`、`sidebar`、`conversation`、`composer-dock`，或任意 `HTMLElement`）、属性标记 `api.dom.mark` / `unmark`、只读主会话上下文 `api.session.getActive()` / `api.session.onChange(cb)`、静态资源 `api.assets.url`、共享设置 `api.storage`、后端调用 `api.backend.invoke`、自定义设置页/面板贡献 `api.settings.registerPage` / `api.panels.register` 与生命周期回收 `api.signal` / `api.track`。
+- 宿主提供区域挂载 `api.dom.mount`（稳定区域 `app`、`topbar`、`sidebar`、`conversation`、`composer-dock`，或任意 `HTMLElement`）、属性标记 `api.dom.mark` / `unmark`、只读主会话上下文 `api.session.getActive()` / `api.session.onChange(cb)`、只读本地会话树与上下文交接关系订阅 `api.threads?.watchTree(cb)`（返回与 Desktop 端一致的 `ThreadTreeSnapshot`，包含 `parents`、`handoffs` 及带 `updatedAtMs` 的 `nodes`）、会话跳转 `api.navigate?.openThread(threadId)`、Harness 展示元数据 `api.harnesses?.describe(id)`、静态资源 `api.assets.url`、共享设置 `api.storage`、后端调用 `api.backend.invoke`、自定义设置页/面板贡献 `api.settings.registerPage` / `api.panels.register` 与生命周期回收 `api.signal` / `api.track`。
 - 浏览器宿主通过 `codexhost/extensions/snapshot` 获取当前已启用快照，并订阅 `GET /api/ch/v1/events` 的 `extensions-changed` 事件驱动对账（单标签页引用计数复用，且在支持 Web Locks + `BroadcastChannel` 的同源多标签页间共享 1 条事件流，避免耗尽 HTTP/1.1 连接池），仅激活含 `manifest.web` 的条目；同代次仅设置修订变化时原地通知 `storage.onChange` 而不重建 DOM。
 - 传统 DSH Web 插件的独立管理/恢复入口（`WebUiExtensions` / `/extensions`）与之隔离并保持独立可用。
 - `api.tabIcon?.set(pngDataUrl | null)` 提交属于当前扩展的标签页图标贡献。仅接受小于 128 KiB 的 PNG data URL；传 `null` 清除本扩展贡献。宿主在文档隐藏（`visibilityState === "hidden"`）、显式清除或扩展卸载时按原 DOM 顺序恢复原有 `link[rel~="icon"]` 节点，多个 Web 扩展之间保持独立所有权并在全部释放后自动清理监听器。该接口仅作用于当前 CodexHost 文档。
@@ -200,6 +200,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 | `asset` | 安全读取公开静态资源、声明的前端入口及包内 `.mjs` 模块，严格禁止读取 `backend.entry` 或路径穿越 |
 | `settings/get` / `settings/set` | 带 `expectedSettingsRevision` 读写独立 `settings.json`（≤ 1 MiB） |
 | `backend/invoke` | 按 `(id, activationId?, method, params?)` 调用已启用且激活成功的单实例后端 |
+| `threadTree` | 读取只读本地会话树与上下文交接快照（`ThreadTreeSnapshot`，供 Web 扩展 `api.threads.watchTree` 按需获取） |
 
 - **变更广播**：任意安装、更新、启停、恢复、卸载或设置写入都会递增 Host 修订号并发布 `extensions-changed` Client Channel 事件。
 - **Web 薄代理（`packages/web-server`）**：不持有任何扩展磁盘目录或子进程，全部在现有 `auth.gate` 鉴权与同源门禁（`--no-auth` / `--safe-mode` 返回 `403`）之后代理至共享 Host：

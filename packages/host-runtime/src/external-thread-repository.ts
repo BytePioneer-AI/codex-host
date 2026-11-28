@@ -18,6 +18,7 @@ import {
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
+  type StoredThreadHandoffV1,
   type StoredThreadRecordV1,
   type StoredThreadSummaryV1,
   type StoredTurnMappingV1,
@@ -112,6 +113,7 @@ export interface ExternalThreadStore {
   replaceSectionPlacements(
     placements: readonly StoredSectionPlacementV1[],
   ): Promise<StoredSectionPlacementV1[]>;
+  listThreadHandoffs?(): Promise<StoredThreadHandoffV1[]>;
   getThreadHandoff?(targetThreadId: HostThreadId): Promise<ThreadHandoffMetadata | null>;
   saveThreadHandoff?(
     targetThreadId: HostThreadId,
@@ -187,6 +189,11 @@ export class ExternalThreadRepository {
     placements: readonly StoredSectionPlacementV1[],
   ): Promise<StoredSectionPlacementV1[]> {
     return this.store.replaceSectionPlacements(placements);
+  }
+
+  async listThreadHandoffs(): Promise<StoredThreadHandoffV1[]> {
+    if (!this.store.listThreadHandoffs) return [];
+    return this.store.listThreadHandoffs();
   }
 
   async getThreadHandoff(targetThreadId: string): Promise<ThreadHandoffMetadata | null> {

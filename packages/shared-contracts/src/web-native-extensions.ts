@@ -4,6 +4,7 @@ import type {
   DesktopExtensionDispose,
 } from "./desktop-extensions.js";
 import type { JsonObject, JsonValue } from "./json-value.js";
+import type { ThreadTreeSnapshot } from "./thread-tree-watch.js";
 
 export const WEB_EXTENSION_REGIONS = [
   "app",
@@ -64,6 +65,18 @@ export interface WebExtensionApi {
     getActive(): WebExtensionActiveSession | null;
     /** Subscribe to main-view active-session changes without replaying the initial snapshot. */
     onChange(listener: (session: WebExtensionActiveSession | null) => void): () => void;
+  };
+  threads?: {
+    /** Subscribe to read-only delegation and context handoff relationships across local Threads. */
+    watchTree(callback: (tree: ThreadTreeSnapshot) => void): () => void;
+  };
+  navigate?: {
+    /** Navigate CH Web to a local or known Thread, loading its summary if needed. */
+    openThread(threadId: string): Promise<void>;
+  };
+  harnesses?: {
+    /** Describe a known Harness's display name and icon URL for UI rendering. */
+    describe(harnessId: string): { name: string; icon?: string } | undefined;
   };
   tabIcon?: { set(pngDataUrl: string | null): void };
   settings: { registerPage(page: WebExtensionContribution): () => void };

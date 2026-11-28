@@ -5,11 +5,14 @@ import path from "node:path";
 import {
   THREAD_TREE_SNAPSHOT_METHOD,
   THREAD_TREE_WATCH_METHOD,
+  harnessIdSchema,
+  hostThreadIdSchema,
+  threadTreeSnapshotSchema,
   threadTreeWatchResultSchema,
 } from "@codexhost/shared-contracts";
 import { expect, it, vi } from "vitest";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
-import { ThreadTreeWatch } from "../src/thread-tree-watch.js";
+import { ThreadTreeWatch, limitTreeEdges } from "../src/thread-tree-watch.js";
 
 it("detects native archives on a cold watch even when status arrived first", async () => {
   vi.useFakeTimers();
@@ -201,5 +204,119 @@ it("detects archived_sessions created later and resolves symlinked thread paths"
   } finally {
     watch.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("exposes handoffs and updatedAtMs on demand via readSnapshot and bounds handoff edges", async () => {
+  const sourceId = hostThreadIdSchema.parse("official-source");
+  const targetId = hostThreadIdSchema.parse("external-target");
+  const codex = harnessIdSchema.parse("codex");
+  const claude = harnessIdSchema.parse("claude");
+  const handoffCreatedAtMs = 1_764_300_000_000;
+  const externalUpdatedIso = "2026-11-28T08:00:00.000Z";
+  const officialUpdatedSeconds = 1_764_290_000;
+
+  const watch = new ThreadTreeWatch({
+    codexHome: path.resolve("fixture-codex-home"),
+    tree: { read: async () => ({ parents: {} }) },
+    repository: {
+      listSummaries: async () => [
+        {
+          formatVersion: 1,
+          state: "ready",
+          hostThreadId: targetId,
+          harnessId: claude,
+          cwd: "/workspace",
+          title: "Handed-off task",
+          createdAt: externalUpdatedIso,
+          updatedAt: externalUpdatedIso,
+          archived: false,
+          transportModelId: "codexhost/claude",
+          ephemeral: false,
+          revision: 1,
+          historyMode: "paginated",
+        },
+      ],
+      listThreadHandoffs: async () => [
+        {
+          targetThreadId: targetId,
+          handoff: {
+            sourceThreadId: sourceId,
+            sourceHarnessId: codex,
+            targetHarnessId: claude,
+            createdAtMs: handoffCreatedAtMs,
+          },
+        },
+      ],
+    },
+    events: new ClientChannelEvents(),
+    localStatus: () => undefined,
+    waiting: () => false,
+    readOfficial: async (id) => ({
+      result: {
+        thread: {
+          id,
+          name: "Original Codex thread",
+          status: { type: "idle" },
+          updatedAt: officialUpdatedSeconds,
+        },
+      },
+    }),
+    send: async () => {},
+    diagnose: (error) => {
+      throw error;
+    },
+  });
+
+  try {
+    // On-demand readSnapshot must populate official handoff nodes even with zero Desktop watchers.
+    const snapshot = threadTreeSnapshotSchema.parse(await watch.readSnapshot());
+    expect(snapshot.handoffs).toEqual({
+      [targetId]: { sourceThreadId: sourceId, createdAtMs: handoffCreatedAtMs },
+    });
+    expect(snapshot.nodes[sourceId]).toEqual({
+      harnessId: codex,
+      title: "Original Codex thread",
+      status: "idle",
+      archived: false,
+      updatedAtMs: officialUpdatedSeconds * 1_000,
+    });
+    expect(snapshot.nodes[targetId]).toEqual({
+      harnessId: claude,
+      title: "Handed-off task",
+      status: "idle",
+      archived: false,
+      updatedAtMs: Date.parse(externalUpdatedIso),
+    });
+
+    // limitTreeEdges prefers newer handoffs when hitting the 5,000-node cap.
+    const parentEdges = Object.fromEntries(
+      Array.from({ length: 4997 }, (_, index) => [`child-${index}`, "root"]),
+    );
+    const bounded = limitTreeEdges(parentEdges, [
+      {
+        targetThreadId: hostThreadIdSchema.parse("older-target"),
+        handoff: {
+          sourceThreadId: hostThreadIdSchema.parse("older-source"),
+          sourceHarnessId: codex,
+          targetHarnessId: claude,
+          createdAtMs: 100,
+        },
+      },
+      {
+        targetThreadId: hostThreadIdSchema.parse("newer-target"),
+        handoff: {
+          sourceThreadId: hostThreadIdSchema.parse("newer-source"),
+          sourceHarnessId: codex,
+          targetHarnessId: claude,
+          createdAtMs: 200,
+        },
+      },
+    ]);
+    expect(bounded.ids.size).toBe(5000);
+    expect(bounded.truncated).toBe(true);
+    expect(Object.keys(bounded.handoffs)).toEqual(["newer-target"]);
+  } finally {
+    watch.close();
   }
 });

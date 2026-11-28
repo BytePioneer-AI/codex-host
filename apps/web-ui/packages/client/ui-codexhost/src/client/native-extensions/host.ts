@@ -11,6 +11,7 @@ import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client
 import {
   type HostExtensionRuntimeEntry,
   type HostExtensionsSnapshotResult,
+  type ThreadTreeSnapshot,
   type WebExtensionDispose,
   type WebExtensionModule,
 } from "@codexhost/shared-contracts";
@@ -24,6 +25,7 @@ import { webNativeExtensionRpcClient, type WebNativeExtensionRpcClient } from ".
 import { createWebWidgetHost } from "./widgets.ts";
 
 const FALLBACK_POLL_INTERVAL_MS = 30_000;
+const THREAD_TREE_COALESCE_MS = 250;
 
 export interface WebNativeExtensionHostHandle {
   /** Trigger an immediate snapshot fetch and reconciliation. */
@@ -95,12 +97,103 @@ export function startWebNativeExtensionHost(
 
   const instances = new Map<string, ActiveInstance>();
   const widgets = createWebWidgetHost(ctx, doc, rpc, importModule);
+  const treeListeners = new Set<(tree: ThreadTreeSnapshot) => void>();
   let lastSnapshotRevision: number | undefined;
+  let lastTreeSnapshot: ThreadTreeSnapshot | undefined;
+  let lastTreeFingerprint: string | undefined;
+  let treeSyncing = false;
+  let treePending = false;
+  let treeCoalesceTimer: ReturnType<typeof setTimeout> | undefined;
+  let treeAbort: AbortController | undefined;
   let stopped = false;
   let syncing = false;
   let pendingSync = false;
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let snapshotAbort: AbortController | undefined;
+
+  const clearTreeCoalesce = (): void => {
+    if (treeCoalesceTimer !== undefined) {
+      clearTimeout(treeCoalesceTimer);
+      treeCoalesceTimer = undefined;
+    }
+  };
+
+  const runTreeSyncLoop = async (): Promise<void> => {
+    if (stopped || treeSyncing || treeListeners.size === 0 || rpc.threadTree === undefined) return;
+    treeSyncing = true;
+    clearTreeCoalesce();
+    try {
+      do {
+        treePending = false;
+        const requestAbort = new AbortController();
+        treeAbort = requestAbort;
+        try {
+          const snapshot = await rpc.threadTree(requestAbort.signal);
+          if (stopped || requestAbort.signal.aborted || treeListeners.size === 0) break;
+          const fingerprint = JSON.stringify({ ...snapshot, revision: 0 });
+          if (fingerprint !== lastTreeFingerprint) {
+            lastTreeFingerprint = fingerprint;
+            lastTreeSnapshot = snapshot;
+            for (const listener of [...treeListeners]) {
+              listener(snapshot);
+            }
+          }
+        } catch (error) {
+          if (!stopped && !requestAbort.signal.aborted) {
+            console.debug("[web-native-extensions] thread tree sync skipped", error);
+          }
+        } finally {
+          if (treeAbort === requestAbort) {
+            treeAbort = undefined;
+          }
+        }
+      } while (!stopped && treePending && treeListeners.size > 0);
+    } finally {
+      treeSyncing = false;
+    }
+  };
+
+  const triggerTreeSync = (immediate = false): void => {
+    if (stopped || treeListeners.size === 0 || rpc.threadTree === undefined) return;
+    if (treeSyncing) {
+      treePending = true;
+      return;
+    }
+    if (immediate) {
+      clearTreeCoalesce();
+      void runTreeSyncLoop();
+      return;
+    }
+    if (treeCoalesceTimer !== undefined) return;
+    treeCoalesceTimer = setTimeout(() => {
+      treeCoalesceTimer = undefined;
+      void runTreeSyncLoop();
+    }, THREAD_TREE_COALESCE_MS);
+  };
+
+  const watchThreadTree = (listener: (tree: ThreadTreeSnapshot) => void): (() => void) => {
+    const wasEmpty = treeListeners.size === 0;
+    treeListeners.add(listener);
+    if (lastTreeSnapshot !== undefined) {
+      listener(lastTreeSnapshot);
+    }
+    if (wasEmpty) {
+      triggerTreeSync(true);
+    } else if (lastTreeSnapshot === undefined) {
+      triggerTreeSync(true);
+    }
+    return () => {
+      treeListeners.delete(listener);
+      if (treeListeners.size === 0) {
+        clearTreeCoalesce();
+        treePending = false;
+        treeAbort?.abort();
+        treeAbort = undefined;
+        lastTreeSnapshot = undefined;
+        lastTreeFingerprint = undefined;
+      }
+    };
+  };
 
   const destroyInstance = (instance: ActiveInstance): void => {
     instance.disposed = true;
@@ -209,6 +302,7 @@ export function startWebNativeExtensionHost(
       document: doc,
       entry,
       rpc,
+      watchThreadTree,
       onSettingsRevisionObserved: (revision) => {
         if (!instance.disposed && instances.get(entry.id) === instance) {
           instance.settingsRevision = revision;
@@ -343,15 +437,24 @@ export function startWebNativeExtensionHost(
     void runSyncLoop();
   };
 
-  // Event-driven refresh via `/api/ch/v1/events` (`extensions-changed`).
+  // Event-driven refresh via `/api/ch/v1/events` (`extensions-changed` and Thread tree updates).
   const unsubscribeEvents = options.subscribeEvents
-    ? options.subscribeEvents(triggerSync)
+    ? options.subscribeEvents(() => {
+        triggerSync();
+        triggerTreeSync();
+      })
     : subscribeHostExtensionEvents({
         document: doc,
         onExtensionsChanged: (revision) => {
           if (revision !== lastSnapshotRevision) triggerSync();
         },
-        onReconnect: triggerSync,
+        onThreadTreeChanged: () => {
+          triggerTreeSync();
+        },
+        onReconnect: () => {
+          triggerSync();
+          triggerTreeSync(true);
+        },
       });
 
   // Immediate sync when returning to the tab; pause fallback polling while hidden.
@@ -362,6 +465,7 @@ export function startWebNativeExtensionHost(
       return;
     }
     triggerSync();
+    triggerTreeSync(true);
   };
   doc.addEventListener("visibilitychange", onVisibilityChange);
 
@@ -375,7 +479,10 @@ export function startWebNativeExtensionHost(
         const nextState = connection.state.getSnapshot();
         const reconnected = nextState === "connected" && previousState !== "connected";
         previousState = nextState;
-        if (reconnected) triggerSync();
+        if (reconnected) {
+          triggerSync();
+          triggerTreeSync(true);
+        }
       }),
     );
     let previousGeneration = connection.generation.getSnapshot()?.id;
@@ -385,6 +492,7 @@ export function startWebNativeExtensionHost(
         if (nextGeneration !== undefined && nextGeneration !== previousGeneration) {
           previousGeneration = nextGeneration;
           triggerSync();
+          triggerTreeSync(true);
         }
       }),
     );
@@ -399,9 +507,16 @@ export function startWebNativeExtensionHost(
       if (stopped) return;
       stopped = true;
       pendingSync = false;
+      treePending = false;
       clearPollTimer();
+      clearTreeCoalesce();
       snapshotAbort?.abort();
       snapshotAbort = undefined;
+      treeAbort?.abort();
+      treeAbort = undefined;
+      treeListeners.clear();
+      lastTreeSnapshot = undefined;
+      lastTreeFingerprint = undefined;
       unsubscribeEvents();
       doc.removeEventListener("visibilitychange", onVisibilityChange);
       for (const unsubscribe of connectionSubscriptions.splice(0)) {

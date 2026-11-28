@@ -31,7 +31,7 @@ import {
 } from "./pi-gotgenes-subagents.js";
 import { ensurePiFastExtension, PI_FAST_ACK, PI_FAST_COMMAND } from "./pi-fast-mode.js";
 import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
-import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
+import { resolvePiExecutable, withPiNodeRuntimeOnPath } from "./command.js";
 import { activePiEntries, mapPiSnapshot, type PiSessionHistory } from "./pi-history.js";
 import {
   latestPiCacheHitRatePercent,
@@ -800,12 +800,15 @@ export class PiRpcSession {
       ...(fastExtension ? { fastExtension } : {}),
       ...(subagentExtension ? { subagentExtension } : {}),
       ...(this.#options.command ? { command: this.#options.command } : {}),
-      environment: withNodeRuntimeOnPath({
-        ...process.env,
-        ...this.#options.environment,
-        PI_SKIP_VERSION_CHECK: "1",
-        PI_TELEMETRY: "0",
-      }),
+      environment: withPiNodeRuntimeOnPath(
+        {
+          ...process.env,
+          ...this.#options.environment,
+          PI_SKIP_VERSION_CHECK: "1",
+          PI_TELEMETRY: "0",
+        },
+        { ...(this.#options.command ? { command: this.#options.command } : {}) },
+      ),
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
       ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
       ...(this.#options.model ? { model: this.#options.model } : {}),

@@ -1,4 +1,4 @@
-/** Settings row that turns Web Push notifications on or off for this browser. */
+/** Settings row that turns notifications on or off for this browser or native shell. */
 import { useEffect, useState, type ReactNode } from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
@@ -9,13 +9,14 @@ import {
   sendTestNotification,
   type NotificationState,
 } from "./notifications.ts";
+import { getShellNotificationBridge } from "./shell-notifications.ts";
 import css from "./NotificationsRow.module.css";
 
 export type NotificationsRowProps = PropsRuntime<"settings.general.item"> &
   PropsLocale<"codexhostImport">;
 
 /**
- * Render the notification toggle with its current browser state.
+ * Render the notification toggle with its current browser or native-shell state.
  * @param props - slot props with the locale seat.
  * @returns the row.
  */
@@ -25,12 +26,23 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
   const [testing, setTesting] = useState(false);
   const [testSent, setTestSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const bridge = getShellNotificationBridge();
+  const shellMode = bridge !== undefined;
+  const openSystemSettings = bridge?.openSystemSettings;
 
   useEffect(() => {
-    void notificationState().then(setState, () => {
-      setState("unsupported");
-    });
-  }, []);
+    const refresh = () => {
+      void notificationState().then(setState, () => {
+        setState("unsupported");
+      });
+    };
+    refresh();
+    if (!shellMode) return;
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+    };
+  }, [shellMode]);
 
   const run = (action: () => Promise<NotificationState>): void => {
     setBusy(true);
@@ -48,14 +60,26 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
     );
   };
 
+  const descriptionKey =
+    state === null
+      ? null
+      : shellMode && state === "denied"
+        ? "notifications.shell.denied"
+        : shellMode && state === "unsupported"
+          ? "notifications.shell.unsupported"
+          : (`notifications.${state}` as const);
   const description =
     error ??
-    (testSent ? t("notifications.testSent") : state === null ? "" : t(`notifications.${state}`));
+    (testSent ? t("notifications.testSent") : descriptionKey === null ? "" : t(descriptionKey));
+
   const test = (): void => {
     setTesting(true);
     setError(null);
     setTestSent(false);
-    void sendTestNotification()
+    void sendTestNotification({
+      title: t("notifications.testTitle"),
+      body: t("notifications.testBody"),
+    })
       .then((sent) => {
         if (sent) setTestSent(true);
         else setError(t("notifications.testNotSent"));
@@ -63,6 +87,15 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
       .catch(() => setError(t("notifications.testFailed")))
       .finally(() => setTesting(false));
   };
+
+  const openSettings = (): void => {
+    if (openSystemSettings === undefined) return;
+    setError(null);
+    void openSystemSettings().catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    });
+  };
+
   return (
     <div className={css.row}>
       <div className={css.rowText}>
@@ -71,6 +104,20 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
           {description}
         </div>
       </div>
+      {state === "denied" && openSystemSettings !== undefined && (
+        <div className={css.actions}>
+          <button
+            type="button"
+            className={css.button}
+            disabled={busy || testing}
+            onClick={() => {
+              openSettings();
+            }}
+          >
+            {t("notifications.openSettings")}
+          </button>
+        </div>
+      )}
       {(state === "off" || state === "on") && (
         <div className={css.actions}>
           {state === "on" && (

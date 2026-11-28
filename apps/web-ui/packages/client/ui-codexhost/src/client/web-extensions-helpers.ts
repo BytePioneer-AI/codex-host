@@ -234,16 +234,31 @@ export function extensionPageIconUrl({
     : resolveHostExtensionAssetUrl({ id, activationId, digest, path: manifest.icon }, document);
 }
 
+export function resolveCatalogIconProxyUrl(
+  entry: HostExtensionCatalogEntry | undefined,
+): string | undefined {
+  if (!entry?.icon) return undefined;
+  const safe = parseSafeIconUrl(entry.icon);
+  if (!safe) return undefined;
+  if (safe.startsWith("data:")) return safe;
+  try {
+    const query = new URLSearchParams({ id: entry.id, v: entry.version });
+    return new URL(`api/extensions/catalog-icon?${query.toString()}`, document.baseURI).href;
+  } catch {
+    return safe;
+  }
+}
+
 export function resolveHostIconUrl(
   item: HostExtensionListItem | undefined,
   catalogOrIconUrl: HostExtensionCatalogEntry | string | undefined,
 ): string | undefined {
   const localIcon = item?.state === "valid" ? parseSafeIconUrl(item.iconDataUrl) : null;
   if (localIcon) return localIcon;
-  const remoteRaw =
-    typeof catalogOrIconUrl === "string" ? catalogOrIconUrl : catalogOrIconUrl?.icon;
-  const remoteIcon = parseSafeIconUrl(remoteRaw);
-  return remoteIcon ?? undefined;
+  if (typeof catalogOrIconUrl === "string") {
+    return parseSafeIconUrl(catalogOrIconUrl) ?? undefined;
+  }
+  return resolveCatalogIconProxyUrl(catalogOrIconUrl);
 }
 
 export function resolveScreenshotUrls(
@@ -254,12 +269,71 @@ export function resolveScreenshotUrls(
     SAFE_SCREENSHOT_DATA_URL.test(url),
   );
   if (local.length > 0) return local;
+  if (
+    item?.state === "valid" &&
+    item.manifest.screenshots &&
+    item.manifest.screenshots.length > 0
+  ) {
+    return item.manifest.screenshots.map((path) =>
+      resolveHostExtensionAssetUrl(
+        { id: item.id, activationId: item.activationId, digest: item.digest, path },
+        document,
+      ),
+    );
+  }
   const remote: string[] = [];
   for (const raw of catalogEntry?.screenshots ?? []) {
     const safe = parseSafeHttpUrl(raw);
     if (safe) remote.push(safe);
   }
   return remote;
+}
+
+function compareCatalogEntriesByRank(
+  left: HostExtensionCatalogEntry,
+  right: HostExtensionCatalogEntry,
+): number {
+  const officialDelta =
+    Number(right.trustTier === "official") - Number(left.trustTier === "official");
+  if (officialDelta !== 0) return officialDelta;
+  const downloadsDelta = (right.downloads ?? 0) - (left.downloads ?? 0);
+  if (downloadsDelta !== 0) return downloadsDelta;
+  const iconDelta = Number(Boolean(right.icon)) - Number(Boolean(left.icon));
+  if (iconDelta !== 0) return iconDelta;
+  const crossPlatformDelta =
+    Number(right.targets.includes("web") && right.targets.includes("desktop")) -
+    Number(left.targets.includes("web") && left.targets.includes("desktop"));
+  if (crossPlatformDelta !== 0) return crossPlatformDelta;
+  const starsDelta = (right.stars ?? 0) - (left.stars ?? 0);
+  if (starsDelta !== 0) return starsDelta;
+  return left.id.localeCompare(right.id, "en");
+}
+
+const MAX_EXPLICIT_FEATURED_ENTRIES = 12;
+
+/**
+ * Pick curated entries for the Featured showcase section on the Marketplace home.
+ * When any entry explicitly declares `featured: true`, only those curated entries are returned
+ * (ordered by ascending `featuredOrder`, then rank tie-breaker, up to 12 entries).
+ * Otherwise falls back to the automatic top-`limit` ranking.
+ */
+export function selectFeaturedCatalogEntries(
+  entries: readonly HostExtensionCatalogEntry[],
+  limit = 3,
+): readonly HostExtensionCatalogEntry[] {
+  const explicit = entries.filter((entry) => entry.featured === true);
+  if (explicit.length > 0) {
+    return [...explicit]
+      .sort((left, right) => {
+        const leftOrder = left.featuredOrder ?? Number.POSITIVE_INFINITY;
+        const rightOrder = right.featuredOrder ?? Number.POSITIVE_INFINITY;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return compareCatalogEntriesByRank(left, right);
+      })
+      .slice(0, MAX_EXPLICIT_FEATURED_ENTRIES);
+  }
+  if (entries.length <= limit) return [...entries].sort(compareCatalogEntriesByRank);
+  return [...entries].sort(compareCatalogEntriesByRank).slice(0, limit);
 }
 
 export function hasHostCatalogUpdate(

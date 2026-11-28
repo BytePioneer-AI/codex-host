@@ -47,6 +47,13 @@ fn main() {
                 "window_zoom_get",
                 "window_zoom_step",
                 "window_zoom_set",
+                "notification_get_state",
+                "notification_request_permission",
+                "notification_set_enabled",
+                "notification_send",
+                "notification_open_settings",
+                "extension_window_drag",
+                "extension_window_hit_regions",
             ])),
     )
     .expect("build Tauri desktop shell");

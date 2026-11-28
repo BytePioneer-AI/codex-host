@@ -320,6 +320,8 @@ export type WorkspaceBrowserInjected = {
   requestSessionRename: (sessionId: SessionId, currentTitle: string) => void;
   /** Tell the user an archived row cannot be opened (a click on it). */
   notifyArchivedNotOpenable: () => void;
+  /** Pin or unpin a Workspace in the shared sidebar projection. */
+  setWorkspacePinned?: ((workspaceId: WorkspaceId, pinned: boolean) => Promise<void>) | undefined;
   /** Move a local Codex project into a native sidebar section, or back to Workspaces. */
   moveWorkspaceToSection?:
     ((workspaceId: WorkspaceId, sectionId: string | null) => Promise<void>) | undefined;

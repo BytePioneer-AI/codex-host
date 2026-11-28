@@ -22,7 +22,7 @@ export type ReleaseTarget =
 export interface CodexhostLatestRelease {
   version: string;
   releaseNotes: string | null;
-  releaseNotesUrl: string;
+  releaseNotesUrl: string | null;
   assets: readonly CodexhostReleaseAsset[];
 }
 

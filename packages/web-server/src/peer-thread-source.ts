@@ -72,6 +72,7 @@ export interface PeerThreadListResult {
   rows: ChThread[];
   harnessIds: ReadonlyMap<string, string>;
   archivedIds: ReadonlySet<string>;
+  pinnedIds: readonly string[];
   parents: Readonly<Record<string, string>>;
   ownershipAvailable: boolean;
   /** Ancestor thread IDs whose archived/unarchived state was not confirmed by this read. */
@@ -109,6 +110,7 @@ export class PeerThreadSource {
   private skillsListUnavailable = false;
   private threadCommandsUnavailable = false;
   private harnessCommandsUnavailable = false;
+  private pinsUnavailable = false;
   private treeUnavailable = false;
   private treeEpoch: string | undefined;
   private treeGeneration = 0;
@@ -120,16 +122,27 @@ export class PeerThreadSource {
   >();
   private archiveSeq = 0;
   private readonly knownArchived = new Map<string, { archived: boolean; seq: number }>();
+  private pinSeq = 0;
+  private pinnedIds: string[] = [];
+  private pinWrites: Promise<unknown> = Promise.resolve();
   private closed = false;
 
   get generation(): number {
     return this.listGeneration;
   }
 
+  cachedPinnedIds(): readonly string[] {
+    return [...this.pinnedIds];
+  }
+
   setArchived(threadId: string, archived: boolean): void {
     this.knownArchived.set(threadId, { archived, seq: ++this.archiveSeq });
     const cached = this.confirmedAncestors.get(threadId);
     if (cached) cached.archived = archived;
+    if (archived && this.pinnedIds.includes(threadId)) {
+      this.pinnedIds = this.pinnedIds.filter((id) => id !== threadId);
+      this.pinSeq++;
+    }
   }
 
   private invalidateTree(nextEpoch: string | undefined, clearKnownArchived = false): void {
@@ -140,7 +153,11 @@ export class PeerThreadSource {
     this.treeEpoch = nextEpoch;
     this.tree.clear();
     this.confirmedAncestors.clear();
-    if (clearKnownArchived) this.knownArchived.clear();
+    if (clearKnownArchived) {
+      this.knownArchived.clear();
+      this.pinnedIds = [];
+      this.pinSeq++;
+    }
   }
 
   constructor(private readonly options: PeerThreadSourceOptions) {
@@ -166,6 +183,7 @@ export class PeerThreadSource {
         this.skillsListUnavailable = false;
         this.threadCommandsUnavailable = false;
         this.harnessCommandsUnavailable = false;
+        this.pinsUnavailable = false;
         if (this.treeEpoch !== undefined && this.treeEpoch !== event.cursor.epoch) {
           this.invalidateTree(event.cursor.epoch, true);
         } else {
@@ -265,6 +283,7 @@ export class PeerThreadSource {
     const generation = this.treeGeneration;
     const listGeneration = this.listGeneration;
     const listStartArchiveSeq = this.archiveSeq;
+    const listStartPinSeq = this.pinSeq;
     const newerArchiveUpdate = (id: string): boolean | undefined => {
       const known = this.knownArchived.get(id);
       return known && known.seq > listStartArchiveSeq ? known.archived : undefined;
@@ -279,11 +298,13 @@ export class PeerThreadSource {
       rows: [],
       harnessIds: new Map(),
       archivedIds: new Set(),
+      pinnedIds: [],
       parents: {},
       ownershipAvailable: false,
       stale: true,
       treeStale: true,
     });
+    const pinsPromise = this.readPeerPins();
     const treePromise = this.treeUnavailable
       ? Promise.resolve("unavailable" as const)
       : this.tree.refresh(isCurrent).then(
@@ -356,6 +377,7 @@ export class PeerThreadSource {
             rows: pageRows,
             harnessIds: pageHarnessIds,
             archivedIds: pageArchivedIds,
+            pinnedIds: [],
             parents: {},
             ownershipAvailable,
           });
@@ -538,10 +560,15 @@ export class PeerThreadSource {
       }
     }
 
+    const listedPins = await pinsPromise;
     if (!isCurrentList()) {
       return staleResult();
     }
     applyNewerArchiveUpdates();
+    const nextPinnedIds = [
+      ...new Set(this.pinSeq === listStartPinSeq ? listedPins : this.pinnedIds),
+    ].filter((id) => !archivedIds.has(id));
+    this.pinnedIds = nextPinnedIds;
     this.knownRows.clear();
     for (const [id, row] of rows) this.knownRows.set(id, row);
     this.knownHarnesses.clear();
@@ -555,12 +582,42 @@ export class PeerThreadSource {
       rows: [...rows.values()],
       harnessIds,
       archivedIds,
+      pinnedIds: [...nextPinnedIds],
       parents,
       ownershipAvailable,
       ...(retainedAncestorIds.size > 0 ? { retainedAncestorIds } : {}),
       ...(unarchivedIds.size > 0 ? { unarchivedIds } : {}),
       ...(treeStale ? { treeStale: true } : {}),
     };
+  }
+
+  private async readPeerPins(): Promise<string[]> {
+    if (this.closed || this.pinsUnavailable) return [];
+    try {
+      return await this.host.pins();
+    } catch (error: unknown) {
+      if (isMethodUnavailableError(error)) {
+        this.pinsUnavailable = true;
+      }
+      return [];
+    }
+  }
+
+  pinSession(threadId: string, pinned: boolean): Promise<string[]> {
+    const next = this.pinWrites.then(async () => {
+      if (this.closed) {
+        throw new RpcError("remote/offline", "Remote peer host client is closed");
+      }
+      const ids = await this.host.pins({ threadId, pinned });
+      if (!this.closed) {
+        this.pinsUnavailable = false;
+        this.pinnedIds = [...ids];
+        this.pinSeq++;
+      }
+      return [...ids];
+    });
+    this.pinWrites = next.catch(() => undefined);
+    return next;
   }
 
   private async listThreadsFallback(rows: Map<string, ChThread>): Promise<void> {

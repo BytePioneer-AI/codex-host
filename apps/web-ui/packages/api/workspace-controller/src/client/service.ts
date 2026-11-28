@@ -103,6 +103,8 @@ export interface IWorkspaces {
    * @param sessionId - Session to unpin.
    */
   unpinSession(sessionId: SessionId): Promise<void>;
+  /** Pin or unpin a Workspace in the shared sidebar projection. */
+  setWorkspacePinned?(workspaceId: WorkspaceId, pinned: boolean): Promise<void>;
   /** Place a local project in a sidebar section, or return it to Workspaces. */
   moveWorkspaceToSection?(workspaceId: WorkspaceId, sectionId: string | null): Promise<void>;
   moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
@@ -199,6 +201,11 @@ export class WorkspaceController extends Service implements IWorkspaces {
   async unpinSession(sessionId: SessionId): Promise<void> {
     const result = await this.model.unpinSession(sessionId);
     if (!result.ok) throw commandError("session unpin", result.error);
+  }
+
+  async setWorkspacePinned(workspaceId: WorkspaceId, pinned: boolean): Promise<void> {
+    const result = await this.model.setWorkspacePinned({ workspaceId, pinned });
+    if (!result.ok) throw commandError(pinned ? "pin" : "unpin", result.error);
   }
 
   async insertSessionBefore(

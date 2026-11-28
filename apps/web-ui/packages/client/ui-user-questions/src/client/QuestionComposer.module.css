@@ -74,6 +74,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .statusGroup {
@@ -131,6 +133,8 @@
   position: relative;
   min-width: 0;
   overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .title {
@@ -415,6 +419,8 @@
   color: var(--dsw-alias-label-tertiary);
   font-size: 14px;
   line-height: 24px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Custom answer row (figma 973:36427): an option-shaped row whose copy is an
@@ -492,6 +498,8 @@
   background: transparent;
   color: var(--dsw-alias-label-primary);
   caret-color: var(--dsw-alias-state-business-primary);
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .fieldInput::placeholder {
@@ -537,6 +545,8 @@
   font-size: 11px;
   line-height: 16px;
   overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .feedback:empty {

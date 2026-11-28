@@ -27,7 +27,7 @@ struct ReadyOwner {
     version: String,
 }
 
-pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn Error>> {
+fn spawn_command(shell: &Path, data: &Path, onboarding: bool) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::new(shell);
     if onboarding {
         command.arg("--onboarding");
@@ -41,8 +41,15 @@ pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(path) = codexhost_platform::user_shell_path() {
+        command.env("PATH", path);
+    }
     configure_detached_service_command(&mut command)?;
-    command.spawn()?;
+    Ok(command)
+}
+
+pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn Error>> {
+    spawn_command(shell, data, onboarding)?.spawn()?;
     Ok(())
 }
 
@@ -81,14 +88,25 @@ fn read_record(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     }
 }
 
+fn live_owner(bytes: &[u8]) -> Option<ProcessIdentity> {
+    serde_json::from_slice::<ReadyOwner>(bytes)
+        .ok()
+        .and_then(|record| process_instance(record.pid, record.started_at_micros))
+}
+
+pub fn running(data: &Path) -> std::io::Result<bool> {
+    Ok(read_record(&data.join(READY))?
+        .as_deref()
+        .and_then(live_owner)
+        .is_some())
+}
+
 pub fn stop(data: &Path) -> Result<bool, Box<dyn Error>> {
     let path = data.join(READY);
     let Some(bytes) = read_record(&path)? else {
         return Ok(false);
     };
-    let owner = serde_json::from_slice::<ReadyOwner>(&bytes)
-        .ok()
-        .and_then(|record| process_instance(record.pid, record.started_at_micros));
+    let owner = live_owner(&bytes);
     if let Some(owner) = owner {
         stop_instance(owner)?;
     }
@@ -112,6 +130,7 @@ mod tests {
         let data =
             std::env::temp_dir().join(format!("codexhost-shell-stop-{}", std::process::id()));
         fs::create_dir(&data).unwrap();
+        assert!(!running(&data).unwrap());
         assert!(!stop(&data).unwrap());
 
         let current = codexhost_platform::process_identity(std::process::id()).unwrap();
@@ -125,6 +144,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&record).unwrap(), fixture);
         let path = data.join(READY);
         fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(!running(&data).unwrap());
         assert!(!stop(&data).unwrap());
         assert!(!path.exists());
         assert!(process_instance(current.id, current.started_at_micros).is_some());
@@ -139,6 +159,7 @@ mod tests {
         let path = data.join(READY);
         fs::write(&path, b"{\"pid\":").unwrap();
 
+        assert!(!running(&data).unwrap());
         assert!(!stop(&data).unwrap());
         assert!(!path.exists());
         fs::remove_dir_all(data).unwrap();
@@ -174,10 +195,65 @@ mod tests {
         };
         let path = data.join(READY);
         fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(running(&data).unwrap());
         let reaper = thread::spawn(move || shell.wait().unwrap());
         assert!(stop(&data).unwrap());
         assert!(reaper.join().unwrap().success());
+        assert!(!running(&data).unwrap());
         assert!(!path.exists());
         fs::remove_dir_all(data).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn spawn_command_injects_macos_login_shell_path_under_minimal_path() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        const TEST: &str =
+            "desktop_shell::tests::spawn_command_injects_macos_login_shell_path_under_minimal_path";
+        const MARKER: &str = "CODEXHOST_TEST_DESKTOP_SHELL_MACOS_PATH";
+        if let Some(root) = std::env::var_os(MARKER) {
+            let root = PathBuf::from(root);
+            let command = spawn_command(&root.join("codexhost-shell"), &root, false).unwrap();
+            let path = command
+                .get_envs()
+                .find_map(|(key, value)| (key == "PATH").then_some(value))
+                .flatten()
+                .expect("PATH must be injected on macOS");
+            assert_eq!(
+                path,
+                "/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            );
+            return;
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codexhost-shell-path-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let fake_shell = root.join("zsh");
+        fs::write(
+            &fake_shell,
+            "#!/bin/sh\nprintf '\\0CODEXHOST_LOGIN_PATH_V1\\0/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin\\0'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_shell, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env(MARKER, &root)
+            .env("HOME", &root)
+            .env("SHELL", &fake_shell)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .status()
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
     }
 }

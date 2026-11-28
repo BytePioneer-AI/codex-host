@@ -40,6 +40,7 @@ import {
 } from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { threadRecencyMs } from "./ch-thread-time.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
 import { ChHarnessCommands, permissionCommand } from "./ch-harness-commands.ts";
@@ -355,7 +356,7 @@ export class ChSessions {
   private refreshPins(): Promise<string[]> {
     return this.pins.refresh().catch((error: unknown) => {
       console.error("[session/list] native pins unavailable", error);
-      return this.workspaces.pinnedSessionIds();
+      return this.workspaces.localPinnedSessionIds();
     });
   }
   private async listWorkspacePage(
@@ -541,7 +542,12 @@ export class ChSessions {
     const assignments = await timing.measure("projects", () =>
       this.host.projects([...rows.keys()]),
     );
-    const projects = { ...assignments, projects: definitions.projects };
+    const pinnedProjects = assignments.pinnedProjects ?? definitions.pinnedProjects;
+    const projects = {
+      ...assignments,
+      projects: definitions.projects,
+      ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
+    };
     if (this.closed) return;
     // A Host-confirmed move supersedes project metadata from this in-flight read.
     for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {
@@ -591,6 +597,7 @@ export class ChSessions {
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
         this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
+        this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
         return;
       }
       if (this.workspaces.usesNativeProjects) return;
@@ -625,6 +632,7 @@ export class ChSessions {
       }
       timing.count("workspaceReferences", references.length);
       this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
+      this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
     });
   }
   private nativeProjectResolver(
@@ -661,7 +669,7 @@ export class ChSessions {
     return JSON.stringify([
       threadListTitle(row),
       row.cwd,
-      row.updatedAt,
+      threadRecencyMs(row),
       row.status.type,
       row.parentThreadId ?? null,
       this.tree.parent(row.id),
@@ -1026,12 +1034,12 @@ export class ChSessions {
       title: threadListTitle(row),
       codexhostImportSource: row.codexhostImportSource ?? null,
       harnessIdentity: { id: harnessId, name: await this.catalog.name(harnessId) },
-      sessionListMetadata: { blank: false, lastPromptAt: row.updatedAt * 1000 },
+      sessionListMetadata: { blank: false, lastPromptAt: threadRecencyMs(row) },
     };
     return {
       sessionId: row.id,
       cwd: row.cwd,
-      updatedAt: row.updatedAt * 1000,
+      updatedAt: threadRecencyMs(row),
       running: row.status.type === "active",
       blank: false,
       agentAvailable: true,
@@ -1514,9 +1522,9 @@ export class ChSessions {
         await this.owner(id);
         if (!this.threads.hasHarness(id))
           throw new RpcError("session/not-found", "This Thread is not in the shared catalog.");
-        const pinnedSessionIds = await this.pins.sync({ threadId: id, pinned });
+        await this.pins.sync({ threadId: id, pinned });
         await this.refresh().catch(() => undefined);
-        return { pinnedSessionIds };
+        return { pinnedSessionIds: this.workspaces.pinnedSessionIds() };
       });
     }
     rpc.register("workspace/moveSessionToSection", async (args) => {

@@ -19,6 +19,7 @@ import { FakeChHost } from "./support/ch-host.ts";
 interface Summary {
   sessionId: string;
   running: boolean;
+  updatedAt: number;
   parentSessionId?: string;
   origin?: string;
   projections: { kind: string; asOfSeq: number; values: Record<string, unknown> };
@@ -87,6 +88,35 @@ it("lists Threads without loading history or controls", async (t) => {
         !["thread/read", "thread/turns/list", "codexhost/harness/inspect"].includes(method),
     ),
   );
+});
+
+it("keeps list, detail and catalog updates on conversation recency rather than metadata writes", async (t) => {
+  const f = fixture(t);
+  const source = f.host.threads.get("source");
+  assert.ok(source);
+  Object.assign(source, { updatedAt: 2000, recencyAt: 1000 });
+  const legacy = f.host.add("legacy", f.root);
+  Object.assign(legacy, { recencyAt: null });
+  const epoch = f.host.add("epoch", f.root);
+  Object.assign(epoch, { recencyAt: 0 });
+  const items = await f.list();
+  assert.equal(items.find((item) => item.sessionId === "source")?.updatedAt, 1_000_000);
+  assert.equal(items.find((item) => item.sessionId === "legacy")?.updatedAt, 2_000_000);
+  assert.equal(items.find((item) => item.sessionId === "epoch")?.updatedAt, 0);
+  const detail = await f.call<{ values: Record<string, unknown> }>("session/projections", {
+    sessionId: "source",
+  });
+  assert.deepEqual(detail.values.sessionListMetadata, { blank: false, lastPromptAt: 1_000_000 });
+  source.updatedAt += 1;
+  await f.list();
+  assert.deepEqual(f.upserts, [], "metadata writes alone do not change the displayed time");
+  Object.assign(source, { recencyAt: 1500 });
+  await f.list();
+  assert.equal(f.upserts.at(-1)?.updatedAt, 1_500_000);
+  assert.deepEqual(f.upserts.at(-1)?.projections.values.sessionListMetadata, {
+    blank: false,
+    lastPromptAt: 1_500_000,
+  });
 });
 
 it("keeps child and connection hints but excludes unrelated loaded projections from lists and upserts", async (t) => {

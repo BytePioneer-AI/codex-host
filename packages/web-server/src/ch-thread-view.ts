@@ -15,6 +15,7 @@ import { externalImportHistoryItems } from "./ch-external-import-history.ts";
 import { conversationItems } from "./ch-file-operations.ts";
 import { SessionLog, type ProjectionListener } from "./session-log.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { threadRecencyMs } from "./ch-thread-time.ts";
 import { summarizeTurnDiffs } from "./ch-turn-changes.ts";
 import { RpcError } from "./transport.ts";
 import { localImagePath } from "./native-user-input.ts";
@@ -62,6 +63,7 @@ export interface ChThread {
   preview?: string | undefined;
   createdAt: number;
   updatedAt: number;
+  recencyAt?: number | null | undefined;
   status: { type: string };
   turns: ChTurn[];
   historyMode?: "legacy" | "paginated";
@@ -587,7 +589,7 @@ export class ChThreadView {
     this.log.setProjection("codexhostImportSource", thread.codexhostImportSource ?? null);
     this.log.setProjection("sessionListMetadata", {
       blank: thread.turns.length === 0,
-      lastPromptAt: thread.updatedAt * 1000,
+      lastPromptAt: threadRecencyMs(thread),
     });
     try {
       this.projectTurns(thread, projectionsByTurn);
@@ -744,8 +746,8 @@ export class ChThreadView {
         this.turns.set(turn.id, view);
       }
       if (!complete) this.log.clock = undefined;
-      if (view.done) continue;
-      const projector = view.projector!;
+      const projector = view.projector;
+      if (view.done || !projector) continue;
       const reasoningPreviewIds = new Set(
         items.filter((item) => item.type === "reasoning").map((item) => item.id),
       );

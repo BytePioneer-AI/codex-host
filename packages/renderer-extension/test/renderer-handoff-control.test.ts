@@ -614,7 +614,8 @@ describe("installRendererHandoffControl", () => {
       });
     if (scenario === "request") dom.portal.setAttribute("data-codex-composer-request", "true");
     if (scenario === "running") {
-      const button = dom.composer.querySelector("button")!;
+      const button = dom.composer.querySelector("button");
+      if (!button) throw new Error("Expected composer button");
       button.type = "button";
       button.setAttribute("aria-label", "Stop");
     }

@@ -74,14 +74,14 @@ import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browse
 import { SidebarBrowserDirect, sidebarDirectStunUrls } from "./sidebar-browser-direct.ts";
 import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
-import { PushNotifier } from "./push.ts";
+import { PushNotifier, type PushMessage } from "./push.ts";
 import { ChPushNotifications } from "./ch-push-notifications.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS, HMR_CLIENT_PLUGIN } from "./plugins.ts";
 import { ChSessions } from "./ch-sessions.ts";
 import { WebHarnessDisplaySettings } from "./harness-display-settings.ts";
 import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
-import { RemoteSessions } from "./remote-sessions.ts";
+import { RemoteSessions, remoteSessionId } from "./remote-sessions.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
 import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
 import { createOfficeEngine } from "./office-engine.ts";
@@ -333,8 +333,15 @@ if (accessTokens !== undefined) {
     downloadTickets.revokeOwner(id);
   });
 }
+const broadcastNotification = (message: PushMessage): void => {
+  events.emit("codexhost/notification", message);
+};
+const hasNotificationListeners = (): boolean => events.clientCount > 0;
 const pushNotifications = chHost.realtime
-  ? new ChPushNotifications(chHost.realtime, push)
+  ? new ChPushNotifications(chHost.realtime, push, {
+      onNotification: broadcastNotification,
+      hasListeners: hasNotificationListeners,
+    })
   : undefined;
 const devWebUi = values["dev-web-ui"] === undefined ? undefined : resolve(values["dev-web-ui"]);
 const assetOptions: WebAssetOptions =
@@ -468,6 +475,14 @@ const peerManager = new PeerHostManager(
     allowLoopback: allowLoopbackPeers,
     localNodeId: localPeerNodeId,
     projector: (threadId) => peerAttachments.projector(threadId),
+    onPeerRealtime: (hostId, realtime) => {
+      const peerNotifications = new ChPushNotifications(realtime, push, {
+        onNotification: broadcastNotification,
+        hasListeners: hasNotificationListeners,
+        sessionId: (threadId) => remoteSessionId(hostId, threadId),
+      });
+      return () => peerNotifications.close();
+    },
     resolveSelfShare: async (preferredOrigin) => {
       if (!accessTokens) return { error: "Remote access tokens are disabled on this Host" };
       const { networkUrls } = await readNetworkAccess();

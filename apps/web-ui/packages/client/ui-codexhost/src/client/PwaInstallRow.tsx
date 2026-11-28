@@ -8,6 +8,7 @@ import {
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { PwaInstall } from "@deepseek-ai/dsh-client-web";
 import { ANDROID_APK_RELEASES_URL } from "./MobileGuideCard.tsx";
+import { isNativeShell } from "./shell-notifications.ts";
 import css from "./PwaInstallRow.module.css";
 
 export interface PwaInstallFace {
@@ -30,7 +31,7 @@ export function PwaInstallRow({
   const guideId = useId();
   const descriptionId = useId();
 
-  if (isDesktopShell()) return null;
+  if (isNativeShell()) return null;
 
   const nativePrompt = state === "available" || state === "prompting";
   const summaryKey =

@@ -6,10 +6,12 @@ import type { ShortcutCommand, ShortcutCommandId } from "@deepseek-ai/dsh-client
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { UiWorkspace } from "./navigation.ts";
+import { canForkSession } from "./session-actions/capabilities.ts";
 
 /** Transient requests consumed by the existing workspace browser. */
 export interface WorkspaceShortcutState {
   readonly searchRequest: number;
+  readonly activityViewRequest: number;
   readonly addRequested: boolean;
   readonly directoryBusy: boolean;
   readonly renameTarget: { readonly sessionId: SessionId; readonly currentTitle: string } | null;
@@ -19,6 +21,7 @@ export interface WorkspaceShortcutState {
 interface WorkspaceShortcutControls {
   state: SnapshotStore<WorkspaceShortcutState>;
   search: () => void;
+  toggleActivityView: () => void;
   add: () => void;
   closeAdd: () => void;
   directoryBusy: (busy: boolean) => void;
@@ -35,6 +38,7 @@ interface WorkspaceShortcutControls {
 export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
   const state = createSnapshotStore<WorkspaceShortcutState>({
     searchRequest: 0,
+    activityViewRequest: 0,
     addRequested: false,
     directoryBusy: false,
     renameTarget: null,
@@ -45,6 +49,10 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
     state,
     search: () => {
       state.set({ ...state.getSnapshot(), searchRequest: state.getSnapshot().searchRequest + 1 });
+    },
+    toggleActivityView: () => {
+      const current = state.getSnapshot();
+      state.set({ ...current, activityViewRequest: current.activityViewRequest + 1 });
     },
     add: () => {
       state.set(
@@ -153,6 +161,15 @@ export function installWorkspaceShortcuts(
     () => ({ status: "handled", run: controls.search }),
   );
   register(
+    "session.activityView",
+    () => t("activityView.label"),
+    ["activity view", "unread sessions"],
+    "KeyU",
+    ["primary", "alt"],
+    ["primary", "alt"],
+    () => ({ status: "handled", run: controls.toggleActivityView }),
+  );
+  register(
     "workspace.add",
     () => t("workspace.add"),
     ["add workspace", "open folder"],
@@ -198,6 +215,8 @@ export function installWorkspaceShortcuts(
     () => {
       const target = current();
       if (target === undefined) return { status: "blocked", reason: t("shortcut.noSession") };
+      if (!canForkSession(target))
+        return { status: "blocked", reason: t("shortcut.remoteForkUnsupported") };
       if (target.blank) return { status: "blocked", reason: t("shortcut.noCompletedTurn") };
       return {
         status: "handled",

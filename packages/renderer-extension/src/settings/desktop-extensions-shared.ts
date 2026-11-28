@@ -97,11 +97,12 @@ const SAFE_SCREENSHOT_DATA_URL_PATTERN =
 const SAFE_ICON_DATA_URL_PATTERN =
   /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/]+={0,2}$/u;
 
-export type DesktopExtensionIconSize = "card" | "detail";
+export type DesktopExtensionIconSize = "card" | "row" | "detail";
 
 export interface CreateExtensionIconOptions {
   readonly document?: Document | undefined;
   readonly iconUrl?: string | null | undefined;
+  readonly resolveIconUrl?: (() => Promise<string | null>) | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
   readonly size: DesktopExtensionIconSize;
   readonly alt?: string | undefined;
@@ -245,10 +246,17 @@ export function resolveInstalledExtensionIconUrl(
 }
 
 export function createExtensionIconElement(options: CreateExtensionIconOptions): HTMLSpanElement {
-  const { document: targetDocument = document, iconUrl, categories, size, alt = "" } = options;
+  const {
+    document: targetDocument = document,
+    iconUrl,
+    resolveIconUrl,
+    categories,
+    size,
+    alt = "",
+  } = options;
   const category = resolveExtensionIconCategory(categories);
   const iconName = EXTENSION_CATEGORY_ICON_MAP[category];
-  const glyphSize = size === "detail" ? 22 : 16;
+  const glyphSize = size === "detail" ? 24 : size === "row" ? 20 : 19;
 
   const container = createEl(
     targetDocument,
@@ -257,32 +265,105 @@ export function createExtensionIconElement(options: CreateExtensionIconOptions):
   );
   container.dataset.iconSize = size;
   container.dataset.iconCategory = category;
+  container.dataset.iconKind = "fallback";
+  container.dataset.iconName = iconName;
   container.setAttribute("aria-hidden", "true");
 
-  let renderedFallback = false;
-  const renderFallback = (): void => {
-    if (renderedFallback) return;
-    renderedFallback = true;
-    container.dataset.iconKind = "fallback";
-    container.dataset.iconName = iconName;
-    container.replaceChildren(createRendererSettingsIcon(iconName, glyphSize));
-  };
+  const fallbackLayer = createEl(targetDocument, "span", "settings-extensions-icon__fallback");
+  fallbackLayer.append(createRendererSettingsIcon(iconName, glyphSize));
+  container.append(fallbackLayer);
 
-  const safeUrl = parseSafeExtensionIconUrl(iconUrl);
-  if (safeUrl) {
-    container.dataset.iconKind = "image";
+  const attachImage = (safeUrl: string, onFallback?: () => void): void => {
     const image = createEl(targetDocument, "img", "settings-extensions-icon__img");
     image.src = safeUrl;
     image.alt = alt;
     image.loading = "lazy";
     image.setAttribute("decoding", "async");
-    image.addEventListener("error", renderFallback);
+
+    const markLoaded = (): void => {
+      container.dataset.iconKind = "image";
+      container.dataset.iconLoaded = "true";
+      image.dataset.loaded = "true";
+      fallbackLayer.dataset.hidden = "true";
+    };
+
+    const markFailed = (): void => {
+      container.dataset.iconKind = "fallback";
+      delete container.dataset.iconLoaded;
+      delete fallbackLayer.dataset.hidden;
+      image.remove();
+      onFallback?.();
+    };
+
+    image.addEventListener("load", markLoaded);
+    image.addEventListener("error", markFailed);
     container.append(image);
-  } else {
-    renderFallback();
+    if (image.complete && image.naturalWidth > 0) {
+      markLoaded();
+    }
+  };
+
+  const safeUrl = parseSafeExtensionIconUrl(iconUrl);
+  if (resolveIconUrl && (!safeUrl || !safeUrl.startsWith("data:"))) {
+    void resolveIconUrl().then((resolved) => {
+      const safeResolved = parseSafeExtensionIconUrl(resolved);
+      if (safeResolved) {
+        attachImage(safeResolved);
+      } else if (safeUrl) {
+        attachImage(safeUrl);
+      }
+    });
+  } else if (safeUrl) {
+    attachImage(safeUrl);
   }
 
   return container;
+}
+
+function compareCatalogEntriesByRank(
+  left: HostExtensionCatalogEntry,
+  right: HostExtensionCatalogEntry,
+): number {
+  const officialDelta =
+    Number(right.trustTier === "official") - Number(left.trustTier === "official");
+  if (officialDelta !== 0) return officialDelta;
+  const downloadsDelta = (right.downloads ?? 0) - (left.downloads ?? 0);
+  if (downloadsDelta !== 0) return downloadsDelta;
+  const iconDelta = Number(Boolean(right.icon)) - Number(Boolean(left.icon));
+  if (iconDelta !== 0) return iconDelta;
+  const crossPlatformDelta =
+    Number(right.targets.includes("web") && right.targets.includes("desktop")) -
+    Number(left.targets.includes("web") && left.targets.includes("desktop"));
+  if (crossPlatformDelta !== 0) return crossPlatformDelta;
+  const starsDelta = (right.stars ?? 0) - (left.stars ?? 0);
+  if (starsDelta !== 0) return starsDelta;
+  return left.id.localeCompare(right.id, "en");
+}
+
+const MAX_EXPLICIT_FEATURED_ENTRIES = 12;
+
+/**
+ * Pick curated entries for the Featured showcase section on the Marketplace home.
+ * Matches CH Web semantics: explicit `featured: true` entries win (ordered by ascending
+ * `featuredOrder`, then rank tie-breaker, up to 12); otherwise falls back to top-`limit`.
+ */
+export function selectFeaturedCatalogEntries(
+  entries: readonly HostExtensionCatalogEntry[],
+  limit = 3,
+): readonly HostExtensionCatalogEntry[] {
+  const explicit = entries.filter((entry) => entry.featured === true);
+  if (explicit.length > 0) {
+    return [...explicit]
+      .sort((left, right) => {
+        const leftOrder = left.featuredOrder ?? Number.POSITIVE_INFINITY;
+        const rightOrder = right.featuredOrder ?? Number.POSITIVE_INFINITY;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return compareCatalogEntriesByRank(left, right);
+      })
+      .slice(0, MAX_EXPLICIT_FEATURED_ENTRIES);
+  }
+  if (entries.length <= limit) return [...entries].sort(compareCatalogEntriesByRank);
+  return [...entries].sort(compareCatalogEntriesByRank).slice(0, limit);
 }
 
 export function formatMessage(template: string, values: Readonly<Record<string, string>>): string {

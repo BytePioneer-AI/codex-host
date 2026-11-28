@@ -22,13 +22,9 @@ export function sidebarWindow<T extends SidebarRow>(
   limit: number,
   currentId?: string,
   revealId?: string,
-  excludedIds?: ReadonlySet<string>,
 ): { rows: readonly T[]; hiddenCount: number; ordinaryCount: number } {
-  const candidates = excludedIds?.size
-    ? sessions.filter((session) => !excludedIds.has(session.id))
-    : sessions;
   let ordinary = 0;
-  const rows = candidates.filter((session) => {
+  const rows = sessions.filter((session) => {
     if (
       session.blank ||
       session.pinned ||
@@ -46,7 +42,7 @@ export function sidebarWindow<T extends SidebarRow>(
       session.tree?.descendantIds.some((id) => id === currentId || id === revealId) === true
     );
   });
-  return { rows, hiddenCount: candidates.length - rows.length, ordinaryCount: ordinary };
+  return { rows, hiddenCount: sessions.length - rows.length, ordinaryCount: ordinary };
 }
 
 /**

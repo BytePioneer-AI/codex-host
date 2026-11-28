@@ -716,6 +716,10 @@ describe("OMP Adapter inspection", () => {
       "No models available. Use /login or set an API key environment variable. Then use /model to select a model.",
       "configurationRequired",
     ],
+    [
+      "No default model selected. Use /login, set an API key environment variable, or select a local model with /model or --model.",
+      "configurationRequired",
+    ],
     ["No models available.", "unavailable"],
     ["Connection timed out", "unavailable"],
   ])("classifies startup diagnostic %j as %s", async (stderr, code) => {

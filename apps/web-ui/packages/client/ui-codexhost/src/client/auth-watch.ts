@@ -7,7 +7,7 @@
  */
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
-import { disableNotifications } from "./notifications.ts";
+import { disableNotifications, isShellNotificationMode } from "./notifications.ts";
 
 const PROBE_INTERVAL_MS = 5_000;
 
@@ -136,7 +136,9 @@ export function watchAuthentication(state: ConnectionHandle["state"]): () => voi
 
 /** Sign this browser out and show the sign-in page; a signed-out device must not keep notifying. */
 export async function signOut(): Promise<void> {
-  await disableNotifications().catch(() => undefined);
+  if (!isShellNotificationMode()) {
+    await disableNotifications().catch(() => undefined);
+  }
   const response = await fetch("api/auth/logout", { method: "POST", credentials: "same-origin" });
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
   window.dispatchEvent(new Event("codexhost:sign-out"));

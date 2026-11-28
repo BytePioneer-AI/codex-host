@@ -27,6 +27,7 @@ import {
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { readThreadCatalog } from "./thread-catalog.js";
+import { readOfficialImportTimes, type OfficialImportTimes } from "./official-import-duplicates.js";
 import { confirmNativeThreadArchived } from "./native-thread-archive-confirm.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
@@ -305,6 +306,7 @@ import {
   type ProjectedTurn,
 } from "./external-turn-projection.js";
 import { HostExtensionManager } from "./host-extension-manager.js";
+import { ExtensionActivity, type ExtensionActivityMetadata } from "./extension-activity.js";
 import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
@@ -941,6 +943,7 @@ function isPassiveTelemetryOutput(output: HarnessOutput): boolean {
 }
 
 export class AppServerHost {
+  #extensionActivity: ExtensionActivity | undefined;
   readonly #options: Required<
     Pick<AppServerHostOptions, "desktopInput" | "desktopOutput" | "diagnosticOutput">
   > &
@@ -1211,6 +1214,7 @@ export class AppServerHost {
       scope: this.#officialRuntimeScope,
       refreshBeforeRequests: !options.externalOnly,
       onBackendStopped: () => {
+        this.#extensionActivity?.resetNative();
         this.#pendingOfficialTurnStarts.clear();
         this.#pendingOfficialDeletes.clear();
         this.#activeOfficialTurns.clear();
@@ -1481,6 +1485,23 @@ export class AppServerHost {
             codexhostDataDirectory(desktopEnvironment),
             (revision) => this.clientEvents.extensionsChanged(revision),
             (message) => this.#diagnose(message),
+            {
+              readActivity: async () => this.#ensureExtensionActivity().read(),
+              releaseActivity: () => this.#releaseExtensionActivity(),
+              describeHarness: async (id) => {
+                if (id === "codex") return { id: harnessIdSchema.parse("codex"), name: "Codex" };
+                const descriptor = this.#pluginDescriptors.find((item) => item.id === id);
+                return descriptor
+                  ? {
+                      id: descriptor.id,
+                      name: descriptor.name,
+                      ...(descriptor.icon ? { icon: descriptor.icon } : {}),
+                      ...(descriptor.iconStyle ? { iconStyle: descriptor.iconStyle } : {}),
+                    }
+                  : null;
+              },
+              desktopShell: desktopEnvironment.CODEXHOST_DESKTOP_SHELL_PATH,
+            },
           ));
     this.#desktopControl = new DesktopControlRequests({
       hostExtensions: this.hostExtensions,
@@ -1593,6 +1614,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#releaseExtensionActivity();
     if (!this.#options.hostExtensions) void this.hostExtensions?.close();
     this.#skills?.dispose();
     this.#options.sharedThreads?.close();
@@ -1742,6 +1764,7 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      this.#releaseExtensionActivity();
       if (!this.#options.hostExtensions) await this.hostExtensions?.close();
       this.#skills?.dispose();
       this.#pluginLoadAbort.abort();
@@ -1789,6 +1812,7 @@ export class AppServerHost {
     } finally {
       this.#skills?.dispose();
       this.#treeWatch.close();
+      this.#releaseExtensionActivity();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
       if (!this.#options.hostExtensions) await this.hostExtensions?.close();
@@ -2037,6 +2061,126 @@ export class AppServerHost {
 
   respondClient(input: ClientChannelResponse): Promise<{ resolved: boolean }> {
     return this.#client.respondClient(input);
+  }
+
+  #ensureExtensionActivity(): ExtensionActivity {
+    if (this.#extensionActivity) return this.#extensionActivity;
+    const activity = new ExtensionActivity({
+      events: this.clientEvents,
+      snapshot: (id) => this.#readExtensionActivitySnapshot(id),
+      readMetadata: (id) => this.#readExtensionActivityMetadata(id),
+      describeHarness: (id) => this.#describeExtensionActivityHarness(id),
+      diagnose: (error) => this.#diagnose(error),
+    });
+    activity.start();
+    this.#extensionActivity = activity;
+    return activity;
+  }
+
+  #releaseExtensionActivity(): void {
+    this.#extensionActivity?.close();
+    this.#extensionActivity = undefined;
+  }
+
+  async #describeExtensionActivityHarness(
+    id: string,
+  ): Promise<{ id: string; name: string } | undefined> {
+    const location = await this.#locateExternalThread(id);
+    if (location.kind !== "external") return undefined;
+    const harnessId = location.record.harnessId;
+    return { id: harnessId, name: this.#harnessDisplayLabel(harnessId) };
+  }
+
+  async #readExtensionActivitySnapshot(id: string): Promise<ClientThreadSnapshot> {
+    const location = await this.#locateExternalThread(id);
+    if (location.kind === "error") throw new Error(location.error.message);
+    if (location.kind === "external") {
+      const runningDescendants = this.#hasRunningSubagents(id);
+      if (location.thread) {
+        const snapshot = await this.#client.clientSnapshot(id, { truncateToolOutput: true });
+        if (runningDescendants && snapshot.thread.status.type !== "active") {
+          return {
+            ...snapshot,
+            thread: { ...snapshot.thread, status: { type: "active", activeFlags: [] } },
+          };
+        }
+        return snapshot;
+      }
+      const subagentActive =
+        this.#subagentThreadStatuses.get(id) === "active" || runningDescendants;
+      const parseSeconds = (value: string) => {
+        const seconds = Math.floor(Date.parse(value) / 1_000);
+        return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+      };
+      return {
+        cursor: this.clientEvents.cursor,
+        activeTurnId: null,
+        thread: {
+          id: location.record.hostThreadId,
+          cwd: location.record.cwd,
+          modelProvider: "codexhost",
+          createdAt: parseSeconds(location.record.createdAt),
+          updatedAt: parseSeconds(location.record.updatedAt),
+          status: subagentActive ? { type: "active", activeFlags: [] } : { type: "idle" },
+          name: location.record.title ?? null,
+          turns: [],
+        },
+        turnsPage: { data: [], nextCursor: null },
+        configuration: {},
+        interactions: [],
+      };
+    }
+    return this.#client.clientSnapshot(id, { truncateToolOutput: true });
+  }
+
+  async #readExtensionActivityMetadata(id: string): Promise<ExtensionActivityMetadata | null> {
+    const location = await this.#locateExternalThread(id);
+    if (location.kind === "error") return null;
+    if (location.kind === "external") {
+      const parseSeconds = (value: string) => {
+        const seconds = Math.floor(Date.parse(value) / 1_000);
+        return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+      };
+      if (location.thread) {
+        return {
+          title:
+            typeof location.thread.thread.name === "string"
+              ? location.thread.thread.name
+              : (location.record.title ?? ""),
+          cwd: location.thread.cwd,
+          updatedAt:
+            typeof location.thread.thread.updatedAt === "number" &&
+            Number.isFinite(location.thread.thread.updatedAt)
+              ? location.thread.thread.updatedAt
+              : parseSeconds(location.record.updatedAt),
+        };
+      }
+      return {
+        title: location.record.title ?? "",
+        cwd: location.record.cwd,
+        updatedAt: parseSeconds(location.record.updatedAt),
+      };
+    }
+    try {
+      const reply = await this.#client.nativeChannel().request("thread/read", {
+        threadId: id,
+        includeTurns: false,
+      });
+      if ("error" in reply || !isRecord(reply.result) || !isRecord(reply.result.thread)) {
+        return null;
+      }
+      const thread = reply.result.thread;
+      return {
+        title: typeof thread.name === "string" ? thread.name : "",
+        cwd: typeof thread.cwd === "string" ? thread.cwd : "",
+        updatedAt:
+          typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt)
+            ? thread.updatedAt
+            : 0,
+      };
+    } catch {
+      return null;
+    }
   }
 
   async #forwardDesktop(): Promise<void> {
@@ -3527,10 +3671,11 @@ export class AppServerHost {
     };
     const decoded = decodeThreadListRequest(request);
     if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
-    const { records, sharedOwners } = await this.#localThreadCatalog();
+    const { records, sharedOwners, officialImportTimes } = await this.#localThreadCatalog();
     const result = await aggregateThreadList({
       query: decoded,
       records,
+      officialImportTimes,
       ...(this.#options.sharedThreads
         ? { sharedThreads: await this.#options.sharedThreads.list(decoded.params) }
         : {}),
@@ -3626,6 +3771,11 @@ export class AppServerHost {
         ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
         ...(parsed.data.scope ? { scope: parsed.data.scope } : {}),
         readLocal: () => this.#localThreadCatalog(),
+        readContinuationImportTimes: async () =>
+          readOfficialImportTimes(
+            this.#officialRuntimeScope.permanentHome,
+            await this.#repository.listSummaries(),
+          ),
         ...(this.#options.sharedThreads ? { sharedThreads: this.#options.sharedThreads } : {}),
         runtimeFor: (id) => this.#listRuntimeState(id),
         ...(this.#options.externalOnly
@@ -3655,7 +3805,7 @@ export class AppServerHost {
     const timing = new ThreadListTiming();
     let ok = false;
     try {
-      const { records, placements } = await timing.measure("store", () =>
+      const { records, placements, officialImportTimes } = await timing.measure("store", () =>
         this.#localThreadCatalog(),
       );
       timing.counts.mappingRecords = records.length;
@@ -3672,6 +3822,7 @@ export class AppServerHost {
         aggregateThreadList({
           query: listRequest,
           records,
+          officialImportTimes,
           ...(sharedThreads ? { sharedThreads } : {}),
           ...(origin === "client" ? { timing } : {}),
           runtimeFor: (threadId) => this.#listRuntimeState(threadId),
@@ -3729,14 +3880,20 @@ export class AppServerHost {
   async #localThreadCatalog(): Promise<{
     records: StoredThreadSummaryV1[];
     placements: StoredSectionPlacementV1[];
+    officialImportTimes: OfficialImportTimes;
     sharedOwners?: ReadonlyMap<string, string>;
   }> {
     const [records, placements] = await Promise.all([
       this.#repository.listSummaries(),
       this.#repository.listSectionPlacements(),
     ]);
+    // Matched against every local record, so a shared-owned Thread still hides its official import.
+    const officialImportTimes = await readOfficialImportTimes(
+      this.#officialRuntimeScope.permanentHome,
+      records,
+    );
     const shared = this.#options.sharedThreads;
-    if (!shared) return { records, placements };
+    if (!shared) return { records, placements, officialImportTimes };
     const ids = [...new Set([...records, ...placements].map((entry) => entry.hostThreadId))];
     const sharedOwners = new Map<string, string>();
     try {
@@ -3749,12 +3906,13 @@ export class AppServerHost {
     } catch (error) {
       // Without the shared Host the local store is the only catalog left.
       this.#diagnose(error);
-      return { records, placements };
+      return { records, placements, officialImportTimes };
     }
-    if (sharedOwners.size === 0) return { records, placements };
+    if (sharedOwners.size === 0) return { records, placements, officialImportTimes };
     return {
       records: records.filter((record) => !sharedOwners.has(record.hostThreadId)),
       placements: placements.filter((placement) => !sharedOwners.has(placement.hostThreadId)),
+      officialImportTimes,
       sharedOwners,
     };
   }

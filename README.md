@@ -210,31 +210,13 @@ Full responsive Web UI paired with the native Android APK and iOS PWA to inspect
   <sub><b>Mobile Companion (Android APK / iOS PWA)</b> — browse workspaces &amp; delegation trees, review multi-agent updates, and trigger cross-agent handoffs right from your phone.</sub>
 </p>
 
-```mermaid
-flowchart TB
-  subgraph Clients["Clients · Real-Time Session Sync"]
-    direction LR
-    CH["Lightweight CH App (Tauri)"]
-    CD["Official Codex Desktop"]
-    WM["Web / PWA & Android"]
-  end
-
-  HOST["Shared Local Host · Threads / Queues / Approvals / Worktrees / Usage / Extensions"]
-
-  subgraph Engines["Execution & Multi-Machine Mesh"]
-    direction LR
-    CODEX["Native Codex Runtime"]
-    EXT["19+ Native Agent Adapters"]
-    MESH["Multi-Machine Mesh & Encrypted Relay"]
-  end
-
-  CH --> HOST
-  CD --> HOST
-  WM --> HOST
-  HOST --> CODEX
-  HOST --> EXT
-  HOST --> MESH
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-diagram-arch-en-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-diagram-arch-en-light.svg" />
+    <img src="docs/imgs/readme-diagram-arch-en-light.svg" alt="CodexHost Architecture: One Shared Local Host syncing Standalone App, Official Codex Desktop, Web, and Mobile" width="100%" />
+  </picture>
+</p>
 
 ---
 
@@ -242,21 +224,13 @@ flowchart TB
 
 When one agent isn't enough—or different tasks fit different models—type `#` in the composer to spin up isolated native child sessions in parallel, or use **[Cross-Harness Handoff](docs/architecture/cross-harness-handoff.md)** to transfer full conversation context cleanly to another agent mid-thread.
 
-```mermaid
-flowchart TB
-  MAIN["Main Thread (e.g. Codex / Claude Code)"]
-  A1["#claude-code · Isolated Worktree Review"]
-  A2["#grok · Concurrency & Edge-Case Audit"]
-  A3["#antigravity · Frontend UI & Docs"]
-  MERGE["Results flow back automatically · Lossless Handoff anytime"]
-
-  MAIN --> A1
-  MAIN --> A2
-  MAIN --> A3
-  A1 --> MERGE
-  A2 --> MERGE
-  A3 --> MERGE
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-diagram-teamwork-en-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-diagram-teamwork-en-light.svg" />
+    <img src="docs/imgs/readme-diagram-teamwork-en-light.svg" alt="Multi-Agent Parallel Delegation and Lossless Cross-Agent Handoff" width="100%" />
+  </picture>
+</p>
 
 > Ask `#claude-code` to review this diff independently and call out compatibility risks.  
 > Ask `#grok` to audit concurrency and edge-case risks in this module.  
@@ -296,11 +270,11 @@ flowchart TB
 <table>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>Cross-Client Plugin Marketplace (18+ Plugins)</strong><br /><sub>Install themes, MCP Sync Hub, Sidebar Thread Tree, and Context Insights across both Codex Desktop and CH Web</sub></p>
+      <p><strong>Cross-Client Plugin Marketplace</strong><br /><sub>Install themes, MCP Sync Hub, Sidebar Thread Tree, and Context Insights across both Codex Desktop and CH Web</sub></p>
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-plugins-en-dark.png" />
         <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-plugins-en-light.png" />
-        <img src="docs/imgs/readme-feat-plugins-en-light.png" alt="CodexHost Plugin Center Marketplace with 18+ extensions for Codex Desktop and CH Web" />
+        <img src="docs/imgs/readme-feat-plugins-en-light.png" alt="CodexHost Plugin Center Marketplace for Codex Desktop and CH Web" />
       </picture>
     </td>
     <td width="50%" valign="top">
@@ -318,24 +292,13 @@ flowchart TB
 
 ## Step Away. Every Machine Stays Within Reach.
 
-```mermaid
-flowchart LR
-  subgraph Nodes["Multi-Machine Mesh · Cross-Node Collaboration"]
-    direction TB
-    M1["MacBook Pro (Local)"]
-    M2["Linux Dev Box (Build / Compute)"]
-    M3["Windows Rig (Test Node)"]
-    M1 <--> M2
-    M2 <--> M3
-    M1 <--> M3
-  end
-
-  HUB["Unified Sidebar Orchestration"]
-  NET["LAN / Tailscale / Encrypted Relay"]
-  MOBILE["Phone / Any Browser"]
-
-  Nodes --> HUB --> NET --> MOBILE
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-diagram-mesh-en-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-diagram-mesh-en-light.svg" />
+    <img src="docs/imgs/readme-diagram-mesh-en-light.svg" alt="Multi-Machine Mesh and Mobile Control Topology" width="100%" />
+  </picture>
+</p>
 
 - **[Multi-Machine Interconnection & Cross-Node Collaboration](docs/product/multi-remote-peers.md)**: Link Macs, Linux servers, and Windows workstations into one unified sidebar—sessions on different machines can invoke each other so multiple nodes collaborate to finish one task together.
 - **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever compliance requires it.

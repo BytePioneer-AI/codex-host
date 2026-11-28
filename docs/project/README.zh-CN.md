@@ -210,31 +210,13 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
   <sub><b>手机端随时掌控（Android APK / iOS PWA）</b> — 离开电脑照样查看工作区委派树、跟进多 Agent 汇报，并一键发起跨 Agent 交接与追问。</sub>
 </p>
 
-```mermaid
-flowchart TB
-  subgraph Clients["多端入口 · 会话实时同步"]
-    direction LR
-    CH["轻量 CH 独立客户端 (Tauri)"]
-    CD["官方 Codex Desktop"]
-    WM["Web / PWA & Android"]
-  end
-
-  HOST["本地共享 Host · 会话 / 队列 / 审批 / Worktree / 用量 / 扩展"]
-
-  subgraph Engines["执行与多机互联"]
-    direction LR
-    CODEX["原生 Codex 运行时"]
-    EXT["19+ 外部 Agent 原生适配器"]
-    MESH["多机互联 & 加密 Relay"]
-  end
-
-  CH --> HOST
-  CD --> HOST
-  WM --> HOST
-  HOST --> CODEX
-  HOST --> EXT
-  HOST --> MESH
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-arch-zh-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-arch-zh-light.svg" />
+    <img src="../imgs/readme-diagram-arch-zh-light.svg" alt="CodexHost 架构总览：轻量独立客户端、官方 Codex Desktop、Web 与手机共用同一本地共享 Host" width="100%" />
+  </picture>
+</p>
 
 ---
 
@@ -242,21 +224,13 @@ flowchart TB
 
 一个 Agent 忙不过来，或者不同任务适合不同模型——在输入框打 `#` 选择目标 Agent，即可拆出独立原生子会话并行执行；聊到一半也能用 **[跨 Agent 无损交接（Handoff）](../architecture/cross-harness-handoff.md)** 把完整上下文无缝交给另一款 Agent 接着干。
 
-```mermaid
-flowchart TB
-  MAIN["主会话 (如 Codex / Claude Code)"]
-  A1["#claude-code · 独立 Worktree 审查"]
-  A2["#grok · 排查并发与边界隐患"]
-  A3["#antigravity · 编写前端页面与文档"]
-  MERGE["结果自动回流主会话 · 支持随时跨 Agent 无损交接"]
-
-  MAIN --> A1
-  MAIN --> A2
-  MAIN --> A3
-  A1 --> MERGE
-  A2 --> MERGE
-  A3 --> MERGE
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-teamwork-zh-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-teamwork-zh-light.svg" />
+    <img src="../imgs/readme-diagram-teamwork-zh-light.svg" alt="多 Agent 并行委派与跨 Agent 无损交接流程" width="100%" />
+  </picture>
+</p>
 
 > 让 `#claude-code` 独立审查这次修改并指出兼容性风险。  
 > 让 `#grok` 排查这个模块的并发与边界隐患。  
@@ -296,11 +270,11 @@ flowchart TB
 <table>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>跨客户端插件市场（18+ 插件）</strong><br /><sub>主题外观、MCP 统一中心、侧栏委派树、上下文洞察等一键安装，同时覆盖 Codex Desktop 与 CH Web</sub></p>
+      <p><strong>跨客户端插件市场</strong><br /><sub>主题外观、MCP 统一中心、侧栏委派树、上下文洞察等一键安装，同时覆盖 Codex Desktop 与 CH Web</sub></p>
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-plugins-zh-dark.png" />
         <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-plugins-zh-light.png" />
-        <img src="../imgs/readme-feat-plugins-zh-light.png" alt="CodexHost 插件中心市场：18+ 社区与官方插件，同时支持 Codex Desktop 与 CH Web" />
+        <img src="../imgs/readme-feat-plugins-zh-light.png" alt="CodexHost 插件中心市场：同时支持 Codex Desktop 与 CH Web" />
       </picture>
     </td>
     <td width="50%" valign="top">
@@ -318,24 +292,13 @@ flowchart TB
 
 ## 离开电脑，多台机器照样在手边
 
-```mermaid
-flowchart LR
-  subgraph Nodes["多机互联 · 跨节点互相调用协作"]
-    direction TB
-    M1["MacBook Pro (本机)"]
-    M2["Linux 开发机 (算力/构建节点)"]
-    M3["Windows 主机 (环境测试节点)"]
-    M1 <--> M2
-    M2 <--> M3
-    M1 <--> M3
-  end
-
-  HUB["同一侧栏统一调度"]
-  NET["局域网 / Tailscale / 加密 Relay"]
-  MOBILE["手机 / 任意电脑随时审批与接力"]
-
-  Nodes --> HUB --> NET --> MOBILE
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-mesh-zh-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-mesh-zh-light.svg" />
+    <img src="../imgs/readme-diagram-mesh-zh-light.svg" alt="多机互联与手机随时掌控拓扑图" width="100%" />
+  </picture>
+</p>
 
 - **[多机互联与跨节点协作](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 开发机连成一张协作网络，收进同一侧栏；不同机器上的会话可以互相委派调用，多个节点联手完成同一项任务。
 - **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，支持局域网、Tailscale 与加密中转连接；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。

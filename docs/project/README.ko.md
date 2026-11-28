@@ -208,31 +208,13 @@ Tauri 기반 경량 CodexHost 네이티브 앱으로 공식 Codex Desktop 없이
   <sub><b>모바일 실시간 제어 (Android APK / iOS PWA)</b> — 자리를 비워도 휴대폰에서 워크스페이스 위임 트리, 멀티 Agent 보고, 원탭 크로스 Agent 인계를 그대로 이어갑니다.</sub>
 </p>
 
-```mermaid
-flowchart TB
-  subgraph Clients["멀티 클라이언트 · 실시간 세션 동기화"]
-    direction LR
-    CH["경량 CH 독립 클라이언트 (Tauri)"]
-    CD["공식 Codex Desktop"]
-    WM["Web / PWA & Android"]
-  end
-
-  HOST["공유 로컬 Host · 세션 / 대기열 / 승인 / Worktree / 사용량 / 확장"]
-
-  subgraph Engines["실행 및 다중 머신 연동"]
-    direction LR
-    CODEX["네이티브 Codex 런타임"]
-    EXT["19+ 외부 Agent 네이티브 어댑터"]
-    MESH["다중 머신 연동 & 암호화 Relay"]
-  end
-
-  CH --> HOST
-  CD --> HOST
-  WM --> HOST
-  HOST --> CODEX
-  HOST --> EXT
-  HOST --> MESH
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-arch-en-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-arch-en-light.svg" />
+    <img src="../imgs/readme-diagram-arch-en-light.svg" alt="CodexHost 아키텍처: 경량 독립 앱, 공식 Codex Desktop, Web, 모바일 실시간 동기화" width="100%" />
+  </picture>
+</p>
 
 ---
 
@@ -240,21 +222,13 @@ flowchart TB
 
 입력창에서 `#`을 입력해 다른 Agent에게 독립적인 네이티브 하위 세션을 병렬로 맡기고, 완료 결과를 원래 세션으로 자동 회수합니다. 대화 중 **[크로스 Agent 무손실 인계(Handoff)](../architecture/cross-harness-handoff.md)**로 전체 맥락을 그대로 넘길 수도 있습니다.
 
-```mermaid
-flowchart TB
-  MAIN["메인 세션 (예: Codex / Claude Code)"]
-  A1["#claude-code · 독립 Worktree 코드 리뷰"]
-  A2["#grok · 동시성 및 예외 케이스 점검"]
-  A3["#antigravity · 프론트엔드 및 문서 작성"]
-  MERGE["결과 자동 회수 · 언제든 크로스 Agent 무손실 인계"]
-
-  MAIN --> A1
-  MAIN --> A2
-  MAIN --> A3
-  A1 --> MERGE
-  A2 --> MERGE
-  A3 --> MERGE
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-teamwork-en-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-teamwork-en-light.svg" />
+    <img src="../imgs/readme-diagram-teamwork-en-light.svg" alt="멀티 Agent 병렬 위임 및 무손실 인계 흐름" width="100%" />
+  </picture>
+</p>
 
 <p align="center">
   <picture>
@@ -290,11 +264,11 @@ flowchart TB
 <table>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>크로스 클라이언트 플러그인 마켓 (18+ 플러그인)</strong><br /><sub>테마, MCP 통합 센터, 사이드바 위임 트리, 컨텍스트 인사이트 등을 Codex Desktop과 CH Web에 동시 설치</sub></p>
+      <p><strong>크로스 클라이언트 플러그인 마켓</strong><br /><sub>테마, MCP 통합 센터, 사이드바 위임 트리, 컨텍스트 인사이트 등을 Codex Desktop과 CH Web에 동시 설치</sub></p>
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-plugins-en-dark.png" />
         <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-plugins-en-light.png" />
-        <img src="../imgs/readme-feat-plugins-en-light.png" alt="CodexHost 플러그인 마켓플레이스: Codex Desktop과 CH Web을 지원하는 18개 이상의 확장 플러그인" />
+        <img src="../imgs/readme-feat-plugins-en-light.png" alt="CodexHost 플러그인 마켓플레이스: Codex Desktop과 CH Web 지원" />
       </picture>
     </td>
     <td width="50%" valign="top">
@@ -312,24 +286,13 @@ flowchart TB
 
 ## 자리를 비워도 모든 머신이 손안에
 
-```mermaid
-flowchart LR
-  subgraph Nodes["다중 머신 연동 · 노드 간 상호 호출 협업"]
-    direction TB
-    M1["MacBook Pro (로컬)"]
-    M2["Linux 개발 서버 (빌드 / 연산 노드)"]
-    M3["Windows PC (테스트 노드)"]
-    M1 <--> M2
-    M2 <--> M3
-    M1 <--> M3
-  end
-
-  HUB["통합 사이드바 오케스트레이션"]
-  NET["LAN / Tailscale / 암호화 Relay"]
-  MOBILE["휴대폰 / 모든 브라우저"]
-
-  Nodes --> HUB --> NET --> MOBILE
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-mesh-en-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-mesh-en-light.svg" />
+    <img src="../imgs/readme-diagram-mesh-en-light.svg" alt="다중 머신 연동 및 모바일 제어 토폴로지" width="100%" />
+  </picture>
+</p>
 
 - **[다중 머신 연동 및 노드 협업](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 하나의 사이드바에 연결해 서로 다른 머신의 세션이 호출하고 협업하며 하나의 작업을 함께 완료합니다.
 - **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 LAN, Tailscale 또는 암호화 Relay로 접속하며, 사내 규정 준수를 위한 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.

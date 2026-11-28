@@ -124,6 +124,15 @@ where
                 wait();
                 continue;
             }
+            Err(error)
+                if process_id != 0
+                    && process_query_raw_os_error(&error) == Some(ERROR_ACCESS_DENIED)
+                    && matches!(inspect(process_id), Err(PlatformError::NotFound(_))) =>
+            {
+                // The direct query can still be denied after the PID has left Toolhelp's
+                // process list. Only the independent absence check disowns the record.
+                return Ok(RecordedProcessObservation::Missing);
+            }
             Err(error) => return Err(error),
         }
         match inspect(process_id) {
@@ -419,6 +428,47 @@ mod tests {
         assert_eq!(observed, RecordedProcessObservation::Reused);
         assert_eq!(full_snapshot_reads, 0);
         assert_eq!(waits, 0);
+    }
+
+    #[test]
+    fn recovers_a_recorded_pid_that_has_left_the_process_list() {
+        let mut waits = 0;
+        let mut snapshots = 0;
+        let observed = observe_recorded_process_with(
+            42,
+            101,
+            5,
+            |_| Err(access_denied()),
+            |_| {
+                snapshots += 1;
+                Err(PlatformError::NotFound("process exited".to_owned()))
+            },
+            || waits += 1,
+        )
+        .expect("the Windows process list confirms the recorded PID has exited");
+
+        assert_eq!(observed, RecordedProcessObservation::Missing);
+        assert_eq!(waits, 4);
+        assert_eq!(snapshots, 1);
+    }
+
+    #[test]
+    fn keeps_the_lease_when_absence_cannot_be_confirmed() {
+        for full_snapshot in [Err(access_denied()), Ok(snapshot(101))] {
+            let error = observe_recorded_process_with(
+                42,
+                101,
+                1,
+                |_| Err(access_denied()),
+                |_| full_snapshot.as_ref().cloned().map_err(|_| access_denied()),
+                || panic!("the start-time retry budget is exhausted"),
+            )
+            .expect_err("a present or inaccessible PID must not be treated as absent");
+            assert_eq!(
+                process_query_raw_os_error(&error),
+                Some(ERROR_ACCESS_DENIED)
+            );
+        }
     }
 
     #[test]

@@ -85,11 +85,11 @@ Hand off full context across agents mid-task.
 
 <td width="25%" valign="top">
 
-### Multi-Machine Mesh
+### Multi-Machine Delegation
 
-Bring Mac, Linux, and Windows into one sidebar—delegate across machines and collaborate across nodes.
+One-click two-way mesh across Mac, Linux, and Windows — agents on different machines delegate tasks directly to each other.
 
-Approve and reply from your phone anywhere.
+Approve and steer from your phone anywhere.
 
 </td>
 

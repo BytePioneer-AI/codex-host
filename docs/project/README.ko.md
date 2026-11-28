@@ -22,7 +22,7 @@
 </p>
 
 <p>
-  <b><a href="https://chost.dev/en/download">CodexHost 다운로드</a></b> &nbsp;·&nbsp;
+  <b><a href="#다운로드-및-설치">CodexHost 다운로드</a></b> &nbsp;·&nbsp;
   <b><a href="https://chost.dev/en">공식 사이트 →</a></b> &nbsp;·&nbsp;
   <a href="https://github.com/BytePioneer-AI/codex-host/tree/main/docs">문서</a> &nbsp;·&nbsp;
   <a href="#커뮤니티">커뮤니티</a>
@@ -296,18 +296,21 @@ Tauri 기반 경량 CodexHost 네이티브 앱으로 공식 Codex Desktop 없이
 
 ---
 
-## 자리를 비워도 모든 머신이 손안에
+## 다중 머신 연동과 노드 간 상호 위임
+
+단순 원격 모니터링을 넘어 **원클릭 양방향 연동**으로 Mac, Linux 서버, Windows PC를 하나의 메시 네트워크로 묶어 **서로 다른 머신의 Agent가 직접 작업을 위임하고 협업**합니다. 노트북의 Codex가 코드를 작성하면 Linux 서버의 Claude Code에 빌드를 맡기고, Windows 테스트 머신의 Grok에 호환성 검증을 위임해 결과를 자동 회수할 수 있습니다.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-mesh-en-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-mesh-en-light.svg" />
-    <img src="../imgs/readme-diagram-mesh-en-light.svg" alt="다중 머신 연동 및 모바일 제어 토폴로지" width="100%" />
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mesh-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mesh-en-light.png" />
+    <img src="../imgs/readme-feat-mesh-en-light.png" alt="CodexHost 원격 호스트 및 4노드 양방향 연결 토폴로지: 로컬, Linux GPU Server, Windows Test Rig, Mac Studio 간 크로스 머신 Agent 위임" width="100%" />
   </picture>
+  <sub><b>실시간 다중 머신 연결 토폴로지</b> — 로컬, Linux GPU Server, Windows Test Rig, Mac Studio를 원클릭 양방향으로 연결해 각 노드의 Agent가 머신을 넘나들며 협업합니다.</sub>
 </p>
 
-- **[다중 머신 연동 및 노드 협업](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 하나의 사이드바에 연결해 서로 다른 머신의 세션이 호출하고 협업하며 하나의 작업을 함께 완료합니다.
-- **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 LAN, Tailscale 또는 암호화 Relay로 접속하며, 사내 규정 준수를 위한 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.
+- **[다중 머신 연동 및 노드 간 위임](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 LAN·Tailscale·암호화 Relay로 하나의 사이드바에 묶고 양방향으로 상호 호출합니다.
+- **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 접속하며, 사내 규정 준수를 위한 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.
 - **로컬 우선 프라이버시**: 코드, 대화 기록, 자격 증명은 모두 내 컴퓨터에 머물며 공식 서비스에 직접 연결됩니다.
 
 <details>

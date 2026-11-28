@@ -22,7 +22,7 @@
 </p>
 
 <p>
-  <b><a href="https://chost.dev/en/download">Download CodexHost</a></b> &nbsp;·&nbsp;
+  <b><a href="#download--install">Download CodexHost</a></b> &nbsp;·&nbsp;
   <b><a href="https://chost.dev/en">Website →</a></b> &nbsp;·&nbsp;
   <a href="docs">Docs</a> &nbsp;·&nbsp;
   <a href="#community">Community</a>
@@ -302,18 +302,21 @@ When one agent isn't enough—or different tasks fit different models—type `#`
 
 ---
 
-## Step Away. Every Machine Stays Within Reach.
+## Multi-Machine Mesh & Cross-Node Delegation
+
+More than viewing another computer remotely — with **one-click bidirectional mesh**, your Mac, Linux servers, and Windows rigs form a live peer network where **agents on different machines delegate work directly to each other**. For example, Codex on your laptop can dispatch builds to Claude Code on a Linux GPU box and compatibility checks to Grok on a Windows test rig, streaming results back automatically.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-diagram-mesh-en-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-diagram-mesh-en-light.svg" />
-    <img src="docs/imgs/readme-diagram-mesh-en-light.svg" alt="Multi-Machine Mesh and Mobile Control Topology" width="100%" />
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-mesh-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-mesh-en-light.png" />
+    <img src="docs/imgs/readme-feat-mesh-en-light.png" alt="CodexHost Remote Hosts and 4-node bidirectional mesh topology linking Local, Linux GPU Server, Windows Test Rig, and Mac Studio for cross-machine agent delegation" width="100%" />
   </picture>
+  <sub><b>Live Multi-Machine Connection Topology</b> — link Local, Linux GPU Server, Windows Test Rig, and Mac Studio with one-click bidirectional peering so agents delegate seamlessly across machines.</sub>
 </p>
 
-- **[Multi-Machine Interconnection & Cross-Node Collaboration](docs/product/multi-remote-peers.md)**: Link Macs, Linux servers, and Windows workstations into one unified sidebar—sessions on different machines can invoke each other so multiple nodes collaborate to finish one task together.
-- **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever compliance requires it.
+- **[Multi-Machine Interconnection & Cross-Node Delegation](docs/product/multi-remote-peers.md)**: Bring Macs, Linux servers, and Windows workstations into one unified sidebar over LAN, Tailscale, or encrypted Relay with bidirectional peering.
+- **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect with zero port forwarding and keep approving or steering from your phone; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** whenever compliance requires it.
 - **Local-First Privacy**: Your code, threads, and agent credentials stay on your own machines and connect directly to official providers—never proxied through third-party servers.
 
 <details>

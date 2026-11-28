@@ -22,7 +22,7 @@
 </p>
 
 <p>
-  <b><a href="https://chost.dev/download">下载 CodexHost</a></b> &nbsp;·&nbsp;
+  <b><a href="#下载与安装">下载 CodexHost</a></b> &nbsp;·&nbsp;
   <b><a href="https://chost.dev">访问官网 →</a></b> &nbsp;·&nbsp;
   <a href="https://github.com/BytePioneer-AI/codex-host/tree/main/docs">文档</a> &nbsp;·&nbsp;
   <a href="#社区与交流群">微信交流群</a>
@@ -302,18 +302,21 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
 
 ---
 
-## 离开电脑，多台机器照样在手边
+## 多机互联，跨节点互相委派
+
+不止是「远程查看另一台电脑」——开启**一键互通**后，Mac、Linux 服务器与 Windows 测试机组成一张网状协作网络，**不同机器上的 Agent 可以直接跨机互相委派任务**。例如：本机上的 Codex 写完代码，直接把编译测试派给 Linux 服务器上的 Claude Code、再交给 Windows 主机上的 Grok 做兼容回归，多节点并行跑完并自动回流结果。
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-diagram-mesh-zh-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-diagram-mesh-zh-light.svg" />
-    <img src="../imgs/readme-diagram-mesh-zh-light.svg" alt="多机互联与手机随时掌控拓扑图" width="100%" />
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mesh-zh-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mesh-zh-light.png" />
+    <img src="../imgs/readme-feat-mesh-zh-light.png" alt="CodexHost 远程主机与 4 节点双向互通连接拓扑：本机、Linux GPU Server、Windows Test Rig 与 Mac Studio 组成跨机互相委派网络" width="100%" />
   </picture>
+  <sub><b>原生多机连接拓扑（一键双向互通）</b> — 本机与 Linux GPU Server、Windows Test Rig、Mac Studio 实时互联，各节点上的 Agent 可跨机互相委派协作。</sub>
 </p>
 
-- **[多机互联与跨节点协作](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 开发机连成一张协作网络，收进同一侧栏；不同机器上的会话可以互相委派调用，多个节点联手完成同一项任务。
-- **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，支持局域网、Tailscale 与加密中转连接；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。
+- **[多机互联与跨节点委派](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 收进同一侧栏，支持局域网、Tailscale 与加密中转混合组网，节点间双向互通。
+- **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，离开电脑同样随时审批与接力；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。
 - **本地优先与隐私边界**：代码、对话历史与各家 Agent 凭据全部留在你自己的机器上，直连官方模型服务，不经任何第三方代理。
 
 <details>

@@ -20,6 +20,7 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import type { HostReleaseAnnouncement } from "./release-announcement.js";
+import type { HostProductTelemetry } from "./product-telemetry.js";
 import { isDesktopContextVariable, withoutDesktopContext } from "./desktop-context-environment.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
@@ -76,6 +77,7 @@ export function sharedHostDesktop(
     prices: ModelPriceCatalog;
     updateCoordinator?: HostUpdateCoordinator;
     releaseAnnouncement?: HostReleaseAnnouncement;
+    productTelemetry?: HostProductTelemetry;
     delegation(): DelegationControlRegistration | undefined;
     register(api: DelegationControlRegistration): (() => void) | undefined;
     connected: Set<AppServerHost>;
@@ -124,6 +126,7 @@ export function sharedHostDesktop(
           }
         : {}),
       ...(options.releaseAnnouncement ? { releaseAnnouncement: options.releaseAnnouncement } : {}),
+      ...(options.productTelemetry ? { productTelemetry: options.productTelemetry } : {}),
       ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
       ...(entry
         ? { consoleOpener: createHostConsoleOpener({ entrypoint: entry, environment }) }
@@ -144,6 +147,7 @@ export function sharedHostDesktop(
           );
         }
         if (attachment.signal.aborted) return 0;
+        options.productTelemetry?.recordSurface("codex-desktop");
         host = createHost();
         options.connected.add(host);
         void options.hostExtensions?.seedDefaultDesktopExtensions(undefined, environment);

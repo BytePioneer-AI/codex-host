@@ -103,6 +103,11 @@ export class RequestTrust {
     return this.proxies.has(address) || (this.trustLoopback && isLoopbackAddress(address));
   }
 
+  /** Whether this request came directly from a configured `--trusted-proxy` IP (nginx/cloudflared/frp). */
+  isExplicitTrustedProxy(request: IncomingMessage): boolean {
+    return this.proxies.has(normalizedAddress(request.socket.remoteAddress));
+  }
+
   /** The address failed sign-ins are counted against. */
   clientAddress(request: IncomingMessage): string {
     const relay = this.relaySockets.get(request.socket);

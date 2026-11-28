@@ -75,6 +75,7 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { HostReleaseAnnouncement } from "./release-announcement.js";
+import { HostProductTelemetry } from "./product-telemetry.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
 import {
@@ -399,7 +400,21 @@ export async function runHostRuntime(input: {
   const releaseAnnouncement = maintenanceRuntimePath
     ? new HostReleaseAnnouncement(maintenanceRuntimePath, input.environment)
     : undefined;
-  const announcementOptions = releaseAnnouncement ? { releaseAnnouncement } : {};
+  const productTelemetry = new HostProductTelemetry({
+    runtimePath: maintenanceRuntimePath,
+    environment: input.environment,
+  });
+  productTelemetry.recordSurface(
+    isRemoteUnixListenerInvocation(input.arguments) ||
+      input.environment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
+      ? "ssh-remote"
+      : "codex-desktop",
+  );
+  productTelemetry.start();
+  const announcementOptions = {
+    ...(releaseAnnouncement ? { releaseAnnouncement } : {}),
+    productTelemetry,
+  };
   // Only a Launcher-started local Host can open the console on this machine.
   // The development entry does not pass its URL; the Launcher still exports the path.
   const consoleHostRuntimePath = hostRuntimePath ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH;
@@ -474,6 +489,7 @@ export async function runHostRuntime(input: {
               registry,
             );
           } finally {
+            productTelemetry.close();
             await official.close();
           }
         }
@@ -530,6 +546,7 @@ export async function runHostRuntime(input: {
             registry,
           );
         } finally {
+          productTelemetry.close();
           try {
             await listener?.close();
           } finally {
@@ -690,6 +707,7 @@ export async function runHostRuntime(input: {
         await listener.closed;
         return 0;
       } finally {
+        productTelemetry.close();
         supervisor.close();
         process.removeListener("SIGINT", stop);
         process.removeListener("SIGTERM", stop);

@@ -291,6 +291,11 @@ import {
 import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import type { HostReleaseAnnouncement } from "./release-announcement.js";
+import {
+  handleProductTelemetryClientRequest,
+  isProductTelemetryMethod,
+  type HostProductTelemetry,
+} from "./product-telemetry.js";
 import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
@@ -458,6 +463,7 @@ export interface AppServerHostOptions {
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
   releaseAnnouncement?: HostReleaseAnnouncement;
+  productTelemetry?: HostProductTelemetry;
   runtimeMaintenance?: RuntimeMaintenance;
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
@@ -1142,6 +1148,7 @@ export class AppServerHost {
       clientHistoryTurns: (thread) => this.#externalHistoryTurns(thread, true),
       queueSnapshot: (threadId) => this.#externalQueue.snapshot(threadId),
       readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
+      onNativeTurnStart: () => this.#options.productTelemetry?.recordHarness("codex"),
       ...(this.#options.externalOnly
         ? {
             native: {
@@ -1539,6 +1546,7 @@ export class AppServerHost {
       attachUsageStatistics: () => this.#attachUsageStatistics(),
       inspectHarnessAccount: (adapter, refresh) => this.#inspectHarnessAccount(adapter, refresh),
       releaseAnnouncement: options.releaseAnnouncement,
+      productTelemetry: options.productTelemetry,
       handleUpdateRequest: (request) => this.#handleUpdateRequest(request),
       handleConsoleOpen: (request) => this.#handleConsoleOpen(request),
       handleWebOpen: (request) => this.#handleWebOpen(request),
@@ -2059,6 +2067,8 @@ export class AppServerHost {
   handleClientRequest(method: string, input: unknown): Promise<ConsoleHostReply> {
     if (isHostExtensionManagementMethod(method))
       return handleHostExtensionRequest(this.hostExtensions, method, input);
+    if (isProductTelemetryMethod(method))
+      return handleProductTelemetryClientRequest(this.#options.productTelemetry, method, input);
     return this.#client.handleClientRequest(method, input);
   }
 
@@ -2695,6 +2705,9 @@ export class AppServerHost {
               ...options,
             },
           });
+      }
+      if (request.method === "turn/start") {
+        this.#options.productTelemetry?.recordHarness("codex");
       }
       if (
         request.method === "thread/delete" &&
@@ -6571,6 +6584,7 @@ export class AppServerHost {
     if (this.#externalThreadBusy(thread)) {
       throw new DelegationControlError("THREAD_BUSY", "External Thread already has an active Turn");
     }
+    this.#options.productTelemetry?.recordHarness(thread.harnessId);
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
@@ -6646,6 +6660,7 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    this.#options.productTelemetry?.recordHarness(thread.harnessId);
     const context = requestObject(request).additionalContext;
     if (isRecord(context) && Object.hasOwn(context, THREAD_STEERING_CONTEXT_PARAM)) {
       await this.#steerExternalTurn(request, thread, true);

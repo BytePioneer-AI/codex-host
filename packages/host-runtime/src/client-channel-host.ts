@@ -118,6 +118,7 @@ export interface ClientChannelHostDependencies {
   queueSnapshot(threadId: string): ExternalThreadQueueSnapshot;
   /** Reads persisted handoff provenance without waking a cold Thread. */
   readThreadHandoff?(threadId: string): Promise<ThreadHandoffMetadata | null>;
+  onNativeTurnStart?(): void;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
   diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
@@ -410,6 +411,7 @@ export class ClientChannelHost {
           delete nativeParams.projectlessWorkspace;
         }
       }
+      if (method === "turn/start") this.#host.onNativeTurnStart?.();
       return normalize(await nativeChannel.request(method, nativeParams));
     };
     const operation = native ? nativeSubmit : submit;

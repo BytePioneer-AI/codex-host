@@ -64,8 +64,13 @@ import {
   reachableNetworkUrls,
 } from "./network-urls.ts";
 import { tailscaleServeState, tailscaleState } from "./tailscale-serve.ts";
-import { REMOTE_PEER_FILE_PROXY_PATH, type WebNetworkAccessUrl } from "@codexhost/shared-contracts";
+import {
+  PRODUCT_TELEMETRY_SIGNAL_METHOD,
+  REMOTE_PEER_FILE_PROXY_PATH,
+  type WebNetworkAccessUrl,
+} from "@codexhost/shared-contracts";
 import { RequestTrust } from "./request-trust.ts";
+import { WebProductTelemetry } from "./web-telemetry.ts";
 import { RemoteRelay } from "./remote-relay/state.ts";
 import { registerRelayRpc } from "./remote-relay/rpc.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
@@ -547,6 +552,10 @@ preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
 push.register(rpc);
+const webTelemetry = new WebProductTelemetry({
+  send: (signal) =>
+    chHost.realtime?.request(PRODUCT_TELEMETRY_SIGNAL_METHOD, signal as Record<string, unknown>),
+});
 async function readNetworkAccess() {
   const host = values.host as string;
   const tailscale = await tailscaleState(listeningPort);
@@ -672,6 +681,9 @@ const server = createWebServer((request, response) => {
       const admission = await auth.gate(request, response, pathname);
       if (admission.handled) return;
       requestAuth = admission.auth;
+    }
+    if (requestAuth !== undefined || auth === undefined) {
+      webTelemetry.observeAuthenticatedHttp(request, pathname, trust, relay.access.kind);
     }
     if (isHostExtensionHttpPath(pathname)) {
       await serveHostExtensionHttp(chHost, trust, request, response, pathname, {
@@ -1074,11 +1086,12 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
   if (auth !== undefined && !auth.admitUpgrade(request, socket)) return;
-  if (path === "/api/remote.mux")
+  if (path === "/api/remote.mux") {
+    webTelemetry.observeAuthenticatedUpgrade(request, trust, relay.access.kind);
     wss.handleUpgrade(request, socket, head, (ws) =>
       streams.attach(ws, trust.relaySockets.has(request.socket)),
     );
-  else {
+  } else {
     void (pluginRuntime?.upgrade(request, socket, head) ?? Promise.resolve(false))
       .then((handled) => {
         if (!handled) socket.destroy();
@@ -1167,6 +1180,7 @@ function shutdown(exitCode = 0): Promise<void> {
   return (shuttingDown ??= (async () => {
     try {
       stopEpoch?.();
+      webTelemetry.close();
       await peerDelegationBridge?.close();
       peerManager.close();
       relay.close();

@@ -11,6 +11,7 @@ import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { hasLauncherManagedUpdateRuntime, prepareDelegationRuntime } from "./run-host-runtime.js";
 import { createHostUpdateCoordinator } from "./update-coordinator.js";
 import { HostReleaseAnnouncement } from "./release-announcement.js";
+import { HostProductTelemetry } from "./product-telemetry.js";
 import { prepareLocalCodex } from "./native-account-host.js";
 import { startClientChannelServer } from "./client-channel-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
@@ -150,6 +151,14 @@ export async function runSharedHostService(
           fileURLToPath(runtimeUrl),
           hostEnvironment,
         );
+        const productTelemetry = new HostProductTelemetry({
+          runtimePath: fileURLToPath(runtimeUrl),
+          environment: hostEnvironment,
+        });
+        if (hostEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1") {
+          productTelemetry.recordSurface("ssh-remote");
+        }
+        productTelemetry.start();
         const host = new AppServerHost({
           stockCodexPath: values["stock-codex"] ?? "",
           arguments: [],
@@ -166,6 +175,7 @@ export async function runSharedHostService(
           modelPrices: prices,
           usageStatistics,
           releaseAnnouncement,
+          productTelemetry,
           ...(updateCoordinator ? { updateCoordinator } : {}),
           ...installed,
           ...(values.plugins
@@ -195,6 +205,7 @@ export async function runSharedHostService(
           store,
           prices,
           releaseAnnouncement,
+          productTelemetry,
           ...(updateCoordinator ? { updateCoordinator } : {}),
           delegation: () => delegation,
           register: (api: DelegationControlRegistration) => registry.register(api),
@@ -259,6 +270,7 @@ export async function runSharedHostService(
           await ready("ready\n");
           return await running;
         } finally {
+          productTelemetry.close();
           supervisor.close();
           process.removeListener("SIGTERM", stop);
           process.removeListener("SIGINT", stop);

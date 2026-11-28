@@ -8,6 +8,11 @@ import {
 } from "./host-extension-management.js";
 import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
 import { THREAD_HANDOFF_METHOD, threadHandoffMetadataSchema } from "./thread-handoff.js";
+import {
+  PRODUCT_TELEMETRY_GET_METHOD,
+  PRODUCT_TELEMETRY_SET_METHOD,
+  PRODUCT_TELEMETRY_SIGNAL_METHOD,
+} from "./telemetry.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
@@ -100,6 +105,9 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/update/status",
   "codexhost/announcement/get",
   "codexhost/announcement/acknowledge",
+  PRODUCT_TELEMETRY_GET_METHOD,
+  PRODUCT_TELEMETRY_SET_METHOD,
+  PRODUCT_TELEMETRY_SIGNAL_METHOD,
   "codexhost/sessions/loaded/list",
 ] as const;
 /** Native custom sections in the order returned by the official app-server. */

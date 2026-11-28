@@ -21,6 +21,13 @@ export {
   classifyCreateRequestRoute,
   officialEnvironment,
 } from "./app-server-host.js";
+export {
+  HostProductTelemetry,
+  isProductTelemetryMethod,
+  isTelemetryDisabledByEnvironment,
+  resolveProductTelemetryUrl,
+} from "./product-telemetry.js";
+export type { HostProductTelemetryOptions } from "./product-telemetry.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
 export type { CodexAccountControl } from "./account/codex-account-control.js";
 export { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";

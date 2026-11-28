@@ -138,19 +138,19 @@ fn web_listening(address: &str) -> bool {
         .is_some_and(|addresses| addresses.into_iter().any(connects))
 }
 
-fn services_ready(
+fn services_pending(
     request: &UpdateRequest,
     expected_version: Option<&str>,
     require_web: bool,
     snapshot: impl Fn(u32) -> Option<ProcessIdentity>,
     listening: impl Fn(&str) -> bool,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<Option<&'static str>, Box<dyn Error>> {
     let Some(data) = &request.data_directory else {
-        return Ok(true);
+        return Ok(None);
     };
     let app = request.installation.resources_root().join("app");
     let Some(host) = read_descriptor::<ServiceOwner>(&data.join("shared-host-ready.json"))? else {
-        return Ok(false);
+        return Ok(Some("Shared Host ready record missing"));
     };
     if !matches_owner(
         &host,
@@ -158,23 +158,37 @@ fn services_ready(
         expected_version,
         snapshot(host.pid).as_ref(),
     ) {
-        return Ok(false);
+        return Ok(Some("Shared Host owner or version did not match"));
     }
     if !require_web {
-        return Ok(true);
+        return Ok(None);
     }
     let Some(web) = read_descriptor::<WebOwner>(&data.join("web-service-ready.json"))? else {
-        return Ok(false);
+        return Ok(Some("Web ready record missing"));
     };
-    Ok(matches_owner(
+    if !(matches_owner(
         &web.owner,
         &app.join("web-server.mjs"),
         expected_version,
         snapshot(web.owner.pid).as_ref(),
     ) && same_path(&web.owner.executable, &request.installation.launcher_path())
         && web.owner.version == host.version
-        && snapshot(web.web_pid).is_some_and(|child| child.parent_id == web.owner.pid)
-        && listening(&web.address))
+        && snapshot(web.web_pid).is_some_and(|child| child.parent_id == web.owner.pid))
+    {
+        return Ok(Some("Web owner, child or version did not match"));
+    }
+    Ok((!listening(&web.address)).then_some("Web port is not listening"))
+}
+
+#[cfg(test)]
+fn services_ready(
+    request: &UpdateRequest,
+    expected_version: Option<&str>,
+    require_web: bool,
+    snapshot: impl Fn(u32) -> Option<ProcessIdentity>,
+    listening: impl Fn(&str) -> bool,
+) -> Result<bool, Box<dyn Error>> {
+    Ok(services_pending(request, expected_version, require_web, snapshot, listening)?.is_none())
 }
 
 fn desktop_ready(request: &UpdateRequest) -> Result<bool, Box<dyn Error>> {
@@ -280,11 +294,94 @@ fn desktop_shell_command(request: &UpdateRequest) -> Command {
     command
 }
 
-pub(crate) fn relaunch_desktop_shell(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
+const SHELL_READY: &str = "desktop-shell-ready.json";
+
+#[derive(Deserialize)]
+struct ShellOwner {
+    pid: u32,
+    started_at_micros: u64,
+    executable: PathBuf,
+    version: String,
+}
+
+fn shell_owner(request: &UpdateRequest) -> Result<Option<ShellOwner>, Box<dyn Error>> {
+    let Some(data) = &request.data_directory else {
+        return Ok(None);
+    };
+    let Some(owner) = read_descriptor::<ShellOwner>(&data.join(SHELL_READY))? else {
+        return Ok(None);
+    };
+    let root = request.installation.resources_root();
+    let shell_name = format!("codexhost-shell{}", std::env::consts::EXE_SUFFIX);
+    let candidates = [
+        root.join("libexec").join(&shell_name),
+        root.join("bin").join(&shell_name),
+        root.join("libexec/CodexHost.app/Contents/MacOS/CodexHost"),
+        root.join("../Helpers/CodexHost.app/Contents/MacOS/CodexHost"),
+    ];
+    Ok(process_snapshot(owner.pid).ok().and_then(|live| {
+        (live.started_at_micros == owner.started_at_micros
+            && same_path(&live.executable, &owner.executable)
+            && candidates
+                .iter()
+                .any(|path| same_path(path, &owner.executable)))
+        .then_some(owner)
+    }))
+}
+
+pub(crate) fn current_desktop_shell(
+    request: &UpdateRequest,
+) -> Result<Option<u32>, Box<dyn Error>> {
+    Ok(shell_owner(request)?.map(|owner| owner.pid))
+}
+
+pub(crate) fn relaunch_desktop_shell(
+    request: &UpdateRequest,
+    expected_version: Option<&str>,
+    previous_pid: Option<u32>,
+    recovery: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut command = desktop_shell_command(request);
+    // A rollback may restore a Launcher that predates the supervised app entrypoint.
+    if !recovery {
+        command.arg("--update-recovery");
+    }
     configure_detached_service_command(&mut command)?;
-    command.spawn()?;
-    Ok(())
+    let log = crate::diagnostics::capture(
+        &mut command,
+        &request.status_path,
+        "desktop-shell-restart.log",
+        recovery,
+    )?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Could not start Desktop Shell launcher {}: {error}{}",
+            request.installation.launcher_path().display(),
+            crate::diagnostics::log_details(&log, false)
+        )
+    })?;
+    let deadline = Instant::now() + Duration::from_secs(46);
+    loop {
+        if let Some(status) = child.try_wait()?
+            && !status.success()
+        {
+            return Err(format!(
+                "Desktop Shell restart exited with {status}{}",
+                crate::diagnostics::log_details(&log, false)
+            )
+            .into());
+        }
+        if let Some(owner) = shell_owner(request)?
+            && (Some(owner.pid) != previous_pid || recovery && child.try_wait()?.is_some())
+            && expected_version.is_none_or(|version| owner.version == version)
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("Desktop Shell did not publish a new ready record for the expected installation and version{}", crate::diagnostics::log_details(&log, false)).into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 pub(crate) fn restore(
@@ -292,7 +389,21 @@ pub(crate) fn restore(
     expected_version: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     verify_available_services(request)?;
-    let mut child = command(request).spawn()?;
+    let mut command = command(request);
+    let executable = PathBuf::from(command.get_program());
+    let log = crate::diagnostics::capture(
+        &mut command,
+        &request.status_path,
+        "restart-service.log",
+        true,
+    )?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Could not start service executable {}: {error}{}",
+            executable.display(),
+            crate::diagnostics::log_details(&log, false)
+        )
+    })?;
     let require_web = request.restart_target == RestartTarget::Web
         || std::env::var_os("CODEXHOST_WEB_SERVICE").as_deref() != Some(std::ffi::OsStr::new("0"));
     let started = Instant::now();
@@ -300,22 +411,42 @@ pub(crate) fn restore(
         if let Some(status) = child.try_wait()?
             && !status.success()
         {
-            return Err(format!("codexhost restart exited with {status}").into());
+            return Err(format!(
+                "codexhost restart exited with {status}{}",
+                crate::diagnostics::log_details(&log, false)
+            )
+            .into());
         }
         if (request.restart_target == RestartTarget::Web || desktop_ready(request)?)
-            && services_ready(
+            && services_pending(
                 request,
                 expected_version,
                 require_web,
                 |pid| process_identity(pid).ok(),
                 web_listening,
             )?
+            .is_none()
         {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(100));
     }
-    Err("codexhost services did not become ready after restart".into())
+    let pending = services_pending(
+        request,
+        expected_version,
+        require_web,
+        |pid| process_identity(pid).ok(),
+        web_listening,
+    )?;
+    let waiting = match pending {
+        Some(waiting) => waiting,
+        None => "Codex Desktop launcher or control port not ready",
+    };
+    Err(format!(
+        "codexhost services did not become ready after restart ({waiting}){}",
+        crate::diagnostics::log_details(&log, false)
+    )
+    .into())
 }
 
 #[cfg(test)]

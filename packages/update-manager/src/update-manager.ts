@@ -13,6 +13,7 @@ import {
 } from "./artifact.js";
 import {
   prefetchNpmRelease,
+  resolveNpmConfiguration,
   type NpmDownloadProgress,
   type NpmReleaseTarget,
 } from "./npm-registry.js";
@@ -128,6 +129,7 @@ interface InternalRequest {
         npm_cli_path: string;
         npm_launcher_path: string;
         npm_package_root: string;
+        npm_config_sha256?: string;
       }
     | {
         kind: "windows-installer";
@@ -469,8 +471,12 @@ export function createBackgroundUpdateManager(
         const packageRoot = requireAbsolutePath(options.packageRoot, "npm platform package root");
         // The Updater installs from this cache after the services stop, so a registry that is
         // unreachable or lacks the release fails here while everything keeps running.
+        const target = { nodePath, npmCliPath, packageRoot, version: common.version };
+        const configuration = dependencies.prefetchNpm
+          ? undefined
+          : await resolveNpmConfiguration(target);
         await prefetchNpm(
-          { nodePath, npmCliPath, packageRoot, version: common.version },
+          { ...target, ...(configuration ? { configuration: configuration.environment } : {}) },
           (npmDownload) =>
             writeStatusSnapshot(common.statusPath, {
               ...statusSnapshot(common.version, "npm", "downloading"),
@@ -486,6 +492,7 @@ export function createBackgroundUpdateManager(
             "npm codexhost launcher",
           ),
           npm_package_root: packageRoot,
+          ...(configuration ? { npm_config_sha256: configuration.digest } : {}),
         });
       } catch (error) {
         await writeFailedStatus(common.statusPath, common.version, "npm", error);

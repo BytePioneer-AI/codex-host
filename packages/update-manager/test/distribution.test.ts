@@ -8,6 +8,7 @@ import {
   UPDATE_RUNTIME_ENV,
   parseDistributionMetadata,
   resolveInstalledUpdateContext,
+  resolveNpmRuntimePaths,
 } from "@codexhost/update-manager";
 
 const roots: string[] = [];
@@ -433,3 +434,43 @@ describe("installed update context", () => {
     },
   );
 });
+
+it.skipIf(process.platform !== "win32")(
+  "discovers npm beside npm.cmd and resolves Windows aliases consistently",
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-npm-windows-"));
+    roots.push(root);
+    const scope = path.join(root, "prefix", "node_modules", "@codexhost");
+    const packageRoot = path.join(scope, "cli-win32-x64");
+    const nodeExecutable = path.join(root, "node", "node.exe");
+    const tools = path.join(root, "npm-tools");
+    const npmCli = path.join(tools, "node_modules", "npm", "bin", "npm-cli.js");
+    await Promise.all([
+      mkdir(packageRoot, { recursive: true }),
+      file(path.join(scope, "cli", "bin", "codexhost.js")),
+      file(nodeExecutable),
+      file(npmCli),
+      file(path.join(tools, "npm.cmd"), "@echo off\r\n"),
+    ]);
+    const options = { packageRoot, nodeExecutable, environment: { Path: tools } };
+    for (const alias of [
+      packageRoot[0]!.toLowerCase() + packageRoot.slice(1),
+      path.toNamespacedPath(packageRoot),
+    ]) {
+      await expect(
+        resolveNpmRuntimePaths({
+          ...options,
+          environment: { ...options.environment, [UPDATE_RUNTIME_ENV.npmPackageRoot]: alias },
+        }),
+      ).resolves.toMatchObject({
+        packageRoot: await realpath(packageRoot),
+        npmCliPath: await realpath(npmCli),
+      });
+    }
+    const linked = path.join(scope, "cli-win32-arm64");
+    await symlink(packageRoot, linked, "junction");
+    await expect(resolveNpmRuntimePaths({ ...options, packageRoot: linked })).rejects.toThrow(
+      "link or junction; update it manually with npm",
+    );
+  },
+);

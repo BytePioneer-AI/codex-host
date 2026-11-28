@@ -108,10 +108,17 @@ fn applications(executable_keys: &[String]) -> Result<Vec<Application>, Platform
         let mut user = FILETIME::default();
         // Read path and creation time through the same handle. Restart Manager uses
         // PID + creation time, so a recycled PID cannot select an unrelated process.
-        unsafe { GetProcessTimes(*handle, &mut created, &mut exited, &mut kernel, &mut user) }
-            .map_err(|error| {
-                PlatformError::Invalid(format!("inspect installer target: {error}"))
-            })?;
+        if let Err(error) =
+            unsafe { GetProcessTimes(*handle, &mut created, &mut exited, &mut kernel, &mut user) }
+        {
+            if unsafe { WaitForSingleObject(*handle, 0) } == WAIT_OBJECT_0 {
+                continue;
+            }
+            return Err(PlatformError::Invalid(format!(
+                "GetProcessTimes for installer target PID {}: {error}",
+                entry.id
+            )));
+        }
         applications.push(Application {
             handle,
             identity: RM_UNIQUE_PROCESS {
@@ -167,8 +174,21 @@ pub fn shutdown_processes_for_executables(executables: &[PathBuf]) -> Result<(),
         // Headless processes may have no Restart Manager shutdown mechanism. They
         // can still be terminated by exact instance; never fall back to image names.
         let force_remaining = result == ERROR_FAIL_SHUTDOWN || result == ERROR_FAIL_NOACTION_REBOOT;
-        if !force_remaining {
-            restart_result("close installer processes", result)?;
+        if !force_remaining && result.0 != 0 {
+            let running = applications
+                .iter()
+                .filter(|app| unsafe { WaitForSingleObject(*app.handle, 0) } != WAIT_OBJECT_0)
+                .map(|app| app.identity.dwProcessId.to_string())
+                .collect::<Vec<_>>();
+            if !running.is_empty() {
+                restart_result(
+                    &format!(
+                        "RmShutdown for installer target PIDs {}",
+                        running.join(", ")
+                    ),
+                    result,
+                )?;
+            }
         }
         for application in &applications {
             if force_remaining

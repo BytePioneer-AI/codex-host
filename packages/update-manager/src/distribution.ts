@@ -219,7 +219,7 @@ function homebrewNpmCliCandidates(nodePath: string, environment: NodeJS.ProcessE
   return candidates;
 }
 
-function discoverNpmCliPath(
+async function discoverNpmCliPath(
   globalModulesRoot: string,
   nodePath: string,
   environment: NodeJS.ProcessEnv,
@@ -247,18 +247,31 @@ function discoverNpmCliPath(
   if (environment.npm_execpath) {
     candidates.push(environment.npm_execpath);
   }
-  for (const directory of (environment.PATH ?? "").split(path.delimiter)) {
+  for (const directory of (environment.PATH ?? environment.Path ?? "").split(path.delimiter)) {
     if (!directory || !path.isAbsolute(directory)) continue;
     if (platform === "win32") {
-      candidates.push(
-        path.join(directory, "node_modules", "npm", "bin", "npm-cli.js"),
-        path.join(directory, "npm.cmd"),
-      );
+      candidates.push(path.join(directory, "node_modules", "npm", "bin", "npm-cli.js"));
+      const shim = await resolveRegularFile(path.join(directory, "npm.cmd"));
+      if (shim && path.dirname(shim) !== directory) {
+        candidates.push(path.join(path.dirname(shim), "node_modules", "npm", "bin", "npm-cli.js"));
+      }
     } else {
       candidates.push(path.join(directory, "npm"));
     }
   }
-  return firstRegularFile(candidates, (resolved) => path.basename(resolved) === "npm-cli.js");
+  return firstRegularFile(candidates, (resolved) => {
+    const name = path.basename(resolved);
+    return (platform === "win32" ? name.toLowerCase() : name) === "npm-cli.js";
+  });
+}
+
+async function windowsNpmPackageRoot(root: string): Promise<string> {
+  const ordinaryPath = root.replace(/^\\\\\?\\UNC\\/iu, "\\\\").replace(/^\\\\\?\\/u, "");
+  const metadata = await lstat(ordinaryPath);
+  if (metadata.isSymbolicLink()) {
+    throw new Error("The npm platform package is a link or junction; update it manually with npm");
+  }
+  return realpath(ordinaryPath);
 }
 
 /**
@@ -291,7 +304,13 @@ export async function resolveNpmRuntimePaths(
     environment,
     UPDATE_RUNTIME_ENV.npmPackageRoot,
   );
-  if (explicitPackageRoot !== undefined && explicitPackageRoot !== resourcesRoot) {
+  const windows = platform === "win32" && process.platform === "win32";
+  const packageRoot = windows ? await windowsNpmPackageRoot(resourcesRoot) : resourcesRoot;
+  const configuredRoot =
+    windows && explicitPackageRoot !== undefined
+      ? await windowsNpmPackageRoot(explicitPackageRoot)
+      : explicitPackageRoot;
+  if (configuredRoot !== undefined && configuredRoot !== packageRoot) {
     throw new Error("npm platform package root does not own the Host Runtime");
   }
   if (
@@ -304,10 +323,10 @@ export async function resolveNpmRuntimePaths(
       nodePath: explicitNodePath,
       npmCliPath: explicitNpmCliPath,
       npmLauncherPath: explicitLauncherPath,
-      packageRoot: explicitPackageRoot,
+      packageRoot,
     };
   }
-  const layout = npmPackageLayout(resourcesRoot);
+  const layout = npmPackageLayout(packageRoot);
   if (!layout) {
     if (explicitNodePath === undefined) {
       throw new Error(`${UPDATE_RUNTIME_ENV.npmNodePath} must be an absolute path`);
@@ -320,7 +339,6 @@ export async function resolveNpmRuntimePaths(
     }
     throw new Error(`${UPDATE_RUNTIME_ENV.npmPackageRoot} must be an absolute path`);
   }
-  const packageRoot = explicitPackageRoot ?? resourcesRoot;
   const nodePath =
     explicitNodePath ??
     (await discoverNpmNodePath(
@@ -335,7 +353,11 @@ export async function resolveNpmRuntimePaths(
     explicitNpmCliPath ??
     (await discoverNpmCliPath(layout.globalModulesRoot, nodePath, environment, platform));
   if (!npmCliPath) {
-    throw new Error(`${UPDATE_RUNTIME_ENV.npmCliPath} must be an absolute path`);
+    throw new Error(
+      platform === "win32"
+        ? "Cannot find npm-cli.js beside Node.js or npm.cmd; reinstall npm or set CODEXHOST_NPM_CLI_PATH to npm-cli.js"
+        : `${UPDATE_RUNTIME_ENV.npmCliPath} must be an absolute path`,
+    );
   }
   const npmLauncherPath =
     explicitLauncherPath ?? (await resolveRegularFile(layout.launcherCandidate));

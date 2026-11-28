@@ -349,9 +349,9 @@ pub(super) fn wait_for_shutdown(
     let started = Instant::now();
     let mut escalated = false;
     loop {
-        match process_identity(target.id) {
-            Ok(current) if current.started_at_micros == target.started_at_micros => {}
-            Ok(_) | Err(PlatformError::NotFound(_)) => return Ok(()),
+        match codexhost_platform::observe_process_identity(target.id) {
+            Ok(Some(current)) if current.started_at_micros == target.started_at_micros => {}
+            Ok(_) => return Ok(()),
             Err(error) => return Err(error.into()),
         }
         if started.elapsed() >= timeout {

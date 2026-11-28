@@ -275,37 +275,63 @@ pub fn terminate_process_instance(
     expected_started_at_micros: u64,
     exit_code: u32,
 ) -> io::Result<bool> {
+    const ERROR_INVALID_PARAMETER: i32 = 87;
+    let inspect_access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE.0;
+    let describe = |operation: &str, error: io::Error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} PID {process_id}: {error}"),
+        )
+    };
     unsafe {
-        let process = OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-            0,
-            process_id,
-        );
+        let process = OpenProcess(inspect_access | PROCESS_TERMINATE, 0, process_id);
         if process.is_null() {
-            return Ok(false);
-        }
-        let current_started_at_micros = match process_started_at_micros_from_handle(process) {
-            Ok(value) => value,
-            Err(error) => {
-                CloseHandle(process);
-                return Err(error);
+            let error = io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(ERROR_INVALID_PARAMETER) if process_id != 0 => return Ok(false),
+                Some(5) => {
+                    let observer = OpenProcess(inspect_access, 0, process_id);
+                    if observer.is_null() {
+                        if io::Error::last_os_error().raw_os_error()
+                            == Some(ERROR_INVALID_PARAMETER)
+                        {
+                            return Ok(false);
+                        }
+                    } else {
+                        let exited = handle_has_exited(observer);
+                        let started = process_started_at_micros_from_handle(observer);
+                        CloseHandle(observer);
+                        if exited
+                            || started.is_ok_and(|started| started != expected_started_at_micros)
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+                _ => {}
             }
-        };
-        if current_started_at_micros != expected_started_at_micros {
-            CloseHandle(process);
-            return Ok(false);
+            return Err(describe("OpenProcess", error));
         }
-        let result = TerminateProcess(process, exit_code);
-        let error = if result == 0 {
-            Some(io::Error::last_os_error())
-        } else {
-            None
-        };
+        let result = (|| {
+            match process_started_at_micros_from_handle(process) {
+                Ok(started) if started != expected_started_at_micros => return Ok(false),
+                Ok(_) => {}
+                Err(_) if handle_has_exited(process) => return Ok(false),
+                Err(error) => return Err(describe("GetProcessTimes", error)),
+            }
+            if TerminateProcess(process, exit_code) == 0 {
+                let error = io::Error::last_os_error();
+                if matches!(error.raw_os_error(), Some(5 | ERROR_INVALID_PARAMETER))
+                    && WaitForSingleObject(HANDLE(process), 50) == WAIT_OBJECT_0
+                {
+                    return Ok(true);
+                }
+                return Err(describe("TerminateProcess", error));
+            }
+            Ok(true)
+        })();
         CloseHandle(process);
-        match error {
-            Some(error) => Err(error),
-            None => Ok(true),
-        }
+        result
     }
 }
 
@@ -417,7 +443,11 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{atomic_replace_file, terminate_process};
+    use super::{
+        atomic_replace_file, process_started_at_micros_from_handle, terminate_process,
+        terminate_process_instance,
+    };
+    use std::os::windows::io::AsRawHandle;
 
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
@@ -435,6 +465,9 @@ mod tests {
                 .success()
         );
 
+        let started = process_started_at_micros_from_handle(child.as_raw_handle()).unwrap();
+        terminate_process_instance(child.id(), started, 1)
+            .expect("the exact process already exited");
         terminate_process(child.id(), 1).expect("the process already exited");
         assert!(!crate::process_exists(child.id()));
     }

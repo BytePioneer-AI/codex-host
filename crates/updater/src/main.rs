@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod diagnostics;
 mod handoff;
 mod install;
 mod npm;
@@ -10,6 +11,8 @@ mod restart;
 mod services;
 mod ssh;
 mod status;
+#[cfg(target_os = "windows")]
+mod windows_install;
 
 use std::env;
 use std::error::Error;
@@ -74,35 +77,112 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
         .transpose()?;
     let mut service_stop_output = None;
     let mut stopping_started = false;
+    let mut services_restored = false;
+    let mut old_shell_pid = None;
+    #[cfg(windows)]
+    let mut windows = None;
+    #[cfg(windows)]
+    let mut installer_started = false;
+    #[cfg(windows)]
+    let mut installation_verified = false;
+    let mut previous_version = None;
     let result = (|| -> Result<(), Box<dyn Error>> {
-        // Before the handoff acknowledgement, so a refusal leaves the owner running.
+        // A refusal before acknowledgement leaves the owner running.
         let npm_layout = install::preflight(&request)?;
+        #[cfg(windows)]
+        if let request::Installation::WindowsInstaller(installation) = &request.installation {
+            let transaction = windows_install::WindowsUpdate::inspect(&request, installation)?;
+            previous_version = Some(transaction.previous_version.clone());
+            windows = Some(transaction);
+        }
+        if matches!(request.installation, request::Installation::Npm(_)) {
+            previous_version =
+                install::installed_version(&request.installation.resources_root(), "npm").ok();
+        }
+        old_shell_pid = restart::current_desktop_shell(&request)?;
+        // A released Windows Launcher may not set this flag yet.
+        if cfg!(windows) && request.service_managed && old_shell_pid.is_some() {
+            request.restart_desktop_shell = true;
+        }
         wait_for_launcher_exit(&request)?;
         stopping_started = true;
         service_stop_output = services::stop(&request)?;
         write_status(&request, "installing", None, service_stop_output.as_deref())?;
+        #[cfg(windows)]
+        if let Some(transaction) = &windows {
+            transaction.backup()?;
+            installer_started = true;
+        }
         install(&mut request, npm_layout.as_ref())?;
+        #[cfg(windows)]
+        {
+            installation_verified = true;
+        }
         write_status(&request, "restarting", None, service_stop_output.as_deref())?;
         restart::restore(&request, Some(&request.version))?;
+        services_restored = true;
+        if request.restart_desktop_shell {
+            restart::relaunch_desktop_shell(
+                &request,
+                Some(&request.version),
+                old_shell_pid,
+                false,
+            )?;
+        }
         write_status(&request, "succeeded", None, service_stop_output.as_deref())?;
-        if request.restart_desktop_shell
-            && let Err(shell_error) = restart::relaunch_desktop_shell(&request)
-        {
-            eprintln!("codexhost updater: desktop shell relaunch failed: {shell_error}");
+        #[cfg(windows)]
+        if let Some(transaction) = &windows {
+            transaction.discard_backup();
         }
         Ok(())
     })();
-    if let Err(error) = &result {
+    if let Err(error) = result {
         let mut message = error.to_string();
-        let mut recovered = false;
-        if stopping_started {
-            match restart::restore(&request, None) {
+        let recover = stopping_started && !services_restored;
+        #[cfg(windows)]
+        let recover = match &windows {
+            Some(transaction) if installation_verified => {
+                message.push_str(&format!(
+                    "; previous installation retained at {}",
+                    transaction.backup_path().display()
+                ));
+                false
+            }
+            Some(transaction) if installer_started => match transaction.rollback() {
                 Ok(()) => {
-                    recovered = true;
+                    message.push_str(&format!(
+                        "; rolled back to {}",
+                        transaction.previous_version
+                    ));
+                    recover
+                }
+                Err(rollback) => {
+                    message.push_str(&format!(
+                        "; rollback failed: {rollback}; backup path: {}",
+                        transaction.backup_path().display(),
+                    ));
+                    false
+                }
+            },
+            _ => recover,
+        };
+        if recover {
+            match restart::restore(&request, previous_version.as_deref()) {
+                Ok(()) => {
                     message.push_str("; service recovery succeeded");
+                    if request.restart_desktop_shell
+                        && let Err(error) = restart::relaunch_desktop_shell(
+                            &request,
+                            previous_version.as_deref(),
+                            old_shell_pid,
+                            true,
+                        )
+                    {
+                        message.push_str(&format!("; desktop shell recovery failed: {error}"));
+                    }
                 }
                 Err(recovery) => {
-                    message.push_str(&format!("; service recovery failed: {recovery}"))
+                    message.push_str(&format!("; service recovery failed: {recovery}"));
                 }
             }
         }
@@ -112,14 +192,9 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
             Some(&message),
             service_stop_output.as_deref(),
         );
-        if recovered
-            && request.restart_desktop_shell
-            && let Err(shell_error) = restart::relaunch_desktop_shell(&request)
-        {
-            eprintln!("codexhost updater: desktop shell recovery failed: {shell_error}");
-        }
+        return Err(message.into());
     }
-    result
+    Ok(())
 }
 
 fn usage() {
@@ -187,6 +262,7 @@ mod tests {
                 npm_cli_path: wrong_executable.clone(),
                 npm_launcher_path: wrong_executable,
                 npm_package_root: directory.clone(),
+                npm_config_sha256: None,
             }),
         };
         let error = wait_for_launcher_exit(&request).unwrap_err();

@@ -13,7 +13,7 @@ use codexhost_platform::configure_background_command;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::npm::{GlobalInstallation, global_installation};
+use crate::npm::{GlobalInstallation, NpmConfiguration, global_installation, npm_command};
 #[cfg(target_os = "linux")]
 use crate::request::validate_linux_archive_paths;
 use crate::request::validate_version;
@@ -87,8 +87,34 @@ fn verify_distribution(
     Ok(())
 }
 
+pub(crate) fn installed_version(root: &Path, distribution: &str) -> Result<String, Box<dyn Error>> {
+    let metadata = distribution_metadata(&root.join("app").join(DISTRIBUTION_FILE))?;
+    if metadata.distribution != distribution {
+        return Err(format!("installed distribution is not {distribution}").into());
+    }
+    Ok(metadata.version)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn verify_installation(
+    root: &Path,
+    version: &str,
+    distribution: &str,
+) -> Result<(), Box<dyn Error>> {
+    verify_distribution(
+        &root.join("app").join(DISTRIBUTION_FILE),
+        version,
+        distribution,
+    )
+}
+
 fn run_checked(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>> {
-    let status = command.status()?;
+    let status = command.status().map_err(|error| {
+        format!(
+            "Could not run {label} executable {}: {error}",
+            Path::new(command.get_program()).display()
+        )
+    })?;
     if !status.success() {
         return Err(format!("{label} failed with {status}").into());
     }
@@ -103,7 +129,7 @@ pub(crate) fn preflight(
     let Installation::Npm(npm) = &request.installation else {
         return Ok(None);
     };
-    let layout = global_installation(
+    let mut layout = global_installation(
         &npm.node_path,
         &npm.npm_cli_path,
         &npm.npm_launcher_path,
@@ -115,6 +141,13 @@ pub(crate) fn preflight(
             npm.npm_package_root.display()
         )
     })?;
+    if let Some(expected) = &npm.npm_config_sha256 {
+        layout.configuration = Some(NpmConfiguration::verify(
+            &npm.node_path,
+            &npm.npm_cli_path,
+            expected,
+        )?);
+    }
     Ok(Some(layout))
 }
 
@@ -130,9 +163,11 @@ fn install_npm(
     // Node runtime is not a target.
     #[cfg(target_os = "windows")]
     crate::prepare_install::prepare(&npm.npm_package_root)?;
-    let mut command = Command::new(&npm.node_path);
+    let mut command = npm_command(&npm.node_path, &npm.npm_cli_path);
+    if let Some(configuration) = &layout.configuration {
+        configuration.apply(&mut command);
+    }
     command
-        .arg(&npm.npm_cli_path)
         // The update manager downloaded these packages into the npm cache before the
         // services stopped, so the install does not wait on a slow or lagging registry.
         .args([
@@ -145,11 +180,9 @@ fn install_npm(
         // npm can silently skip a failed optional dependency. Require the native
         // payload explicitly so npm fails and restores the old packages if it cannot install it.
         .args(layout.required_specs(version));
-    configure_background_command(&mut command);
-    if let Some(log) = operation_log(status_path, "npm-install.log") {
-        command.stdout(log.try_clone()?).stderr(log);
-    }
-    run_checked(&mut command, "npm update")?;
+    let log = crate::diagnostics::capture(&mut command, status_path, "npm-install.log", false)?;
+    run_checked(&mut command, "npm update")
+        .map_err(|error| format!("{error}{}", crate::diagnostics::log_details(&log, true)))?;
     // A nested payload can move to a global sibling when npm installs it explicitly.
     npm.npm_package_root = layout.resolved_platform_root().to_path_buf();
     let package_root = &npm.npm_package_root;
@@ -167,21 +200,12 @@ fn install_npm(
     Ok(())
 }
 
-/// A diagnostic log beside the operation status; updates proceed without it.
-fn operation_log(status_path: &Path, name: &str) -> Option<File> {
-    File::create(status_path.parent()?.join(name)).ok()
-}
-
 #[cfg(target_os = "windows")]
 fn install_windows(
     request: &UpdateRequest,
     windows: &WindowsInstallation,
 ) -> Result<(), Box<dyn Error>> {
     verify_artifact(&windows.installer_path, &windows.artifact_sha256)?;
-    // Close the console, Node, Shim and Launcher still running from this
-    // installation. Installers released before `prepare-install` do not, and
-    // Inno aborts a silent install when Restart Manager cannot close them.
-    crate::prepare_install::prepare(&windows.install_root)?;
     let mut command = Command::new(&windows.installer_path);
     command.args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]);
     // Keep the running installation's directory, and leave Inno's log beside the
@@ -616,6 +640,7 @@ printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixtur
                     npm_cli_path: npm_cli.clone(),
                     npm_launcher_path: modules.join("cli/bin/codexhost.js"),
                     npm_package_root: package_root.clone(),
+                    npm_config_sha256: None,
                 }),
             };
 
@@ -722,6 +747,7 @@ printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixtur
                     npm_cli_path: path.clone(),
                     npm_launcher_path: path.clone(),
                     npm_package_root: path,
+                    npm_config_sha256: None,
                 }),
             }
         }

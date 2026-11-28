@@ -1746,10 +1746,11 @@ fn launch_presentation(arguments: &[String], terminal: bool) -> console::Present
 }
 
 fn is_launch_command(arguments: &[String]) -> bool {
-    matches!(
-        arguments.first().map(String::as_str),
-        None | Some(START_MENU_ARGUMENT | "launch" | "app")
-    )
+    arguments != ["app", "--update-recovery"]
+        && matches!(
+            arguments.first().map(String::as_str),
+            None | Some(START_MENU_ARGUMENT | "launch" | "app")
+        )
 }
 
 fn default_launch_options() -> LaunchOptions {
@@ -1862,6 +1863,15 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             let onboarding = match &arguments[1..] {
                 [] => false,
                 [flag] if flag == "--onboarding" => true,
+                [flag] if flag == "--update-recovery" => {
+                    let shell = InstalledResources::from_current_executable()?
+                        .desktop_shell
+                        .ok_or("Desktop Shell executable is missing from the installation")?;
+                    let data = startup_record::data_directory()
+                        .ok_or("User data directory is unavailable")?;
+                    service_update::ensure_start_allowed(&data)?;
+                    return desktop_shell::spawn_for_update(&shell, &data);
+                }
                 _ => return Err("usage: codexhost app [--onboarding]".into()),
             };
             shortcut::maybe_prompt_on_first_run();

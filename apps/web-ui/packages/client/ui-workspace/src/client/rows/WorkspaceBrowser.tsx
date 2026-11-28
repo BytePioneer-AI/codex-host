@@ -108,6 +108,8 @@ import {
   filterWorkspacesByHostScope,
   hasRemotePeerWorkspaces,
   hasRemoteWorkspaces,
+  hostScopeIncludesLocalSessions,
+  hostScopeIncludesUngroupedLocal,
   isHostScopeFiltered,
   isRemoteFallbackWorkspace,
   loadHostScopeFilter,
@@ -791,14 +793,6 @@ function SessionTree({
     [list, rowState, statuses, forestRoots],
   );
   const showPinnedSection = pinnedRows.length > 0 || pinnedGroups.length > 0;
-  const projectSessionIds = new Set<string>(
-    allWorkspaces.flatMap((workspace) => {
-      const linked = linkedRoots.get(workspace.workspaceId);
-      return linked === undefined || linked.size === 0
-        ? workspace.sessionIds
-        : workspace.sessionIds.filter((id) => !linked.has(id));
-    }),
-  );
   const rowKeys: string[] = [];
   if (showPinnedSection) {
     rowKeys.push(`section:${PINNED_SECTION_KEY}`);
@@ -831,7 +825,6 @@ function SessionTree({
       sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
       current,
       revealSessionId,
-      workspaceId === undefined ? projectSessionIds : undefined,
     );
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
@@ -2141,6 +2134,17 @@ function WorkspaceBrowserContent({
     orderedWorkspaces,
     effectiveHostScopeFilter,
   ]);
+  const scopedCanStartProjectless = useMemo(
+    () =>
+      canStartProjectless &&
+      hostScopeIncludesUngroupedLocal(effectiveHostScopeFilter, orderedWorkspaces),
+    [canStartProjectless, effectiveHostScopeFilter, orderedWorkspaces],
+  );
+  const localPaginationInScope = useMemo(
+    () =>
+      hostScopeIncludesLocalSessions(effectiveHostScopeFilter, orderedWorkspaces, scopedWorkspaces),
+    [effectiveHostScopeFilter, orderedWorkspaces, scopedWorkspaces],
+  );
   const scopedList = useMemo(() => {
     if (!hostScopeFiltered) return list;
     const allowedIds = new Set(
@@ -2158,10 +2162,12 @@ function WorkspaceBrowserContent({
     return {
       ...list,
       ids: list.ids.filter((id) => allowedIds.has(id)),
+      ...(localPaginationInScope ? {} : { hasMore: false, loading: false }),
     };
   }, [
     hostScopeFiltered,
     list,
+    localPaginationInScope,
     visibleWorkspaceIdSet,
     orderedWorkspaces,
     effectiveHostScopeFilter,
@@ -2797,7 +2803,7 @@ function WorkspaceBrowserContent({
               allWorkspaces={orderedWorkspaces}
               linkedRoots={linkedRoots}
               ungroupedSessionIds={orderedUngroupedSessionIds}
-              canStartProjectless={canStartProjectless}
+              canStartProjectless={scopedCanStartProjectless}
               workspaceReady={workspaceReady}
               nestWorkspaces={groupBy === "workspace-tree"}
               animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}/${hostScopeResetKey}`}

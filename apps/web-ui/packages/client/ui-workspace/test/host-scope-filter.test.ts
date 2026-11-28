@@ -6,8 +6,14 @@ import type {
 } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { WorkspaceId, WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
-import { deriveFlat, deriveGroups, type SessionRowState } from "../src/client/tree.ts";
+import {
+  deriveFlat,
+  deriveGroups,
+  UNGROUPED_KEY,
+  type SessionRowState,
+} from "../src/client/tree.ts";
 import { threadTreeOrderSource, workspaceTreeMembers } from "../src/client/thread-tree-order.ts";
+import { sidebarWindow } from "../src/client/rows/sidebar-window.ts";
 import {
   DEFAULT_HOST_SCOPE_FILTER_STATE,
   HOST_SCOPE_FILTER_STORAGE_KEY,
@@ -18,6 +24,8 @@ import {
   filterWorkspacesByHostScope,
   hasRemotePeerWorkspaces,
   hasRemoteWorkspaces,
+  hostScopeIncludesLocalSessions,
+  hostScopeIncludesUngroupedLocal,
   isHostScopeFiltered,
   loadHostScopeFilter,
   parseHostScopeFilter,
@@ -305,6 +313,86 @@ describe("filterSessionsByHostScope", () => {
       state,
     );
     assert.deepEqual(result, ["s-us-1"]);
+  });
+
+  it("keeps ungrouped sessions belonging to the selected remote host in all mode only", () => {
+    const workspaces = sampleWorkspaces();
+    const allOnUs: HostScopeFilterState = { selectedHost: "remote-peer:us-vps", perHost: {} };
+    const visibleAll = filterWorkspacesByHostScope(workspaces, allOnUs);
+    assert.deepEqual(
+      filterSessionsByHostScope(
+        allSessions,
+        visibleAll.map((w) => w.workspaceId),
+        workspaces,
+        allOnUs,
+      ).map((s) => s.id),
+      ["s-us-1", "s-us-2", "s-ungrouped-remote"],
+    );
+
+    const selectedOnUs: HostScopeFilterState = {
+      selectedHost: "remote-peer:us-vps",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    };
+    const visibleSelected = filterWorkspacesByHostScope(workspaces, selectedOnUs);
+    assert.deepEqual(
+      filterSessionsByHostScope(
+        allSessions,
+        visibleSelected.map((w) => w.workspaceId),
+        workspaces,
+        selectedOnUs,
+      ).map((s) => s.id),
+      ["s-us-1"],
+    );
+  });
+});
+
+describe("hostScopeIncludesLocalSessions & hostScopeIncludesUngroupedLocal", () => {
+  it("gates local pagination and projectless creation by the active host scope", () => {
+    const workspaces = sampleWorkspaces();
+    const localOnly = workspaces.filter((w) => w.remote === undefined);
+
+    assert.equal(hostScopeIncludesLocalSessions(DEFAULT_HOST_SCOPE_FILTER_STATE, localOnly), true);
+    assert.equal(hostScopeIncludesUngroupedLocal(DEFAULT_HOST_SCOPE_FILTER_STATE, localOnly), true);
+
+    assert.equal(hostScopeIncludesLocalSessions(DEFAULT_HOST_SCOPE_FILTER_STATE, workspaces), true);
+    assert.equal(
+      hostScopeIncludesUngroupedLocal(DEFAULT_HOST_SCOPE_FILTER_STATE, workspaces),
+      true,
+    );
+
+    const localHost: HostScopeFilterState = { selectedHost: "local", perHost: {} };
+    assert.equal(hostScopeIncludesLocalSessions(localHost, workspaces), true);
+    assert.equal(hostScopeIncludesUngroupedLocal(localHost, workspaces), true);
+
+    const localSelectedOne: HostScopeFilterState = {
+      selectedHost: "local",
+      perHost: { local: { mode: "selected", workspaceIds: ["ws-local-1"] } },
+    };
+    assert.equal(hostScopeIncludesLocalSessions(localSelectedOne, workspaces), true);
+    assert.equal(hostScopeIncludesUngroupedLocal(localSelectedOne, workspaces), false);
+
+    const localSelectedNone: HostScopeFilterState = {
+      selectedHost: "local",
+      perHost: { local: { mode: "selected", workspaceIds: [] } },
+    };
+    assert.equal(hostScopeIncludesLocalSessions(localSelectedNone, workspaces), false);
+    assert.equal(hostScopeIncludesUngroupedLocal(localSelectedNone, workspaces), false);
+
+    const allWithLocalEmpty: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: { local: { mode: "selected", workspaceIds: [] } },
+    };
+    assert.equal(hostScopeIncludesLocalSessions(allWithLocalEmpty, workspaces), false);
+    assert.equal(hostScopeIncludesUngroupedLocal(allWithLocalEmpty, workspaces), false);
+
+    const remoteHost: HostScopeFilterState = {
+      selectedHost: "remote-peer:us-vps",
+      perHost: {},
+    };
+    assert.equal(hostScopeIncludesLocalSessions(remoteHost, workspaces), false);
+    assert.equal(hostScopeIncludesUngroupedLocal(remoteHost, workspaces), false);
   });
 });
 
@@ -734,5 +822,153 @@ describe("host scope filter with delegation thread trees", () => {
     assert.ok(localRoot);
     assert.equal(localRoot.tree?.descendantCount, 1);
     assert.equal(localRoot.tree?.activity.running, 1);
+  });
+
+  it("retains project-owned sessions in Recents across local, all, and remote host scopes without leaking local hasMore", () => {
+    const jpHost = {
+      hostId: "remote-peer:jp-box",
+      displayName: "日VPS",
+      state: "connected",
+    };
+    const rows: SessionSummary[] = [
+      makeSummary({ id: "local-proj-1", updatedAt: 500 }),
+      makeSummary({ id: "local-pinned", updatedAt: 600 }),
+      { ...makeSummary({ id: "local-blank", updatedAt: 700 }), blank: true },
+      { ...makeSummary({ id: "local-subagent", updatedAt: 650 }), origin: "subagent" },
+      makeSummary({ id: "local-ungrouped", updatedAt: 300 }),
+      makeSummary({ id: "peer-proj-1", hostId: peerHost.hostId, updatedAt: 550 }),
+      makeSummary({ id: "peer-proj-2", hostId: peerHost.hostId, updatedAt: 450 }),
+      makeSummary({ id: "peer-ungrouped", hostId: peerHost.hostId, updatedAt: 400 }),
+      makeSummary({ id: "jp-proj-1", hostId: jpHost.hostId, updatedAt: 580 }),
+    ];
+    const list: SessionListState = {
+      ids: rows.map((r) => r.id),
+      byId: Object.fromEntries(rows.map((r) => [r.id, r])),
+      phase: "ready",
+      hasMore: true,
+      loading: true,
+      projectionsBySession: {},
+    };
+    const workspaces = [
+      makeWorkspace({
+        id: "ws-local",
+        sessionIds: ["local-proj-1", "local-pinned", "local-blank"],
+      }),
+      makeWorkspace({ id: "ws-peer-1", sessionIds: ["peer-proj-1"], remote: peerHost }),
+      makeWorkspace({ id: "ws-peer-2", sessionIds: ["peer-proj-2"], remote: peerHost }),
+      makeWorkspace({ id: "ws-jp-1", sessionIds: ["jp-proj-1"], remote: jpHost }),
+      makeWorkspace({ id: "ws-jp-empty", sessionIds: [], remote: jpHost }),
+    ];
+    const pinnedRowState: SessionRowState = {
+      pinnedSessionIds: [SessionId("local-pinned")],
+      archivedSessionIds: [],
+      archivedFilter: "default",
+    };
+
+    // 1. All-hosts view keeps project-owned and ungrouped sessions in Recents (even when projects are collapsed),
+    //    excluding blank drafts, subagents, and pinned sessions.
+    const allGroups = deriveGroups(list, workspaces, pinnedRowState, new Map(), {
+      expandedGroups: [UNGROUPED_KEY],
+      excludePinned: true,
+    });
+    const allRecents = allGroups.find((g) => g.key === UNGROUPED_KEY);
+    assert.ok(allRecents);
+    assert.deepEqual(
+      sidebarWindow(allRecents.sessions, 10).rows.map((s) => s.id),
+      [
+        "jp-proj-1",
+        "peer-proj-1",
+        "local-proj-1",
+        "peer-proj-2",
+        "peer-ungrouped",
+        "local-ungrouped",
+      ],
+    );
+
+    // 2. Single remote host view shows only that remote host's recent sessions in Recents
+    //    and suppresses local hasMore / loading / projectless creation.
+    const remoteFilter: HostScopeFilterState = {
+      selectedHost: peerHost.hostId,
+      perHost: {},
+    };
+    const remoteView = buildScopedView(list, workspaces, remoteFilter);
+    const localPagination = hostScopeIncludesLocalSessions(
+      remoteFilter,
+      remoteView.orderedWorkspaces,
+      remoteView.scopedWorkspaces,
+    );
+    const remoteScopedList: SessionListState = {
+      ...remoteView.scopedList,
+      ...(localPagination ? {} : { hasMore: false, loading: false }),
+    };
+    assert.equal(remoteScopedList.hasMore, false);
+    assert.equal(remoteScopedList.loading, false);
+    assert.equal(
+      hostScopeIncludesUngroupedLocal(remoteFilter, remoteView.orderedWorkspaces),
+      false,
+    );
+    const remoteGroups = deriveGroups(
+      remoteScopedList,
+      remoteView.scopedWorkspaces,
+      pinnedRowState,
+      new Map(),
+      { expandedGroups: [UNGROUPED_KEY], excludePinned: true },
+    );
+    const remoteRecents = remoteGroups.find((g) => g.key === UNGROUPED_KEY);
+    assert.ok(remoteRecents, "remote host Recents must contain its recent sessions");
+    const remoteWindow = sidebarWindow(remoteRecents.sessions, 5);
+    assert.deepEqual(
+      remoteWindow.rows.map((s) => s.id),
+      ["peer-proj-1", "peer-proj-2", "peer-ungrouped"],
+    );
+    assert.equal(remoteWindow.hiddenCount, 0);
+
+    // 3. Remote host with selected-workspaces filter shows only selected workspaces' sessions in Recents.
+    const remoteSubsetFilter: HostScopeFilterState = {
+      selectedHost: peerHost.hostId,
+      perHost: {
+        [peerHost.hostId]: { mode: "selected", workspaceIds: ["ws-peer-1"] },
+      },
+    };
+    const remoteSubset = buildScopedView(list, workspaces, remoteSubsetFilter);
+    const remoteSubsetGroups = deriveGroups(
+      remoteSubset.scopedList,
+      remoteSubset.scopedWorkspaces,
+      pinnedRowState,
+      new Map(),
+      { expandedGroups: [UNGROUPED_KEY], excludePinned: true },
+    );
+    assert.deepEqual(
+      remoteSubsetGroups.find((g) => g.key === UNGROUPED_KEY)?.sessions.map((s) => s.id),
+      ["peer-proj-1"],
+    );
+
+    // 4. Remote host filtered to an empty workspace emits no Recents group and no local hasMore.
+    const emptyRemoteFilter: HostScopeFilterState = {
+      selectedHost: jpHost.hostId,
+      perHost: {
+        [jpHost.hostId]: { mode: "selected", workspaceIds: ["ws-jp-empty"] },
+      },
+    };
+    const emptyRemote = buildScopedView(list, workspaces, emptyRemoteFilter);
+    assert.equal(
+      hostScopeIncludesLocalSessions(
+        emptyRemoteFilter,
+        emptyRemote.orderedWorkspaces,
+        emptyRemote.scopedWorkspaces,
+      ),
+      false,
+    );
+    const emptyRemoteGroups = deriveGroups(
+      { ...emptyRemote.scopedList, hasMore: false, loading: false },
+      emptyRemote.scopedWorkspaces,
+      pinnedRowState,
+      new Map(),
+      { expandedGroups: [UNGROUPED_KEY], excludePinned: true },
+    );
+    assert.equal(
+      emptyRemoteGroups.some((g) => g.key === UNGROUPED_KEY),
+      false,
+    );
   });
 });

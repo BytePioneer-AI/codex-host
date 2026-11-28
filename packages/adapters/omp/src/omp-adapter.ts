@@ -2697,7 +2697,7 @@ export class OmpAdapter implements HarnessAdapter {
       await transport.close().catch(() => undefined);
       const normalized =
         stage === "startup" &&
-        /No models available\.\s*Use \/login or set an API key environment variable\./i.test(
+        /No (?:models available|default model selected)\.\s*Use \/login(?:,|\s+or)\s+set an API key environment variable/i.test(
           transport.stderrTail ?? "",
         )
           ? ({

@@ -344,7 +344,13 @@ export class ChSessions {
             cursor,
             workspace,
           )
-        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, cursor, sectionSnapshot);
+        : this.listAll(
+            this.refreshingTiming,
+            includeArchived,
+            archiveChanges,
+            cursor,
+            sectionSnapshot,
+          );
       this.refreshing = load.finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;

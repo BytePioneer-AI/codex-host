@@ -362,6 +362,8 @@ it("keeps cross-project ancestors in the scoped reply and publishes section disc
   const live = await f.list({ cursor: nextCursor, workspaceId: workspace.workspaceId });
   assert.ok(live.archivedSessionIds.includes(parent.id));
   assert.ok(!live.items.some((row) => row.sessionId === parent.id));
+  // An explicit live flag on the section read supersedes the retained archive state.
+  parent.archived = false;
   await f.list();
   assert.deepEqual(
     f.emitted.flatMap(({ event, args }) =>

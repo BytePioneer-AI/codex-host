@@ -245,7 +245,7 @@ export async function executeThreadHandoff(
       return { ok: false, error: { code: -32078, message: "Source Thread is unavailable" } };
     }
     const source = resolution.thread;
-    if (!source.running) {
+    if (!source.running && !source.admittingTurnId) {
       const refreshError = await input.refreshExternalThread(source);
       if (refreshError) return { ok: false, error: refreshError };
     }

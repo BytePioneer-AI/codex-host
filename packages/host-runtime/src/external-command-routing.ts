@@ -1,4 +1,8 @@
-import { isExcludedLiveCommand, type HarnessSession } from "@codexhost/harness-adapter";
+import {
+  isExcludedLiveCommand,
+  type HarnessErrorCode,
+  type HarnessSession,
+} from "@codexhost/harness-adapter";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   harnessCommandCatalogSchema,
@@ -10,6 +14,8 @@ export class ExternalCommandError extends Error {
   constructor(
     readonly code: number,
     message: string,
+    readonly notStarted = false,
+    readonly harnessErrorCode?: HarnessErrorCode,
   ) {
     super(message);
   }
@@ -84,7 +90,8 @@ export async function resolveExternalCommand(
     if (builtIn) return builtIn;
   }
   const catalog = await commands.list();
-  if (!catalog.ok) throw new ExternalCommandError(-32073, catalog.error.message);
+  if (!catalog.ok)
+    throw new ExternalCommandError(-32073, catalog.error.message, true, catalog.error.code);
   const matched = matchCatalogCommand(catalog.value, commandText);
   if (!matched) {
     const name = /^\/(\S+)/u.exec(commandText)?.[1] ?? "";

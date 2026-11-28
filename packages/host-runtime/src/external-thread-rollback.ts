@@ -230,7 +230,7 @@ export async function executeExternalThreadRollback(input: {
   environment?: NodeJS.ProcessEnv;
 }): Promise<ExternalThreadRollbackResult> {
   const { derived, rollback, adapters, repository, runtime, expectedLastTurnId } = input;
-  if (derived.running) {
+  if (derived.running || derived.admittingTurnId !== null) {
     return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
   }
   // Native history may have split a steered Turn that Desktop still shows whole. Only the undone
@@ -319,7 +319,7 @@ export async function executeExternalThreadRollback(input: {
       error: { code: -32076, message: "External rollback source lineage is unsupported" },
     };
   }
-  if (!source.running) {
+  if (!source.running && !source.admittingTurnId) {
     const sourceRefreshError = await runtime.refresh(source);
     if (sourceRefreshError) return { ok: false, error: sourceRefreshError };
   }

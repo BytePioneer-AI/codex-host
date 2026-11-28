@@ -237,6 +237,7 @@ export class ExternalTurnProjection {
       };
       thread.running = true;
       thread.activeTurnId = event.turnId;
+      thread.autonomousTurnSequence += 1;
       thread.projectedTerminalTurnId = null;
       thread.projectedTurns.set(event.turnId, projection);
       thread.responseGates.set(event.turnId, {

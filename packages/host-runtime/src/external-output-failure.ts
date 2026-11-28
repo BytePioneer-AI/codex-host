@@ -19,7 +19,8 @@ export async function settleExternalOutputFailure(
     diagnose(closeError);
   }
   try {
-    for (const { projector } of [...thread.projectedTurns.values()]) {
+    for (const [turnId, { projector }] of [...thread.projectedTurns]) {
+      if (turnId === thread.admittingTurnId) continue;
       for (const event of projector.failureEvents({
         code: "protocolError",
         message: `External Harness output failed: ${message}`,

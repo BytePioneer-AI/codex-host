@@ -61,6 +61,7 @@ export class ExternalThreadPrewarms {
     if (
       thread.running ||
       thread.activeTurnId ||
+      thread.admittingTurnId ||
       thread.turns.length ||
       thread.record.turnMappings.length ||
       thread.session.hasBackgroundWork?.()

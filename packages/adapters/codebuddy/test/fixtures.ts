@@ -145,6 +145,13 @@ export function fixture() {
       }
       return this.complete(id, input);
     }
+    /** Resolve a Prompt held by the `hold` input, as the native Agent would on completion. */
+    finishPending() {
+      const pending = this.pending;
+      if (!pending) throw new Error("No pending Prompt in the native fixture");
+      this.pending = undefined;
+      pending.resolve(this.complete(pending.id, pending.input));
+    }
     complete(id: string, input: string) {
       if (!this.missingHistory)
         history.push({

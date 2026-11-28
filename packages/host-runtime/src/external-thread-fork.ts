@@ -94,7 +94,7 @@ export async function executeExternalThreadFork(input: {
       error: { code: -32076, message: "External Harness cannot fork into another cwd" },
     };
   }
-  if (!source.running) {
+  if (!source.running && !source.admittingTurnId) {
     const refreshError = await runtime.refresh(source);
     if (refreshError) return { ok: false, error: refreshError };
   }

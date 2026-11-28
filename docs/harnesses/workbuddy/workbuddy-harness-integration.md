@@ -114,13 +114,24 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 | Fork | 创建独立、可继续写入的 WorkBuddy Native Session，精确保留所选 checkpoint 及以前的完整 Turn。支持同目录和跨目录，来源 Session 不被修改。 |
 | Revise previous message | 通过 `rollbackLastTurn` 创建独立、可写的新 Session，并精确移除一个完整的最后 Turn；源 Session 保持不变，Model、Thinking 和 Permission Mode 会继承或采用显式修订设置。 |
 | Cross-Harness delegation | 普通持久化 WorkBuddy Thread 的委派 CLI 发现、凭据传递以及创建、读取、等待、继续、取消路径已接线；这与 WorkBuddy 自身的 Agent 子任务是两套独立能力。由于尚未完成已登录 WorkBuddy 的递归调用验收，README 暂不标记支持。 |
+| Native autonomous Turns | 受限支持实时观测：同一连接的公告至 `session_end` 为一轮，串行区间分别暂存；自主 Turn 不分配 `nativeTurnRef`，不从历史推断终态或分组。重开后的历史可能与实时分组不同。仅静态核对内置 CLI，未真实触发后台任务。 |
 | Images | 当前公共 Turn 输入仍为文本；CLI 声明图像能力不等于 Host 已提供图片输入。 |
 
 上述“已实现”表示 Adapter 的协议和公共契约路径已接线，不表示本轮完成了认证后的付费在线验收。尤其是 Model 目录、权限名称、历史格式和子 Agent 事件仍须在已登录的目标账号与实际 WorkBuddy 版本上复核；运行时以原生响应为准，不把 2.137.1 的观察结果硬编码为永久产品能力。
 
+### 原生自主 Turn
+
+WorkBuddy 内置 CLI 支持 unsolicited drain：原生空闲时因后台任务、cron 或协调者结果开始执行，先发 `session_info_update`，其 `_meta["codebuddy.ai/unsolicitedTurn"]` 带 `requestId` 与 `reason: "background_drain"`，最后以 `session_end` 结束。共享 Session 声明 `autonomousTurns.observe`，但 B12 仅受限支持实时观测：同一连接上的公告至终态区间归入一个 `input: []` 的公共自主 Turn。requestId 可复用或在 admission 中改变，不作为区间身份。原生区间已经结束、公共 Turn 仍在收尾时，后续区间独立暂存；真正未结束的区间再次收到公告才 fault。自主 Turn 占用 Session 时，新的 Host Turn 以 `sessionBusy` 拒绝；前台取消后的连接重建期间同样区分普通历史回放与显式公告的实时区间，开放区间在继续准入前登记并阻止新 prompt 下发，重建失败时清理候选连接的缓冲与交互等待。Host Runtime 区分前台准入中与已接纳的活动 Turn：自动出队因自主 Turn 占位收到明确 `sessionBusy` 拒绝时，保留队首不暂停并在自主 Turn 成功结束后自动推进一次，其余真实启动失败仍暂停队列。
+
+`session_end` 发出唯一实时终态：已请求取消则为 cancelled，否则以 succeeded 表示区间完成，不证明原生业务成功。自主 Turn 不读取历史来推断成功、身份或分组，也不分配 `nativeTurnRef`。这些终态带 `ephemeral: true`，由 Host 临时投影完成实时收尾和队列推进，不写入 Host Turn 身份映射；原生 Session 记录仍由原生存储保留。发送仅带 Session ID 的原生 `session/cancel` 前先验证目标 Turn 仍拥有原生执行权；已结算或已让位给自主区间的前台 Turn 返回 `invalidState`，不误取消下一自主轮。取消等待 `session_end` 以及取消后的连接重建均受 30 秒上限约束，超时或失败时按故障释放 Session，不长期停留在 `sessionBusy`。close/fault 沿用共享生命周期。已公告未结束的区间拥有 permission/question，等待自身公共 turnId 后发出交互；旧 Host prompt 的 finally 是否执行不改变归属。取消后到达的请求，以及等待公共身份时被取消的请求，都返回原生 cancelled，不重新发布交互。全部未释放区间、帧和等待交互元数据共享 2048 帧 / 4 MiB UTF-8 总额度，空区间也占额度。
+
+只读历史保持原生行投影规则，不保存或恢复实时区间；重开会话后，自主输出按原生落盘展示，分组和终态可能与实时不同。前台 Turn 在观察到 drain 交叠时禁用无 `userMessageId` 的单轮回退，压缩确认也只消费可归属该前台 Turn 自身（含其前置压缩边、排除 drain 压缩）的落盘证据。
+
+静态证据覆盖 WorkBuddy AI App 5.7.6（完整 bundle SHA-256 `76b75e8513c70f696148278cf5621cd0a9bc9a8105318a451fbed7e63bae38c5`）和 WorkBuddy App 5.6.2（`3e88ad84178ba2903c48c40e7d7149d10d209976afd3fc8b7fa738e4524a470d`）：均有公告/drain/终态路径，但隐藏通知复用 conversationRequestId、输入帧被省略，不足以可靠恢复每轮身份。没有启动 WorkBuddy 或真实触发后台任务、cron、取消；在线表现尚未验证。
+
 ### 原生历史续行
 
-共享历史投影在普通消息路径中将 `startsNewUserRequest: false` 视为当前 Turn 的续行，而非新的用户请求。`isMeta: true` 的内部行，以及正文完全由 `<system-reminder data-role="user-context">…</system-reminder>` 包装块和空白组成的行不进入用户输入；包装内引用 `<user_query>` 不改变这一判断。其他续行文本（包括原生 steer 的真实用户追加）保留在当前 Turn 的 input 中，不改变原生 Turn ID、checkpoint 或待完成工具的关联。`startsNewUserRequest: true` 仍创建新 Turn，即使同时带有 `isMeta: true`；正文中的 `<user_query>` 不覆盖续行元数据。本地命令与压缩记录继续使用各自的专用投影。这一历史读取行为不表示 Host 已支持发送 `turn.steer`。
+共享历史投影在普通消息路径中将 `startsNewUserRequest: false` 视为当前 Turn 的续行，而非新的用户请求。`isMeta: true` 的内部行，以及正文完全由 `<system-reminder data-role="user-context">…</system-reminder>` 包装块和空白组成的行不进入用户输入；包装内引用 `<user_query>` 不改变这一判断。其他续行文本（包括原生 steer 的真实用户追加）保留在当前 Turn 的 input 中，不改变原生 Turn ID、checkpoint 或待完成工具的关联。`startsNewUserRequest: true` 仍创建新 Turn，即使同时带有 `isMeta: true`；正文中的 `<user_query>` 不覆盖续行元数据。未显式标记续行的 `isMeta` 用户行沿用普通历史用户行的开轮与文本展示规则，不推断它是否对应某个实时 drain 区间。本地命令与压缩记录继续使用各自的专用投影。这一历史读取行为不表示 Host 已支持发送 `turn.steer`。
 
 取消生成可能留下参数尚未闭合的 `function_call`。同时标记 `status: incomplete`、`providerData.isPartialAborted: true` 和 `providerData.discard: true` 的调用仅作为原生父链节点保留，不解析参数，也不投影为已启动的工具；后续 Turn 仍可读取。缺少上述丢弃证据的无效参数仍按协议错误处理，不将损坏历史伪装为成功。
 

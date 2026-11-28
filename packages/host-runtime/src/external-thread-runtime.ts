@@ -80,6 +80,10 @@ export interface ExternalThread {
   historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
+  /** Foreground Turn or command start awaiting Harness admission; not yet an active Turn. */
+  admittingTurnId: HostTurnId | null;
+  /** Monotonic count of live autonomous Turns projected on this Thread. */
+  autonomousTurnSequence: number;
   // Terminal Turn projected by this process that is still the latest Turn
   // attempt; any later start clears it. A read may report it when native
   // history cannot be refreshed.
@@ -426,7 +430,8 @@ export class ExternalThreadRuntime {
   }
 
   #idleForRestore(thread: ExternalThread): boolean {
-    if (thread.running || thread.activeTurnId !== null) return false;
+    if (thread.running || thread.activeTurnId !== null || thread.admittingTurnId !== null)
+      return false;
     if (thread.session.hasBackgroundWork?.()) return false;
     if (this.#hasRunningDescendants(thread.id)) return false;
     return true;
@@ -531,6 +536,8 @@ export class ExternalThreadRuntime {
       historyHydrated: true,
       running,
       activeTurnId: null,
+      admittingTurnId: null,
+      autonomousTurnSequence: 0,
       latestUsage: input.session.initialUsage,
       livePlan: null,
       usageMeter: new UsageMeter(),
@@ -586,6 +593,7 @@ export class ExternalThreadRuntime {
   ): Promise<ExternalThread> {
     if (
       current.running ||
+      current.admittingTurnId !== null ||
       this.#threads.get(current.id) !== current ||
       input.record.hostThreadId !== current.id
     ) {
@@ -923,7 +931,7 @@ export class ExternalThreadRuntime {
   async retainedFailure(threadId: string) {
     const loaded = this.get(threadId);
     const record = loaded?.record ?? (await this.#repository.find(threadId));
-    if (!record || loaded?.activeTurnId) return;
+    if (!record || loaded?.activeTurnId || loaded?.admittingTurnId) return;
     const turns = this.#mergeFailedTurns(
       record,
       record.turnMappings.map(({ hostTurnId }) => ({ id: hostTurnId })),

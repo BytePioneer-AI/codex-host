@@ -1,3 +1,5 @@
+import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
+import { useEffect } from "react";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import { SIDEBAR_PAGE_ROWS } from "./sidebar-window.ts";
 import css from "./WorkspaceBrowser.module.css";
@@ -7,8 +9,11 @@ type Props = Pick<WorkspaceBrowserProps, "loadMoreSessions" | "t"> & {
   hiddenCount: number;
   hasMore?: boolean;
   loading?: boolean;
+  workspaceHistory?: NonNullable<SessionListState["workspaceHistory"]>[string];
+  workspaceId?: Parameters<WorkspaceBrowserProps["loadMoreSessions"]>[0];
+  fillWorkspace?: boolean;
   expanded?: boolean;
-  expand: () => void;
+  expand?: () => void;
   collapse?: () => void;
 };
 
@@ -18,14 +23,28 @@ export function SessionListExpansion({
   hiddenCount,
   hasMore,
   loading,
+  workspaceHistory,
+  workspaceId,
+  fillWorkspace,
   expanded,
   expand,
   collapse,
   loadMoreSessions,
   t,
 }: Props) {
+  useEffect(() => {
+    if (fillWorkspace) loadMoreSessions(workspaceId);
+  }, [fillWorkspace, loadMoreSessions, workspaceId]);
   if (hiddenCount === 0 && !hasMore && !collapse) return null;
   const fetching = hiddenCount === 0 && hasMore && loading;
+  const searchLabel =
+    workspaceHistory === "retry"
+      ? "sessions.retryWorkspaceHistory"
+      : workspaceHistory === "continue"
+        ? "sessions.continueWorkspaceHistory"
+        : workspaceHistory === "search"
+          ? "sessions.searchWorkspaceHistory"
+          : "sessions.expandMore";
   return (
     <button
       type="button"
@@ -34,10 +53,10 @@ export function SessionListExpansion({
       aria-expanded={expanded}
       disabled={fetching}
       onClick={() => {
-        if (hiddenCount > 0) expand();
+        if (hiddenCount > 0) expand?.();
         else if (hasMore) {
-          expand();
-          loadMoreSessions();
+          expand?.();
+          loadMoreSessions(workspaceId);
         } else collapse?.();
       }}
     >
@@ -46,7 +65,7 @@ export function SessionListExpansion({
         : hiddenCount > 0
           ? t("sessions.expand", { n: Math.min(SIDEBAR_PAGE_ROWS, hiddenCount) })
           : hasMore
-            ? t("sessions.expandMore")
+            ? t(searchLabel)
             : t("sessions.collapse")}
     </button>
   );

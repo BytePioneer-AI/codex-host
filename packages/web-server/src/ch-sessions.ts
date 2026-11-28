@@ -33,7 +33,11 @@ import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
-import { nativeProjectRootOwners, projectGroupRoot } from "./ch-project-groups.ts";
+import {
+  insideProjectFolder,
+  nativeProjectRootOwners,
+  projectGroupRoot,
+} from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { threadRecencyMs } from "./ch-thread-time.ts";
@@ -75,6 +79,20 @@ import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-sessi
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 
 type CatalogScope = NonNullable<ThreadCatalogReadParams["scope"]>;
+type WorkspaceCatalog = { workspaceId: string; scope: CatalogScope };
+type CatalogRefresh = CatalogPage & {
+  workspaceItems?: Awaited<ReturnType<ChSessions["summary"]>>[];
+};
+
+function catalogOwnership(page: CatalogPage, rows: ReadonlyMap<string, ChThread>) {
+  const ownership = new Map<string, string>();
+  for (const item of page.ownership) {
+    if (item.owner === "codex") ownership.set(item.threadId, "codex");
+    else if (item.harnessId && rows.get(item.threadId)?.modelProvider === "codexhost")
+      ownership.set(item.threadId, item.harnessId);
+  }
+  return ownership;
+}
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -105,13 +123,14 @@ export class ChSessions {
   private readonly attachments: ChAttachments | undefined;
   private readonly fileInputs: ChFileInputs | undefined;
   private rows = new Map<string, ChThread>();
+  private readonly workspacePageRows = new Set<string>();
   private publishedCatalog: Map<string, string> | undefined;
   private readonly handoffs = new Map<string, ThreadHandoffMetadata | null>();
   /** Loaded rows accumulate across partial official pages; drafts are not Host Threads. */
   private readonly threads = new WebThreadStates();
   private drafts = new Map<string, Draft>();
   private controls = new Set<StreamSink>();
-  private refreshing: Promise<CatalogPage | undefined> | undefined;
+  private refreshing: Promise<CatalogRefresh | undefined> | undefined;
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
@@ -286,8 +305,8 @@ export class ChSessions {
     timing?: SessionListTiming,
     includeArchived = false,
     cursor?: string,
-    scope?: CatalogScope,
-  ): Promise<CatalogPage | undefined> {
+    workspace?: WorkspaceCatalog,
+  ): Promise<CatalogRefresh | undefined> {
     if (this.closed) return;
     if (
       this.refreshing &&
@@ -298,7 +317,7 @@ export class ChSessions {
       const stage = this.refreshingCatalog ? "catalog_wait" : "workspace_wait";
       const pending = this.refreshing.catch(() => undefined);
       await (timing ? timing.measure(stage, () => pending) : pending);
-      return this.refresh(timing, includeArchived, cursor, scope);
+      return this.refresh(timing, includeArchived, cursor, workspace);
     }
     const mode = this.refreshing ? "joined" : "started";
     if (!this.refreshing) {
@@ -308,13 +327,16 @@ export class ChSessions {
       const archiveChanges = new Map<string, boolean>();
       this.refreshingArchiveChanges = archiveChanges;
       this.refreshingProjectAssignments = new Map();
-      this.refreshing = this.listAll(
-        this.refreshingTiming,
-        includeArchived,
-        archiveChanges,
-        cursor,
-        scope,
-      ).finally(() => {
+      const load = workspace
+        ? this.listWorkspacePage(
+            this.refreshingTiming,
+            includeArchived,
+            archiveChanges,
+            cursor,
+            workspace,
+          )
+        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, cursor);
+      this.refreshing = load.finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
         this.refreshingArchives = false;
@@ -337,16 +359,113 @@ export class ChSessions {
       return this.workspaces.localPinnedSessionIds();
     });
   }
+  private async listWorkspacePage(
+    timing: SessionListTiming,
+    includeArchived: boolean,
+    archiveChanges: ReadonlyMap<string, boolean>,
+    cursor: string | undefined,
+    { workspaceId, scope }: WorkspaceCatalog,
+  ): Promise<CatalogRefresh | undefined> {
+    const [{ page }] = await Promise.all([
+      readSessionPage(this.host, timing, includeArchived, cursor, async () => [], scope),
+      timing.measure("thread_tree", () => this.tree.refresh()),
+    ]);
+    const target = this.workspaces.get(workspaceId);
+    if (this.closed || !target) return;
+    const candidates = page.threads.filter((row) =>
+      "projectId" in scope
+        ? row.projectId === scope.projectId ||
+          scope.legacyThreadIds.includes(row.id) ||
+          (row.cwd &&
+            scope.rootPaths?.some(
+              (root) => desktopProjectPathKey(root) === desktopProjectPathKey(row.cwd),
+            ))
+        : row.cwd &&
+          insideProjectFolder(scope.cwd, row.cwd) &&
+          !scope.excludeCwds.some((root) => insideProjectFolder(root, row.cwd)),
+    );
+    if (candidates.length === 0) return { ...page, workspaceItems: [] };
+    const projects = await timing.measure("projects", () =>
+      this.host.projects(candidates.map((row) => row.id)),
+    );
+    const projectFor = this.nativeProjectResolver(projects);
+    const indexed = new Map(page.threads.map((row) => [row.id, row]));
+    const ownership = catalogOwnership(page, indexed);
+    const members = new Map<string, ChThread>();
+    for (const row of candidates) {
+      if (!ownership.has(row.id)) continue;
+      const moved = this.refreshingProjectAssignments?.get(row.id);
+      if (moved !== undefined) row.projectId = moved;
+      if (target.projectId) {
+        if (!projects.nativeProjects) continue;
+        const projectId = projectFor(row);
+        if (projectId !== target.projectId) continue;
+      } else {
+        if (
+          !row.cwd ||
+          (row.workspaceKind === "projectless" &&
+            !row.projectId &&
+            !projects.assignments[row.id]) ||
+          projectGroupRoot(projects, row.id, row.cwd) !== target.path
+        )
+          continue;
+      }
+      members.set(row.id, row);
+    }
+    const rows = new Map(members);
+    const archived = new Set<string>(page.archivedThreadIds);
+    await this.tree.supplement(rows, async (id) => {
+      const scanned = indexed.get(id);
+      if (scanned && ownership.has(id)) return scanned;
+      const { thread, harnessId } = await this.readThread(id);
+      ownership.set(id, harnessId);
+      if (thread.archived === true) archived.add(id);
+      return thread;
+    });
+    if (this.closed || !this.workspaces.get(workspaceId)) return;
+    for (const [id, row] of members) {
+      const moved = this.refreshingProjectAssignments?.get(id);
+      if (target.projectId && moved !== undefined && moved !== target.projectId) {
+        members.delete(id);
+        continue;
+      }
+      const harnessId = ownership.get(id);
+      if (!harnessId) continue;
+      if (!this.rows.has(id)) this.workspacePageRows.add(id);
+      this.rows.set(id, row);
+      this.threads.setHarness(id, harnessId);
+    }
+    this.workspaces.addCatalogMembers(workspaceId, [...members.keys()]);
+    const localArchives = new Set(this.workspaces.localArchivedSessionIds());
+    const included = this.tree.withAncestors(members.keys());
+    for (const [id, row] of rows) {
+      if (!included.has(id)) continue;
+      // A supplemented ancestor may omit archive state on thread/read.
+      const isArchived =
+        archived.has(id) || (!indexed.has(id) && (row.archived ?? localArchives.has(id)));
+      if (archiveChanges.get(id) ?? isArchived) localArchives.add(id);
+      else localArchives.delete(id);
+    }
+    this.workspaces.setReferenceArchives([...localArchives].sort());
+    const workspaceItems = await timing.measure("summaries", () =>
+      Promise.all(
+        [...rows.values()]
+          .filter((row) => included.has(row.id) && (includeArchived || !localArchives.has(row.id)))
+          .map((row) => this.summary(row, ownership.get(row.id))),
+      ),
+    );
+    return { ...page, workspaceItems };
+  }
+
   private async listAll(
     timing: SessionListTiming,
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor?: string,
-    scope?: CatalogScope,
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
     const [{ page: snapshot }, definitions, , sections] = await Promise.all([
-      readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins(), scope),
+      readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins()),
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
       timing.measure("thread_sections", async () => {
@@ -366,16 +485,7 @@ export class ChSessions {
     const archivedIds = new Set(this.workspaces.localArchivedSessionIds());
     for (const id of snapshotArchives) archivedIds.add(id);
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
-    const ownership = new Map<string, string>();
-    for (const item of snapshot.ownership) {
-      if (
-        item.owner === "external" &&
-        item.harnessId &&
-        found.get(item.threadId)?.modelProvider === "codexhost"
-      )
-        ownership.set(item.threadId, item.harnessId);
-      else if (item.owner === "codex") ownership.set(item.threadId, "codex");
-    }
+    const ownership = catalogOwnership(snapshot, found);
     const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
     const threadSections = sections?.map(({ id, name, threads }) => {
       const threadIds: string[] = [];
@@ -464,6 +574,7 @@ export class ChSessions {
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
+    for (const id of found.keys()) this.workspacePageRows.delete(id);
     await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
     this.catalogReadAt = Date.now();
     return snapshot;
@@ -480,23 +591,9 @@ export class ChSessions {
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
       if (projects.nativeProjects) {
-        const known = new Set(projects.projects.map((project) => project.id));
         const roots = nativeProjectRootOwners(projects.projects);
-        const projectless = new Set(projects.projectless);
-        for (const row of this.rows.values()) {
-          // A stale or foreign project ID must not hide the Thread; fall back like Desktop does.
-          const explicit = [row.projectId, projects.assignments[row.id]].find(
-            (id): id is string => typeof id === "string" && known.has(id),
-          );
-          const byCwd =
-            explicit === undefined &&
-            row.cwd &&
-            row.workspaceKind !== "projectless" &&
-            !projectless.has(row.id)
-              ? roots.get(desktopProjectPathKey(row.cwd))?.projectId
-              : undefined;
-          groups.set(row.id, explicit ?? byCwd);
-        }
+        const projectFor = this.nativeProjectResolver(projects, roots);
+        for (const row of this.rows.values()) groups.set(row.id, projectFor(row));
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
         this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
@@ -538,8 +635,26 @@ export class ChSessions {
       this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
     });
   }
-  private archiveForkParent(row: ChThread): string | null {
-    return this.threads.harnessId(row.id) === "codex" &&
+  private nativeProjectResolver(
+    projects: ChProjectSnapshot,
+    roots = nativeProjectRootOwners(projects.projects),
+  ): (row: ChThread) => string | undefined {
+    const known = new Set(projects.projects.map((project) => project.id));
+    const projectless = new Set(projects.projectless);
+    return (row) => {
+      const explicit = [row.projectId, projects.assignments[row.id]].find(
+        (id): id is string => typeof id === "string" && known.has(id),
+      );
+      if (explicit || !row.cwd || row.workspaceKind === "projectless" || projectless.has(row.id))
+        return explicit;
+      return roots.get(desktopProjectPathKey(row.cwd))?.projectId;
+    };
+  }
+  private archiveForkParent(
+    row: ChThread,
+    harnessId = this.threads.harnessId(row.id),
+  ): string | null {
+    return harnessId === "codex" &&
       !row.parentThreadId &&
       typeof row.forkedFromId === "string" &&
       !this.workspaces.pinnedSessionIds().includes(row.id)
@@ -574,7 +689,11 @@ export class ChSessions {
   }
   private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
     const before = this.publishedCatalog;
-    const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
+    const next = new Map(
+      [...this.rows]
+        .filter(([id]) => !this.workspacePageRows.has(id))
+        .map(([id, row]) => [id, this.catalogKey(row)]),
+    );
     // First load is already delivered by session/list. Subsequent refreshes,
     // including ones requested by a second browser, publish actual deltas only.
     // New continuation rows stay request-local unless a shared section references them.
@@ -585,6 +704,7 @@ export class ChSessions {
             [...this.rows.values()]
               .filter(
                 (row) =>
+                  next.has(row.id) &&
                   before.get(row.id) !== next.get(row.id) &&
                   (!pageSectionAdditions || before.has(row.id) || pageSectionAdditions.has(row.id)),
               )
@@ -886,8 +1006,7 @@ export class ChSessions {
       });
     this.threads.ensure(id).controls = loading;
   }
-  private async summary(row: ChThread) {
-    const harnessId = this.threads.harnessId(row.id);
+  private async summary(row: ChThread, harnessId = this.threads.harnessId(row.id)) {
     if (!harnessId)
       throw new RpcError("session/ownership-unconfirmed", "CH did not confirm Thread ownership.");
     const projections = this.threads.view(row.id)?.log.projections ?? {};
@@ -909,7 +1028,7 @@ export class ChSessions {
         ? { [WEB_HANDOFF_PROJECTION]: this.handoffs.get(row.id) ?? null }
         : {}),
       threadTreeParent: this.tree.parent(row.id),
-      archiveForkParent: this.archiveForkParent(row),
+      archiveForkParent: this.archiveForkParent(row, harnessId),
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
@@ -1495,7 +1614,21 @@ export class ChSessions {
           archivedSessionIds: this.workspaces.archivedSessionIds(),
           nextCursor: null,
         };
-      const page = await this.refresh(timing, includeArchived, cursor, scope);
+      const page = await this.refresh(
+        timing,
+        includeArchived,
+        cursor,
+        workspaceId !== undefined && scope ? { workspaceId, scope } : undefined,
+      );
+      if (workspaceId !== undefined) {
+        const items = page?.workspaceItems ?? [];
+        timing.count("resultRows", items.length);
+        return {
+          items,
+          archivedSessionIds: this.workspaces.archivedSessionIds(),
+          nextCursor: page ? nextCatalogCursor(page, includeArchived) : null,
+        };
+      }
       const pageIds = this.tree.withAncestors(page?.threads.map((row) => row.id) ?? []);
       const archivedSessionIds = this.workspaces.archivedSessionIds();
       const archived = new Set(archivedSessionIds);

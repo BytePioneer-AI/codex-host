@@ -56,6 +56,7 @@ export interface ChThread {
   id: string;
   cwd: string;
   modelProvider: string;
+  archived?: boolean;
   workspaceKind?: "projectless";
   projectId?: string | null;
   name?: string | null | undefined;

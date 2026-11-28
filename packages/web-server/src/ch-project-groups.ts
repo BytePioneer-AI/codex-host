@@ -3,6 +3,11 @@ import { resolve, relative, isAbsolute, sep } from "node:path";
 import { desktopProjectPathKey } from "@codexhost/shared-contracts";
 import type { ChProjectSnapshot } from "./ch-host-client.ts";
 
+export function insideProjectFolder(root: string, cwd: string): boolean {
+  const path = relative(resolve(root), resolve(cwd));
+  return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(".." + sep));
+}
+
 /** Return the selected GUI project's root for navigation, never change execution cwd.
  * @param snapshot Current native local projects and projectless classification.
  * @param threadId Canonical CH Thread ID.
@@ -20,10 +25,7 @@ export function projectGroupRoot(
   if (!project && snapshot.projectless.includes(threadId)) return undefined;
   const matches = roots
     .map((root) => resolve(root))
-    .filter((root) => {
-      const path = relative(root, resolve(cwd));
-      return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(".." + sep));
-    });
+    .filter((root) => insideProjectFolder(root, cwd));
   const match = matches.sort((a, b) => b.length - a.length)[0];
   if (match !== undefined) {
     // A folder is the Workspace of the earliest project whose first root it is. A Thread

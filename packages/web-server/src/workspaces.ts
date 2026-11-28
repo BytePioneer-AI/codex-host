@@ -581,6 +581,46 @@ export class Workspaces {
     this.broadcast({ type: "upsert", workspace: item });
   }
 
+  addCatalogMembers(workspaceId: string, sessionIds: readonly string[]): void {
+    if (sessionIds.length === 0) return;
+    const workspace = this.get(workspaceId);
+    if (!workspace) return;
+    if (workspace.projectId) {
+      const next = [...new Set([...workspace.sessionIds, ...sessionIds])];
+      const now = new Date().toISOString();
+      for (const sessionId of sessionIds)
+        this.detachFromOtherNativeProjects(sessionId, workspace, now);
+      if (next.length !== workspace.sessionIds.length) {
+        workspace.sessionIds = next;
+        this.broadcast({ type: "upsert", workspace });
+      }
+      return;
+    }
+    const before = this.list();
+    const groups = new Map(this.referenceGroups);
+    const projectless = new Set(this.referenceProjectless);
+    for (const id of sessionIds) {
+      groups.set(id, workspace.path);
+      projectless.delete(id);
+    }
+    const next = [...new Set([...workspace.sessionIds, ...sessionIds])];
+    if (next.length !== workspace.sessionIds.length) {
+      const state = {
+        ...this.state,
+        items: this.state.items.map((entry) =>
+          entry.workspaceId === workspaceId
+            ? { ...entry, sessionIds: [...new Set([...entry.sessionIds, ...sessionIds])] }
+            : entry,
+        ),
+      };
+      this.data.writeJson(FILE, state);
+      this.state = state;
+    }
+    this.referenceGroups = groups;
+    this.referenceProjectless = projectless;
+    this.publishWorkspaceChanges(before);
+  }
+
   /** Show a session only in its native project, at the requested place; Codex owns membership. */
   placeNativeSession(
     workspaceId: string,

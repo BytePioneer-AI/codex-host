@@ -351,8 +351,8 @@ function buildGroup(
 
 /**
  * Group Sessions by Workspace: one group per caller-ordered entity, with
- * members resolved from caller-ordered sessionIds. Recents follows with all
- * visible Sessions, newest first, independently of Workspace membership.
+ * members resolved from caller-ordered sessionIds. Recents follows the general
+ * catalog, newest first.
  */
 function groupByWorkspace(
   list: SessionListState,
@@ -360,6 +360,8 @@ function groupByWorkspace(
   archived: ReadonlySet<SessionId>,
   archivedFilter: ArchivedFilter,
 ): Group[] {
+  const workspaceOnly = new Set(list.workspaceOnlyIds);
+  const workspaceHistoryMembers = new Set<SessionId>();
   const groups: Group[] = [];
   for (const workspace of workspaces) {
     const members: SessionSummary[] = [];
@@ -368,6 +370,7 @@ function groupByWorkspace(
       if (summary === undefined) continue; // account may lead the list pull; the row appears when the summary lands
       if (!sessionVisible(summary, archived, archivedFilter)) continue;
       members.push(summary);
+      if (workspaceOnly.has(id)) workspaceHistoryMembers.add(id);
     }
     // The archived-only view lists archives, not the Workspace inventory, so
     // a Workspace without archived Sessions contributes no group.
@@ -384,7 +387,10 @@ function groupByWorkspace(
       ),
     );
   }
-  const recent = orderByRecency(list.ids, list.byId)
+  const recent = orderByRecency(
+    list.ids.filter((id) => !workspaceHistoryMembers.has(id)),
+    list.byId,
+  )
     .map((id) => list.byId[id])
     .filter(
       (s): s is SessionSummary => s !== undefined && sessionVisible(s, archived, archivedFilter),

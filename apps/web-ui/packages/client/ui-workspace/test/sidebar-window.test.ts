@@ -43,14 +43,18 @@ it("retains pinned, provisional and active conversations outside the ordinary qu
     ["0", "1", "2", "3", "4", "10", "11", "12", "13"],
   );
   assert.equal(result.hiddenCount, 31);
+  const shortProject = sidebarWindow([pinned, running, ...rows().slice(0, 2)], 5);
+  assert.equal(shortProject.ordinaryCount, 2);
+  assert.equal(shortProject.rows.length, 4);
 });
+
 it("extends a presentation window by ten without mutating the catalog order", () => {
   const source = rows();
   const before = structuredClone(source);
   assert.equal(sidebarWindow(source, 15).rows.length, 15);
   assert.deepEqual(source, before);
   assert.equal(sidebarWindow(source, 50).hiddenCount, 0);
-  assert.deepEqual(sidebarWindow([], 5), { rows: [], hiddenCount: 0 });
+  assert.deepEqual(sidebarWindow([], 5), { rows: [], hiddenCount: 0, ordinaryCount: 0 });
 });
 
 const workspaces = () => ["a", "b", "c", "d", "e", "f", "g"].map((key) => ({ key }));

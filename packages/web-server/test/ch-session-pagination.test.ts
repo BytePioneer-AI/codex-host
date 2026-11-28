@@ -277,28 +277,122 @@ it("rejects cross-scope continuations and reports pin failures without hiding th
   assert.ok(errors.some((args) => String(args[0]).includes("native pins unavailable")));
 });
 
-it("continues a Workspace's page within its folder, outside nested Workspaces, only after a cursor", async (t) => {
+it("returns only threads in the requested Workspace on a scoped continuation", async (t) => {
   const f = fixture(t);
-  const head = await f.list();
   const folder = (...parts: string[]) => join(f.root, ...parts);
-  for (const path of [folder("app", "nested"), folder("elsewhere")])
+  const projectFolders = [
+    ["app", folder("app"), "native-23"],
+    ["nested", folder("app", "nested"), "native-24"],
+    ["elsewhere", folder("elsewhere"), "native-25"],
+  ] as const;
+  for (const [id, path, threadId] of projectFolders) {
     mkdirSync(path, { recursive: true });
-  const app = f.workspaces.create(folder("app")).workspace;
-  f.workspaces.create(folder("app", "nested"));
-  f.workspaces.create(folder("elsewhere"));
+    f.host.projectSnapshot.projects.push({ id, name: id, rootPaths: [path] });
+    f.host.projectSnapshot.assignments[threadId] = id;
+    const thread = f.host.threads.get(threadId);
+    assert.ok(thread);
+    thread.cwd = path;
+  }
+  const head = await f.list();
+  const app = f.workspaces.list().find((workspace) => workspace.path === folder("app"));
+  assert.ok(app);
   const count = f.cursors.length;
   const headless = await f.rpc.dispatch("session/list", {
     args: { request: { workspaceId: app.workspaceId } },
   });
   assert.equal(headless.ok, false, "a Workspace scope only continues a page");
   assert.equal(f.cursors.length, count);
-  await f.list({ cursor: head.nextCursor, workspaceId: app.workspaceId });
+  const appPage = await f.list({ cursor: head.nextCursor, workspaceId: app.workspaceId });
+  assert.deepEqual(
+    appPage.items.map((row) => row.sessionId),
+    ["native-23"],
+  );
   assert.deepEqual(f.cursors.at(-1)?.scope, {
     cwd: folder("app"),
     excludeCwds: [folder("app", "nested")],
   });
-  await f.list({ cursor: head.nextCursor });
+  assert.equal(f.workspaces.ownerOf("native-23")?.workspaceId, app.workspaceId);
+  assert.equal(f.workspaces.ownerOf("native-24"), undefined);
+  assert.equal(f.workspaces.ownerOf("native-25"), undefined);
+  const appEnd = await f.list({ cursor: appPage.nextCursor, workspaceId: app.workspaceId });
+  assert.deepEqual(appEnd.items, []);
+  assert.equal(appEnd.nextCursor, null);
+  assert.ok(!f.emitted.some((event) => event.event === "api-session/added"));
+  const recents = await f.list({ cursor: head.nextCursor });
+  assert.ok(recents.items.some((row) => row.sessionId === "native-24"));
+  assert.ok(recents.items.some((row) => row.sessionId === "native-25"));
   assert.equal(f.cursors.at(-1)?.scope, undefined, "Recents keeps the plain next page");
+});
+
+it("keeps cross-project ancestors in the scoped reply and publishes section discoveries on the next global read", async (t) => {
+  const f = fixture(t);
+  const request = f.host.request.bind(f.host);
+  const child = f.host.threads.get("native-23");
+  const parent = f.host.threads.get("native-42");
+  assert.ok(child && parent);
+  const root = join(f.root, "child");
+  mkdirSync(root);
+  f.host.projectSnapshot.nativeProjects = true;
+  f.host.projectSnapshot.projects.push({ id: "child", name: "Child project", rootPaths: [root] });
+  child.cwd = root;
+  child.projectId = "child";
+  const { nextCursor } = await f.list();
+  const inclusiveCursor = (await f.list({ includeArchived: true })).nextCursor;
+  const workspace = f.workspaces.byPath(root);
+  assert.ok(workspace);
+  f.host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/tree/read") return { parents: { [child.id]: parent.id } } as T;
+    if (method === "codexhost/thread/sections/list")
+      return { sections: [{ id: "section", name: "Section", threads: [parent] }] } as T;
+    return request<T>(method, params);
+  };
+
+  const project = await f.list({ cursor: nextCursor, workspaceId: workspace.workspaceId });
+  assert.deepEqual(project.items.map((row) => row.sessionId).sort(), [child.id, parent.id]);
+  assert.ok(!f.emitted.some((event) => event.event === "api-session/added"));
+  parent.archived = true;
+  const inclusive = await f.list({
+    cursor: inclusiveCursor,
+    workspaceId: workspace.workspaceId,
+    includeArchived: true,
+  });
+  assert.ok(inclusive.items.some((row) => row.sessionId === parent.id));
+  assert.ok(inclusive.archivedSessionIds.includes(parent.id));
+  delete parent.archived;
+  const live = await f.list({ cursor: nextCursor, workspaceId: workspace.workspaceId });
+  assert.ok(live.archivedSessionIds.includes(parent.id));
+  assert.ok(!live.items.some((row) => row.sessionId === parent.id));
+  await f.list();
+  assert.deepEqual(
+    f.emitted.flatMap(({ event, args }) =>
+      event === "api-session/added" ? [(args[0] as { sessionId: string }).sessionId] : [],
+    ),
+    [parent.id],
+  );
+});
+
+it("finds native project history using equivalent Windows and WSL root keys", async (t) => {
+  const f = fixture(t);
+  f.host.projectSnapshot.nativeProjects = true;
+  f.host.projectSnapshot.projects.push({
+    id: "windows",
+    name: "Windows project",
+    rootPaths: ["C:/Repo"],
+  });
+  const old = f.host.threads.get("native-23");
+  assert.ok(old);
+  old.cwd = "/mnt/c/repo";
+  f.host.projectSnapshot.projectless = f.host.projectSnapshot.projectless.filter(
+    (id) => id !== old.id,
+  );
+  const { nextCursor } = await f.list();
+  const workspace = f.workspaces.list().find((item) => item.projectId === "windows");
+  assert.ok(workspace);
+  const result = await f.list({ cursor: nextCursor, workspaceId: workspace.workspaceId });
+  assert.deepEqual(
+    result.items.map((row) => row.sessionId),
+    [old.id],
+  );
 });
 
 it("ends a deleted native project's continuation without reading the global catalog", async (t) => {

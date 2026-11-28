@@ -19,6 +19,7 @@ import type {
 } from "../src/native-client-channel.js";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
 import { OfficialAdmissionError } from "../src/codex-runtime/official-work-gate.js";
+import { CODEX_APPROVE_FOR_ME_MODE } from "../src/codex-runtime/native-permission-presets.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -236,7 +237,10 @@ it("uses official profiles and waits for settings confirmation; forwards command
     serviceTier: null,
     effort: "low",
     activePermissionProfile: { id: ":workspace" },
+    approvalsReviewer: "user",
+    approvalPolicy: "on-request",
   };
+  let requirements: JsonObject | null = null;
   const updates: JsonObject[] = [];
   const calls: Array<{ method: string; params: JsonObject }> = [];
   let buffer = "";
@@ -286,6 +290,7 @@ it("uses official profiles and waits for settings confirmation; forwards command
           ],
           nextCursor: null,
         };
+      if (method === "configRequirements/read") result = { requirements };
       if (method === "thread/resume")
         result = { ...settings, reasoningEffort: settings.effort ?? null };
       if (method === "thread/settings/update") updates.push(params);
@@ -321,6 +326,7 @@ it("uses official profiles and waits for settings confirmation; forwards command
       permissionModes: {
         modes: [
           { id: ":workspace", label: "Workspace write", description: "Workspace" },
+          { id: CODEX_APPROVE_FOR_ME_MODE, label: "Approve for me" },
           { id: ":read-only", label: "Read only", description: "Read without writing files" },
           { id: ":danger-full-access", label: "Full access", description: "Unrestricted access" },
           { id: ":future-profile", label: "future-profile", description: "Future" },
@@ -333,6 +339,21 @@ it("uses official profiles and waits for settings confirmation; forwards command
       },
     },
   });
+  for (const restricted of [
+    { allowedApprovalsReviewers: ["user"] },
+    { allowedApprovalPolicies: ["never"] },
+  ]) {
+    requirements = restricted;
+    const inspection = await fixture.host.handleClientRequest("codexhost/harness/inspect", {
+      harnessId: "codex",
+    });
+    expect(inspection).toMatchObject({ result: { status: "ready" } });
+    expect(inspection).not.toHaveProperty(
+      "result.permissionModes.modes",
+      expect.arrayContaining([expect.objectContaining({ id: CODEX_APPROVE_FOR_ME_MODE })]),
+    );
+  }
+  requirements = null;
   expect(inspection).toHaveProperty("result.catalog.thinkingOptions", [
     { id: "none", label: "None" },
     { id: "minimal", label: "Minimal" },
@@ -441,6 +462,63 @@ it("uses official profiles and waits for settings confirmation; forwards command
       .filter((call) => call.method === "thread/resume")
       .every((call) => call.params.excludeTurns === true),
   ).toBe(true);
+  const notifySettings = () =>
+    fixture.official.stdout.write(
+      `${JSON.stringify({ method: "thread/settings/updated", params: { threadId: "official", threadSettings: settings } })}\n`,
+    );
+  let approved = false;
+  const selectPermission = (permissionModeId: string) =>
+    fixture.host.handleClientRequest("codexhost/thread/permission-mode/select", {
+      threadId: "official",
+      permissionModeId,
+    });
+  const automatic = selectPermission(CODEX_APPROVE_FOR_ME_MODE).then((reply) => {
+    approved = true;
+    return reply;
+  });
+  await vi.waitFor(() => expect(updates[0]?.approvalsReviewer).toBe("auto_review"));
+  expect(updates.shift()).toEqual({
+    threadId: "official",
+    permissions: ":workspace",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "auto_review",
+  });
+  settings = { ...settings, activePermissionProfile: { id: ":workspace" } };
+  notifySettings();
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(approved).toBe(false);
+  settings = { ...settings, approvalsReviewer: "auto_review" };
+  notifySettings();
+  await expect(automatic).resolves.toMatchObject({
+    result: { effectivePermissionModeId: CODEX_APPROVE_FOR_ME_MODE },
+  });
+
+  const readOnly = selectPermission(":read-only");
+  await vi.waitFor(() => expect(updates[0]?.permissions).toBe(":read-only"));
+  expect(updates.shift()).toEqual({ threadId: "official", permissions: ":read-only" });
+  settings = { ...settings, activePermissionProfile: { id: ":read-only" } };
+  notifySettings();
+  await expect(readOnly).resolves.toMatchObject({
+    result: { effectivePermissionModeId: ":read-only" },
+  });
+
+  const manual = selectPermission(":workspace");
+  await vi.waitFor(() => expect(updates[0]?.permissions).toBe(":workspace"));
+  const manualUpdate = updates.shift();
+  settings = {
+    ...settings,
+    activePermissionProfile: { id: ":workspace" },
+    approvalsReviewer: manualUpdate?.approvalsReviewer ?? settings.approvalsReviewer ?? null,
+  };
+  notifySettings();
+  await expect(manual).resolves.toMatchObject({
+    result: { effectivePermissionModeId: ":workspace" },
+  });
+  expect(manualUpdate).toEqual({
+    threadId: "official",
+    permissions: ":workspace",
+    approvalsReviewer: "user",
+  });
 });
 
 it("keeps writer-conflicted snapshots readable and falls back to queue IDs for missing client message IDs", async () => {

@@ -161,6 +161,7 @@ import {
   THREAD_STEER_STRICT_TARGET_PARAM,
   REASONING_TRANSCRIPT_COMMAND,
   permissionModeFixedAtCreate,
+  HARNESS_PERMISSION_MODE_CATALOG_MAX_LENGTH,
   sameHarnessModelRef,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
@@ -314,6 +315,13 @@ import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
 import { ThreadListTiming } from "./thread-list-timing.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
+import {
+  canSelectCodexApproveForMe,
+  CODEX_APPROVE_FOR_ME_MODE,
+  CODEX_WORKSPACE_PROFILE,
+  codexApproveForMeSettings,
+  isAutomaticCodexReviewer,
+} from "./codex-runtime/native-permission-presets.js";
 import {
   updateNativeThreadSettings,
   nativeDraftSkillCommands,
@@ -4305,7 +4313,13 @@ export class AppServerHost {
           ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         });
         if (inspection.status === "ready") {
-          const response = await this.#requestOfficial("permissionProfile/list", {});
+          const [response, requirements] = await Promise.all([
+            this.#requestOfficial(
+              "permissionProfile/list",
+              params.data.cwd ? { cwd: params.data.cwd } : {},
+            ),
+            this.#requestOfficial("configRequirements/read", {}).catch(() => undefined),
+          ]);
           if (isRecord(response.error)) throw new Error(String(response.error.message));
           const profiles =
             isRecord(response.result) && Array.isArray(response.result.data)
@@ -4323,6 +4337,18 @@ export class AppServerHost {
               ? { description: profile.description }
               : {}),
           }));
+          const workspaceIndex = modes.findIndex((mode) => mode.id === CODEX_WORKSPACE_PROFILE);
+          if (
+            workspaceIndex >= 0 &&
+            modes.length < HARNESS_PERMISSION_MODE_CATALOG_MAX_LENGTH &&
+            canSelectCodexApproveForMe(requirements?.result)
+          )
+            modes.splice(workspaceIndex + 1, 0, {
+              id: CODEX_APPROVE_FOR_ME_MODE,
+              label: "Approve for me",
+              description:
+                "Allow workspace edits and automatically review eligible approval requests.",
+            });
           inspection = harnessInspectionSchema.parse({
             ...inspection,
             capabilities: {
@@ -5162,7 +5188,12 @@ export class AppServerHost {
         (method, params) => this.#requestOfficial(method, params),
         this.#nativeSettingsNotifications,
         threadId,
-        settings,
+        settings.permissions === CODEX_WORKSPACE_PROFILE &&
+          settings.approvalsReviewer === undefined &&
+          isRecord(resumed.result) &&
+          isAutomaticCodexReviewer(resumed.result.approvalsReviewer)
+          ? { ...settings, approvalsReviewer: "user" }
+          : settings,
       );
       await this.#writer.json(
         rpcEnvelope(request, { result: jsonValueSchema.parse(configuration) }),
@@ -5414,9 +5445,13 @@ export class AppServerHost {
     }
     const thread = resolution.kind === "external" ? resolution.thread : undefined;
     if (!thread) {
-      await this.#selectOfficialThreadSettings(request, params.data.threadId, {
-        permissions: params.data.permissionModeId,
-      });
+      await this.#selectOfficialThreadSettings(
+        request,
+        params.data.threadId,
+        params.data.permissionModeId === CODEX_APPROVE_FOR_ME_MODE
+          ? codexApproveForMeSettings
+          : { permissions: params.data.permissionModeId },
+      );
       return;
     }
     if (!thread.session.capabilities.configuration.selectPermissionMode) {

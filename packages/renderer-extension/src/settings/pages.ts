@@ -620,26 +620,39 @@ function updatesPage(
       };
 
       let confirming = false;
-      const requestStart = (client: RendererUpdateClient, runningTaskCount: number): void => {
+      const requestStart = (
+        client: RendererUpdateClient,
+        fallbackRunningTaskCount: number,
+      ): void => {
         if (pending || confirming) return;
-        if (runningTaskCount > 0) {
-          confirming = true;
-          void confirmUpdateWithRunningTasks(
-            context.content,
-            messages,
-            context.signal,
-            runningTaskCount,
-          )
-            .then((confirmed) => {
-              confirming = false;
-              if (confirmed && !context.signal.aborted) start(client);
-            })
-            .catch(() => {
-              confirming = false;
-            });
-          return;
-        }
-        start(client);
+        confirming = true;
+        void (async () => {
+          try {
+            let latestRunningTaskCount = fallbackRunningTaskCount;
+            try {
+              const fresh = await runBoundedRendererUpdateRequest(
+                () => client.checkUpdate(),
+                context.signal,
+              );
+              if (context.signal.aborted) return;
+              if (fresh) latestRunningTaskCount = fresh.runningTaskCount ?? 0;
+            } catch {
+              if (context.signal.aborted) return;
+            }
+            if (latestRunningTaskCount > 0) {
+              const confirmed = await confirmUpdateWithRunningTasks(
+                context.content,
+                messages,
+                context.signal,
+                latestRunningTaskCount,
+              );
+              if (!confirmed || context.signal.aborted) return;
+            }
+            if (!context.signal.aborted) start(client);
+          } finally {
+            confirming = false;
+          }
+        })();
       };
 
       const start = (client: RendererUpdateClient): void => {

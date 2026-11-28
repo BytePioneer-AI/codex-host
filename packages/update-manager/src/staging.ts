@@ -35,9 +35,12 @@ import { requireSemanticVersion, SEMVER_PATTERN } from "./status.js";
 const STAGING_SCHEMA_VERSION = 1;
 const STAGING_LOCK_FILE = "staging-v1.lock";
 const STAGING_LOCK_TTL_SECONDS = 30 * 60;
+const STAGING_LOCK_WRITE_GRACE_MS = 5_000;
 const STAGED_DIRECTORY_NAME = "staged";
 const STAGED_METADATA_FILE = "staged-v1.json";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const NPM_CACHE_FILE_PATTERN =
+  /^content-v2\/(?:sha512|sha256|sha1)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]+$/u;
 const RELEASE_TARGETS = new Set<ReleaseTarget>([
   "macos-arm64",
   "macos-x64",
@@ -56,6 +59,7 @@ export interface StagedUpdateRecord {
   target: ReleaseTarget;
   stagedAt: number;
   npmConfigSha256?: string;
+  npmCacheFiles?: string[];
   assetName?: string;
   artifactPath?: string;
   sha256?: string;
@@ -79,12 +83,21 @@ export interface StageNpmOptions {
   target: ReleaseTarget;
   npmTarget: NpmReleaseTarget;
   npmConfigSha256?: string;
+  npmCacheDirectory?: string;
+  resolveCacheFiles?: (target: NpmReleaseTarget) => Promise<string[]>;
   prefetchNpm?: (
     target: NpmReleaseTarget,
     onProgress?: (progress: NpmDownloadProgress) => void | Promise<void>,
   ) => Promise<void>;
   onProgress?: (progress: NpmDownloadProgress) => void | Promise<void>;
   now?: () => number;
+}
+
+export interface VerifyStagedNpmOptions {
+  version: string;
+  target?: ReleaseTarget;
+  npmConfigSha256?: string;
+  npmCacheDirectory?: string;
 }
 
 export interface CleanupStagedUpdatesOptions {
@@ -215,10 +228,26 @@ async function recoverStagingLock(
   now: () => number = Date.now,
 ): Promise<void> {
   const lockPath = stagingLockPath(stateDirectory);
-  if (!(await regularFile(lockPath))) return;
-  const nowSeconds = Math.floor(now() / 1000);
+  let metadata;
   try {
-    const parsed = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
+    metadata = await lstat(lockPath);
+  } catch (error) {
+    if (systemErrorCode(error) === "ENOENT") return;
+    throw error;
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) return;
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, "utf8");
+  } catch (error) {
+    const code = systemErrorCode(error);
+    if (code === "ENOENT" || code === "EACCES" || code === "EBUSY" || code === "EPERM") return;
+    throw error;
+  }
+  const nowMs = now();
+  const nowSeconds = Math.floor(nowMs / 1000);
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     const ownerPid = parsed.ownerPid;
     const startedAt = parsed.startedAt;
     const pidAlive = typeof ownerPid === "number" && processIsAlive(ownerPid);
@@ -231,7 +260,8 @@ async function recoverStagingLock(
       await rm(lockPath, { force: true });
     }
   } catch {
-    // Remove malformed staging lock files so background staging can recover without affecting active updates.
+    // A freshly created fallback lock file may briefly be empty before its payload is flushed.
+    if (nowMs - metadata.mtimeMs < STAGING_LOCK_WRITE_GRACE_MS) return;
     await rm(lockPath, { force: true });
   }
 }
@@ -276,9 +306,12 @@ async function acquireStagingLock(
         try {
           await fallbackHandle.writeFile(payload, "utf8");
           await fallbackHandle.sync();
-        } finally {
-          await fallbackHandle.close();
+        } catch (writeError) {
+          await fallbackHandle.close().catch(() => undefined);
+          await rm(lockPath, { force: true }).catch(() => undefined);
+          throw writeError;
         }
+        await fallbackHandle.close();
       } else {
         throw error;
       }
@@ -295,8 +328,9 @@ async function acquireStagingLock(
       try {
         const current = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
         if (current.token !== token) return;
-      } catch (error) {
-        if (systemErrorCode(error) === "ENOENT") return;
+      } catch {
+        // Never remove the lock file unless ownership is positively verified.
+        return;
       }
       await rm(lockPath, { force: true });
     },
@@ -315,6 +349,7 @@ export function parseStagedUpdateRecord(value: unknown): StagedUpdateRecord {
     "target",
     "stagedAt",
     "npmConfigSha256",
+    "npmCacheFiles",
     "assetName",
     "artifactPath",
     "sha256",
@@ -351,6 +386,19 @@ export function parseStagedUpdateRecord(value: unknown): StagedUpdateRecord {
     ) {
       throw new Error("staged npm metadata has an invalid npmConfigSha256");
     }
+    let npmCacheFiles: string[] | undefined;
+    if (record.npmCacheFiles !== undefined) {
+      if (
+        !Array.isArray(record.npmCacheFiles) ||
+        record.npmCacheFiles.length > 8 ||
+        record.npmCacheFiles.some(
+          (entry) => typeof entry !== "string" || !NPM_CACHE_FILE_PATTERN.test(entry),
+        )
+      ) {
+        throw new Error("staged npm metadata has invalid npmCacheFiles");
+      }
+      npmCacheFiles = record.npmCacheFiles as string[];
+    }
     return {
       schemaVersion: 1,
       version,
@@ -358,10 +406,11 @@ export function parseStagedUpdateRecord(value: unknown): StagedUpdateRecord {
       target: record.target as ReleaseTarget,
       stagedAt: record.stagedAt,
       ...(record.npmConfigSha256 !== undefined ? { npmConfigSha256: record.npmConfigSha256 } : {}),
+      ...(npmCacheFiles !== undefined ? { npmCacheFiles } : {}),
     };
   }
-  if (record.npmConfigSha256 !== undefined) {
-    throw new Error("staged installer metadata must not include npmConfigSha256");
+  if (record.npmConfigSha256 !== undefined || record.npmCacheFiles !== undefined) {
+    throw new Error("staged installer metadata must not include npm staging fields");
   }
   if (
     typeof record.assetName !== "string" ||
@@ -592,6 +641,62 @@ export async function stageArtifact(options: StageArtifactOptions): Promise<Stag
   }
 }
 
+async function nonEmptyDirectory(directoryPath: string): Promise<boolean> {
+  try {
+    const entries = await readdir(directoryPath);
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function verifyNpmCacheContentFiles(
+  cacacheRoot: string,
+  relativeFiles: readonly string[],
+): Promise<boolean> {
+  let realCacacheRoot: string;
+  try {
+    realCacacheRoot = await realpath(cacacheRoot);
+  } catch {
+    return false;
+  }
+  for (const relativeFile of relativeFiles) {
+    if (!NPM_CACHE_FILE_PATTERN.test(relativeFile)) return false;
+    const candidate = path.join(realCacacheRoot, ...relativeFile.split("/"));
+    try {
+      const metadata = await lstat(candidate);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size <= 0) return false;
+      const realCandidate = await realpath(candidate);
+      if (!isPathInsideRoot(realCacacheRoot, realCandidate)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function verifyStagedNpm(
+  staged: StagedUpdateRecord,
+  options: VerifyStagedNpmOptions,
+): Promise<boolean> {
+  if (staged.distribution !== "npm") return false;
+  if (staged.version !== options.version) return false;
+  if (options.target && staged.target !== options.target) return false;
+  if (options.npmConfigSha256 && staged.npmConfigSha256 !== options.npmConfigSha256) return false;
+  if (options.npmCacheDirectory) {
+    const cacacheRoot = path.join(options.npmCacheDirectory, "_cacache");
+    const [hasIndex, hasContent] = await Promise.all([
+      nonEmptyDirectory(path.join(cacacheRoot, "index-v5")),
+      nonEmptyDirectory(path.join(cacacheRoot, "content-v2")),
+    ]);
+    if (!hasIndex || !hasContent) return false;
+    if (staged.npmCacheFiles && staged.npmCacheFiles.length > 0) {
+      if (!(await verifyNpmCacheContentFiles(cacacheRoot, staged.npmCacheFiles))) return false;
+    }
+  }
+  return true;
+}
+
 export async function stageNpm(options: StageNpmOptions): Promise<StagedUpdateRecord> {
   const root = requireAbsoluteDirectory(options.stateDirectory);
   const version = requireSemanticVersion(options.version);
@@ -614,16 +719,31 @@ export async function stageNpm(options: StageNpmOptions): Promise<StagedUpdateRe
     const existing = await readStagedUpdate(root);
     if (
       existing &&
-      existing.distribution === "npm" &&
-      existing.version === version &&
-      existing.target === options.target &&
-      existing.npmConfigSha256 === options.npmConfigSha256
+      (await verifyStagedNpm(existing, {
+        version,
+        target: options.target,
+        ...(options.npmConfigSha256 ? { npmConfigSha256: options.npmConfigSha256 } : {}),
+        ...(options.npmCacheDirectory ? { npmCacheDirectory: options.npmCacheDirectory } : {}),
+      }))
     ) {
       return existing;
     }
 
     await removeOtherStagedVersionDirectories(root);
     await prefetch(options.npmTarget, options.onProgress);
+    let verifiedCacheFiles: string[] | undefined;
+    if (options.npmCacheDirectory && options.resolveCacheFiles) {
+      const candidateFiles = await options.resolveCacheFiles(options.npmTarget).catch(() => []);
+      if (
+        candidateFiles.length > 0 &&
+        (await verifyNpmCacheContentFiles(
+          path.join(options.npmCacheDirectory, "_cacache"),
+          candidateFiles,
+        ))
+      ) {
+        verifiedCacheFiles = candidateFiles;
+      }
+    }
     const record: StagedUpdateRecord = {
       schemaVersion: 1,
       version,
@@ -631,6 +751,7 @@ export async function stageNpm(options: StageNpmOptions): Promise<StagedUpdateRe
       target: options.target,
       stagedAt: Math.floor(now() / 1000),
       ...(options.npmConfigSha256 ? { npmConfigSha256: options.npmConfigSha256 } : {}),
+      ...(verifiedCacheFiles ? { npmCacheFiles: verifiedCacheFiles } : {}),
     };
     await writeStagedMetadata(root, record);
     return record;

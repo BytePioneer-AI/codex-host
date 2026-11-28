@@ -16,6 +16,8 @@ import type { ReleaseTarget } from "./github-release.js";
 import {
   prefetchNpmRelease,
   resolveNpmConfiguration,
+  resolveNpmPackageCacheFiles,
+  type NpmConfiguration,
   type NpmDownloadProgress,
   type NpmReleaseTarget,
 } from "./npm-registry.js";
@@ -24,6 +26,7 @@ import {
   stageArtifact as stageArtifactToDisk,
   stageNpm as stageNpmToDisk,
   verifyStagedArtifact,
+  verifyStagedNpm as verifyStagedNpmRecord,
   type StageArtifactOptions,
   type StagedUpdateRecord,
   type StageNpmOptions,
@@ -109,6 +112,10 @@ export interface BackgroundUpdateManagerDependencies {
     target: NpmReleaseTarget,
     onProgress: (progress: NpmDownloadProgress) => Promise<void>,
   ): Promise<void>;
+  /** Resolves global npm configuration digest and cache directory for config-drift checks. */
+  resolveNpmConfiguration?(target: NpmReleaseTarget): Promise<NpmConfiguration>;
+  /** Resolves relative `_cacache` content paths for the target npm packages. */
+  resolveNpmPackageCacheFiles?(target: NpmReleaseTarget): Promise<string[]>;
   now?(): number;
 }
 
@@ -123,6 +130,11 @@ export interface BackgroundUpdateManager {
     options: Omit<StageArtifactOptions, "download" | "now">,
   ): Promise<StagedUpdateRecord>;
   stageNpm(options: Omit<StageNpmOptions, "prefetchNpm" | "now">): Promise<StagedUpdateRecord>;
+  verifyStagedNpm(options: {
+    stateDirectory: string;
+    npmTarget: NpmReleaseTarget;
+    target?: ReleaseTarget;
+  }): Promise<boolean>;
   /** Resolves only after the Updater validates the owner and is waiting for its exit. */
   start(
     prepared: PreparedBackgroundUpdate,
@@ -272,6 +284,12 @@ export function createBackgroundUpdateManager(
   const prefetchNpm: NonNullable<BackgroundUpdateManagerDependencies["prefetchNpm"]> =
     dependencies.prefetchNpm ??
     ((target, onProgress) => prefetchNpmRelease(target, undefined, onProgress));
+  const resolveNpmConfig =
+    dependencies.resolveNpmConfiguration ??
+    (dependencies.prefetchNpm ? undefined : resolveNpmConfiguration);
+  const resolveNpmCacheFiles =
+    dependencies.resolveNpmPackageCacheFiles ??
+    (dependencies.prefetchNpm ? undefined : resolveNpmPackageCacheFiles);
   const now = dependencies.now ?? Date.now;
   const preparedRequests = new Set<string>();
 
@@ -525,16 +543,17 @@ export function createBackgroundUpdateManager(
         const packageRoot = requireAbsolutePath(options.packageRoot, "npm platform package root");
         await options.waitForStaged?.();
         const target = { nodePath, npmCliPath, packageRoot, version: common.version };
-        const configuration = dependencies.prefetchNpm
-          ? undefined
-          : await resolveNpmConfiguration(target);
+        const configuration = resolveNpmConfig ? await resolveNpmConfig(target) : undefined;
         const expectedConfigSha256 = options.npmConfigSha256 ?? configuration?.digest;
         const staged = await readStagedUpdate(common.stateDirectory);
         const alreadyStaged =
-          staged?.distribution === "npm" &&
-          staged.version === common.version &&
-          (!options.target || staged.target === options.target) &&
-          (!expectedConfigSha256 || staged.npmConfigSha256 === expectedConfigSha256);
+          staged !== null &&
+          (await verifyStagedNpmRecord(staged, {
+            version: common.version,
+            ...(options.target ? { target: options.target } : {}),
+            ...(expectedConfigSha256 ? { npmConfigSha256: expectedConfigSha256 } : {}),
+            ...(configuration ? { npmCacheDirectory: configuration.cacheDirectory } : {}),
+          }));
         if (!alreadyStaged) {
           // The Updater installs from this cache after the services stop, so a registry that is
           // unreachable or lacks the release fails here while everything keeps running.
@@ -650,14 +669,49 @@ export function createBackgroundUpdateManager(
       });
     },
 
-    stageNpm(options: Omit<StageNpmOptions, "prefetchNpm" | "now">): Promise<StagedUpdateRecord> {
+    async stageNpm(
+      options: Omit<StageNpmOptions, "prefetchNpm" | "now">,
+    ): Promise<StagedUpdateRecord> {
+      const configuration = resolveNpmConfig
+        ? await resolveNpmConfig(options.npmTarget)
+        : undefined;
+      const npmTarget: NpmReleaseTarget = {
+        ...options.npmTarget,
+        ...(configuration ? { configuration: configuration.environment } : {}),
+      };
+      const npmConfigSha256 = options.npmConfigSha256 ?? configuration?.digest;
+      const npmCacheDirectory = options.npmCacheDirectory ?? configuration?.cacheDirectory;
+      const resolveCacheFiles = options.resolveCacheFiles ?? resolveNpmCacheFiles;
       return stageNpmToDisk({
         ...options,
+        npmTarget,
+        ...(npmConfigSha256 ? { npmConfigSha256 } : {}),
+        ...(npmCacheDirectory ? { npmCacheDirectory } : {}),
+        ...(resolveCacheFiles ? { resolveCacheFiles } : {}),
         prefetchNpm: (target, onProgress) =>
           prefetchNpm(target, async (progress) => {
             await onProgress?.(progress);
           }),
         now,
+      });
+    },
+
+    async verifyStagedNpm(options: {
+      stateDirectory: string;
+      npmTarget: NpmReleaseTarget;
+      target?: ReleaseTarget;
+    }): Promise<boolean> {
+      const staged = await readStagedUpdate(options.stateDirectory);
+      if (!staged) return false;
+      const configuration = resolveNpmConfig
+        ? await resolveNpmConfig(options.npmTarget).catch(() => null)
+        : undefined;
+      if (configuration === null) return false;
+      return verifyStagedNpmRecord(staged, {
+        version: options.npmTarget.version,
+        ...(options.target ? { target: options.target } : {}),
+        ...(configuration ? { npmConfigSha256: configuration.digest } : {}),
+        ...(configuration ? { npmCacheDirectory: configuration.cacheDirectory } : {}),
       });
     },
 

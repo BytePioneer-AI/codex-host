@@ -185,12 +185,14 @@ export function createHostUpdateCoordinator(
 
   // In-memory background staging state; never written into status-v1.json or active-update-v1.lock.
   let backgroundPhase: UpdateBackgroundPhase = "idle";
-  let stagedVersion: string | null = null;
   let backgroundDownload: UpdateBackgroundDownload | null = null;
   let backgroundError: string | null = null;
   let backgroundTargetVersion: string | null = null;
   let retryState: { version: string; failures: number } | null = null;
   let activeStaging: { version: string; promise: Promise<void> } | null = null;
+  let activeBackgroundCycle: Promise<void> | null = null;
+  const currentActiveStaging = (): { version: string; promise: Promise<void> } | null =>
+    activeStaging;
 
   let disposed = false;
   const backgroundAbort = new AbortController();
@@ -216,7 +218,6 @@ export function createHostUpdateCoordinator(
 
   function resetBackgroundState(): void {
     backgroundPhase = "idle";
-    stagedVersion = null;
     backgroundDownload = null;
     backgroundError = null;
     backgroundTargetVersion = null;
@@ -273,18 +274,28 @@ export function createHostUpdateCoordinator(
     context: InstalledUpdateContext,
     release: CodexhostLatestRelease,
   ): Promise<boolean> {
+    if (context.installation.kind === "npm") {
+      const npm = context.installation.options;
+      return manager.verifyStagedNpm({
+        stateDirectory: context.common.stateDirectory,
+        target: context.metadata.target,
+        npmTarget: {
+          nodePath: npm.nodePath,
+          npmCliPath: npm.npmCliPath,
+          packageRoot: npm.packageRoot,
+          version: release.version,
+        },
+      });
+    }
     const staged = await readStagedUpdate(context.common.stateDirectory);
     if (
       !staged ||
       staged.version !== release.version ||
-      staged.target !== context.metadata.target
+      staged.target !== context.metadata.target ||
+      staged.distribution !== "installer"
     ) {
       return false;
     }
-    if (context.installation.kind === "npm") {
-      return staged.distribution === "npm";
-    }
-    if (staged.distribution !== "installer") return false;
     try {
       const selected = selectInstallerReleaseArtifact(release, context.metadata.target);
       const verified = await verifyStagedArtifact(
@@ -338,10 +349,12 @@ export function createHostUpdateCoordinator(
       }
       return;
     }
+    await recoverUpdateOperationLock(context.common.stateDirectory);
+    if (disposed) return;
     if (await isUpdateOperationActive(context.common.stateDirectory)) return;
 
     if (await hasVerifiedStagedRelease(context, release)) {
-      stagedVersion = release.version;
+      if (disposed) return;
       backgroundPhase = "ready";
       backgroundDownload = null;
       backgroundError = null;
@@ -350,12 +363,22 @@ export function createHostUpdateCoordinator(
       return;
     }
 
+    // Re-check concurrency and lifecycle guards after awaiting disk/npm checks.
+    if (disposed) return;
+    const concurrentStaging = currentActiveStaging();
+    if (concurrentStaging) {
+      if (concurrentStaging.version === release.version) {
+        await concurrentStaging.promise;
+      }
+      return;
+    }
+    if (await isUpdateOperationActive(context.common.stateDirectory)) return;
+
     const jobVersion = release.version;
     backgroundTargetVersion = jobVersion;
     backgroundPhase = "downloading";
     backgroundDownload = null;
     backgroundError = null;
-    stagedVersion = null;
 
     let stagingEntry: { version: string; promise: Promise<void> } | null = null;
     const job = (async (): Promise<void> => {
@@ -393,14 +416,12 @@ export function createHostUpdateCoordinator(
           });
         }
         if (disposed) return;
-        stagedVersion = jobVersion;
         backgroundPhase = "ready";
         backgroundDownload = null;
         backgroundError = null;
         retryState = null;
       } catch (error) {
         if (disposed) return;
-        stagedVersion = null;
         backgroundPhase = "failed";
         backgroundDownload = null;
         backgroundError = boundedError(error);
@@ -420,47 +441,57 @@ export function createHostUpdateCoordinator(
     await job;
   }
 
-  async function runBackgroundCycle(): Promise<void> {
-    if (disposed || !backgroundConfig.enabled) return;
-    let context: InstalledUpdateContext;
-    try {
-      context = await installedContext();
-    } catch {
-      // Source checkout or incomplete runtime metadata: permanently disable background checks.
-      clearTimers();
-      return;
-    }
-    try {
-      await cleanupStagedUpdates(context.common.stateDirectory, {
-        currentVersion: context.metadata.version,
-      });
-      if (await isUpdateOperationActive(context.common.stateDirectory)) {
+  function runBackgroundCycle(): Promise<void> {
+    if (disposed || !backgroundConfig.enabled) return Promise.resolve();
+    if (activeBackgroundCycle) return activeBackgroundCycle;
+    let cycle: Promise<void> | null = null;
+    cycle = (async (): Promise<void> => {
+      let context: InstalledUpdateContext;
+      try {
+        context = await installedContext();
+      } catch {
+        // Source checkout or incomplete runtime metadata: permanently disable background checks.
+        clearTimers();
         return;
       }
-      const release = await fetchLatest(backgroundAbort.signal).catch((error) =>
-        npmFallbackRelease(context, error, backgroundAbort.signal),
-      );
-      if (disposed) return;
-      candidate = release;
-      const updateAvailable =
-        compareSemanticVersions(context.metadata.version, release.version) < 0;
-      if (!updateAvailable) {
-        resetBackgroundState();
-        retryState = null;
-        return;
+      try {
+        await recoverUpdateOperationLock(context.common.stateDirectory);
+        await cleanupStagedUpdates(context.common.stateDirectory, {
+          currentVersion: context.metadata.version,
+        });
+        if (await isUpdateOperationActive(context.common.stateDirectory)) {
+          return;
+        }
+        const release = await fetchLatest(backgroundAbort.signal).catch((error) =>
+          npmFallbackRelease(context, error, backgroundAbort.signal),
+        );
+        if (disposed) return;
+        candidate = release;
+        const updateAvailable =
+          compareSemanticVersions(context.metadata.version, release.version) < 0;
+        if (!updateAvailable) {
+          resetBackgroundState();
+          retryState = null;
+          return;
+        }
+        const { available } = await installable(context, release);
+        if (disposed || !available) return;
+        if (retryState && retryState.version !== release.version) {
+          retryState = null;
+          backgroundError = null;
+        }
+        await stageReleaseInBackground(context, release);
+      } catch {
+        // Discovery failure in background is non-fatal and retried on the next scheduled cycle.
+      } finally {
+        if (cycle !== null && activeBackgroundCycle === cycle) {
+          activeBackgroundCycle = null;
+        }
+        scheduleNextPeriodicCheck();
       }
-      const { available } = await installable(context, release);
-      if (disposed || !available) return;
-      if (retryState && retryState.version !== release.version) {
-        retryState = null;
-        backgroundError = null;
-      }
-      await stageReleaseInBackground(context, release);
-    } catch {
-      // Discovery failure in background is non-fatal and retried on the next scheduled cycle.
-    } finally {
-      scheduleNextPeriodicCheck();
-    }
+    })();
+    activeBackgroundCycle = cycle;
+    return cycle;
   }
 
   if (backgroundConfig.enabled) {
@@ -483,23 +514,15 @@ export function createHostUpdateCoordinator(
     "stagedVersion" | "backgroundPhase" | "backgroundDownload" | "backgroundError"
   > {
     if (!updateAvailable || !releaseVersion) {
-      return {
-        stagedVersion: null,
-        backgroundPhase: "idle",
-        backgroundDownload: null,
-        backgroundError: null,
-      };
+      return {};
     }
     if (activeStaging && activeStaging.version === releaseVersion) {
       return {
-        stagedVersion: null,
         backgroundPhase: "downloading",
-        backgroundDownload,
-        backgroundError: null,
+        ...(backgroundDownload ? { backgroundDownload } : {}),
       };
     }
     if (verifiedStaged) {
-      stagedVersion = releaseVersion;
       backgroundPhase = "ready";
       backgroundDownload = null;
       backgroundError = null;
@@ -507,32 +530,25 @@ export function createHostUpdateCoordinator(
       return {
         stagedVersion: releaseVersion,
         backgroundPhase: "ready",
-        backgroundDownload: null,
-        backgroundError: null,
       };
     }
     if (backgroundPhase === "failed" && backgroundTargetVersion === releaseVersion) {
       return {
-        stagedVersion: null,
         backgroundPhase: "failed",
-        backgroundDownload: null,
-        backgroundError,
+        ...(backgroundError ? { backgroundError } : {}),
       };
     }
     if (backgroundTargetVersion !== releaseVersion) {
       resetBackgroundState();
     }
-    return {
-      stagedVersion: null,
-      backgroundPhase: "idle",
-      backgroundDownload: null,
-      backgroundError: null,
-    };
+    return {};
   }
 
   return Object.freeze({
     async check(signal?: AbortSignal): Promise<UpdateCheckResult> {
       const taskCount = currentRunningTaskCount();
+      const activeTasksField =
+        taskCount !== undefined && taskCount > 0 ? { runningTaskCount: taskCount } : {};
       let context: InstalledUpdateContext;
       try {
         context = await installedContext();
@@ -556,7 +572,7 @@ export function createHostUpdateCoordinator(
           releaseNotesUrl: null,
           status: null,
           error: boundedError(error),
-          ...(taskCount === undefined ? {} : { runningTaskCount: taskCount }),
+          ...activeTasksField,
         };
       }
       const status = await latestStatus(context);
@@ -590,7 +606,7 @@ export function createHostUpdateCoordinator(
           status,
           error,
           ...backgroundFields,
-          ...(taskCount === undefined ? {} : { runningTaskCount: taskCount }),
+          ...activeTasksField,
         };
       } catch (error) {
         return {
@@ -603,7 +619,7 @@ export function createHostUpdateCoordinator(
           releaseNotesUrl: null,
           status,
           error: boundedError(error),
-          ...(taskCount === undefined ? {} : { runningTaskCount: taskCount }),
+          ...activeTasksField,
         };
       }
     },

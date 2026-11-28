@@ -3397,7 +3397,11 @@ describe("Renderer Updates page", () => {
     if (!restartButton) throw new Error("Missing Restart to update button");
     restartButton.dispatch("click");
 
-    const dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+    let dialog: FakeElement | undefined;
+    await vi.waitFor(() => {
+      dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+      expect(dialog).toBeDefined();
+    });
     if (!dialog) throw new Error("Missing running tasks confirmation dialog");
     expect(visibleText(dialog)).toContain("2 个会话正在运行");
     expect(client.startUpdate).not.toHaveBeenCalled();
@@ -3411,10 +3415,23 @@ describe("Renderer Updates page", () => {
     await Promise.resolve();
     expect(client.startUpdate).not.toHaveBeenCalled();
 
-    // Confirming starts the update.
+    // Refreshing runningTaskCount on click picks up a newly started task before confirming.
+    client.checkUpdate.mockResolvedValueOnce({
+      ...updateCheck(),
+      stagedVersion: "1.2.3",
+      backgroundPhase: "ready" as const,
+      backgroundDownload: null,
+      backgroundError: null,
+      runningTaskCount: 4,
+    });
     restartButton.dispatch("click");
-    const secondDialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+    let secondDialog: FakeElement | undefined;
+    await vi.waitFor(() => {
+      secondDialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+      expect(secondDialog).toBeDefined();
+    });
     if (!secondDialog) throw new Error("Missing second confirmation dialog");
+    expect(visibleText(secondDialog)).toContain("4 个会话正在运行");
     const confirmButton = descendants(secondDialog).find(
       ({ tagName, textContent }) => tagName === "button" && textContent === "确认重启并更新",
     );

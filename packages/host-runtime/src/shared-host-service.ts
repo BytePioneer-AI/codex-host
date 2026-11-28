@@ -190,7 +190,10 @@ export async function runSharedHostService(
           },
         });
         runningTasksCount = () =>
-          new Set([host, ...desktops].flatMap((owner) => owner.runningThreadIds())).size;
+          new Set([
+            ...official.officialRuntimeScope.owner.activeThreadIds,
+            ...[host, ...desktops].flatMap((owner) => owner.runningThreadIds()),
+          ]).size;
         const running = host.run();
         let stopping = false;
         const stop = () => {
@@ -234,11 +237,7 @@ export async function runSharedHostService(
             externalSession: (streams) => owner.createSession(streams),
             shutdown: {
               isStopping: () => stopping,
-              runningTasks: () =>
-                new Set([
-                  ...official.officialRuntimeScope.owner.activeThreadIds,
-                  ...[host, ...desktops].flatMap((owner) => owner.runningThreadIds()),
-                ]).size,
+              runningTasks: () => runningTasksCount(),
               stop,
             },
             desktopSession: (streams, request) =>
@@ -276,7 +275,7 @@ export async function runSharedHostService(
           return await running;
         } finally {
           productTelemetry.close();
-          updateCoordinator?.dispose();
+          updateCoordinator?.dispose?.();
           supervisor.close();
           process.removeListener("SIGTERM", stop);
           process.removeListener("SIGINT", stop);

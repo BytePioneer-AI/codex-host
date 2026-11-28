@@ -79,7 +79,7 @@ export const updateBackgroundDownloadSchema = z
     message: "downloadedBytes must not exceed totalBytes",
   });
 
-export const updateCheckResultSchema = z.strictObject({
+export const updateCheckResultSchema = z.object({
   currentVersion: updateSemanticVersionSchema,
   installation: updateInstallationSchema.nullable(),
   latestVersion: updateSemanticVersionSchema.nullable(),

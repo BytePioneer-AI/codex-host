@@ -760,6 +760,6 @@ export async function runHostRuntime(input: {
   try {
     return await runBody();
   } finally {
-    ownedUpdateCoordinator?.dispose();
+    ownedUpdateCoordinator?.dispose?.();
   }
 }

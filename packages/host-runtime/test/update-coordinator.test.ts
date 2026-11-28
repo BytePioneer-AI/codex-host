@@ -734,10 +734,10 @@ describe("Host update coordinator", () => {
         installationAvailable: true,
         stagedVersion: "1.2.3",
         backgroundPhase: "ready",
-        backgroundError: null,
         status: null,
         runningTaskCount: 2,
       });
+      expect(checked.backgroundError).toBeUndefined();
 
       const started = await coordinator.start();
       expect(started.status.version).toBe("1.2.3");
@@ -747,7 +747,75 @@ describe("Host update coordinator", () => {
       // Reused verified staged copy: no second network download.
       expect(download).toHaveBeenCalledTimes(1);
     } finally {
-      coordinator.dispose();
+      coordinator.dispose?.();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("recovers a stale active-update-v1.lock from a crashed run during background cycles", async () => {
+    vi.useFakeTimers();
+    const fixture = await macFixture();
+    const stateDirectory = defaultUpdateStateDirectory("darwin", fixture.environment);
+    const staleStatusPath = path.join(stateDirectory, "update-1.2.2-stale", "status-v1.json");
+    await mkdir(path.dirname(staleStatusPath), { recursive: true });
+    await writeFile(
+      staleStatusPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.2",
+        installation: "macos-dmg",
+        phase: "downloading",
+        updatedAt: 1,
+      }),
+    );
+    await writeFile(
+      path.join(stateDirectory, "active-update-v1.lock"),
+      JSON.stringify({
+        ownerPid: 999_999_999,
+        statusPath: staleStatusPath,
+      }),
+    );
+    const bytes = Buffer.from("recovered-macos-dmg");
+    const download = vi.fn(async (_source: { url: string }, destination: string) => {
+      await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+      return { bytes: bytes.length, finalUrl: "https://downloads.example.test/v1.2.3.dmg" };
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "darwin",
+      architecture: "arm64",
+      manager: createBackgroundUpdateManager({ platform: "darwin", download }),
+      background: {
+        enabled: true,
+        initialDelayMs: 500,
+        intervalMs: 60_000,
+        jitterMs: 0,
+      },
+      fetchLatest: async () => ({
+        version: "1.2.3",
+        releaseNotes: "Release 1.2.3",
+        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        assets: [
+          {
+            name: "codexhost-1.2.3-macos-arm64.dmg",
+            size: bytes.length,
+            digest: `sha256:${digest(bytes)}`,
+            downloadUrl:
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-macos-arm64.dmg",
+          },
+        ],
+      }),
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.waitFor(async () => {
+        expect(download).toHaveBeenCalledTimes(1);
+        expect((await coordinator.check()).backgroundPhase).toBe("ready");
+      });
+    } finally {
+      coordinator.dispose?.();
     }
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -804,11 +872,11 @@ describe("Host update coordinator", () => {
       expect(checked).toMatchObject({
         updateAvailable: true,
         installationAvailable: true,
-        stagedVersion: null,
         backgroundPhase: "failed",
         backgroundError: "network reset during background download",
         status: null,
       });
+      expect(checked.stagedVersion).toBeUndefined();
       await expect(coordinator.status()).resolves.toEqual({ status: null });
 
       // Auto-retry #1 after 1_000ms.
@@ -822,7 +890,7 @@ describe("Host update coordinator", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       expect(download).toHaveBeenCalledTimes(3);
     } finally {
-      coordinator.dispose();
+      coordinator.dispose?.();
     }
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -831,10 +899,10 @@ describe("Host update coordinator", () => {
     vi.useFakeTimers();
     const fixture = await macFixture();
     const bytes = Buffer.from("joined-macos-dmg");
-    const gate = Promise.withResolvers<void>();
-    const startedDownload = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<undefined>();
+    const startedDownload = Promise.withResolvers<undefined>();
     const download = vi.fn(async (_source: { url: string }, destination: string) => {
-      startedDownload.resolve();
+      startedDownload.resolve(undefined);
       await gate.promise;
       await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
       return { bytes: bytes.length, finalUrl: "https://downloads.example.test/joined.dmg" };
@@ -887,13 +955,13 @@ describe("Host update coordinator", () => {
       // Still only the single in-flight background download.
       expect(download).toHaveBeenCalledTimes(1);
 
-      gate.resolve();
+      gate.resolve(undefined);
       await vi.waitFor(async () => {
         expect((await coordinator.status()).status?.phase).toBe("prepared");
       });
       expect(download).toHaveBeenCalledTimes(1);
     } finally {
-      coordinator.dispose();
+      coordinator.dispose?.();
     }
     expect(vi.getTimerCount()).toBe(0);
   });

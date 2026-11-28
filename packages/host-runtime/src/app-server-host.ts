@@ -4315,10 +4315,11 @@ export class AppServerHost {
     try {
       if (request.method === "codexhost/update/check") {
         const checked = await coordinator.check();
+        const runningTaskCount = checked.runningTaskCount ?? this.runningThreadIds().length;
         const result = updateCheckResultSchema.parse({
           ...checked,
           releaseNotesUrl: checked.releaseNotesUrl || null,
-          runningTaskCount: checked.runningTaskCount ?? this.runningThreadIds().length,
+          ...(runningTaskCount > 0 ? { runningTaskCount } : {}),
         });
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
         return;

@@ -75,15 +75,17 @@ export const runNpmCommand: NpmCommandRunner = (target, arguments_, timeoutMs) =
 
 const npmConfigurationKeys = ["registry", "cache", "prefix", "@codexhost:registry"] as const;
 
-export async function resolveNpmConfiguration(target: NpmReleaseTarget): Promise<{
+export interface NpmConfiguration {
   digest: string;
+  cacheDirectory: string;
   environment: NodeJS.ProcessEnv;
-}> {
-  const result = await runNpmCommand(
-    target,
-    ["config", "get", ...npmConfigurationKeys],
-    VIEW_TIMEOUT_MS,
-  );
+}
+
+export async function resolveNpmConfiguration(
+  target: NpmReleaseTarget,
+  run: NpmCommandRunner = runNpmCommand,
+): Promise<NpmConfiguration> {
+  const result = await run(target, ["config", "get", ...npmConfigurationKeys], VIEW_TIMEOUT_MS);
   const configuration = result.stdout.trim().replaceAll("\r\n", "\n");
   const lines = configuration.split("\n");
   const values = npmConfigurationKeys.map((key) => {
@@ -96,6 +98,7 @@ export async function resolveNpmConfiguration(target: NpmReleaseTarget): Promise
   }
   return {
     digest: createHash("sha256").update(configuration).digest("hex"),
+    cacheDirectory: cache,
     environment: {
       npm_config_registry: registry,
       npm_config_cache: cache,
@@ -103,6 +106,31 @@ export async function resolveNpmConfiguration(target: NpmReleaseTarget): Promise
       "npm_config_@codexhost:registry": scopedRegistry === "undefined" ? registry : scopedRegistry,
     },
   };
+}
+
+/**
+ * Resolves the relative `_cacache/content-v2/...` paths for the npm release
+ * tarballs from each package's published SRI integrity digest.
+ */
+export async function resolveNpmPackageCacheFiles(
+  target: NpmReleaseTarget,
+  run: NpmCommandRunner = runNpmCommand,
+): Promise<string[]> {
+  const specs = npmReleasePackages(target.packageRoot, target.version);
+  const files: string[] = [];
+  for (const spec of specs) {
+    const result = await run(target, ["view", spec, "dist.integrity"], VIEW_TIMEOUT_MS);
+    if (result.code !== 0) return [];
+    const integrity = result.stdout.trim();
+    const match = /^(sha512|sha256|sha1)-([A-Za-z0-9+/=]+)$/u.exec(integrity);
+    if (!match) return [];
+    const [, algorithm, encoded] = match;
+    if (!algorithm || !encoded) return [];
+    const hex = Buffer.from(encoded, "base64").toString("hex");
+    if (hex.length < 8) return [];
+    files.push(`content-v2/${algorithm}/${hex.slice(0, 2)}/${hex.slice(2, 4)}/${hex.slice(4)}`);
+  }
+  return files;
 }
 
 function firstErrorLine(result: NpmCommandResult): string {

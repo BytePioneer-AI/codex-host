@@ -39,18 +39,23 @@ export {
   stageArtifact,
   stageNpm,
   verifyStagedArtifact,
+  verifyStagedNpm,
   type CleanupStagedUpdatesOptions,
   type StageArtifactOptions,
   type StagedUpdateRecord,
   type StageNpmOptions,
   type VerifiedStagedArtifact,
+  type VerifyStagedNpmOptions,
 } from "./staging.js";
 export { parseReleaseAnnouncementMarkdown } from "./release-announcement.js";
 export {
   createNpmReleaseAvailability,
   fetchLatestNpmRelease,
   prefetchNpmRelease,
+  resolveNpmConfiguration,
+  resolveNpmPackageCacheFiles,
   type NpmCommandRunner,
+  type NpmConfiguration,
   type NpmReleaseAvailability,
   type NpmReleaseTarget,
 } from "./npm-registry.js";

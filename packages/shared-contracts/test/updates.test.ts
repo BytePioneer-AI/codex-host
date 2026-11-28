@@ -29,6 +29,7 @@ describe("update runtime contracts", () => {
         releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
         status: null,
         error: null,
+        futureOptionalField: true,
       }),
     ).toMatchObject({
       installation: "macos-dmg",

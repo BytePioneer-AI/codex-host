@@ -294,11 +294,31 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           : { available: false, error: null };
         let stagedVersion: string | null = null;
         if (updateAvailable && installationAvailable) {
-          const staged = await readStagedUpdate(stateDirectory());
-          if (staged && staged.version === release.version && staged.target === metadata.target) {
-            if (installationKind(metadata) === "npm" && staged.distribution === "npm") {
-              stagedVersion = staged.version;
-            } else if (staged.distribution === "installer") {
+          if (installationKind(metadata) === "npm") {
+            try {
+              const npm = await resolveConsoleNpmPaths(target);
+              const verified = await manager.verifyStagedNpm({
+                stateDirectory: stateDirectory(),
+                target: metadata.target,
+                npmTarget: {
+                  nodePath: npm.nodePath,
+                  npmCliPath: npm.npmCliPath,
+                  packageRoot: npm.packageRoot,
+                  version: release.version,
+                },
+              });
+              if (verified) stagedVersion = release.version;
+            } catch {
+              // Missing npm paths or changed configuration falls back to live download.
+            }
+          } else {
+            const staged = await readStagedUpdate(stateDirectory());
+            if (
+              staged &&
+              staged.distribution === "installer" &&
+              staged.version === release.version &&
+              staged.target === metadata.target
+            ) {
               try {
                 const selected = selectInstallerReleaseArtifact(release, metadata.target);
                 const verified = await verifyStagedArtifact(

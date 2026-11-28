@@ -564,4 +564,113 @@ describe("update staging storage and reuse", () => {
       npmConfigSha256: configHashB,
     });
   });
+
+  it("invalidates staged npm updates when _cacache is cleared and protects freshly written empty fallback locks", async () => {
+    const root = await temporaryDirectory();
+    const common = await commonOptions(root, "1.2.3");
+    const packageRoot = path.join(root, "node_modules", "@codexhost", "cli-darwin-arm64");
+    const npmCache = path.join(root, "npm-cache");
+    const contentRel = `content-v2/sha512/aa/bb/${"cc".repeat(30)}`;
+    const contentFile = path.join(npmCache, "_cacache", ...contentRel.split("/"));
+    const indexFile = path.join(npmCache, "_cacache", "index-v5", "00", "11", "entry");
+    const npmFiles = {
+      nodePath: path.join(root, "node"),
+      npmCliPath: path.join(root, "npm-cli.js"),
+      npmLauncherPath: path.join(root, "codexhost.js"),
+    };
+    await Promise.all([
+      mkdir(packageRoot, { recursive: true }),
+      mkdir(path.dirname(contentFile), { recursive: true }),
+      mkdir(path.dirname(indexFile), { recursive: true }),
+      writeFile(npmFiles.nodePath, ""),
+      writeFile(npmFiles.npmCliPath, ""),
+      writeFile(npmFiles.npmLauncherPath, ""),
+    ]);
+    const configDigest = sha256(Buffer.from("registry=https://registry.npmjs.org/\n"));
+    const prefetch = vi.fn(async () => {
+      await mkdir(path.dirname(contentFile), { recursive: true });
+      await mkdir(path.dirname(indexFile), { recursive: true });
+      await writeFile(contentFile, "tarball-bytes");
+      await writeFile(indexFile, "index-entry");
+    });
+    const manager = createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "npm-cache-check",
+      prefetchNpm: prefetch,
+      resolveNpmConfiguration: async () => ({
+        digest: configDigest,
+        cacheDirectory: npmCache,
+        environment: { npm_config_cache: npmCache },
+      }),
+      resolveNpmPackageCacheFiles: async () => [contentRel],
+    });
+
+    await manager.stageNpm({
+      stateDirectory: common.stateDirectory,
+      version: "1.2.3",
+      target: "macos-arm64",
+      npmTarget: {
+        nodePath: npmFiles.nodePath,
+        npmCliPath: npmFiles.npmCliPath,
+        packageRoot,
+        version: "1.2.3",
+      },
+    });
+    expect(prefetch).toHaveBeenCalledTimes(1);
+    await expect(
+      manager.verifyStagedNpm({
+        stateDirectory: common.stateDirectory,
+        target: "macos-arm64",
+        npmTarget: {
+          nodePath: npmFiles.nodePath,
+          npmCliPath: npmFiles.npmCliPath,
+          packageRoot,
+          version: "1.2.3",
+        },
+      }),
+    ).resolves.toBe(true);
+
+    // Clearing _cacache invalidates staged npm so verifyStagedNpm is false and prepareNpm re-prefetches.
+    await rm(path.join(npmCache, "_cacache"), { recursive: true, force: true });
+    await expect(
+      manager.verifyStagedNpm({
+        stateDirectory: common.stateDirectory,
+        target: "macos-arm64",
+        npmTarget: {
+          nodePath: npmFiles.nodePath,
+          npmCliPath: npmFiles.npmCliPath,
+          packageRoot,
+          version: "1.2.3",
+        },
+      }),
+    ).resolves.toBe(false);
+
+    await manager.prepareNpm({
+      ...common,
+      ...npmFiles,
+      packageRoot,
+      target: "macos-arm64",
+    });
+    expect(prefetch).toHaveBeenCalledTimes(2);
+
+    // A freshly created 0-byte staging-v1.lock (fallback path write window) must not be deleted as corrupt.
+    const lockPath = path.join(common.stateDirectory, "staging-v1.lock");
+    await writeFile(lockPath, "");
+    await expect(
+      stageNpm({
+        stateDirectory: common.stateDirectory,
+        version: "1.2.3",
+        target: "macos-arm64",
+        npmTarget: {
+          nodePath: npmFiles.nodePath,
+          npmCliPath: npmFiles.npmCliPath,
+          packageRoot,
+          version: "1.2.3",
+        },
+        prefetchNpm: prefetch,
+      }),
+    ).rejects.toThrow("already active");
+    await expect(readFile(lockPath, "utf8")).resolves.toBe("");
+    await rm(lockPath, { force: true });
+  });
 });

@@ -397,20 +397,25 @@ it("preserves numeric Host errors on every native client operation", async (t) =
       assert.deepEqual(await reply.json(), { error: { code, message } });
     }
   }
-  const sectionMethod = "codexhost/thread/sections/create";
-  hostCode = -32603;
-  await assert.rejects(client.request(sectionMethod, {}), {
-    message,
-    details: { hostCode: -32603 },
-  });
-  t.mock.method(host, "request", async () => {
-    throw new Error(message);
-  });
-  await assert.rejects(client.request(sectionMethod, {}), {
-    details: { hostCode: -32093 },
-  });
-  t.mock.method(host, "request", async () => undefined);
-  await assert.rejects(client.request(sectionMethod, {}), {
-    details: { hostCode: -32093 },
-  });
+  for (const { request, expected } of [
+    {
+      request: async () => {
+        throw Object.assign(new Error(message), { code: -32603 });
+      },
+      expected: { message, details: { hostCode: -32603 } },
+    },
+    {
+      request: async () => {
+        throw new Error(message);
+      },
+      expected: { details: { hostCode: -32093 } },
+    },
+    {
+      request: async () => undefined,
+      expected: { details: { hostCode: -32093 } },
+    },
+  ]) {
+    t.mock.method(host, "request", request);
+    await assert.rejects(client.request("codexhost/thread/sections/create", {}), expected);
+  }
 });

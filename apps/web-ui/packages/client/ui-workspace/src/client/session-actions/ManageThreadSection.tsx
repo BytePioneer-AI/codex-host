@@ -85,24 +85,17 @@ export function ManageThreadSectionDialog({
 }: ManageProps) {
   const request = useThreadSectionManage((value) => value);
   if (request === null) return null;
-  if (request.mode === "create") {
+  if (request.mode !== "delete") {
+    const section = request.mode === "rename" ? request.section : undefined;
     return (
-      <CreateSectionForm
-        key="create"
+      <SectionNameDialog
+        key={section ? `rename:${section.id}` : "create"}
+        initialName={section?.name ?? ""}
+        requireChange={section !== undefined}
+        title={section ? t("section.rename.title") : t("section.create.title")}
+        submitLabel={section ? t("rename") : t("section.create.action")}
+        saveName={section ? (name) => updateSection(section.id, name) : createSection}
         dismiss={dismiss}
-        createSection={createSection}
-        notifySyncPending={notifySyncPending}
-        t={t}
-      />
-    );
-  }
-  if (request.mode === "rename") {
-    return (
-      <RenameSectionForm
-        key={`rename:${request.section.id}`}
-        section={request.section}
-        dismiss={dismiss}
-        updateSection={updateSection}
         notifySyncPending={notifySyncPending}
         t={t}
       />
@@ -120,121 +113,41 @@ export function ManageThreadSectionDialog({
   );
 }
 
-function CreateSectionForm({
+function SectionNameDialog({
+  initialName,
+  requireChange,
+  title,
+  submitLabel,
+  saveName,
   dismiss,
-  createSection,
   notifySyncPending,
   t,
-}: Pick<ManageProps, "dismiss" | "createSection" | "notifySyncPending" | "t">) {
-  const [draft, setDraft] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const composingRef = useRef(false);
-  const pendingRef = useRef(false);
-  const name = draft.trim();
-  const blocked = submitting || name.length === 0;
-  const close = () => {
-    if (!pendingRef.current) dismiss();
-  };
-  const submit = async () => {
-    if (pendingRef.current || name.length === 0) return;
-    pendingRef.current = true;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const result = await createSection(name);
-      if (result.status !== "confirmed") {
-        setError(t("section.outcomeUnknown"));
-        return;
-      }
-      dismiss();
-      if (result.syncPending) notifySyncPending();
-    } catch (reason: unknown) {
-      setError(errorMessage(reason));
-    } finally {
-      pendingRef.current = false;
-      setSubmitting(false);
-    }
-  };
-  return (
-    <Modal
-      phoneSidebar
-      open
-      onClose={close}
-      closeLabel={t("close")}
-      title={t("section.create.title")}
-      footer={
-        <>
-          <Button variant="outline" disabled={submitting} onClick={close}>
-            {t("cancel")}
-          </Button>
-          <Button variant="primary" disabled={blocked} onClick={() => void submit()}>
-            {t("section.create.action")}
-          </Button>
-        </>
-      }
-    >
-      <input
-        className={css.renameInput}
-        value={draft}
-        placeholder={t("section.namePlaceholder")}
-        aria-label={t("field.sectionName")}
-        data-modal-autofocus
-        disabled={submitting}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          setError(null);
-        }}
-        onCompositionStart={() => {
-          composingRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          composingRef.current = false;
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !composingRef.current) {
-            event.preventDefault();
-            void submit();
-          }
-        }}
-      />
-      {error !== null && (
-        <div className={css.renameError} role="alert">
-          {error}
-        </div>
-      )}
-    </Modal>
-  );
-}
-
-function RenameSectionForm({
-  section,
-  dismiss,
-  updateSection,
-  notifySyncPending,
-  t,
-}: Pick<ManageProps, "dismiss" | "updateSection" | "notifySyncPending" | "t"> & {
-  section: WorkspaceThreadSection;
+}: Pick<ManageProps, "dismiss" | "notifySyncPending" | "t"> & {
+  initialName: string;
+  requireChange: boolean;
+  title: string;
+  submitLabel: string;
+  saveName: ManageProps["createSection"];
 }) {
-  const [draft, setDraft] = useState(section.name);
-  const [submitting, setSubmitting] = useState(false);
+  const [draft, setDraft] = useState(initialName);
+  const [state, setState] = useState<"editing" | "saving" | "unknown">("editing");
   const [error, setError] = useState<string | null>(null);
   const composingRef = useRef(false);
-  const pendingRef = useRef(false);
+  const submissionRef = useRef(false);
   const name = draft.trim();
-  const unchanged = name === section.name;
-  const blocked = submitting || name.length === 0 || unchanged;
+  const invalid = name.length === 0 || (requireChange && name === initialName);
   const close = () => {
-    if (!pendingRef.current) dismiss();
+    if (state !== "saving") dismiss();
   };
   const submit = async () => {
-    if (pendingRef.current || name.length === 0 || unchanged) return;
-    pendingRef.current = true;
-    setSubmitting(true);
+    if (submissionRef.current || invalid) return;
+    submissionRef.current = true;
+    setState("saving");
     setError(null);
     try {
-      const result = await updateSection(section.id, name);
-      if (result.status !== "confirmed") {
+      const result = await saveName(name);
+      if (result.status === "unknown") {
+        setState("unknown");
         setError(t("section.outcomeUnknown"));
         return;
       }
@@ -242,9 +155,8 @@ function RenameSectionForm({
       if (result.syncPending) notifySyncPending();
     } catch (reason: unknown) {
       setError(errorMessage(reason));
-    } finally {
-      pendingRef.current = false;
-      setSubmitting(false);
+      submissionRef.current = false;
+      setState("editing");
     }
   };
   return (
@@ -253,14 +165,18 @@ function RenameSectionForm({
       open
       onClose={close}
       closeLabel={t("close")}
-      title={t("section.rename.title")}
+      title={title}
       footer={
         <>
-          <Button variant="outline" disabled={submitting} onClick={close}>
+          <Button variant="outline" disabled={state === "saving"} onClick={close}>
             {t("cancel")}
           </Button>
-          <Button variant="primary" disabled={blocked} onClick={() => void submit()}>
-            {t("rename")}
+          <Button
+            variant="primary"
+            disabled={state !== "editing" || invalid}
+            onClick={() => void submit()}
+          >
+            {submitLabel}
           </Button>
         </>
       }
@@ -271,10 +187,8 @@ function RenameSectionForm({
         placeholder={t("section.namePlaceholder")}
         aria-label={t("field.sectionName")}
         data-modal-autofocus
-        disabled={submitting}
-        onFocus={(event) => {
-          event.target.select();
-        }}
+        disabled={state !== "editing"}
+        onFocus={requireChange ? (event) => event.target.select() : undefined}
         onChange={(event) => {
           setDraft(event.target.value);
           setError(null);

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Context } from "@deepseek-ai/cordis";
 import { RemoteMock, openStream } from "@deepseek-ai/dsh-remote-mock";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
-import type { RemoteFailure, RemoteResult, TypertCodec } from "@deepseek-ai/dsh-typert-protocol";
+import { RemoteError, type RemoteResult, type TypertCodec } from "@deepseek-ai/dsh-typert-protocol";
 import TYPERT_REMOTE from "../generated/remote.js";
 import { apply as applyGateway } from "../../gateway/src/client/index.ts";
 import { installConnection } from "../../../client/connection/src/client/index.ts";
@@ -10,15 +10,7 @@ import { apply as applyTypert } from "../../../typert/registry/src/client/index.
 import { createWorkspaceStateStream } from "../src/client/index.ts";
 import { ClientWorkspaceModel, type WorkspaceRemote } from "../src/client/model.ts";
 import { WorkspaceController } from "../src/client/service.ts";
-import type {
-  WorkspaceCreateThreadSectionRequest,
-  WorkspaceCreateThreadSectionValue,
-  WorkspaceDeleteThreadSectionRequest,
-  WorkspaceDeleteThreadSectionValue,
-  WorkspaceFollowFrame,
-  WorkspaceUpdateThreadSectionRequest,
-  WorkspaceUpdateThreadSectionValue,
-} from "../src/types.ts";
+import type { WorkspaceFollowFrame, WorkspaceThreadSectionMutationValue } from "../src/types.ts";
 
 // The browser export is a loader bundle. Load the same Gateway source in Node.
 vi.mock("@deepseek-ai/dsh-api-gateway/client", () => import("../../gateway/src/client/index.ts"));
@@ -139,199 +131,91 @@ describe("workspace-controller thread section contracts", () => {
     expect(model.getSnapshot().threadSectionsV1).toBeUndefined();
   });
 
-  it("validates create/update/delete confirmed, unknown, and delete section:null responses", () => {
-    const createParam = strictSchema(descriptor("createThreadSection").parameters[0]!.codec);
-    const createResult = strictSchema(descriptor("createThreadSection").result);
-    expect(createParam.parse({ name: "Research" })).toEqual({ name: "Research" });
-    expect(
-      createResult.parse({
+  const futureAppearance = { icon: "unknown-v9", color: "custom-v9" };
+  const mutations = [
+    {
+      method: "createThreadSection",
+      request: { name: "Research" },
+      invoke: (controller: WorkspaceController) => controller.createThreadSection("Research"),
+      confirmed: {
         status: "confirmed",
-        sectionId: "sec-1",
-        section: { id: "sec-1", name: "Research", appearance: null },
+        sectionId: "sec-new",
+        section: { id: "sec-new", name: "Research", appearance: null },
         syncPending: false,
-      }),
-    ).toEqual({
-      status: "confirmed",
-      sectionId: "sec-1",
-      section: { id: "sec-1", name: "Research", appearance: null },
-      syncPending: false,
-    });
-    expect(createResult.parse({ status: "unknown" })).toEqual({ status: "unknown" });
-
-    const updateParam = strictSchema(descriptor("updateThreadSection").parameters[0]!.codec);
-    const updateResult = strictSchema(descriptor("updateThreadSection").result);
-    expect(updateParam.parse({ sectionId: "sec-1", name: "Renamed" })).toEqual({
-      sectionId: "sec-1",
-      name: "Renamed",
-    });
-    expect(
-      updateResult.parse({
+      },
+      error: /workspace create thread section failed: gateway\/bad-request: Official rejected/,
+    },
+    {
+      method: "updateThreadSection",
+      request: { sectionId: "sec-1", name: "Renamed" },
+      invoke: (controller: WorkspaceController) =>
+        controller.updateThreadSection("sec-1", "Renamed"),
+      confirmed: {
         status: "confirmed",
         sectionId: "sec-1",
-        section: { id: "sec-1", name: "Renamed", appearance: { icon: "star", color: null } },
+        section: { id: "sec-1", name: "Renamed", appearance: futureAppearance },
         syncPending: true,
-      }),
-    ).toEqual({
-      status: "confirmed",
-      sectionId: "sec-1",
-      section: { id: "sec-1", name: "Renamed", appearance: { icon: "star", color: null } },
-      syncPending: true,
-    });
-    expect(updateResult.parse({ status: "unknown" })).toEqual({ status: "unknown" });
+      },
+      error: /workspace update thread section failed: gateway\/bad-request: Official rejected/,
+    },
+    {
+      method: "deleteThreadSection",
+      request: { sectionId: "sec-1" },
+      invoke: (controller: WorkspaceController) => controller.deleteThreadSection("sec-1"),
+      confirmed: { status: "confirmed", sectionId: "sec-1", section: null, syncPending: true },
+      error: /workspace delete thread section failed: gateway\/bad-request: Official rejected/,
+    },
+  ] as const;
 
-    const deleteParam = strictSchema(descriptor("deleteThreadSection").parameters[0]!.codec);
-    const deleteResult = strictSchema(descriptor("deleteThreadSection").result);
-    expect(deleteParam.parse({ sectionId: "sec-1" })).toEqual({ sectionId: "sec-1" });
-    expect(
-      deleteResult.parse({
-        status: "confirmed",
-        sectionId: "sec-1",
-        section: null,
-        syncPending: true,
-      }),
-    ).toEqual({
-      status: "confirmed",
-      sectionId: "sec-1",
-      section: null,
-      syncPending: true,
-    });
-    expect(deleteResult.parse({ status: "unknown" })).toEqual({ status: "unknown" });
-    expect(() => deleteResult.parse({ sectionId: "sec-1", deleted: true })).toThrow();
+  it.each(mutations)("decodes $method parameters and results", ({ method, request, confirmed }) => {
+    const entry = descriptor(method);
+    const result = strictSchema(entry.result);
+    expect(strictSchema(entry.parameters[0]!.codec).parse(request)).toEqual(request);
+    expect(result.parse(confirmed)).toEqual(confirmed);
+    expect(result.parse({ status: "unknown" })).toEqual({ status: "unknown" });
   });
 
-  it("omits appearance on rename, preserves unknown appearance, and returns confirmed/unknown/errors", async () => {
-    const sentCreate: WorkspaceCreateThreadSectionRequest[] = [];
-    const sentUpdate: WorkspaceUpdateThreadSectionRequest[] = [];
-    const sentDelete: WorkspaceDeleteThreadSectionRequest[] = [];
+  it("rejects a delete result without a status", () => {
+    const result = strictSchema(descriptor("deleteThreadSection").result);
+    expect(() => result.parse({ sectionId: "sec-1", deleted: true })).toThrow();
+  });
 
-    const remote = {
-      createThreadSection: async (
-        request: WorkspaceCreateThreadSectionRequest,
-      ): Promise<RemoteResult<WorkspaceCreateThreadSectionValue>> => {
-        sentCreate.push(request);
-        if (request.name === "Uncertain") {
-          return { ok: true, value: { status: "unknown" } };
-        }
-        return {
-          ok: true,
-          value: {
-            status: "confirmed",
-            sectionId: "sec-new",
-            section: { id: "sec-new", name: request.name, appearance: null },
-            syncPending: false,
-          },
-        };
-      },
-      updateThreadSection: async (
-        request: WorkspaceUpdateThreadSectionRequest,
-      ): Promise<RemoteResult<WorkspaceUpdateThreadSectionValue>> => {
-        sentUpdate.push(request);
-        if (request.name === "fail") {
-          return {
-            ok: false,
-            error: {
-              code: "gateway/bad-request",
-              message: "Official rejected",
-              details: {},
-            } as RemoteFailure,
-          };
-        }
-        if (request.name === "unknown") {
-          return { ok: true, value: { status: "unknown" } };
-        }
-        return {
-          ok: true,
-          value: {
-            status: "confirmed",
-            sectionId: request.sectionId,
-            section: {
-              id: request.sectionId,
-              name: request.name,
-              appearance: { icon: "unknown-v9", color: "custom-v9" },
-            },
-            syncPending: true,
-          },
-        };
-      },
-      deleteThreadSection: async (
-        request: WorkspaceDeleteThreadSectionRequest,
-      ): Promise<RemoteResult<WorkspaceDeleteThreadSectionValue>> => {
-        sentDelete.push(request);
-        if (request.sectionId === "sec-unknown") {
-          return { ok: true, value: { status: "unknown" } };
-        }
-        return {
-          ok: true,
-          value: {
-            status: "confirmed",
-            sectionId: request.sectionId,
-            section: null,
-            syncPending: true,
-          },
-        };
-      },
-    } as unknown as WorkspaceRemote;
-
-    const model = new ClientWorkspaceModel(remote);
-    const ctx = new Context();
-    const controller = new WorkspaceController(ctx, model);
-
+  it("preserves unrecognized appearance in the Workspace model", () => {
+    const model = new ClientWorkspaceModel({} as WorkspaceRemote);
     model.replaceThreadSections([
       {
         id: "sec-1",
         name: "Original",
-        appearance: { icon: "unknown-v9", color: "custom-v9" },
+        appearance: futureAppearance,
         threadIds: ["t-1" as SessionId],
       },
     ]);
-    expect(model.getSnapshot().threadSections?.[0]?.appearance).toEqual({
-      icon: "unknown-v9",
-      color: "custom-v9",
-    });
-
-    const created = await controller.createThreadSection("New Section");
-    expect(created).toEqual({
-      status: "confirmed",
-      sectionId: "sec-new",
-      section: { id: "sec-new", name: "New Section", appearance: null },
-      syncPending: false,
-    });
-    expect(Object.hasOwn(sentCreate[0]!, "appearance")).toBe(false);
-
-    const createdUnknown = await controller.createThreadSection("Uncertain");
-    expect(createdUnknown).toEqual({ status: "unknown" });
-
-    const updated = await controller.updateThreadSection("sec-1", "Renamed");
-    expect(updated).toEqual({
-      status: "confirmed",
-      sectionId: "sec-1",
-      section: {
-        id: "sec-1",
-        name: "Renamed",
-        appearance: { icon: "unknown-v9", color: "custom-v9" },
-      },
-      syncPending: true,
-    });
-    expect(Object.hasOwn(sentUpdate[0]!, "appearance")).toBe(false);
-    expect(sentUpdate[0]).toEqual({ sectionId: "sec-1", name: "Renamed" });
-
-    const updatedUnknown = await controller.updateThreadSection("sec-1", "unknown");
-    expect(updatedUnknown).toEqual({ status: "unknown" });
-
-    await expect(controller.updateThreadSection("sec-1", "fail")).rejects.toThrow(
-      /workspace update thread section failed: gateway\/bad-request: Official rejected/,
-    );
-
-    const deleted = await controller.deleteThreadSection("sec-1");
-    expect(deleted).toEqual({
-      status: "confirmed",
-      sectionId: "sec-1",
-      section: null,
-      syncPending: true,
-    });
-    expect(sentDelete[0]).toEqual({ sectionId: "sec-1" });
-
-    const deletedUnknown = await controller.deleteThreadSection("sec-unknown");
-    expect(deletedUnknown).toEqual({ status: "unknown" });
+    expect(model.getSnapshot().threadSections?.[0]?.appearance).toEqual(futureAppearance);
   });
+
+  it.each(mutations)(
+    "preserves confirmed, unknown and gateway errors for $method",
+    async ({ method, request, invoke, confirmed, error }) => {
+      const remoteCall =
+        vi.fn<
+          (input: typeof request) => Promise<RemoteResult<WorkspaceThreadSectionMutationValue>>
+        >();
+      const model = new ClientWorkspaceModel({
+        [method]: remoteCall,
+      } as unknown as WorkspaceRemote);
+      const controller = new WorkspaceController(new Context(), model);
+      remoteCall
+        .mockResolvedValueOnce({ ok: true, value: confirmed })
+        .mockResolvedValueOnce({ ok: true, value: { status: "unknown" } })
+        .mockResolvedValueOnce({
+          ok: false,
+          error: new RemoteError("gateway/bad-request", "Official rejected", {}),
+        });
+
+      await expect(invoke(controller)).resolves.toEqual(confirmed);
+      await expect(invoke(controller)).resolves.toEqual({ status: "unknown" });
+      await expect(invoke(controller)).rejects.toThrow(error);
+      expect(remoteCall.mock.calls).toEqual([[request], [request], [request]]);
+    },
+  );
 });

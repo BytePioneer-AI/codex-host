@@ -326,7 +326,7 @@ export function apply(ctx: Context): void {
       movingProjectSessions: projectMoveCoordinator.movingSessionIds,
     },
     dismiss: () => threadProjectMove.set(null),
-    move: (payload) => projectMoveCoordinator.move(payload, { notifyOnError: false }),
+    move: projectMoveCoordinator.move,
   });
   const threadSectionMove = createSnapshotStore<SessionId | null>(null);
   const threadSectionMenu = (): ThreadSectionMenuInjected => ({

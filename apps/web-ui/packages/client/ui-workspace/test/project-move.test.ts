@@ -176,10 +176,7 @@ describe("createProjectMoveCoordinator", () => {
     assert.deepEqual(moveA2, { status: "skipped-in-flight" });
     assert.equal(calls.length, 1);
 
-    const moveB = coordinator.move(
-      { sessionId: sid("b"), projectId: "proj-beta" },
-      { notifyOnError: false },
-    );
+    const moveB = coordinator.move({ sessionId: sid("b"), projectId: "proj-beta" });
     assert.equal(coordinator.isMoving(sid("b")), true);
     assert.equal(calls.length, 2);
 
@@ -196,7 +193,7 @@ describe("createProjectMoveCoordinator", () => {
     const failure = new Error("Project unavailable");
     moveBResult.reject(failure);
     const outcomeB = await moveB;
-    assert.equal(outcomeB.status, "failed");
+    assert.deepEqual(outcomeB, { status: "failed", error: failure });
     assert.equal(coordinator.isMoving(sid("b")), false);
   });
 });

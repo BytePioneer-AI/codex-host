@@ -35,10 +35,7 @@ export interface ProjectMoveCoordinator {
    * Commit one project move under a per-session in-flight lock.
    * Never mutates local snapshots optimistically; authoritative stream updates own placement.
    */
-  move(
-    payload: ProjectMovePayload,
-    options?: { readonly notifyOnError?: boolean },
-  ): Promise<ProjectMoveOutcome>;
+  move(payload: ProjectMovePayload): Promise<ProjectMoveOutcome>;
 }
 
 export interface MoveProjectDialogState {
@@ -167,13 +164,12 @@ export function createProjectMoveCoordinator(options: {
     sessionId: SessionId,
     projectId: string | null,
   ) => Promise<WorkspaceMoveSessionToProjectValue>;
-  readonly onError?: (error: unknown) => void;
 }): ProjectMoveCoordinator {
   const { lock } = options;
   return {
     movingSessionIds: lock.movingSessionIds,
     isMoving: lock.isMoving,
-    async move(payload, moveOptions = {}) {
+    async move(payload) {
       if (!lock.tryAcquire(payload.sessionId)) {
         return { status: "skipped-in-flight" };
       }
@@ -184,7 +180,6 @@ export function createProjectMoveCoordinator(options: {
         }
         return { status: "committed", projectId: result.projectId };
       } catch (error) {
-        if (moveOptions.notifyOnError !== false) options.onError?.(error);
         return { status: "failed", error };
       } finally {
         lock.release(payload.sessionId);

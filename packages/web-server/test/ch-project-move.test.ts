@@ -81,6 +81,24 @@ function setup(t: TestContext, host: FakeChHost, sessionId = "moving") {
   };
 }
 
+function holdNextProjectRead(t: TestContext, host: FakeChHost) {
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const projects = host.projects.bind(host);
+  t.mock.method(
+    host,
+    "projects",
+    async () => {
+      const snapshot = await projects();
+      entered.resolve(undefined);
+      await release.promise;
+      return snapshot;
+    },
+    { times: 1 },
+  );
+  return { entered: entered.promise, release: () => release.resolve(undefined) };
+}
+
 function memberships(frames: unknown[], sessionId: string) {
   return (frames as Array<{ type: string; workspace?: WorkspaceView }>).flatMap((frame) =>
     frame.type === "upsert" && frame.workspace?.sessionIds.includes(sessionId)
@@ -675,26 +693,18 @@ it("allows a project move after unarchive even when the official Thread is off t
 
   host.threads.delete(row.id);
   host.archivedIds.delete(row.id);
-  const entered = Promise.withResolvers<undefined>();
-  const release = Promise.withResolvers<undefined>();
-  const projects = host.projects.bind(host);
-  t.mock.method(host, "projects", async () => {
-    const snapshot = await projects();
-    entered.resolve(undefined);
-    await release.promise;
-    return snapshot;
-  });
+  const { entered, release } = holdNextProjectRead(t, host);
   const refreshing = list();
   try {
     await Promise.race([
-      entered.promise,
+      entered,
       refreshing.then((reply) =>
         assert.fail(`Catalog settled before project read: ${JSON.stringify(reply)}`),
       ),
     ]);
     host.changed(row.id, "thread/unarchived");
   } finally {
-    release.resolve(undefined);
+    release();
   }
   assert.ok((await refreshing).ok);
   assert.equal(workspaces.isArchived(row.id), false);
@@ -713,26 +723,18 @@ it("does not restore an archived Thread from an in-flight catalog and section sn
       ? ({ sections: [{ id: "research", name: "Research", threads: [row] }] } as T)
       : request<T>(method, params);
   assert.ok((await list()).ok);
-  const entered = Promise.withResolvers<undefined>();
-  const release = Promise.withResolvers<undefined>();
-  const projects = host.projects.bind(host);
-  t.mock.method(host, "projects", async () => {
-    const snapshot = await projects();
-    entered.resolve(undefined);
-    await release.promise;
-    return snapshot;
-  });
+  const { entered, release } = holdNextProjectRead(t, host);
   const pending = list();
   try {
     await Promise.race([
-      entered.promise,
+      entered,
       pending.then(() => assert.fail("Catalog published before the pending project read")),
     ]);
     host.archivedIds.add(row.id);
     host.changed(row.id, "thread/archived");
     assert.equal(workspaces.isArchived(row.id), true);
   } finally {
-    release.resolve(undefined);
+    release();
   }
   const result = await pending;
   assert.ok(result.ok);
@@ -759,23 +761,15 @@ it("keeps a concurrent direct-link Thread without restoring a removed catalog ro
   assert.ok(workspaces.ownerOf(row.id));
   host.threads.delete(row.id);
 
-  const entered = Promise.withResolvers<undefined>();
-  const release = Promise.withResolvers<undefined>();
-  const projects = host.projects.bind(host);
-  t.mock.method(host, "projects", async () => {
-    const snapshot = await projects();
-    entered.resolve(undefined);
-    await release.promise;
-    return snapshot;
-  });
+  const { entered, release } = holdNextProjectRead(t, host);
   const refreshing = list();
   const cwd = join(root, "target");
   try {
-    await entered.promise;
+    await entered;
     const linked = host.add("direct-link", cwd, "Direct link", false);
     assert.ok((await call("session/list", { sessionId: linked.id })).ok);
   } finally {
-    release.resolve(undefined);
+    release();
   }
   assert.ok((await refreshing).ok);
   assert.equal(workspaces.ownerOf("direct-link")?.path, cwd);
@@ -790,25 +784,17 @@ it("does not remove a draft's canonical Thread when an older catalog publishes",
   const draft = await call("session/create");
   assert.ok(draft.ok);
   const { sessionId } = draft.value as { sessionId: string };
-  const entered = Promise.withResolvers<undefined>();
-  const release = Promise.withResolvers<undefined>();
-  const projects = host.projects.bind(host);
-  t.mock.method(host, "projects", async () => {
-    const snapshot = await projects();
-    entered.resolve(undefined);
-    await release.promise;
-    return snapshot;
-  });
+  const { entered, release } = holdNextProjectRead(t, host);
   const refreshing = list();
   try {
-    await entered.promise;
+    await entered;
     const sent = await call("session/prompt", {
       sessionId,
       content: [{ type: "text", text: "Start a Thread" }],
     });
     assert.ok(sent.ok, sent.ok ? undefined : sent.error.message);
   } finally {
-    release.resolve(undefined);
+    release();
   }
   assert.ok((await refreshing).ok);
   const lifecycle = emitted.mock.calls.map(({ arguments: args }) => args);
@@ -829,20 +815,15 @@ it("does not keep an official Thread deleted while its catalog batch was in flig
   assert.ok((await list()).ok);
   assert.ok(workspaces.ownerOf(row.id));
 
-  const entered = Promise.withResolvers<undefined>();
-  const release = Promise.withResolvers<undefined>();
-  const projects = host.projects.bind(host);
-  t.mock.method(host, "projects", async () => {
-    const snapshot = await projects();
-    entered.resolve(undefined);
-    await release.promise;
-    return snapshot;
-  });
+  const { entered, release } = holdNextProjectRead(t, host);
   const refreshing = list();
-  await entered.promise;
-  host.threads.delete(row.id);
-  host.changed(row.id, "thread/deleted");
-  release.resolve(undefined);
+  try {
+    await entered;
+    host.threads.delete(row.id);
+    host.changed(row.id, "thread/deleted");
+  } finally {
+    release();
+  }
   assert.ok((await refreshing).ok);
   assert.equal(workspaces.ownerOf(row.id), undefined);
 });

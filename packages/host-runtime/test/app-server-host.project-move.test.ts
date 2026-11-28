@@ -282,9 +282,9 @@ async function workspace({ fixture }: Setup, threadIds: string[] = [], nativePro
   return clientWorkspaceSnapshotSchema.parse(response.result);
 }
 
-async function startExternal({ fixture, cwd }: Setup) {
+async function startExternal({ fixture, cwd }: Setup, ephemeral = false) {
   return hostThreadIdSchema.parse(
-    await startExternalThread(fixture, "codexhost/pi-native", 1, { cwd }),
+    await startExternalThread(fixture, "codexhost/pi-native", 1, { cwd, ephemeral }),
   );
 }
 
@@ -514,50 +514,46 @@ describe("Host client project move", () => {
     },
   );
 
-  it.each(["stale", "malformed-readback"] as const)(
-    "returns unknown on %s after a claimed write success, without resending",
-    async (write) => {
+  it.each([
+    { name: "stale move readback", write: "stale", projectId: GUI_PROJECT, wireId: NATIVE_PROJECT },
+    { name: "stale clear readback", write: "stale", projectId: null, wireId: "" },
+    {
+      name: "malformed move readback",
+      write: "malformed-readback",
+      projectId: GUI_PROJECT,
+      wireId: NATIVE_PROJECT,
+    },
+    {
+      name: "ambiguous write confirmed by readback",
+      write: "ambiguous",
+      projectId: GUI_PROJECT,
+      wireId: NATIVE_PROJECT,
+    },
+  ] as const)(
+    "settles $name from a separate read without resending",
+    async ({ write, projectId, wireId }) => {
       const context = await setup({ write });
-      await expect(move(context, NATIVE_THREAD)).resolves.toEqual({
-        result: { status: "unknown" },
-      });
+      await expect(move(context, NATIVE_THREAD, projectId)).resolves.toEqual(
+        write === "ambiguous" ? confirmed : { result: { status: "unknown" } },
+      );
+      expect(nativeWrites(context).map(({ params }) => params)).toEqual([
+        { threadId: NATIVE_THREAD, projectId: wireId },
+      ]);
       const writeIndex = context.requests.findIndex(
         ({ method }) => method === "thread/metadata/update",
       );
       expect(context.requests.slice(writeIndex + 1)).toContainEqual(
-        expect.objectContaining({ method: "thread/read" }),
+        expect.objectContaining({
+          method: "thread/read",
+          params: { threadId: NATIVE_THREAD, includeTurns: false },
+        }),
       );
-      expect(nativeWrites(context)).toHaveLength(1);
+      if (projectId === null)
+        expect((await workspace(context, [NATIVE_THREAD])).assignments[NATIVE_THREAD]).toBe(
+          OLD_GUI_PROJECT,
+        );
     },
   );
-
-  it("returns unknown without resending when a native clear cannot be read back", async () => {
-    const context = await setup({ write: "stale" });
-    await expect(move(context, NATIVE_THREAD, null)).resolves.toEqual({
-      result: { status: "unknown" },
-    });
-    expect(nativeWrites(context).map(({ params }) => params)).toEqual([
-      { threadId: NATIVE_THREAD, projectId: "" },
-    ]);
-    expect((await workspace(context, [NATIVE_THREAD])).assignments[NATIVE_THREAD]).toBe(
-      OLD_GUI_PROJECT,
-    );
-  });
-
-  it("confirms an ambiguous native write only by reading it back, without resending", async () => {
-    const context = await setup({ write: "ambiguous" });
-    await expect(move(context, NATIVE_THREAD)).resolves.toEqual(confirmed);
-    expect(nativeWrites(context)).toHaveLength(1);
-    const writeIndex = context.requests.findIndex(
-      ({ method }) => method === "thread/metadata/update",
-    );
-    expect(context.requests.slice(writeIndex + 1)).toContainEqual(
-      expect.objectContaining({
-        method: "thread/read",
-        params: { threadId: NATIVE_THREAD, includeTurns: false },
-      }),
-    );
-  });
 
   it("preserves an explicit native rejection as an RPC error", async () => {
     const context = await setup({ write: "rejected" });
@@ -923,48 +919,43 @@ describe("Host client project move", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("rejects an ephemeral external Thread even when it has a persisted native identity", async () => {
-    const context = await setup();
-    const id = hostThreadIdSchema.parse(
-      await startExternalThread(context.fixture, "codexhost/pi-native", 1, {
-        cwd: context.cwd,
-        ephemeral: true,
-      }),
-    );
-    const before = await context.mappingStore.getThread(id);
-    expect(before).toMatchObject({
-      state: "ready",
-      ephemeral: true,
-      nativeSessionRef: { nativeSessionId: expect.any(String) },
-    });
-    await expect(move(context, id)).resolves.toHaveProperty("error");
-    expect(await context.mappingStore.getThread(id)).toEqual(before);
-    expect(nativeWrites(context)).toEqual([]);
-  });
-
-  it("rejects pinned external Threads and extra project-move fields", async () => {
-    const context = await setup();
-    const { fixture } = context;
-    const threadId = await startExternal(context);
-    const placements = await fixture.mappingStore.replaceSectionPlacements([
-      {
-        hostThreadId: threadId,
-        section: { id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null },
-        enteredAt: "2026-01-10T00:00:00.000Z",
-        beforeThreadId: null,
-      },
-    ]);
-    const before = await fixture.mappingStore.getThread(threadId);
-    await expect(move(context, threadId)).resolves.toHaveProperty("error");
-    await expect(
-      fixture.host.handleClientRequest(MOVE, {
-        threadId,
-        projectId: GUI_PROJECT,
-        daybreakEnabled: true,
-      }),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-    expect(await fixture.mappingStore.listSectionPlacements()).toEqual(placements);
-    expect(await fixture.mappingStore.getThread(threadId)).toEqual(before);
-    expect(nativeWrites(context)).toEqual([]);
-  });
+  it.each(["ephemeral", "pinned"] as const)(
+    "rejects a persisted %s external Thread without writing",
+    async (kind) => {
+      const context = await setup();
+      const { fixture, mappingStore } = context;
+      const ephemeral = kind === "ephemeral";
+      const threadId = await startExternal(context, ephemeral);
+      const placements =
+        kind === "pinned"
+          ? await mappingStore.replaceSectionPlacements([
+              {
+                hostThreadId: threadId,
+                section: { id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null },
+                enteredAt: "2026-01-10T00:00:00.000Z",
+                beforeThreadId: null,
+              },
+            ])
+          : await mappingStore.listSectionPlacements();
+      const before = await mappingStore.getThread(threadId);
+      expect(before).toMatchObject({
+        state: "ready",
+        nativeSessionRef: { nativeSessionId: expect.any(String) },
+        ...(ephemeral ? { ephemeral: true } : {}),
+      });
+      await expect(move(context, threadId)).resolves.toHaveProperty("error");
+      if (kind === "pinned") {
+        await expect(
+          fixture.host.handleClientRequest(MOVE, {
+            threadId,
+            projectId: GUI_PROJECT,
+            daybreakEnabled: true,
+          }),
+        ).resolves.toMatchObject({ error: { code: -32602 } });
+      }
+      expect(await mappingStore.listSectionPlacements()).toEqual(placements);
+      expect(await mappingStore.getThread(threadId)).toEqual(before);
+      expect(nativeWrites(context)).toEqual([]);
+    },
+  );
 });

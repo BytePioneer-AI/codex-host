@@ -112,29 +112,41 @@ Mac、Linux、Windows 收进同一侧栏，跨机互相派活、多节点一起�
 
 ## 下载与安装
 
-CodexHost 开源免费，支持 **macOS / Windows / Linux / Android / iOS (PWA)**。本机与局域网内的全部功能**无需注册账号**，也**不要求预先安装官方 Codex Desktop**。
+### 1. 安装包（推荐）
 
-- **客户端安装包（推荐）**：[**官网下载**](https://chost.dev/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest)（含桌面端、Android APK 与手机端指引；另见 [Linux 说明](../platforms/linux/linux.zh-CN.md)）
-  - Windows 也可用 WinGet 安装：`winget install --id BytePioneer-AI.CodexHost --exact`
-  - 安装包点图标即用，不自动注册终端 `codexhost` 命令；需要 CLI 请用下方 npm 安装。
+<table>
+<tr>
+<td width="50%" align="center">
 
-> [!IMPORTANT]
-> **macOS 首次打开提示「应用无法验证」**，在终端执行以下命令放行即可：
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/codexhost.app
-> ```
+[**官网下载（推荐） →**](https://chost.dev/download)<br /><sub>macOS · Windows · Linux · Android · iOS (PWA)</sub>
 
-### npm 安装
+</td>
+<td width="50%" align="center">
+
+[**GitHub Releases →**](https://github.com/BytePioneer-AI/codex-host/releases/latest)<br /><sub>全部版本安装包 · <a href="../platforms/linux/linux.zh-CN.md">Linux 说明</a></sub>
+
+</td>
+</tr>
+</table>
+
+Windows 也可用 WinGet 安装：`winget install --id BytePioneer-AI.CodexHost --exact`
+
+> [!NOTE]
+> **macOS 首次打开提示「应用无法验证」**：在终端执行 `xattr -dr com.apple.quarantine /Applications/codexhost.app` 放行即可。
+
+### 2. npm 安装（含全局 CLI）
 
 ```bash
-npm install -g @codexhost/cli   # 安装并注册全局 codexhost 命令（需 Node.js 22.19+ 或 24）
+npm install -g @codexhost/cli
+```
 
-codexhost          # 自动启动轻量独立客户端或官方 Codex Desktop 增强模式
-codexhost app      # 直接打开轻量 CodexHost 独立客户端
-codexhost web      # 启动本地 Web 端并在浏览器打开
-codexhost status   # 查看后台 Host 与服务状态
+```bash
+codexhost          # 启动桌面端（独立客户端或官方 Codex 增强模式）
+codexhost app      # 直接打开轻量独立客户端
+codexhost web      # 启动本地 Web 端
+codexhost status   # 查看服务状态
 codexhost update   # 升级到最新版本
-codexhost stop     # 停止全部后台服务（npm 覆盖安装前请先执行）
+codexhost stop     # 停止后台服务（npm 重装前先执行）
 ```
 
 <details>

@@ -112,29 +112,41 @@ Mac·Linux·Windows를 한 사이드바에 묶어 머신 간 작업을 위임하
 
 ## 다운로드 및 설치
 
-CodexHost는 **macOS / Windows / Linux / Android / iOS (PWA)**를 지원하는 무료 오픈소스입니다. 로컬 및 LAN 환경의 모든 기능은 **계정 등록 없이**, **공식 Codex Desktop 미설치 상태에서도** 바로 사용할 수 있습니다.
+### 1. 설치 파일 (권장)
 
-- **설치 파일 다운로드 (권장)**: [**공식 사이트 다운로드**](https://chost.dev/en/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest) _(데스크톱 앱, Android APK, 모바일 안내 포함 · [Linux 안내](../platforms/linux/linux.md))_
-  - Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
-  - 설치 파일은 앱 아이콘으로 바로 실행되며 `PATH`에 `codexhost`를 등록하지 않습니다. CLI가 필요하면 아래 npm으로 설치하세요.
+<table>
+<tr>
+<td width="50%" align="center">
 
-> [!IMPORTANT]
-> **macOS 최초 실행 시 「확인할 수 없는 앱」 경고가 표시될 때** 터미널에서 아래 명령어를 실행하세요:
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/codexhost.app
-> ```
+[**공식 사이트 다운로드 (권장) →**](https://chost.dev/en/download)<br /><sub>macOS · Windows · Linux · Android · iOS (PWA)</sub>
 
-### npm 설치
+</td>
+<td width="50%" align="center">
+
+[**GitHub Releases →**](https://github.com/BytePioneer-AI/codex-host/releases/latest)<br /><sub>전체 릴리스 패키지 · <a href="../platforms/linux/linux.md">Linux 안내</a></sub>
+
+</td>
+</tr>
+</table>
+
+Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
+
+> [!NOTE]
+> **macOS 최초 실행 시 「확인할 수 없는 앱」 경고가 뜰 때**: 터미널에서 `xattr -dr com.apple.quarantine /Applications/codexhost.app`를 실행하세요.
+
+### 2. npm 설치 (전역 CLI 포함)
 
 ```bash
-npm install -g @codexhost/cli   # 전역 codexhost CLI 설치 및 등록 (Node.js 22.19+ 또는 24 필요)
+npm install -g @codexhost/cli
+```
 
-codexhost          # 경량 독립 클라이언트 또는 공식 Codex Desktop 확장 모드 실행
-codexhost app      # 경량 CodexHost 독립 클라이언트 바로 실행
-codexhost web      # 로컬 Web UI 시작 후 브라우저에서 열기
-codexhost status   # 백그라운드 Host 및 서비스 상태 확인
+```bash
+codexhost          # 데스크톱 실행 (독립 앱 또는 공식 Codex 확장 모드)
+codexhost app      # 경량 독립 클라이언트 바로 실행
+codexhost web      # 로컬 Web UI 시작
+codexhost status   # 서비스 상태 확인
 codexhost update   # 최신 버전으로 업그레이드
-codexhost stop     # 모든 백그라운드 서비스 종료 (npm 재설치 전 실행)
+codexhost stop     # 백그라운드 서비스 종료 (npm 재설치 전 실행)
 ```
 
 <details>

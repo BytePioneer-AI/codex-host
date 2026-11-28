@@ -112,29 +112,41 @@ Reuses your local logins—no extra account or third-party proxy.
 
 ## Download & Install
 
-CodexHost is free and open source for **macOS / Windows / Linux / Android / iOS (PWA)**. Local and LAN features work **without an account** and **do not require official Codex Desktop**.
+### 1. Installers & Apps (Recommended)
 
-- **Installers & Apps (Recommended)**: [**Download from Website**](https://chost.dev/en/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest) _(Desktop installers, Android APK, and mobile setup; see also [Linux Guide](docs/platforms/linux/linux.md))_
-  - Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
-  - Installers launch from the app icon without adding `codexhost` to `PATH`; use npm below for global CLI commands.
+<table>
+<tr>
+<td width="50%" align="center">
 
-> [!IMPORTANT]
-> **macOS: "App can't be verified" on first launch** — run this in Terminal to clear quarantine:
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/codexhost.app
-> ```
+[**Download from Website (Recommended) →**](https://chost.dev/en/download)<br /><sub>macOS · Windows · Linux · Android · iOS (PWA)</sub>
 
-### npm
+</td>
+<td width="50%" align="center">
+
+[**GitHub Releases →**](https://github.com/BytePioneer-AI/codex-host/releases/latest)<br /><sub>All release binaries · <a href="docs/platforms/linux/linux.md">Linux Guide</a></sub>
+
+</td>
+</tr>
+</table>
+
+Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
+
+> [!NOTE]
+> **macOS "App can't be verified" on first launch**: run `xattr -dr com.apple.quarantine /Applications/codexhost.app` in Terminal.
+
+### 2. npm (Includes Global CLI)
 
 ```bash
-npm install -g @codexhost/cli   # Installs and registers the global codexhost CLI (Node.js 22.19+ or 24)
+npm install -g @codexhost/cli
+```
 
-codexhost          # Launch standalone CH Desktop or enhanced official Codex Desktop
-codexhost app      # Open the lightweight CodexHost standalone app directly
-codexhost web      # Start local Web UI and open in your browser
-codexhost status   # Inspect background Host and service status
+```bash
+codexhost          # Launch desktop (standalone app or enhanced official Codex Desktop)
+codexhost app      # Open the lightweight standalone app directly
+codexhost web      # Start local Web UI
+codexhost status   # Check service status
 codexhost update   # Upgrade to the latest release
-codexhost stop     # Stop all background services (run before npm reinstall)
+codexhost stop     # Stop background services (run before npm reinstall)
 ```
 
 <details>

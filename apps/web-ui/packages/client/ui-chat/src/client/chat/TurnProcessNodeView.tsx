@@ -71,12 +71,12 @@ export const TurnProcessNodeView = memo(function TurnProcessNodeView({
         onClick={(event) => {
           const button = event.currentTarget;
           const active = button.ownerDocument.activeElement;
-          const insideTurn =
+          const insideProcess =
             active instanceof Element &&
-            active !== button &&
-            active.closest("[data-chat-turn]")?.getAttribute("data-chat-turn") ===
-              String(node.data.turn);
-          if (open && insideTurn) {
+            active
+              .closest("[data-turn-process-member], [data-step-process]")
+              ?.getAttribute("data-chat-turn") === String(node.data.turn);
+          if (open && insideProcess) {
             if (event.detail !== 0 || pointerModality()) {
               focusWithoutRing(button, { preventScroll: true });
             } else {

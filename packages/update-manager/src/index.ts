@@ -22,14 +22,29 @@ export {
   expectedInstallerAssetName,
   fetchGitHubReleaseAnnouncement,
   fetchLatestGitHubRelease,
+  fetchLatestGitHubReleaseConditional,
   parseLatestGitHubRelease,
   selectInstallerReleaseArtifact,
   type CodexhostLatestRelease,
   type CodexhostReleaseAsset,
+  type ConditionalGitHubReleaseResult,
   type GitHubReleaseFetchOptions,
   type ReleaseTarget,
   type SelectedReleaseArtifact,
 } from "./github-release.js";
+export {
+  cleanupStagedUpdates,
+  parseStagedUpdateRecord,
+  readStagedUpdate,
+  stageArtifact,
+  stageNpm,
+  verifyStagedArtifact,
+  type CleanupStagedUpdatesOptions,
+  type StageArtifactOptions,
+  type StagedUpdateRecord,
+  type StageNpmOptions,
+  type VerifiedStagedArtifact,
+} from "./staging.js";
 export { parseReleaseAnnouncementMarkdown } from "./release-announcement.js";
 export {
   createNpmReleaseAvailability,

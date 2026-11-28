@@ -106,6 +106,42 @@ describe("console updates", () => {
     });
   });
 
+  it("reports ready staged state and cleans obsolete staged directories on check", async () => {
+    const { target, environment } = await npmLayout();
+    const stateDirectory = path.join(root, "state");
+    await mkdir(path.join(stateDirectory, "staged"), { recursive: true });
+    await writeFile(
+      path.join(stateDirectory, "staged", "staged-v1.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.1.0",
+        distribution: "npm",
+        target: "linux-x64",
+        stagedAt: 1_700_000_000,
+      }),
+    );
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory,
+      fetchLatest: async () => release,
+    });
+    await expect(updates.check(target)).resolves.toMatchObject({
+      latestVersion: "1.1.0",
+      stagedVersion: "1.1.0",
+      backgroundPhase: "ready",
+    });
+
+    // Once upgraded to 1.1.0, check() cleans obsolete staged metadata.
+    await updates.check({
+      ...target,
+      distribution: { ...target.distribution!, version: "1.1.0" },
+    });
+    await expect(
+      readFileSync.bind(null, path.join(stateDirectory, "staged", "staged-v1.json")),
+    ).toThrow();
+  });
+
   it("waits for an npm registry that has not synced the release", async () => {
     const { target, environment } = await npmLayout();
     npmRegistry.installable.mockImplementationOnce(async () => false);

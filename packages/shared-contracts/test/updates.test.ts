@@ -35,9 +35,92 @@ describe("update runtime contracts", () => {
       latestVersion: "1.2.3",
       updateAvailable: true,
     });
+    expect(
+      updateCheckResultSchema.parse({
+        currentVersion: "1.2.2",
+        installation: "macos-dmg",
+        latestVersion: "1.2.3",
+        updateAvailable: true,
+        installationAvailable: true,
+        releaseNotes: null,
+        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        status: null,
+        error: null,
+        stagedVersion: "1.2.3",
+        backgroundPhase: "ready",
+        backgroundDownload: null,
+        backgroundError: null,
+        runningTaskCount: 2,
+      }),
+    ).toMatchObject({
+      stagedVersion: "1.2.3",
+      backgroundPhase: "ready",
+      runningTaskCount: 2,
+    });
+    expect(
+      updateCheckResultSchema.parse({
+        currentVersion: "1.2.2",
+        installation: "macos-dmg",
+        latestVersion: "1.2.3",
+        updateAvailable: true,
+        installationAvailable: true,
+        releaseNotes: null,
+        releaseNotesUrl: null,
+        status: null,
+        error: null,
+        stagedVersion: null,
+        backgroundPhase: "downloading",
+        backgroundDownload: { downloadedBytes: 10, totalBytes: 100 },
+        backgroundError: null,
+        runningTaskCount: 0,
+      }),
+    ).toMatchObject({
+      backgroundPhase: "downloading",
+      backgroundDownload: { downloadedBytes: 10, totalBytes: 100 },
+    });
     expect(updateStartResultSchema.parse({ status })).toEqual({ status });
     expect(updateStatusResultSchema.parse({ status })).toEqual({ status });
     expect(updateStatusResultSchema.parse({ status: null })).toEqual({ status: null });
+  });
+
+  it("rejects invalid background staging fields and negative running task counts", () => {
+    const base = {
+      currentVersion: "1.2.2",
+      installation: "macos-dmg" as const,
+      latestVersion: "1.2.3",
+      updateAvailable: true,
+      installationAvailable: true,
+      releaseNotes: null,
+      releaseNotesUrl: null,
+      status: null,
+      error: null,
+    };
+    expect(
+      updateCheckResultSchema.safeParse({
+        ...base,
+        backgroundPhase: "downloading",
+        backgroundDownload: { downloadedBytes: 101, totalBytes: 100 },
+      }).success,
+    ).toBe(false);
+    expect(
+      updateCheckResultSchema.safeParse({
+        ...base,
+        backgroundPhase: "failed",
+        backgroundError: "x".repeat(501),
+      }).success,
+    ).toBe(false);
+    expect(
+      updateCheckResultSchema.safeParse({
+        ...base,
+        stagedVersion: "not-a-semver",
+      }).success,
+    ).toBe(false);
+    expect(
+      updateCheckResultSchema.safeParse({
+        ...base,
+        runningTaskCount: -1,
+      }).success,
+    ).toBe(false);
   });
 
   it("preserves optional service stop output without interpreting tasks", () => {

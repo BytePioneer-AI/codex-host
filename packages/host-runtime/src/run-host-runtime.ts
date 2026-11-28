@@ -401,14 +401,17 @@ export async function runHostRuntime(input: {
     prices: modelPrices,
     diagnose: (message) => process.stderr.write(`codexhost Host Runtime: ${message}\n`),
   });
-  const updateCoordinator =
-    input.updateCoordinator ??
-    (hostRuntimePath && hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
+  const ownedUpdateCoordinator =
+    !input.updateCoordinator &&
+    hostRuntimePath &&
+    hasLauncherManagedUpdateRuntime(input.environment, hostRuntimePath)
       ? createHostUpdateCoordinator({
           hostRuntimePath,
           environment: input.environment,
+          background: { enabled: true },
         })
-      : undefined);
+      : undefined;
+  const updateCoordinator = input.updateCoordinator ?? ownedUpdateCoordinator;
   const releaseAnnouncement = maintenanceRuntimePath
     ? new HostReleaseAnnouncement(maintenanceRuntimePath, input.environment)
     : undefined;
@@ -441,59 +444,124 @@ export async function runHostRuntime(input: {
     ? createHostConsoleOpener({ entrypoint: consoleEntry, environment: input.environment })
     : undefined;
 
-  if (!isRemoteUnixListenerInvocation(input.arguments)) {
-    const webOpener = createHostWebOpener(input.environment);
-    const remoteControlPlan = createRemoteControlAppServerPlan({
-      arguments: input.arguments,
-      environment: input.environment,
-      ...(hostRuntimePath ? { hostRuntimePath } : {}),
-    });
-    const environment = remoteControlPlan?.environment ?? input.environment;
-    return prepareDelegationRuntime({
-      environment,
-      ...(hostRuntimePath ? { hostRuntimePath } : {}),
-      createHost: async (delegationEnvironment, onDelegationApi, registry) => {
-        const official = await prepareLocalCodex({
-          stockCodexPath,
-          arguments: remoteControlPlan?.officialArguments ?? input.arguments,
-          environment: delegationEnvironment,
-          diagnosticOutput: process.stderr,
-        });
-        const shared = {
-          officialRuntimeScope: official.officialRuntimeScope,
-          accountControl: official.accountControl,
-        };
-        if (!remoteControlPlan) {
+  const runBody = async (): Promise<number> => {
+    if (!isRemoteUnixListenerInvocation(input.arguments)) {
+      const webOpener = createHostWebOpener(input.environment);
+      const remoteControlPlan = createRemoteControlAppServerPlan({
+        arguments: input.arguments,
+        environment: input.environment,
+        ...(hostRuntimePath ? { hostRuntimePath } : {}),
+      });
+      const environment = remoteControlPlan?.environment ?? input.environment;
+      return prepareDelegationRuntime({
+        environment,
+        ...(hostRuntimePath ? { hostRuntimePath } : {}),
+        createHost: async (delegationEnvironment, onDelegationApi, registry) => {
+          const official = await prepareLocalCodex({
+            stockCodexPath,
+            arguments: remoteControlPlan?.officialArguments ?? input.arguments,
+            environment: delegationEnvironment,
+            diagnosticOutput: process.stderr,
+          });
+          const shared = {
+            officialRuntimeScope: official.officialRuntimeScope,
+            accountControl: official.accountControl,
+          };
+          if (!remoteControlPlan) {
+            try {
+              const host = new AppServerHost({
+                ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+                modelPrices,
+                usageStatistics,
+                ...(process.platform !== "win32"
+                  ? {
+                      sharedThreads: new SharedThreadBridge({
+                        connect: () => connectSharedThreads(delegationEnvironment),
+                        delegateCreates: false,
+                        diagnose: (error) =>
+                          process.stderr.write(`codexhost shared Threads: ${String(error)}\n`),
+                      }),
+                    }
+                  : {}),
+                stockCodexPath,
+                arguments: input.arguments,
+                environment: delegationEnvironment,
+                ...shared,
+                ...installedHarnessPluginOptions(
+                  delegationEnvironment,
+                  false,
+                  input.hostRuntimeUrl,
+                ),
+                onDelegationApi,
+                ...announcementOptions,
+                ...(updateCoordinator ? { updateCoordinator } : {}),
+                ...(consoleOpener ? { consoleOpener } : {}),
+                ...(webOpener ? { webOpener } : {}),
+              });
+              void host.hostExtensions?.seedDefaultDesktopExtensions(
+                undefined,
+                delegationEnvironment,
+              );
+              return await runWithConsoleControl(
+                host,
+                consoleOpener !== undefined,
+                delegationEnvironment,
+                registry,
+              );
+            } finally {
+              productTelemetry.close();
+              await official.close();
+            }
+          }
+          const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
+          let listener: ReturnType<typeof createRemoteAppServerWebSocketListener> | undefined;
           try {
-            const host = new AppServerHost({
-              ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
-              modelPrices,
-              usageStatistics,
-              ...(process.platform !== "win32"
-                ? {
-                    sharedThreads: new SharedThreadBridge({
-                      connect: () => connectSharedThreads(delegationEnvironment),
-                      delegateCreates: false,
-                      diagnose: (error) =>
-                        process.stderr.write(`codexhost shared Threads: ${String(error)}\n`),
-                    }),
-                  }
-                : {}),
+            await mappingStore.initialize();
+            const common = {
               stockCodexPath,
-              arguments: input.arguments,
               environment: delegationEnvironment,
               ...shared,
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
-              onDelegationApi,
+              mappingStore,
+              closeMappingStoreOnExit: false,
               ...announcementOptions,
               ...(updateCoordinator ? { updateCoordinator } : {}),
               ...(consoleOpener ? { consoleOpener } : {}),
               ...(webOpener ? { webOpener } : {}),
+            };
+            const host = new AppServerHost({
+              ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+              modelPrices,
+              usageStatistics,
+              ...common,
+              arguments: input.arguments,
+              // Every Remote Control client shares this backend and Mapping Store.
+              onDelegationApi: (api) => registry.register(api, { harnessCatalog: true }),
             });
+            listener = createRemoteAppServerWebSocketListener({
+              socketPath: remoteControlPlan.pipePath,
+              diagnosticOutput: process.stderr,
+              createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
+                new AppServerHost({
+                  ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+                  modelPrices,
+                  usageStatistics,
+                  ...common,
+                  hostExtensions: host.hostExtensions,
+                  arguments: [],
+                  desktopInput,
+                  desktopOutput,
+                  diagnosticOutput,
+                  onDelegationApi: (api) => registry.register(api),
+                }),
+            });
+            await listener.listen();
+            await publishRemoteControlAppServerDescriptor(remoteControlPlan);
             void host.hostExtensions?.seedDefaultDesktopExtensions(
               undefined,
               delegationEnvironment,
             );
+            // Official failure/replacement must never close this listener or external Harnesses.
             return await runWithConsoleControl(
               host,
               consoleOpener !== undefined,
@@ -502,245 +570,196 @@ export async function runHostRuntime(input: {
             );
           } finally {
             productTelemetry.close();
-            await official.close();
+            try {
+              await listener?.close();
+            } finally {
+              try {
+                await official.close();
+              } finally {
+                await mappingStore.close();
+              }
+            }
           }
-        }
+        },
+      });
+    }
+
+    if (process.platform === "win32") {
+      throw new Error("Remote Unix app-server listener is unavailable on Windows");
+    }
+    const listenUrl = remoteUnixListenerUrl(input.arguments);
+    if (!listenUrl) throw new Error("Remote app-server listener URL is unavailable");
+    return prepareDelegationRuntime({
+      environment: input.environment,
+      ...(hostRuntimePath ? { hostRuntimePath } : {}),
+      createHost: async (delegationEnvironment, _onDelegationApi, registry) => {
+        const socketPath = remoteAppServerSocketPath(delegationEnvironment, listenUrl);
+        const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
+        const officialRuntimeScope = new OfficialRuntimeScope({
+          permanentHome: path.resolve(
+            delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
+          ),
+          diagnosticOutput: process.stderr,
+          // The listener outlives Desktop connections and Shim reuses it on
+          // reconnect, so a failed official generation must be replaced here.
+          recovery: {},
+          createBackend: () =>
+            delegationEnvironment.CODEXHOST_SSH_NATIVE_HOST === "shared"
+              ? sharedNativeBackend(sharedHostDataDirectory(delegationEnvironment))
+              : createOwnedUnixBackend({
+                  stockCodexPath,
+                  arguments: officialPlan.listenerArguments,
+                  socketPath: officialPlan.socketPath,
+                  environment: officialEnvironment(delegationEnvironment),
+                  diagnosticOutput: process.stderr,
+                }),
+        });
+        const accountControl = new SingleNativeCodexAccount(() => ({
+          version: 2,
+          currentAccountId: "remote-native",
+          phase: officialRuntimeScope.gate.phase,
+          revision: officialRuntimeScope.gate.revision,
+          accounts: [{ accountId: "remote-native", label: "Remote native Codex Account" }],
+        }));
         const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
-        let listener: ReturnType<typeof createRemoteAppServerWebSocketListener> | undefined;
-        try {
-          await mappingStore.initialize();
-          const common = {
-            stockCodexPath,
-            environment: delegationEnvironment,
-            ...shared,
-            ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
-            mappingStore,
-            closeMappingStoreOnExit: false,
-            ...announcementOptions,
-            ...(updateCoordinator ? { updateCoordinator } : {}),
-            ...(consoleOpener ? { consoleOpener } : {}),
-            ...(webOpener ? { webOpener } : {}),
-          };
-          const host = new AppServerHost({
-            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
-            modelPrices,
-            usageStatistics,
-            ...common,
-            arguments: input.arguments,
-            // Every Remote Control client shares this backend and Mapping Store.
-            onDelegationApi: (api) => registry.register(api, { harnessCatalog: true }),
-          });
-          listener = createRemoteAppServerWebSocketListener({
-            socketPath: remoteControlPlan.pipePath,
-            diagnosticOutput: process.stderr,
-            createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
-              new AppServerHost({
-                ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
-                modelPrices,
-                usageStatistics,
-                ...common,
-                hostExtensions: host.hostExtensions,
-                arguments: [],
-                desktopInput,
-                desktopOutput,
-                diagnosticOutput,
-                onDelegationApi: (api) => registry.register(api),
-              }),
-          });
-          await listener.listen();
-          await publishRemoteControlAppServerDescriptor(remoteControlPlan);
-          void host.hostExtensions?.seedDefaultDesktopExtensions(undefined, delegationEnvironment);
-          // Official failure/replacement must never close this listener or external Harnesses.
-          return await runWithConsoleControl(
-            host,
-            consoleOpener !== undefined,
+        await mappingStore.initialize();
+        const sharedOwner = new SharedThreadOwner();
+        let sharedDelegation: DelegationControlRegistration | undefined;
+        const externalHost = new AppServerHost({
+          ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+          modelPrices,
+          usageStatistics,
+          stockCodexPath,
+          arguments: [],
+          environment: delegationEnvironment,
+          desktopInput: sharedOwner.input,
+          desktopOutput: sharedOwner.output,
+          diagnosticOutput: process.stderr,
+          externalOnly: true,
+          ...announcementOptions,
+          sharedThreads: createRemoteSharedExternalBridge(
+            maintenanceRuntimePath,
             delegationEnvironment,
-            registry,
+            stockCodexPath,
+          ),
+          ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
+          mappingStore,
+          closeMappingStoreOnExit: false,
+          officialRuntimeScope,
+          accountControl,
+          onDelegationApi: (api) => {
+            sharedDelegation = api;
+            return registry.register(api, { harnessCatalog: true });
+          },
+        });
+        const externalRunning = externalHost.run();
+        const sharedListener = createRemoteAppServerWebSocketListener({
+          socketPath: sharedThreadSocketPath(delegationEnvironment),
+          diagnosticOutput: process.stderr,
+          createSession: (streams) => sharedOwner.createSession(streams),
+        });
+        const listener = createRemoteAppServerWebSocketListener({
+          socketPath,
+          diagnosticOutput: process.stderr,
+          createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
+            return new AppServerHost({
+              ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
+              modelPrices,
+              usageStatistics,
+              ...(sharedDelegation ? { sharedDelegation } : {}),
+              hostExtensions: externalHost.hostExtensions,
+              sharedThreads: new SharedThreadBridge({
+                connect: async () => sharedOwner.connect(),
+                delegateCreates: true,
+                diagnose: (error) =>
+                  diagnosticOutput.write(`codexhost shared Threads: ${String(error)}\n`),
+              }),
+              stockCodexPath,
+              arguments: [],
+              environment: delegationEnvironment,
+              desktopInput,
+              desktopOutput,
+              diagnosticOutput,
+              ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
+              mappingStore,
+              closeMappingStoreOnExit: false,
+              officialRuntimeScope,
+              accountControl,
+              onDelegationApi: (api) => registry.register(api),
+              ...announcementOptions,
+              ...(updateCoordinator ? { updateCoordinator } : {}),
+            });
+          },
+        });
+
+        const stop = (): void => {
+          void listener.close();
+        };
+        void externalRunning.then(stop, stop);
+        // Desktop's reconnect cleanup can kill the Shim supervisor and stock Codex
+        // while this retitled listener survives. An unsupervised listener must
+        // close normally and release its socket instead of lingering or crashing
+        // on its closed diagnostic pipes.
+        let supervisorLost = false;
+        const supervisor = watchRemoteListenerSupervisor({
+          onLost: (reason) => {
+            supervisorLost = true;
+            process.stderr.write(`codexhost: remote listener ${reason}; closing\n`);
+            stop();
+          },
+          // Shim always spawns this listener as its child, so an init parent at
+          // startup means the supervisor is already gone.
+          supervisorRequired: true,
+        });
+        try {
+          await prepareRemoteAppServerSocketDirectory(socketPath);
+          await prepareRemoteAppServerSocketDirectory(
+            sharedThreadSocketPath(delegationEnvironment),
           );
+          // Also covers a loss reported while the directory was being prepared.
+          if (supervisorLost) return 0;
+          // Native Codex failure never closes this listener: external Harness
+          // sessions stay alive while the Scope restarts the official generation.
+          await officialRuntimeScope.start().catch(() => {
+            officialRuntimeScope.gate.unavailable();
+          });
+          if (supervisorLost) return 0;
+          await listener.listen();
+          await sharedListener.listen();
+          process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
+          process.once("SIGINT", stop);
+          process.once("SIGTERM", stop);
+          await listener.closed;
+          return 0;
         } finally {
           productTelemetry.close();
+          supervisor.close();
+          process.removeListener("SIGINT", stop);
+          process.removeListener("SIGTERM", stop);
           try {
-            await listener?.close();
+            await listener.close();
           } finally {
             try {
-              await official.close();
+              await sharedListener.close();
+              externalHost.close();
+              sharedOwner.close();
+              await externalRunning;
+              sharedOwner.output.end();
             } finally {
-              await mappingStore.close();
+              try {
+                await officialRuntimeScope.close();
+              } finally {
+                await mappingStore.close();
+              }
             }
           }
         }
       },
     });
+  };
+  try {
+    return await runBody();
+  } finally {
+    ownedUpdateCoordinator?.dispose();
   }
-
-  if (process.platform === "win32") {
-    throw new Error("Remote Unix app-server listener is unavailable on Windows");
-  }
-  const listenUrl = remoteUnixListenerUrl(input.arguments);
-  if (!listenUrl) throw new Error("Remote app-server listener URL is unavailable");
-  return prepareDelegationRuntime({
-    environment: input.environment,
-    ...(hostRuntimePath ? { hostRuntimePath } : {}),
-    createHost: async (delegationEnvironment, _onDelegationApi, registry) => {
-      const socketPath = remoteAppServerSocketPath(delegationEnvironment, listenUrl);
-      const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
-      const officialRuntimeScope = new OfficialRuntimeScope({
-        permanentHome: path.resolve(
-          delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
-        ),
-        diagnosticOutput: process.stderr,
-        // The listener outlives Desktop connections and Shim reuses it on
-        // reconnect, so a failed official generation must be replaced here.
-        recovery: {},
-        createBackend: () =>
-          delegationEnvironment.CODEXHOST_SSH_NATIVE_HOST === "shared"
-            ? sharedNativeBackend(sharedHostDataDirectory(delegationEnvironment))
-            : createOwnedUnixBackend({
-                stockCodexPath,
-                arguments: officialPlan.listenerArguments,
-                socketPath: officialPlan.socketPath,
-                environment: officialEnvironment(delegationEnvironment),
-                diagnosticOutput: process.stderr,
-              }),
-      });
-      const accountControl = new SingleNativeCodexAccount(() => ({
-        version: 2,
-        currentAccountId: "remote-native",
-        phase: officialRuntimeScope.gate.phase,
-        revision: officialRuntimeScope.gate.revision,
-        accounts: [{ accountId: "remote-native", label: "Remote native Codex Account" }],
-      }));
-      const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
-      await mappingStore.initialize();
-      const sharedOwner = new SharedThreadOwner();
-      let sharedDelegation: DelegationControlRegistration | undefined;
-      const externalHost = new AppServerHost({
-        ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
-        modelPrices,
-        usageStatistics,
-        stockCodexPath,
-        arguments: [],
-        environment: delegationEnvironment,
-        desktopInput: sharedOwner.input,
-        desktopOutput: sharedOwner.output,
-        diagnosticOutput: process.stderr,
-        externalOnly: true,
-        ...announcementOptions,
-        sharedThreads: createRemoteSharedExternalBridge(
-          maintenanceRuntimePath,
-          delegationEnvironment,
-          stockCodexPath,
-        ),
-        ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
-        mappingStore,
-        closeMappingStoreOnExit: false,
-        officialRuntimeScope,
-        accountControl,
-        onDelegationApi: (api) => {
-          sharedDelegation = api;
-          return registry.register(api, { harnessCatalog: true });
-        },
-      });
-      const externalRunning = externalHost.run();
-      const sharedListener = createRemoteAppServerWebSocketListener({
-        socketPath: sharedThreadSocketPath(delegationEnvironment),
-        diagnosticOutput: process.stderr,
-        createSession: (streams) => sharedOwner.createSession(streams),
-      });
-      const listener = createRemoteAppServerWebSocketListener({
-        socketPath,
-        diagnosticOutput: process.stderr,
-        createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
-          return new AppServerHost({
-            ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
-            modelPrices,
-            usageStatistics,
-            ...(sharedDelegation ? { sharedDelegation } : {}),
-            hostExtensions: externalHost.hostExtensions,
-            sharedThreads: new SharedThreadBridge({
-              connect: async () => sharedOwner.connect(),
-              delegateCreates: true,
-              diagnose: (error) =>
-                diagnosticOutput.write(`codexhost shared Threads: ${String(error)}\n`),
-            }),
-            stockCodexPath,
-            arguments: [],
-            environment: delegationEnvironment,
-            desktopInput,
-            desktopOutput,
-            diagnosticOutput,
-            ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
-            mappingStore,
-            closeMappingStoreOnExit: false,
-            officialRuntimeScope,
-            accountControl,
-            onDelegationApi: (api) => registry.register(api),
-            ...announcementOptions,
-            ...(updateCoordinator ? { updateCoordinator } : {}),
-          });
-        },
-      });
-
-      const stop = (): void => {
-        void listener.close();
-      };
-      void externalRunning.then(stop, stop);
-      // Desktop's reconnect cleanup can kill the Shim supervisor and stock Codex
-      // while this retitled listener survives. An unsupervised listener must
-      // close normally and release its socket instead of lingering or crashing
-      // on its closed diagnostic pipes.
-      let supervisorLost = false;
-      const supervisor = watchRemoteListenerSupervisor({
-        onLost: (reason) => {
-          supervisorLost = true;
-          process.stderr.write(`codexhost: remote listener ${reason}; closing\n`);
-          stop();
-        },
-        // Shim always spawns this listener as its child, so an init parent at
-        // startup means the supervisor is already gone.
-        supervisorRequired: true,
-      });
-      try {
-        await prepareRemoteAppServerSocketDirectory(socketPath);
-        await prepareRemoteAppServerSocketDirectory(sharedThreadSocketPath(delegationEnvironment));
-        // Also covers a loss reported while the directory was being prepared.
-        if (supervisorLost) return 0;
-        // Native Codex failure never closes this listener: external Harness
-        // sessions stay alive while the Scope restarts the official generation.
-        await officialRuntimeScope.start().catch(() => {
-          officialRuntimeScope.gate.unavailable();
-        });
-        if (supervisorLost) return 0;
-        await listener.listen();
-        await sharedListener.listen();
-        process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
-        process.once("SIGINT", stop);
-        process.once("SIGTERM", stop);
-        await listener.closed;
-        return 0;
-      } finally {
-        productTelemetry.close();
-        supervisor.close();
-        process.removeListener("SIGINT", stop);
-        process.removeListener("SIGTERM", stop);
-        try {
-          await listener.close();
-        } finally {
-          try {
-            await sharedListener.close();
-            externalHost.close();
-            sharedOwner.close();
-            await externalRunning;
-            sharedOwner.output.end();
-          } finally {
-            try {
-              await officialRuntimeScope.close();
-            } finally {
-              await mappingStore.close();
-            }
-          }
-        }
-      }
-    },
-  });
 }

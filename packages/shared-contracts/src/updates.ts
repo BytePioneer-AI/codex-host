@@ -67,6 +67,18 @@ const githubReleaseNotesUrlSchema = z
     "release notes URL must identify a codexhost GitHub Release",
   );
 
+export const updateBackgroundPhaseSchema = z.enum(["idle", "downloading", "ready", "failed"]);
+
+export const updateBackgroundDownloadSchema = z
+  .strictObject({
+    downloadedBytes: z.number().int().nonnegative(),
+    totalBytes: z.number().int().positive(),
+  })
+  .refine((progress) => progress.downloadedBytes <= progress.totalBytes, {
+    path: ["downloadedBytes"],
+    message: "downloadedBytes must not exceed totalBytes",
+  });
+
 export const updateCheckResultSchema = z.strictObject({
   currentVersion: updateSemanticVersionSchema,
   installation: updateInstallationSchema.nullable(),
@@ -77,6 +89,11 @@ export const updateCheckResultSchema = z.strictObject({
   releaseNotesUrl: githubReleaseNotesUrlSchema.nullable(),
   status: updateStatusSchema.nullable(),
   error: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).nullable(),
+  stagedVersion: updateSemanticVersionSchema.nullable().optional(),
+  backgroundPhase: updateBackgroundPhaseSchema.optional(),
+  backgroundDownload: updateBackgroundDownloadSchema.nullable().optional(),
+  backgroundError: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).nullable().optional(),
+  runningTaskCount: z.number().int().nonnegative().optional(),
 });
 
 export const updateStartResultSchema = z.strictObject({
@@ -107,6 +124,8 @@ export const macosLocalSigningStatusSchema = z.strictObject({
 export type UpdateInstallation = z.infer<typeof updateInstallationSchema>;
 export type UpdatePhase = z.infer<typeof updatePhaseSchema>;
 export type UpdateStatus = z.infer<typeof updateStatusSchema>;
+export type UpdateBackgroundPhase = z.infer<typeof updateBackgroundPhaseSchema>;
+export type UpdateBackgroundDownload = z.infer<typeof updateBackgroundDownloadSchema>;
 export type UpdateCheckResult = z.infer<typeof updateCheckResultSchema>;
 export type UpdateStartResult = z.infer<typeof updateStartResultSchema>;
 export type UpdateStatusResult = z.infer<typeof updateStatusResultSchema>;

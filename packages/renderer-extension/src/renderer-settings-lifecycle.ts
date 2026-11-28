@@ -39,6 +39,7 @@ import {
 const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 const ANNOUNCEMENT_CHECK_TIMEOUT_MS = 20_000;
 const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
+const UPDATE_PERIODIC_REFRESH_MS = 15 * 60_000;
 const PLUGIN_PAGES_SYNC_INTERVAL_MS = 5_000;
 
 export interface RendererSettingsLifecycleOptions {
@@ -77,9 +78,11 @@ export function installRendererSettingsLifecycle(
   let checkedUpdateClient: RendererUpdateClient | null = null;
   let retryUpdateClient: RendererUpdateClient | null = null;
   let updateRetryTimer: number | null = null;
+  let updatePeriodicTimer: number | null = null;
   let updateRetryAttempt = 0;
   let updateCheckGeneration = 0;
   let updateAvailable = false;
+  let updateReadyVersion: string | null = null;
   let announcementChecked = false;
   let announcementShown = false;
   let activeAnnouncementDialog: ReleaseAnnouncementDialogHandle | null = null;
@@ -231,6 +234,7 @@ export function installRendererSettingsLifecycle(
       },
     });
     nextTrigger.setUpdateAvailable(updateAvailable);
+    nextTrigger.setUpdateReadyVersion?.(updateReadyVersion);
     shell = nextShell;
     pluginPages = nextPluginPages;
     trigger = nextTrigger;
@@ -290,10 +294,35 @@ export function installRendererSettingsLifecycle(
     updateRetryTimer = null;
   };
 
+  const clearUpdatePeriodicRefresh = (): void => {
+    if (updatePeriodicTimer === null) return;
+    ownerWindow.clearTimeout(updatePeriodicTimer);
+    updatePeriodicTimer = null;
+  };
+
+  const scheduleUpdatePeriodicRefresh = (client: RendererUpdateClient): void => {
+    clearUpdatePeriodicRefresh();
+    if (disposed) return;
+    updatePeriodicTimer = ownerWindow.setTimeout(() => {
+      updatePeriodicTimer = null;
+      if (disposed || options.getUpdateClient?.() !== client) return;
+      if (ownerWindow.document?.visibilityState === "hidden") {
+        scheduleUpdatePeriodicRefresh(client);
+        return;
+      }
+      checkedUpdateClient = null;
+      refreshUpdateIndicator();
+    }, UPDATE_PERIODIC_REFRESH_MS);
+  };
+
   const scheduleUpdateRetry = (client: RendererUpdateClient): void => {
     if (disposed || updateRetryTimer !== null) return;
     const delay = UPDATE_RETRY_DELAYS_MS[updateRetryAttempt];
-    if (delay === undefined) return;
+    if (delay === undefined) {
+      updateRetryAttempt = 0;
+      scheduleUpdatePeriodicRefresh(client);
+      return;
+    }
     checkedUpdateClient = null;
     updateRetryAttempt += 1;
     updateRetryTimer = ownerWindow.setTimeout(() => {
@@ -326,6 +355,7 @@ export function installRendererSettingsLifecycle(
     if (!client || checkedUpdateClient === client) return;
     if (retryUpdateClient !== client) {
       clearUpdateRetry();
+      clearUpdatePeriodicRefresh();
       retryUpdateClient = client;
       updateRetryAttempt = 0;
     } else if (updateRetryTimer !== null) {
@@ -337,13 +367,31 @@ export function installRendererSettingsLifecycle(
       .then((result) => {
         if (disposed || generation !== updateCheckGeneration) return;
         // A release the npm registry has not synced yet is offered once it can be installed.
+        // Background staging failures still alert the user that a newer version is available.
         updateAvailable =
           (result?.updateAvailable ?? false) &&
-          (result?.installationAvailable === true || result?.error != null);
+          (result?.installationAvailable === true ||
+            result?.error != null ||
+            result?.backgroundPhase === "failed");
+        updateReadyVersion =
+          updateAvailable &&
+          result?.stagedVersion &&
+          result.stagedVersion === result.latestVersion &&
+          result.backgroundPhase === "ready"
+            ? result.stagedVersion
+            : null;
         trigger?.setUpdateAvailable(updateAvailable);
-        if (result === null || result.error === null) {
+        trigger?.setUpdateReadyVersion?.(updateReadyVersion);
+        if (result === null) {
           updateRetryAttempt = 0;
           clearUpdateRetry();
+          clearUpdatePeriodicRefresh();
+          return;
+        }
+        if (result.error === null) {
+          updateRetryAttempt = 0;
+          clearUpdateRetry();
+          scheduleUpdatePeriodicRefresh(client);
           return;
         }
         scheduleUpdateRetry(client);
@@ -425,6 +473,7 @@ export function installRendererSettingsLifecycle(
       lifecycleController.abort();
       clearPluginPagesSync();
       clearUpdateRetry();
+      clearUpdatePeriodicRefresh();
       activeAnnouncementDialog?.dispose();
       activeAnnouncementDialog = null;
       trigger?.dispose();

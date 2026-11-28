@@ -105,17 +105,13 @@ async function sha256File(filePath: string): Promise<string> {
   return hash.digest("hex");
 }
 
-export async function verifyDownloadedArtifact(
+export async function verifyArtifactFile(
   source: ArtifactSource,
   filePath: string,
-  result: ArtifactDownloadResult,
-): Promise<void> {
+): Promise<number> {
   const metadata = await lstat(filePath);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size === 0) {
     throw new Error("downloaded update artifact is not a non-empty regular file");
-  }
-  if (metadata.size !== result.bytes) {
-    throw new Error("downloaded update artifact size changed after download");
   }
   if (source.size !== undefined && metadata.size !== source.size) {
     throw new Error(`update artifact size mismatch: expected ${source.size}, got ${metadata.size}`);
@@ -123,5 +119,17 @@ export async function verifyDownloadedArtifact(
   const actual = await sha256File(filePath);
   if (actual !== source.sha256) {
     throw new Error(`update artifact SHA-256 mismatch: expected ${source.sha256}, got ${actual}`);
+  }
+  return metadata.size;
+}
+
+export async function verifyDownloadedArtifact(
+  source: ArtifactSource,
+  filePath: string,
+  result: ArtifactDownloadResult,
+): Promise<void> {
+  const actualSize = await verifyArtifactFile(source, filePath);
+  if (actualSize !== result.bytes) {
+    throw new Error("downloaded update artifact size changed after download");
   }
 }

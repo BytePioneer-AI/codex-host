@@ -4314,7 +4314,12 @@ export class AppServerHost {
     }
     try {
       if (request.method === "codexhost/update/check") {
-        const result = updateCheckResultSchema.parse(await coordinator.check());
+        const checked = await coordinator.check();
+        const result = updateCheckResultSchema.parse({
+          ...checked,
+          releaseNotesUrl: checked.releaseNotesUrl || null,
+          runningTaskCount: checked.runningTaskCount ?? this.runningThreadIds().length,
+        });
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
         return;
       }

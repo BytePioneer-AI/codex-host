@@ -105,15 +105,37 @@ describe("GitHub Release update discovery", () => {
       async () =>
         new Response(JSON.stringify(release()), {
           status: 200,
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", etag: 'W/"rel-1"' },
         }),
     );
-    await expect(fetchLatestGitHubRelease({ fetch: fetchImpl })).resolves.toMatchObject({
-      version: "1.2.3",
-    });
+    const onEtag = vi.fn();
+    const first = await fetchLatestGitHubRelease({ fetch: fetchImpl, onEtag });
+    expect(first).toMatchObject({ version: "1.2.3" });
+    expect(onEtag).toHaveBeenCalledWith('W/"rel-1"');
     expect(fetchImpl).toHaveBeenCalledWith(
       CODEXHOST_LATEST_RELEASE_URL,
       expect.objectContaining({ redirect: "error" }),
+    );
+
+    const notModifiedFetch = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 304,
+          headers: { etag: 'W/"rel-1"' },
+        }),
+    );
+    await expect(
+      fetchLatestGitHubRelease({
+        fetch: notModifiedFetch,
+        etag: 'W/"rel-1"',
+        cachedRelease: first,
+      }),
+    ).resolves.toBe(first);
+    expect(notModifiedFetch).toHaveBeenCalledWith(
+      CODEXHOST_LATEST_RELEASE_URL,
+      expect.objectContaining({
+        headers: expect.objectContaining({ "if-none-match": 'W/"rel-1"' }),
+      }),
     );
   });
 

@@ -71,6 +71,7 @@ import {
 } from "./update-request.js";
 
 import { createRendererUpdateStatusPoll } from "./update-status-poll.js";
+import { confirmUpdateWithRunningTasks } from "./update-confirmation.js";
 import { describeUpdateFailure } from "./update-failure-messages.js";
 import { RendererRequestTransportError } from "../renderer-request-sender.js";
 
@@ -135,7 +136,7 @@ export interface RendererUpdateClient extends MacOsSigningClient {
 function panelIconName(view: string): RendererSettingsIconName {
   if (view === "failed" || view === "error") return "alert";
   if (view === "unavailable") return "unavailable";
-  if (view === "current") return "check";
+  if (view === "current" || view === "ready") return "check";
   return "updates";
 }
 
@@ -598,7 +599,47 @@ function updatesPage(
           );
           detail.textContent = `${percent}% · ${formatUpdateBytes(status.downloadedBytes)} / ${formatUpdateBytes(status.totalBytes)}`;
           panel.append(progress, detail);
+        } else if (status?.phase === "downloading" && status.npmDownload) {
+          const progress = document.createElement("progress");
+          progress.className = "settings-update-progress";
+          progress.max = status.npmDownload.total;
+          progress.value = Math.min(status.npmDownload.completed, status.npmDownload.total);
+          progress.setAttribute("aria-label", messages.updateDownloading);
+          const percent = Math.min(
+            100,
+            Math.round((status.npmDownload.completed / status.npmDownload.total) * 100),
+          );
+          const detail = document.createElement("span");
+          detail.className = "settings-update-progress-detail";
+          detail.textContent = messages.updateNpmDownloadProgress
+            .replace("{completed}", String(status.npmDownload.completed))
+            .replace("{total}", String(status.npmDownload.total))
+            .replace("{percent}", String(percent));
+          panel.append(progress, detail);
         }
+      };
+
+      let confirming = false;
+      const requestStart = (client: RendererUpdateClient, runningTaskCount: number): void => {
+        if (pending || confirming) return;
+        if (runningTaskCount > 0) {
+          confirming = true;
+          void confirmUpdateWithRunningTasks(
+            context.content,
+            messages,
+            context.signal,
+            runningTaskCount,
+          )
+            .then((confirmed) => {
+              confirming = false;
+              if (confirmed && !context.signal.aborted) start(client);
+            })
+            .catch(() => {
+              confirming = false;
+            });
+          return;
+        }
+        start(client);
       };
 
       const start = (client: RendererUpdateClient): void => {
@@ -663,7 +704,7 @@ function updatesPage(
             result.latestVersion,
           );
         }
-        if (result.releaseNotesUrl) releaseLink.href = result.releaseNotesUrl;
+        releaseLink.href = result.releaseNotesUrl || CODEXHOST_RELEASES_LATEST_URL;
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {
           renderPendingStatus(result.status, operationMessage ?? messages.updatePreparing);
@@ -674,14 +715,48 @@ function updatesPage(
           result.status?.phase === "failed" && result.status.version === result.latestVersion
             ? result.status
             : null;
-        const view = result.error ? "error" : result.updateAvailable ? "available" : "current";
+        const stagedReady =
+          !result.error &&
+          !actionableStatus &&
+          result.updateAvailable &&
+          result.installationAvailable &&
+          result.latestVersion !== null &&
+          result.stagedVersion === result.latestVersion &&
+          result.backgroundPhase === "ready";
+        const backgroundDownloading =
+          !result.error &&
+          !actionableStatus &&
+          result.updateAvailable &&
+          result.installationAvailable &&
+          result.backgroundPhase === "downloading";
+        const backgroundFailed =
+          !result.error &&
+          !actionableStatus &&
+          result.updateAvailable &&
+          result.backgroundPhase === "failed";
+        const runningTaskCount = result.runningTaskCount ?? 0;
+
+        const view = result.error
+          ? "error"
+          : backgroundFailed
+            ? "failed"
+            : stagedReady
+              ? "ready"
+              : backgroundDownloading
+                ? "downloading"
+                : result.updateAvailable
+                  ? "available"
+                  : "current";
         panel.dataset.updateState = view;
         panel.replaceChildren();
-        setManualFallback(Boolean(result.error) || actionableStatus !== null);
+        setManualFallback(Boolean(result.error) || actionableStatus !== null || backgroundFailed);
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
         const inlineUpdate =
           !result.error &&
           !actionableStatus &&
+          !backgroundFailed &&
+          !stagedReady &&
+          !backgroundDownloading &&
           !result.status?.serviceStopOutput &&
           result.updateAvailable &&
           result.installationAvailable;
@@ -695,20 +770,72 @@ function updatesPage(
               ? (statusMessage(actionableStatus, messages) ?? messages.updateFailed)
               : result.error
                 ? messages.updateFailed
-                : result.updateAvailable
-                  ? // Not installable without an error: the npm registry has not synced it yet.
-                    result.installationAvailable
-                    ? messages.updateAvailable
-                    : messages.updateWaitingForRegistry
-                  : messages.updateUpToDate,
+                : backgroundFailed
+                  ? messages.updateBackgroundFailedTitle.replace(
+                      "{version}",
+                      result.latestVersion ?? "",
+                    )
+                  : backgroundDownloading
+                    ? messages.updateBackgroundDownloading.replace(
+                        "{version}",
+                        result.latestVersion ?? "",
+                      )
+                    : result.updateAvailable
+                      ? // Not installable without an error: the npm registry has not synced it yet.
+                        result.installationAvailable
+                        ? messages.updateAvailable
+                        : messages.updateWaitingForRegistry
+                      : messages.updateUpToDate,
           ),
         );
         appendServiceStopOutput(result.status);
+        if (stagedReady && result.latestVersion) {
+          const summary = document.createElement("p");
+          summary.className = "settings-update-summary";
+          summary.textContent = messages.updateReadyDetail.replace(
+            "{version}",
+            result.latestVersion,
+          );
+          panel.append(summary);
+        }
+        if (backgroundDownloading && result.backgroundDownload) {
+          const progress = document.createElement("progress");
+          progress.className = "settings-update-progress";
+          progress.max = result.backgroundDownload.totalBytes;
+          progress.value = Math.min(
+            result.backgroundDownload.downloadedBytes,
+            result.backgroundDownload.totalBytes,
+          );
+          progress.setAttribute("aria-label", messages.updateDownloading);
+          const detail = document.createElement("span");
+          detail.className = "settings-update-progress-detail";
+          const percent = Math.min(
+            100,
+            Math.round(
+              (result.backgroundDownload.downloadedBytes / result.backgroundDownload.totalBytes) *
+                1000,
+            ) / 10,
+          );
+          detail.textContent = `${percent}% · ${formatUpdateBytes(result.backgroundDownload.downloadedBytes)} / ${formatUpdateBytes(result.backgroundDownload.totalBytes)}`;
+          panel.append(progress, detail);
+        }
         if (actionableStatus?.error) {
           const error = document.createElement("p");
           error.className = "settings-update-error";
           error.textContent = actionableStatus.error;
           panel.append(error);
+        }
+        if (backgroundFailed) {
+          if (result.backgroundError) {
+            const error = document.createElement("p");
+            error.className = "settings-update-error";
+            error.textContent = result.backgroundError;
+            panel.append(error);
+          }
+          const hint = document.createElement("p");
+          hint.className = "settings-update-summary";
+          hint.textContent = messages.updateBackgroundFailedHint;
+          panel.append(hint);
         }
         if (result.error) {
           const error = document.createElement("p");
@@ -717,12 +844,25 @@ function updatesPage(
           panel.append(error);
         }
         const buttons: HTMLElement[] = [];
-        if (result.updateAvailable && result.installationAvailable) {
+        if (backgroundFailed) {
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "settings-command-button";
+          retry.append(createRendererSettingsIcon("refresh", 16), messages.updateRetry);
+          retry.addEventListener("click", () => {
+            if (result.installationAvailable) requestStart(client, runningTaskCount);
+            else void load();
+          });
+          buttons.push(retry);
+        } else if (result.updateAvailable && result.installationAvailable) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";
-          update.append(createRendererSettingsIcon("updates", 16), messages.updateAndRestart);
-          update.addEventListener("click", () => start(client));
+          update.append(
+            createRendererSettingsIcon("updates", 16),
+            stagedReady ? messages.updateRestartToUpdate : messages.updateAndRestart,
+          );
+          update.addEventListener("click", () => requestStart(client, runningTaskCount));
           buttons.push(update);
         }
         if (result.error) {

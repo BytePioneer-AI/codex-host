@@ -140,11 +140,14 @@ export async function runSharedHostService(
         let delegation: DelegationControlRegistration | undefined;
         const installed = installedHarnessPluginOptions(hostEnvironment, false, runtimeUrl);
         const runtimePath = hostEnvironment.CODEXHOST_HOST_RUNTIME_PATH;
+        let runningTasksCount = (): number => 0;
         const updateCoordinator =
           runtimePath && hasLauncherManagedUpdateRuntime(hostEnvironment, runtimePath)
             ? createHostUpdateCoordinator({
                 hostRuntimePath: runtimePath,
                 environment: hostEnvironment,
+                runningTaskCount: () => runningTasksCount(),
+                background: { enabled: true },
               })
             : undefined;
         const releaseAnnouncement = new HostReleaseAnnouncement(
@@ -186,6 +189,8 @@ export async function runSharedHostService(
             return registry.register(api, { harnessCatalog: true });
           },
         });
+        runningTasksCount = () =>
+          new Set([host, ...desktops].flatMap((owner) => owner.runningThreadIds())).size;
         const running = host.run();
         let stopping = false;
         const stop = () => {
@@ -271,6 +276,7 @@ export async function runSharedHostService(
           return await running;
         } finally {
           productTelemetry.close();
+          updateCoordinator?.dispose();
           supervisor.close();
           process.removeListener("SIGTERM", stop);
           process.removeListener("SIGINT", stop);

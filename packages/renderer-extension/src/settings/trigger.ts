@@ -17,6 +17,7 @@ export interface RendererSettingsTriggerControl {
   root: HTMLElement;
   button: HTMLButtonElement;
   setUpdateAvailable(available: boolean): void;
+  setUpdateReadyVersion?(version: string | null): void;
   setSelected(selected: boolean): void;
   dispose(): void;
 }
@@ -25,6 +26,7 @@ export interface RendererSettingsRailTriggerControl {
   readonly root: HTMLElement | null;
   refresh(): boolean;
   setUpdateAvailable(available: boolean): void;
+  setUpdateReadyVersion?(version: string | null): void;
   setSelected(selected: boolean): void;
   dispose(): void;
 }
@@ -132,11 +134,15 @@ export function mountRendererSettingsTrigger(
   button.append(updateBadge);
 
   let updateAvailable = false;
+  let updateReadyVersion: string | null = null;
   const renderTitle = (): void => {
+    const suffix = updateReadyVersion
+      ? messages.updateReadyTooltip.replace("{version}", updateReadyVersion)
+      : messages.updateAvailable;
     button.title = !available
       ? messages.settingsUnavailableTitle
       : updateAvailable
-        ? `${messages.settingsButtonTitle} · ${messages.updateAvailable}`
+        ? `${messages.settingsButtonTitle} · ${suffix}`
         : messages.settingsButtonTitle;
   };
   renderTitle();
@@ -174,7 +180,13 @@ export function mountRendererSettingsTrigger(
     setUpdateAvailable(next) {
       updateAvailable = next;
       root.toggleAttribute("data-update-available", next);
+      root.toggleAttribute("data-update-ready", Boolean(next && updateReadyVersion));
       updateBadge.style.display = next ? "block" : "none";
+      renderTitle();
+    },
+    setUpdateReadyVersion(version) {
+      updateReadyVersion = version;
+      root.toggleAttribute("data-update-ready", Boolean(updateAvailable && version));
       renderTitle();
     },
     setSelected(next) {
@@ -201,6 +213,7 @@ export function installRendererSettingsRailTrigger(options: {
   const ownerDocument = options.ownerDocument ?? document;
   let trigger: RendererSettingsTriggerControl | null = null;
   let updateAvailable = false;
+  let updateReadyVersion: string | null = null;
   let selected = false;
   let disposed = false;
 
@@ -223,6 +236,7 @@ export function installRendererSettingsRailTrigger(options: {
         options.messages,
       );
       trigger.setUpdateAvailable(updateAvailable);
+      trigger.setUpdateReadyVersion?.(updateReadyVersion);
       trigger.setSelected(selected);
     }
     if (
@@ -243,6 +257,10 @@ export function installRendererSettingsRailTrigger(options: {
     setUpdateAvailable(available) {
       updateAvailable = available;
       trigger?.setUpdateAvailable(available);
+    },
+    setUpdateReadyVersion(version) {
+      updateReadyVersion = version;
+      trigger?.setUpdateReadyVersion?.(version);
     },
     setSelected(next) {
       selected = next;

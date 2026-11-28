@@ -357,6 +357,8 @@ export {
   UPDATE_ERROR_MAX_LENGTH,
   UPDATE_SEMVER_PATTERN,
   macosLocalSigningStatusSchema,
+  updateBackgroundDownloadSchema,
+  updateBackgroundPhaseSchema,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateInstallationSchema,
@@ -369,6 +371,8 @@ export {
 } from "./updates.js";
 export type {
   MacOsLocalSigningStatus,
+  UpdateBackgroundDownload,
+  UpdateBackgroundPhase,
   UpdateCheckResult,
   UpdateInstallation,
   UpdatePhase,

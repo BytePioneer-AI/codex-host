@@ -134,7 +134,7 @@ Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
 > [!NOTE]
 > **macOS 최초 실행 시 「확인할 수 없는 앱」 경고가 뜰 때**: 터미널에서 `xattr -dr com.apple.quarantine /Applications/codexhost.app`를 실행하세요.
 
-### 2. npm 설치 (전역 CLI 포함)
+### 2. npm 설치
 
 ```bash
 npm install -g @codexhost/cli

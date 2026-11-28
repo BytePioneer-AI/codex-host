@@ -134,7 +134,7 @@ Windows 也可用 WinGet 安装：`winget install --id BytePioneer-AI.CodexHost 
 > [!NOTE]
 > **macOS 首次打开提示「应用无法验证」**：在终端执行 `xattr -dr com.apple.quarantine /Applications/codexhost.app` 放行即可。
 
-### 2. npm 安装（含全局 CLI）
+### 2. npm 安装
 
 ```bash
 npm install -g @codexhost/cli

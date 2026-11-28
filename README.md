@@ -134,7 +134,7 @@ Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
 > [!NOTE]
 > **macOS "App can't be verified" on first launch**: run `xattr -dr com.apple.quarantine /Applications/codexhost.app` in Terminal.
 
-### 2. npm (Includes Global CLI)
+### 2. npm
 
 ```bash
 npm install -g @codexhost/cli

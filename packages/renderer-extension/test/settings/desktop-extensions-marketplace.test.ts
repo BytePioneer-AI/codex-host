@@ -974,4 +974,97 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
 
     mounted.dispose();
   });
+
+  it("toggles between Overview and Changelog tabs inside the detail modal action bar", async () => {
+    const withChangelog: HostExtensionCatalogEntry = {
+      ...CATALOG_TREE,
+      changelog: [
+        {
+          version: "0.2.0",
+          publishedAt: "2026-11-28T08:08:25Z",
+          notes: "- **上下文交接连线**：交接前后的会话自动并排相连。",
+          url: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.2.0",
+        },
+        {
+          version: "0.1.0",
+          publishedAt: "2026-11-20T08:00:00Z",
+          notes: "- Initial stable release.",
+        },
+      ],
+    };
+    const mounted = mountPage("zh-CN", () => ({
+      listHostExtensions: vi.fn(async () => sampleInstalledList()),
+      listHostExtensionCatalog: vi.fn(async () => ({
+        schemaVersion: 2 as const,
+        generatedAt: "2026-11-28T09:00:00Z",
+        catalogUrl: "https://example.com/catalog.v2.json",
+        fetchedAt: "2026-11-28T09:00:00Z",
+        cached: false,
+        extensions: [withChangelog, CATALOG_THEME],
+      })),
+    }));
+
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("极光配色"));
+    const treeCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
+    treeCard.dispatch("click");
+
+    const dialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const overviewTab = must(
+      descendants(dialog).find(
+        (el) => el.tagName === "button" && el.dataset.detailTab === "overview",
+      ),
+    );
+    const changelogTab = must(
+      descendants(dialog).find(
+        (el) => el.tagName === "button" && el.dataset.detailTab === "changelog",
+      ),
+    );
+    const overviewPanel = must(
+      descendants(dialog).find((el) =>
+        el.className.includes("settings-extensions-detail-modal__overview-panel"),
+      ),
+    );
+    const changelogPanel = must(
+      descendants(dialog).find((el) => el.className === "settings-extensions-changelog"),
+    );
+
+    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
+    expect(changelogTab.getAttribute("aria-selected")).toBe("false");
+    expect(overviewPanel.hidden).toBe(false);
+    expect(changelogPanel.hidden).toBe(true);
+    expect(
+      descendants(changelogTab).some((el) =>
+        el.className.includes("settings-extensions-detail-modal__view-tab-dot"),
+      ),
+    ).toBe(true);
+
+    changelogTab.dispatch("click");
+    expect(overviewPanel.hidden).toBe(true);
+    expect(changelogPanel.hidden).toBe(false);
+    expect(textOf(changelogPanel)).toContain("v0.2.0");
+    expect(textOf(changelogPanel)).toContain("新版本");
+    expect(textOf(changelogPanel)).toContain("上下文交接连线");
+    expect(textOf(changelogPanel)).toContain("当前版本");
+
+    // Switching back restores overview.
+    const overviewTabAfter = must(
+      descendants(dialog).find(
+        (el) => el.tagName === "button" && el.dataset.detailTab === "overview",
+      ),
+    );
+    overviewTabAfter.dispatch("click");
+    expect(overviewPanel.hidden).toBe(false);
+    expect(changelogPanel.hidden).toBe(true);
+
+    mounted.dispose();
+  });
 });

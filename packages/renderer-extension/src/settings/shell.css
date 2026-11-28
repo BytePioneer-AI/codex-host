@@ -4587,7 +4587,178 @@ dialog.settings-account-dialog.settings-extensions-detail-dialog::backdrop {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
+}
+
+.settings-extensions-detail-modal__action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-extensions-detail-modal__view-tabs {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 9px;
+  border: 1px solid var(--settings-border);
+  background: var(--settings-inset);
+  flex: none;
+}
+
+.settings-extensions-detail-modal__view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--settings-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.settings-extensions-detail-modal__view-tab:hover:not([aria-selected="true"]) {
+  color: var(--settings-text);
+}
+
+.settings-extensions-detail-modal__view-tab[aria-selected="true"] {
+  background: var(--settings-panel);
+  color: var(--settings-text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+.settings-extensions-detail-modal__view-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--settings-focus);
+  flex: none;
+}
+
+.settings-extensions-update-chip--interactive {
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.settings-extensions-update-chip--interactive:hover {
+  border-color: color-mix(in srgb, var(--settings-focus) 48%, transparent);
+  background: color-mix(in srgb, var(--settings-focus) 16%, transparent);
+}
+
+.settings-extensions-detail-modal__overview-panel {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.settings-extensions-detail-modal__overview-panel[hidden],
+.settings-extensions-changelog[hidden] {
+  display: none;
+}
+
+.settings-extensions-changelog {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-extensions-changelog__item {
+  display: grid;
+  gap: 10px;
+  padding: 13px 15px;
+  border-radius: 12px;
+  border: 1px solid var(--settings-border);
+  background: var(--settings-inset);
+  min-width: 0;
+}
+
+.settings-extensions-changelog__item[data-release-state="new"] {
+  border-color: color-mix(in srgb, var(--settings-focus) 30%, var(--settings-border));
+  background: color-mix(in srgb, var(--settings-focus) 4%, var(--settings-inset));
+}
+
+.settings-extensions-changelog__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.settings-extensions-changelog__meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.settings-extensions-changelog__version {
+  color: var(--settings-text);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-extensions-changelog__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--settings-border);
+  background: var(--settings-panel);
+  color: var(--settings-muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.settings-extensions-changelog__badge[data-tone="update"] {
+  color: var(--settings-focus);
+  font-weight: 600;
+  border-color: color-mix(in srgb, var(--settings-focus) 30%, transparent);
+  background: color-mix(in srgb, var(--settings-focus) 11%, transparent);
+}
+
+.settings-extensions-changelog__date {
+  color: var(--settings-subtle);
+  font-size: 11.5px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-extensions-changelog__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--settings-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.settings-extensions-changelog__link:hover {
+  color: var(--settings-focus);
 }
 
 .settings-extensions-detail-modal__action-bar input:disabled {

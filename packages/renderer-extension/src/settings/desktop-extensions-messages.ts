@@ -117,6 +117,12 @@ export interface DesktopExtensionsMessages {
   readonly authorBy: string;
   readonly githubRepository: string;
   readonly downloadsLabel: string;
+  readonly detailTabsLabel: string;
+  readonly detailTabOverview: string;
+  readonly detailTabChangelog: string;
+  readonly changelogNewBadge: string;
+  readonly changelogCurrentBadge: string;
+  readonly changelogViewRelease: string;
   readonly screenshotsTitle: string;
   readonly screenshotAlt: string;
   readonly screenshotPreviewLabel: string;
@@ -335,6 +341,12 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   authorBy: "By {author}",
   githubRepository: "GitHub",
   downloadsLabel: "Downloads: {count}",
+  detailTabsLabel: "Plugin detail views",
+  detailTabOverview: "Overview",
+  detailTabChangelog: "Changelog",
+  changelogNewBadge: "New",
+  changelogCurrentBadge: "Installed",
+  changelogViewRelease: "View release on GitHub",
   screenshotsTitle: "Screenshots",
   screenshotAlt: "{name} screenshot {index}",
   screenshotPreviewLabel: "Preview screenshot {index} of {total}",
@@ -568,6 +580,12 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   authorBy: "作者：{author}",
   githubRepository: "GitHub 仓库",
   downloadsLabel: "下载量：{count}",
+  detailTabsLabel: "插件详情视图",
+  detailTabOverview: "详情",
+  detailTabChangelog: "更新日志",
+  changelogNewBadge: "新版本",
+  changelogCurrentBadge: "当前版本",
+  changelogViewRelease: "在 GitHub 查看 Release",
   screenshotsTitle: "界面预览",
   screenshotAlt: "{name} 截图 {index}",
   screenshotPreviewLabel: "预览第 {index} 张截图（共 {total} 张）",

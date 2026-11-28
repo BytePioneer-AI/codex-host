@@ -1,7 +1,9 @@
 import {
+  compareExtensionVersions,
   resolveLocalizedExtensionText,
   type DesktopExtensionSettingField,
   type HostExtensionCatalogEntry,
+  type HostExtensionChangelogEntry,
   type HostExtensionListItem,
   type HostExtensionSettings,
   type JsonObject,
@@ -183,9 +185,11 @@ export function createDesktopExtensionDetailModal(options: {
   let dialog: HTMLDialogElement | null = null;
   let openExtensionId: string | null = null;
   let activeScreenshotIndex: number | null = null;
+  let activeTab: "overview" | "changelog" = "overview";
   let renderedIconKey = "";
   let renderedScreenshotsKey = "";
   let renderedDetailsKey = "";
+  let renderedChangelogKey = "";
   let renderedSettingsKey = "";
   let settingsLoadToken = 0;
   let screenshotsLoadToken = 0;
@@ -206,6 +210,8 @@ export function createDesktopExtensionDetailModal(options: {
   let modalToggle: HTMLInputElement | null = null;
   let feedbackBar: HTMLDivElement | null = null;
   let attentionBar: HTMLDivElement | null = null;
+  let overviewPanel: HTMLDivElement | null = null;
+  let changelogSection: HTMLElement | null = null;
   let settingsSection: HTMLElement | null = null;
   let descriptionSection: HTMLDivElement | null = null;
   let screenshotsSection: HTMLElement | null = null;
@@ -852,6 +858,24 @@ export function createDesktopExtensionDetailModal(options: {
     );
   };
 
+  const formatReleaseDate = (publishedAt: string | undefined): string | null => {
+    if (!publishedAt) return null;
+    const parsed = Date.parse(publishedAt);
+    if (!Number.isFinite(parsed)) return null;
+    return new Date(parsed).toISOString().slice(0, 10);
+  };
+
+  const resolveReleaseState = (
+    entry: HostExtensionChangelogEntry,
+    installedVersion: string | undefined,
+  ): "new" | "current" | "older" => {
+    if (!installedVersion) return "older";
+    const cmp = compareExtensionVersions(entry.version, installedVersion);
+    if (cmp > 0) return "new";
+    if (cmp === 0) return "current";
+    return "older";
+  };
+
   const renderActions = (
     extensionId: string,
     displayName: string,
@@ -1040,8 +1064,71 @@ export function createDesktopExtensionDetailModal(options: {
       }
     }
 
-    actionBar.hidden = nodes.length === 0;
-    actionBar.replaceChildren(...nodes);
+    const changelog = catalogEntry?.changelog ?? [];
+    const hasChangelog = changelog.length > 0;
+    const effectiveTab: "overview" | "changelog" = hasChangelog ? activeTab : "overview";
+    const barChildren: HTMLElement[] = [];
+    if (nodes.length > 0) {
+      const actionGroup = createEl(
+        document,
+        "div",
+        "settings-extensions-detail-modal__action-group",
+      );
+      actionGroup.append(...nodes);
+      barChildren.push(actionGroup);
+    }
+    if (hasChangelog) {
+      const tabList = createEl(document, "div", "settings-extensions-detail-modal__view-tabs");
+      tabList.setAttribute("role", "tablist");
+      tabList.setAttribute("aria-label", copy.detailTabsLabel);
+
+      const overviewTab = createEl(
+        document,
+        "button",
+        "settings-extensions-detail-modal__view-tab",
+        copy.detailTabOverview,
+      );
+      overviewTab.type = "button";
+      overviewTab.setAttribute("role", "tab");
+      overviewTab.setAttribute("aria-selected", String(effectiveTab === "overview"));
+      overviewTab.dataset.detailTab = "overview";
+      overviewTab.addEventListener("click", () => {
+        if (activeTab === "overview") return;
+        activeTab = "overview";
+        if (currentState) {
+          renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
+        }
+      });
+
+      const changelogTab = createEl(
+        document,
+        "button",
+        "settings-extensions-detail-modal__view-tab",
+      );
+      changelogTab.type = "button";
+      changelogTab.setAttribute("role", "tab");
+      changelogTab.setAttribute("aria-selected", String(effectiveTab === "changelog"));
+      changelogTab.dataset.detailTab = "changelog";
+      changelogTab.append(createEl(document, "span", "", copy.detailTabChangelog));
+      if (updateAvailable) {
+        const dot = createEl(document, "span", "settings-extensions-detail-modal__view-tab-dot");
+        dot.setAttribute("aria-hidden", "true");
+        changelogTab.append(dot);
+      }
+      changelogTab.addEventListener("click", () => {
+        if (activeTab === "changelog") return;
+        activeTab = "changelog";
+        if (currentState) {
+          renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
+        }
+      });
+
+      tabList.append(overviewTab, changelogTab);
+      barChildren.push(tabList);
+    }
+
+    actionBar.hidden = barChildren.length === 0;
+    actionBar.replaceChildren(...barChildren);
   };
 
   const renderContent = (
@@ -1143,14 +1230,39 @@ export function createDesktopExtensionDetailModal(options: {
       statusBadge.dataset.tone = statusTone(statusState);
       titleNodes.push(statusBadge);
     }
+    const changelog = catalogEntry?.changelog ?? [];
+    const hasChangelog = changelog.length > 0;
+    const effectiveTab: "overview" | "changelog" = hasChangelog ? activeTab : "overview";
+    if (!hasChangelog && activeTab !== "overview") {
+      activeTab = "overview";
+    }
     if (updateAvailable) {
-      const updateBadge = createEl(
-        document,
-        "span",
-        "settings-extensions-update-chip",
-        copy.updateAvailable,
-      );
-      titleNodes.push(updateBadge);
+      if (hasChangelog) {
+        const updateBadge = createEl(
+          document,
+          "button",
+          "settings-extensions-update-chip settings-extensions-update-chip--interactive",
+          copy.updateAvailable,
+        );
+        updateBadge.type = "button";
+        updateBadge.title = copy.detailTabChangelog;
+        updateBadge.addEventListener("click", () => {
+          if (activeTab === "changelog") return;
+          activeTab = "changelog";
+          if (currentState) {
+            renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
+          }
+        });
+        titleNodes.push(updateBadge);
+      } else {
+        const updateBadge = createEl(
+          document,
+          "span",
+          "settings-extensions-update-chip",
+          copy.updateAvailable,
+        );
+        titleNodes.push(updateBadge);
+      }
     }
     titleRow.replaceChildren(...titleNodes);
 
@@ -1357,6 +1469,81 @@ export function createDesktopExtensionDetailModal(options: {
 
     // Screenshots gallery + interactive large preview.
     renderScreenshots(extensionId, installed, catalogEntry, displayName);
+
+    // Versioned changelog panel (toggled cleanly via overviewPanel vs changelogSection).
+    if (overviewPanel && changelogSection) {
+      const showingChangelog = effectiveTab === "changelog" && hasChangelog;
+      overviewPanel.hidden = showingChangelog;
+      changelogSection.hidden = !showingChangelog;
+      const changelogKey = `${extensionId}\0${installedVersion ?? ""}\0${JSON.stringify(changelog)}`;
+      if (changelogKey !== renderedChangelogKey) {
+        renderedChangelogKey = changelogKey;
+        const cards: HTMLElement[] = [];
+        for (const entry of changelog) {
+          const releaseState = resolveReleaseState(entry, installedVersion);
+          const card = createEl(document, "article", "settings-extensions-changelog__item");
+          card.dataset.releaseState = releaseState;
+
+          const header = createEl(document, "header", "settings-extensions-changelog__header");
+          const meta = createEl(document, "div", "settings-extensions-changelog__meta");
+          meta.append(
+            createEl(
+              document,
+              "span",
+              "settings-extensions-changelog__version",
+              `v${entry.version.replace(/^v/u, "")}`,
+            ),
+          );
+          if (releaseState === "new") {
+            const badge = createEl(
+              document,
+              "span",
+              "settings-extensions-changelog__badge",
+              copy.changelogNewBadge,
+            );
+            badge.dataset.tone = "update";
+            meta.append(badge);
+          } else if (releaseState === "current") {
+            const badge = createEl(
+              document,
+              "span",
+              "settings-extensions-changelog__badge",
+              copy.changelogCurrentBadge,
+            );
+            badge.dataset.tone = "current";
+            meta.append(badge);
+          }
+          const dateLabel = formatReleaseDate(entry.publishedAt);
+          if (dateLabel) {
+            meta.append(
+              createEl(document, "time", "settings-extensions-changelog__date", dateLabel),
+            );
+          }
+          header.append(meta);
+
+          const releaseHref = parseSafeRepositoryUrl(entry.url);
+          if (releaseHref) {
+            const link = createEl(document, "a", "settings-extensions-changelog__link");
+            link.href = releaseHref;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.title = copy.changelogViewRelease;
+            link.append(
+              createEl(document, "span", "", "GitHub"),
+              createRendererSettingsIcon("external-link", 11),
+            );
+            header.append(link);
+          }
+
+          const body = createEl(document, "div", "settings-extensions-detail-modal__description");
+          body.append(...renderSafeMarkdown(document, entry.notes));
+
+          card.append(header, body);
+          cards.push(card);
+        }
+        changelogSection.replaceChildren(...cards);
+      }
+    }
   };
 
   const cleanup = (): void => {
@@ -1370,9 +1557,11 @@ export function createDesktopExtensionDetailModal(options: {
     dialog = null;
     openExtensionId = null;
     activeScreenshotIndex = null;
+    activeTab = "overview";
     renderedIconKey = "";
     renderedScreenshotsKey = "";
     renderedDetailsKey = "";
+    renderedChangelogKey = "";
     renderedSettingsKey = "";
     confirmingUninstall = false;
     currentItem = undefined;
@@ -1389,6 +1578,8 @@ export function createDesktopExtensionDetailModal(options: {
     modalToggle = null;
     feedbackBar = null;
     attentionBar = null;
+    overviewPanel = null;
+    changelogSection = null;
     settingsSection = null;
     descriptionSection = null;
     screenshotsSection = null;
@@ -1498,13 +1689,15 @@ export function createDesktopExtensionDetailModal(options: {
     galleryGrid = createEl(document, "div", "settings-extensions-detail-modal__gallery");
     screenshotsSection.append(screenshotsHeading, galleryGrid);
 
-    modalBody.append(
-      feedbackBar,
-      attentionBar,
-      settingsSection,
-      descriptionSection,
-      screenshotsSection,
-    );
+    overviewPanel = createEl(document, "div", "settings-extensions-detail-modal__overview-panel");
+    overviewPanel.append(settingsSection, descriptionSection, screenshotsSection);
+
+    changelogSection = createEl(document, "section", "settings-extensions-changelog");
+    changelogSection.setAttribute("role", "tabpanel");
+    changelogSection.setAttribute("aria-label", copy.detailTabChangelog);
+    changelogSection.hidden = true;
+
+    modalBody.append(feedbackBar, attentionBar, overviewPanel, changelogSection);
     surface.append(modalHeader, modalBody);
     modal.append(surface);
 
@@ -1562,9 +1755,11 @@ export function createDesktopExtensionDetailModal(options: {
       if (!installed && !catalogEntry) return;
       if (openExtensionId !== extensionId) {
         closeLightbox();
+        activeTab = "overview";
         renderedIconKey = "";
         renderedScreenshotsKey = "";
         renderedDetailsKey = "";
+        renderedChangelogKey = "";
         renderedSettingsKey = "";
         confirmingUninstall = false;
       }

@@ -445,7 +445,9 @@ export class AntigravitySession implements HarnessSession {
   currentPromptWindows(): AntigravityPromptWindow[] {
     const turn = this.#active;
     const activeWindow =
-      turn?.promptPhase === "submitted" && turn.submittedAtMs !== undefined
+      turn?.promptPhase === "submitted" &&
+      turn.submittedAtMs !== undefined &&
+      turn.returnedAtMs === undefined
         ? [{ submittedAtMs: turn.submittedAtMs, returnedAtMs: Number.POSITIVE_INFINITY }]
         : undefined;
     return mergePromptWindows(this.#promptWindows, activeWindow);
@@ -1573,11 +1575,10 @@ export class AntigravitySession implements HarnessSession {
           }
         }
       } finally {
-        recordPromptWindow();
+        responded();
       }
       if (hasLatestError || !result) throw latestError;
       if (turn.steered) mayWriteInput = true;
-      responded();
       const completedAtMs = Date.now();
       if (!this.#isCurrent(turn)) return;
       outcome =
@@ -2296,9 +2297,14 @@ export class AntigravityAdapter implements HarnessAdapter {
           if (value !== undefined) environment[key] = value;
         }
       }
+      const promptWindows = await readPromptWindows(
+        input.nativeRef.nativeSessionId,
+        environment,
+      ).catch(() => []);
       const { events } = await readNativeHistory(
         input.nativeRef.nativeSessionId,
         antigravityHome(environment),
+        { promptWindows },
       );
       const turns = projectReplayedEventsToTurns({
         nativeSessionId: input.nativeRef.nativeSessionId,

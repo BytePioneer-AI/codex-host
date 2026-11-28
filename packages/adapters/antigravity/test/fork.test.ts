@@ -316,23 +316,21 @@ describe("native SQLite Fork", () => {
     });
     expect(failed.ok).toBe(false);
     expect((await readdir(promptWindowsDirectory(f.options.adapterEnvironment))).sort()).toEqual(
-      [`${f.sourceRef.nativeSessionId}.json`, `${forkedId}.json`].sort(),
+      [`${f.sourceRef.nativeSessionId}.jsonl`, `${forkedId}.jsonl`].sort(),
     );
 
-    // If derived prompt-window persistence fails, Fork must fail and clean up derived files
-    // rather than returning a derived Session that splits on readSnapshot().
+    // Auxiliary prompt-window storage failures must degrade instead of blocking Fork, Rollback,
+    // or derived-file cleanup when openSession fails.
     const blockedEnv = {
       ...f.options.adapterEnvironment,
       CODEXHOST_DATA_DIR: path.join(f.home, "blocked-data"),
     };
     await mkdir(blockedEnv.CODEXHOST_DATA_DIR, { recursive: true });
     await writeFile(promptWindowsDirectory(blockedEnv), "not-a-directory");
-    const openBlocked = vi.fn();
-    const blocked = await forkAntigravitySession({
+    const degradedFork = await forkAntigravitySession({
       ...f.options,
       adapterEnvironment: blockedEnv,
       sourcePromptWindows: [turn0Window],
-      openSession: openBlocked,
       input: {
         kind: "fork",
         cwd: f.home,
@@ -340,11 +338,53 @@ describe("native SQLite Fork", () => {
         checkpoint: { ...f.sourceRef, checkpointId: "turn-0" },
       },
     });
-    expect(blocked).toMatchObject({ ok: false, error: { code: "nativeFailure" } });
-    expect(openBlocked).not.toHaveBeenCalled();
+    assert(degradedFork.ok && degradedFork.value.initialState.nativeRef);
+    const degradedForkId = degradedFork.value.initialState.nativeRef.nativeSessionId;
+
+    const degradedRollback = await rollbackAntigravityLastTurn({
+      ...f.options,
+      adapterEnvironment: blockedEnv,
+      sourcePromptWindows: [turn0Window],
+      input: {
+        kind: "rollbackLastTurn",
+        cwd: f.home,
+        sourceRef: degradedFork.value.initialState.nativeRef,
+      },
+    });
+    assert(degradedRollback.ok && degradedRollback.value.initialState.nativeRef);
+    const degradedRollbackId = degradedRollback.value.initialState.nativeRef.nativeSessionId;
+    expect(await readNativeTurnCount(nativeConversationDbPath(degradedRollbackId, f.home))).toBe(0);
+
+    const blockedOpenFail = await forkAntigravitySession({
+      ...f.options,
+      adapterEnvironment: blockedEnv,
+      sourcePromptWindows: [turn0Window],
+      openSession: vi.fn(async () => ({
+        ok: false as const,
+        error: { code: "authenticationRequired" as const, message: "Login", retryable: false },
+      })),
+      input: {
+        kind: "fork",
+        cwd: f.home,
+        sourceRef: f.sourceRef,
+        checkpoint: { ...f.sourceRef, checkpointId: "turn-0" },
+      },
+    });
+    expect(blockedOpenFail).toEqual({
+      ok: false,
+      error: { code: "authenticationRequired", message: "Login", retryable: false },
+    });
     expect(
       (await readdir(path.dirname(f.file))).filter((name) => name.endsWith(".db")).sort(),
-    ).toEqual([`${f.sourceRef.nativeSessionId}.db`, `${forkedId}.db`, `${rolledBackId}.db`].sort());
+    ).toEqual(
+      [
+        `${f.sourceRef.nativeSessionId}.db`,
+        `${forkedId}.db`,
+        `${rolledBackId}.db`,
+        `${degradedForkId}.db`,
+        `${degradedRollbackId}.db`,
+      ].sort(),
+    );
   });
 
   it("rejects an interleaved native cutoff instead of dropping a retained wake continuation", async () => {

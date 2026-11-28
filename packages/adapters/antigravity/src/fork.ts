@@ -402,7 +402,10 @@ export async function openDerivedAntigravitySession(
   const derivedId = randomUUID();
   let cloned = false;
   try {
-    const persistedPromptWindows = await readPromptWindows(sourceRef.nativeSessionId, environment);
+    const persistedPromptWindows = await readPromptWindows(
+      sourceRef.nativeSessionId,
+      environment,
+    ).catch(() => []);
     const resolveSourcePromptWindows = () =>
       mergePromptWindows(
         persistedPromptWindows,
@@ -427,7 +430,10 @@ export async function openDerivedAntigravitySession(
       retainedBounds.cutoff,
       retainedBounds.maxRetainedStepCreatedAtMs,
     );
-    if (inheritedWindows.length) await savePromptWindows(derivedId, inheritedWindows, environment);
+    if (inheritedWindows.length) {
+      // Auxiliary replay metadata must not block Fork or Rollback.
+      await savePromptWindows(derivedId, inheritedWindows, environment).catch(() => undefined);
+    }
     // Brain files have neither a snapshot nor a Turn boundary. Resume can load the SQLite prefix alone.
     if (fork?.activeTurnIndex === undefined)
       await copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedId, home);
@@ -474,7 +480,7 @@ export async function openDerivedAntigravitySession(
       removeDerivedDb(derivedId, home),
       rm(nativeBrainDirPath(derivedId, home), { recursive: true, force: true }),
       removeDerivedSummary(derivedId, home),
-      removePromptWindows(derivedId, environment),
+      removePromptWindows(derivedId, environment).catch(() => undefined),
     ]);
   }
 }

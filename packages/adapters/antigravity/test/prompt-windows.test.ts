@@ -1,66 +1,24 @@
 import assert from "node:assert/strict";
-import * as childProcess from "node:child_process";
-import { execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { link, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import * as fsPromises from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { promptWindowsPath, readPromptWindows, savePromptWindows } from "../src/prompt-windows.js";
-
-function currentProcessStartToken(): string {
-  if (process.platform === "linux") {
-    const statText = readFileSync(`/proc/${process.pid}/stat`, "utf8");
-    const fields = statText
-      .slice(statText.lastIndexOf(")") + 1)
-      .trim()
-      .split(/\s+/u);
-    if (fields[19] && /^\d+$/u.test(fields[19])) return `ticks${fields[19]}`;
-  }
-  if (process.platform === "darwin") {
-    const result = execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      env: { ...process.env, LC_ALL: "C" },
-      timeout: 1_000,
-    }).trim();
-    const startedAt = Date.parse(result);
-    if (Number.isFinite(startedAt)) return String(startedAt);
-  }
-  return String(Math.round(performance.timeOrigin));
-}
-
-function staleProcessStartToken(): string {
-  if (process.platform === "linux") return "ticks1";
-  const current = Number(currentProcessStartToken());
-  return String((Number.isFinite(current) ? current : Math.round(performance.timeOrigin)) - 60_000);
-}
-
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof childProcess>();
-  const { promisify: nodePromisify } = await import("node:util");
-  const actualPromisified = nodePromisify(actual.execFile);
-  const trackedExecFile = vi.fn(actual.execFile);
-  Object.defineProperty(trackedExecFile, nodePromisify.custom, {
-    value: (...args: Parameters<typeof actualPromisified>) => {
-      trackedExecFile.mock.calls.push(args as unknown as Parameters<typeof actual.execFile>);
-      return actualPromisified(...args);
-    },
-  });
-  return {
-    ...actual,
-    execFile: trackedExecFile,
-  };
-});
+import {
+  filterRetainedPromptWindows,
+  promptWindowsPath,
+  readPromptWindows,
+  removePromptWindows,
+  savePromptWindows,
+} from "../src/prompt-windows.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof fsPromises>();
   return {
     ...actual,
-    open: vi.fn(actual.open),
+    appendFile: vi.fn(actual.appendFile),
     readFile: vi.fn(actual.readFile),
     rm: vi.fn(actual.rm),
   };
@@ -69,8 +27,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const dirs: string[] = [];
 
 afterEach(async () => {
-  vi.mocked(childProcess.execFile).mockClear();
-  vi.mocked(fsPromises.open).mockRestore();
+  vi.mocked(fsPromises.appendFile).mockRestore();
   vi.mocked(fsPromises.readFile).mockRestore();
   vi.mocked(fsPromises.rm).mockRestore();
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -83,320 +40,179 @@ async function setupEnv() {
   return { dir, env };
 }
 
-describe("prompt-windows cross-process lock safety", () => {
-  it("never unlinks a newer live lock when a concurrent reclaimer inspects a dead lock", async () => {
+describe("prompt-windows append-only JSONL persistence", () => {
+  it("appends, deduplicates, sorts, and removes .jsonl prompt windows safely", async () => {
     const { env } = await setupEnv();
-    const sessionId = "reclaim-race";
+    const sessionId = "session-jsonl";
     const file = promptWindowsPath(sessionId, env);
-    const lockFile = `${file}.lock`;
-    await savePromptWindows(sessionId, [{ submittedAtMs: 0, returnedAtMs: 1 }], env);
-    // Seed a dead-PID lock file.
-    await writeFile(
-      lockFile,
-      JSON.stringify({ pid: 999_999_999, token: "dead-owner", createdAtMs: 1 }),
+    expect(path.basename(file)).toBe(`${sessionId}.jsonl`);
+
+    await savePromptWindows(
+      sessionId,
+      [
+        { submittedAtMs: 2_000, returnedAtMs: 2_500 },
+        { submittedAtMs: 1_000, returnedAtMs: Number.POSITIVE_INFINITY },
+        { submittedAtMs: 3_000, returnedAtMs: 2_900 },
+      ],
+      env,
+    );
+    await savePromptWindows(
+      sessionId,
+      [
+        { submittedAtMs: 1_000, returnedAtMs: 1_500 },
+        { submittedAtMs: 2_000, returnedAtMs: 2_500 },
+      ],
+      env,
     );
 
-    const actualReadFile = vi.mocked(fsPromises.readFile).getMockImplementation();
-    assert(actualReadFile);
-    let releaseRead!: () => void;
-    const paused = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    let hitStaleRead!: () => void;
-    const sawStaleRead = new Promise<void>((resolve) => {
-      hitStaleRead = resolve;
-    });
+    expect(await readPromptWindows(sessionId, env)).toEqual([
+      { submittedAtMs: 1_000, returnedAtMs: 1_500 },
+      { submittedAtMs: 2_000, returnedAtMs: 2_500 },
+    ]);
+    expect(await readdir(path.dirname(file))).toEqual([`${sessionId}.jsonl`]);
 
-    // Pause caller A right after reading the dead lock so caller B reclaims it and holds a new live lock.
-    let intercepted = false;
-    vi.mocked(fsPromises.readFile).mockImplementation(((
-      ...args: Parameters<typeof fsPromises.readFile>
-    ) => {
-      if (!intercepted && args[0] === lockFile) {
-        intercepted = true;
-        return (async () => {
-          const content = await actualReadFile(...args);
-          hitStaleRead();
-          await paused;
-          return content;
-        })() as ReturnType<typeof fsPromises.readFile>;
-      }
-      return actualReadFile(...args);
-    }) as typeof fsPromises.readFile);
+    await removePromptWindows(sessionId, env);
+    expect(await readPromptWindows(sessionId, env)).toEqual([]);
+    expect(await readdir(path.dirname(file))).toEqual([]);
+    await expect(removePromptWindows(sessionId, env)).resolves.toBeUndefined();
+  });
 
-    // Run caller A via a different session path? Same file would queue in-process via pendingWrites,
-    // so simulate another process holding the live lock after B reclaims it while A is paused.
-    const callerA = savePromptWindows(sessionId, [{ submittedAtMs: 10, returnedAtMs: 11 }], env);
-    await sawStaleRead;
-
-    // Simulate process B reclaiming the dead lock and acquiring its own live lock before A resumes.
-    await rm(lockFile);
-    const livePayload = JSON.stringify({
-      pid: process.pid,
-      token: "live-process-b",
-      createdAtMs: Date.now(),
-    });
-    await writeFile(lockFile, livePayload);
-
-    // Let A resume: A must NOT delete B's live lock (its claim snapshot sees livePayload !== dead-owner).
-    releaseRead();
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(await actualReadFile(lockFile, "utf8")).toBe(livePayload);
-
-    // Process B writes its window and releases its lock; A then acquires the lock and merges cleanly.
+  it("ignores malformed, truncated, and non-window lines while preserving valid JSONL entries", async () => {
+    const { env } = await setupEnv();
+    const sessionId = "corrupt-lines";
+    const file = promptWindowsPath(sessionId, env);
+    await mkdir(path.dirname(file), { recursive: true });
     await writeFile(
       file,
-      JSON.stringify({
-        version: 1,
-        windows: [
-          { submittedAtMs: 0, returnedAtMs: 1 },
-          { submittedAtMs: 20, returnedAtMs: 21 },
-        ],
-      }),
+      [
+        "",
+        '{"submittedAtMs":2000,"returnedAtMs":2500}\r',
+        '{"submittedAtMs":1500,"returnedAtMs":',
+        '{"submittedAtMs":-1,"returnedAtMs":100}',
+        '{"submittedAtMs":3000,"returnedAtMs":2000}',
+        '{"version":1,"windows":[{"submittedAtMs":1,"returnedAtMs":2}]}',
+        '{"submittedAtMs":1000,"returnedAtMs":1200}',
+        '{"submittedAtMs":2000,"returnedAtMs":2500}',
+      ].join("\n"),
+      "utf8",
     );
-    await rm(lockFile);
-    await callerA;
 
     expect(await readPromptWindows(sessionId, env)).toEqual([
-      { submittedAtMs: 0, returnedAtMs: 1 },
-      { submittedAtMs: 10, returnedAtMs: 11 },
-      { submittedAtMs: 20, returnedAtMs: 21 },
+      { submittedAtMs: 1_000, returnedAtMs: 1_200 },
+      { submittedAtMs: 2_000, returnedAtMs: 2_500 },
     ]);
-    expect(await readdir(path.dirname(file))).toEqual([`${sessionId}.json`]);
   });
 
-  it("never evicts a live lock owner even when the lock file mtime exceeds the stale threshold", async () => {
+  it("rejects invalid session IDs in promptWindowsPath and no-ops in persistence helpers", async () => {
     const { env } = await setupEnv();
-    const sessionId = "live-owner-aged";
+    expect(() => promptWindowsPath("../escape", env)).toThrow("Invalid native Session ID");
+    expect(await readPromptWindows("../escape", env)).toEqual([]);
+    await expect(
+      savePromptWindows("../escape", [{ submittedAtMs: 1, returnedAtMs: 2 }], env),
+    ).resolves.toBeUndefined();
+    await expect(removePromptWindows("../escape", env)).resolves.toBeUndefined();
+  });
+
+  it("preserves every window across concurrent multi-process appends with no lock artifacts", async () => {
+    const { env } = await setupEnv();
+    const sessionId = "concurrent-jsonl";
     const file = promptWindowsPath(sessionId, env);
-    const lockFile = `${file}.lock`;
-    await mkdir(path.dirname(file), { recursive: true });
-    const livePayload = JSON.stringify({
-      pid: process.pid,
-      token: "live-holder",
-      createdAtMs: Date.now() - 60_000,
-    });
-    await writeFile(lockFile, livePayload);
-    const oldDate = new Date(Date.now() - 60_000);
-    await utimes(lockFile, oldDate, oldDate);
+    const moduleUrl = pathToFileURL(
+      path.resolve(import.meta.dirname, "../src/prompt-windows.ts"),
+    ).href;
+    const expected = Array.from({ length: 6 }, (_, index) => ({
+      submittedAtMs: 1_000 + index * 100,
+      returnedAtMs: 1_050 + index * 100,
+    }));
 
-    await expect(
-      savePromptWindows(sessionId, [{ submittedAtMs: 10, returnedAtMs: 11 }], env, {
-        lockTimeoutMs: 80,
-      }),
-    ).rejects.toThrow("Timed out acquiring prompt windows lock");
-    expect(await fsPromises.readFile(lockFile, "utf8")).toBe(livePayload);
-    await rm(lockFile);
-  });
-
-  it("leaves no lock file on lock-payload write failure and surfaces lock-release EACCES", async () => {
-    const { env } = await setupEnv();
-    const sessionId = "fault-cleanup";
-    const file = promptWindowsPath(sessionId, env);
-    const lockFile = `${file}.lock`;
-
-    // 1. Inject EIO while writing the lock payload; no `.lock` or `.publish-*` file may remain.
-    const actualOpen = vi.mocked(fsPromises.open).getMockImplementation();
-    assert(actualOpen);
-    vi.mocked(fsPromises.open).mockImplementationOnce(async (...args) => {
-      const handle = await actualOpen(...args);
-      return Object.assign(Object.create(Object.getPrototypeOf(handle)), handle, {
-        writeFile: async () => {
-          throw Object.assign(new Error("disk I/O error"), { code: "EIO" });
-        },
-        close: () => handle.close(),
-      });
-    });
-    await expect(
-      savePromptWindows(sessionId, [{ submittedAtMs: 1, returnedAtMs: 2 }], env),
-    ).rejects.toMatchObject({ code: "EIO" });
-    expect(await readdir(path.dirname(file))).toEqual([]);
-
-    // 2. Inject EACCES while releasing `.lock`; savePromptWindows must reject instead of resolving,
-    // and once EACCES clears the next save must automatically release the leftover own-process lock.
-    const actualRm = vi.mocked(fsPromises.rm).getMockImplementation();
-    assert(actualRm);
-    vi.mocked(fsPromises.rm).mockImplementation(((...args: Parameters<typeof fsPromises.rm>) => {
-      if (args[0] === lockFile) {
-        return Promise.reject(Object.assign(new Error("permission denied"), { code: "EACCES" }));
-      }
-      return actualRm(...args);
-    }) as typeof fsPromises.rm);
-    await expect(
-      savePromptWindows(sessionId, [{ submittedAtMs: 1, returnedAtMs: 2 }], env),
-    ).rejects.toMatchObject({ code: "EACCES" });
-    vi.mocked(fsPromises.rm).mockImplementation(actualRm);
-    // Without manually removing lockFile, subsequent save must recover and merge both windows.
-    await savePromptWindows(sessionId, [{ submittedAtMs: 3, returnedAtMs: 4 }], env, {
-      lockTimeoutMs: 500,
-    });
-    expect(await readPromptWindows(sessionId, env)).toEqual([
-      { submittedAtMs: 1, returnedAtMs: 2 },
-      { submittedAtMs: 3, returnedAtMs: 4 },
-    ]);
-    expect(await readdir(path.dirname(file))).toEqual([`${sessionId}.json`]);
-  });
-
-  it.each(["publish", "claim"] as const)(
-    "reclaims a dead lock that still has an orphan .%s-<deadPid> hard link",
-    async (kind) => {
-      const { env } = await setupEnv();
-      const sessionId = `orphan-${kind}`;
-      const file = promptWindowsPath(sessionId, env);
-      const lockFile = `${file}.lock`;
-      await mkdir(path.dirname(file), { recursive: true });
-      await writeFile(
-        lockFile,
-        JSON.stringify({ pid: 999_999_999, token: "dead-owner", createdAtMs: 1 }),
-      );
-      await link(lockFile, `${lockFile}.${kind}-999999999-orphan`);
-      expect((await stat(lockFile)).nlink).toBe(2);
-
-      await savePromptWindows(sessionId, [{ submittedAtMs: 10, returnedAtMs: 20 }], env, {
-        lockTimeoutMs: 500,
-      });
-
-      expect(await readPromptWindows(sessionId, env)).toEqual([
-        { submittedAtMs: 10, returnedAtMs: 20 },
-      ]);
-      expect(await readdir(path.dirname(file))).toEqual([`${sessionId}.json`]);
-    },
-  );
-
-  it("never evicts a live lock or active live reclaimer when extra hard links exist", async () => {
-    const { env } = await setupEnv();
-
-    // 1. Live lock owner with an orphan sibling link must never be evicted.
-    const liveSessionId = "live-with-orphan";
-    const liveFile = promptWindowsPath(liveSessionId, env);
-    const liveLock = `${liveFile}.lock`;
-    await mkdir(path.dirname(liveFile), { recursive: true });
-    const livePayload = JSON.stringify({
-      pid: process.pid,
-      token: "live-owner",
-      createdAtMs: Date.now() - 60_000,
-    });
-    await writeFile(liveLock, livePayload);
-    await link(liveLock, `${liveLock}.publish-999999999-orphan`);
-    const oldDate = new Date(Date.now() - 60_000);
-    await utimes(liveLock, oldDate, oldDate);
-
-    await expect(
-      savePromptWindows(liveSessionId, [{ submittedAtMs: 1, returnedAtMs: 2 }], env, {
-        lockTimeoutMs: 80,
-      }),
-    ).rejects.toThrow("Timed out acquiring prompt windows lock");
-    expect(await fsPromises.readFile(liveLock, "utf8")).toBe(livePayload);
-    await rm(liveLock);
-    await rm(`${liveLock}.publish-999999999-orphan`);
-
-    // 2. Dead lock aged > STALE_LOCK_MS currently pinned by a live concurrent reclaimer's
-    // .claim-<livePid>-<liveStart> link must NEVER be unlinked even when aged past STALE_LOCK_MS.
-    const racingSessionId = "dead-with-live-claim";
-    const racingFile = promptWindowsPath(racingSessionId, env);
-    const racingLock = `${racingFile}.lock`;
-    const activeClaim = `${racingLock}.claim-${process.pid}-${currentProcessStartToken()}-active`;
-    await writeFile(
-      racingLock,
-      JSON.stringify({ pid: 999_999_999, token: "dead-owner", createdAtMs: 1 }),
+    await Promise.all(
+      expected.map(
+        (entry) =>
+          new Promise<void>((resolve, reject) => {
+            const child = spawn(
+              process.execPath,
+              [
+                "--import",
+                "tsx",
+                "--input-type=module",
+                "-e",
+                `import { savePromptWindows } from ${JSON.stringify(moduleUrl)};
+                 await savePromptWindows(${JSON.stringify(sessionId)}, [${JSON.stringify(entry)}], process.env);`,
+              ],
+              { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] },
+            );
+            let stderr = "";
+            child.stderr.on("data", (chunk: Buffer) => {
+              stderr += chunk.toString("utf8");
+            });
+            child.once("error", reject);
+            child.once("exit", (code) => {
+              if (code === 0) resolve();
+              else reject(new Error(`child exited (${String(code)}): ${stderr}`));
+            });
+          }),
+      ),
     );
-    await link(racingLock, activeClaim);
-    await utimes(racingLock, oldDate, oldDate);
 
-    await expect(
-      savePromptWindows(racingSessionId, [{ submittedAtMs: 1, returnedAtMs: 2 }], env, {
-        lockTimeoutMs: 80,
-      }),
-    ).rejects.toThrow("Timed out acquiring prompt windows lock");
-    expect((await stat(racingLock)).nlink).toBe(2);
-    expect((await stat(activeClaim)).ino).toBe((await stat(racingLock)).ino);
-    await rm(activeClaim);
-    await rm(racingLock);
-
-    // 3. Reused-PID orphan .claim-<livePid>-<staleStart> link IS reclaimed cleanly without deadlock.
-    const reusedSessionId = "dead-with-reused-pid-claim";
-    const reusedFile = promptWindowsPath(reusedSessionId, env);
-    const reusedLock = `${reusedFile}.lock`;
-    await writeFile(
-      reusedLock,
-      JSON.stringify({ pid: 999_999_999, token: "dead-owner", createdAtMs: 1 }),
-    );
-    await link(reusedLock, `${reusedLock}.claim-${process.pid}-${staleProcessStartToken()}-stale`);
-    await utimes(reusedLock, oldDate, oldDate);
-
-    await savePromptWindows(reusedSessionId, [{ submittedAtMs: 30, returnedAtMs: 40 }], env, {
-      lockTimeoutMs: 500,
-    });
-    expect(await readPromptWindows(reusedSessionId, env)).toEqual([
-      { submittedAtMs: 30, returnedAtMs: 40 },
-    ]);
-    expect(await readdir(path.dirname(reusedFile))).toEqual([`${reusedSessionId}.json`]);
+    expect(await readPromptWindows(sessionId, env)).toEqual(expected);
+    expect(await readdir(path.dirname(file))).toEqual([`${sessionId}.jsonl`]);
   });
 
-  it("recovers after own-process claim cleanup fails with EACCES during concurrent reclaim", async () => {
-    const { env } = await setupEnv();
-    const sessionId = "orphan-own-claim";
-    const file = promptWindowsPath(sessionId, env);
-    const lockFile = `${file}.lock`;
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(
-      lockFile,
-      JSON.stringify({ pid: 999_999_999, token: "dead-owner", createdAtMs: 1 }),
-    );
-    const externalClaim = `${lockFile}.claim-${process.pid}-${currentProcessStartToken()}-external`;
-    await link(lockFile, externalClaim);
-
-    const actualRm = vi.mocked(fsPromises.rm).getMockImplementation();
-    assert(actualRm);
-    vi.mocked(fsPromises.rm).mockImplementation(((...args: Parameters<typeof fsPromises.rm>) => {
-      const target = String(args[0]);
-      if (target.startsWith(`${lockFile}.claim-`) && target !== externalClaim) {
-        return Promise.reject(Object.assign(new Error("permission denied"), { code: "EACCES" }));
-      }
-      return actualRm(...args);
-    }) as typeof fsPromises.rm);
-
-    await expect(
-      savePromptWindows(sessionId, [{ submittedAtMs: 1, returnedAtMs: 2 }], env, {
-        lockTimeoutMs: 60,
-      }),
-    ).rejects.toThrow("Timed out acquiring prompt windows lock");
-
-    // Remove the external contender and clear EACCES; the previously orphaned own claim must be cleaned automatically.
-    vi.mocked(fsPromises.rm).mockImplementation(actualRm);
-    await rm(externalClaim);
-
-    await savePromptWindows(sessionId, [{ submittedAtMs: 5, returnedAtMs: 6 }], env, {
-      lockTimeoutMs: 500,
-    });
-    expect(await readPromptWindows(sessionId, env)).toEqual([
-      { submittedAtMs: 5, returnedAtMs: 6 },
+  it("filters retained windows strictly when cutoff has no step metadata timestamps", () => {
+    const windows = [
+      { submittedAtMs: 1_000, returnedAtMs: 1_500 },
+      { submittedAtMs: 2_000, returnedAtMs: 2_500 },
+      { submittedAtMs: 3_000, returnedAtMs: Number.POSITIVE_INFINITY },
+    ];
+    expect(filterRetainedPromptWindows(windows, undefined, undefined)).toEqual([
+      { submittedAtMs: 1_000, returnedAtMs: 1_500 },
+      { submittedAtMs: 2_000, returnedAtMs: 2_500 },
     ]);
-    expect(await readdir(path.dirname(file))).toEqual([`${sessionId}.json`]);
+    expect(filterRetainedPromptWindows(windows, 0, 5_000)).toEqual([]);
+    expect(filterRetainedPromptWindows(windows, 4, undefined)).toEqual([]);
+    expect(filterRetainedPromptWindows(windows, 4, 1_999)).toEqual([
+      { submittedAtMs: 1_000, returnedAtMs: 1_500 },
+    ]);
+    expect(filterRetainedPromptWindows(windows, 4, 2_000)).toEqual([
+      { submittedAtMs: 1_000, returnedAtMs: 1_500 },
+      { submittedAtMs: 2_000, returnedAtMs: 2_500 },
+    ]);
   });
 
-  it("retries transient Windows read errors and surfaces persistent read failures", async () => {
+  it("retries transient Windows read, append, and remove errors and surfaces persistent failures", async () => {
     const { env } = await setupEnv();
-    const sessionId = "win-read-retry";
+    const sessionId = "win-retry";
     const file = promptWindowsPath(sessionId, env);
-    await savePromptWindows(sessionId, [{ submittedAtMs: 1_000, returnedAtMs: 2_000 }], env);
 
     const originalPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const actualAppendFile = vi.mocked(fsPromises.appendFile).getMockImplementation();
     const actualReadFile = vi.mocked(fsPromises.readFile).getMockImplementation();
-    assert(actualReadFile);
+    const actualRm = vi.mocked(fsPromises.rm).getMockImplementation();
+    assert(actualAppendFile && actualReadFile && actualRm);
     try {
-      let failedOnce = false;
+      let appendFailedOnce = false;
+      vi.mocked(fsPromises.appendFile).mockImplementation(((
+        ...args: Parameters<typeof fsPromises.appendFile>
+      ) => {
+        if (!appendFailedOnce && args[0] === file) {
+          appendFailedOnce = true;
+          return Promise.reject(Object.assign(new Error("file busy"), { code: "EBUSY" }));
+        }
+        return actualAppendFile(...args);
+      }) as typeof fsPromises.appendFile);
+      await savePromptWindows(sessionId, [{ submittedAtMs: 1_000, returnedAtMs: 2_000 }], env);
+
+      let readFailedOnce = false;
       vi.mocked(fsPromises.readFile).mockImplementation(((
         ...args: Parameters<typeof fsPromises.readFile>
       ) => {
-        if (!failedOnce && args[0] === file) {
-          failedOnce = true;
+        if (!readFailedOnce && args[0] === file) {
+          readFailedOnce = true;
           return Promise.reject(Object.assign(new Error("file busy"), { code: "EBUSY" }));
         }
         return actualReadFile(...args);
       }) as typeof fsPromises.readFile);
-
       expect(await readPromptWindows(sessionId, env)).toEqual([
         { submittedAtMs: 1_000, returnedAtMs: 2_000 },
       ]);
@@ -409,120 +225,21 @@ describe("prompt-windows cross-process lock safety", () => {
         }
         return actualReadFile(...args);
       }) as typeof fsPromises.readFile);
-
       await expect(readPromptWindows(sessionId, env)).rejects.toMatchObject({ code: "EACCES" });
+
+      let rmFailedOnce = false;
+      vi.mocked(fsPromises.rm).mockImplementation(((...args: Parameters<typeof fsPromises.rm>) => {
+        if (!rmFailedOnce && args[0] === file) {
+          rmFailedOnce = true;
+          return Promise.reject(Object.assign(new Error("permission denied"), { code: "EPERM" }));
+        }
+        return actualRm(...args);
+      }) as typeof fsPromises.rm);
+      await removePromptWindows(sessionId, env);
+      vi.mocked(fsPromises.readFile).mockImplementation(actualReadFile);
+      expect(await readPromptWindows(sessionId, env)).toEqual([]);
     } finally {
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
     }
   });
-
-  it.skipIf(process.platform !== "darwin")(
-    "never evicts a live lock held by a process launched via shell exec after delay",
-    async () => {
-      const { env } = await setupEnv();
-      const sessionId = "shell-exec-owner";
-      const file = promptWindowsPath(sessionId, env);
-      const lockFile = `${file}.lock`;
-      const moduleUrl = pathToFileURL(
-        path.resolve(import.meta.dirname, "../src/prompt-windows.ts"),
-      ).href;
-
-      // Hold the real `.lock` created by `savePromptWindows` by placing a POSIX FIFO at `file`
-      // so the child blocks in `readFile(file)` after acquiring the lock with its own startId.
-      await mkdir(path.dirname(file), { recursive: true });
-      execFileSync("mkfifo", [file]);
-
-      // Sleep 6s in sh before exec'ing node so OS process creation time predates performance.timeOrigin by >5s.
-      const childScript = `
-        import { savePromptWindows } from ${JSON.stringify(moduleUrl)};
-        await savePromptWindows(${JSON.stringify(sessionId)}, [{ submittedAtMs: 1, returnedAtMs: 2 }], process.env);
-      `;
-      const child = spawn(
-        "/bin/sh",
-        [
-          "-c",
-          `sleep 6; exec "$0" --import tsx --input-type=module -e "$1"`,
-          process.execPath,
-          childScript,
-        ],
-        { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] },
-      );
-      try {
-        let stderr = "";
-        child.stderr.on("data", (chunk: Buffer) => {
-          stderr += chunk.toString("utf8");
-        });
-        const deadline = Date.now() + 12_000;
-        let lockBefore = "";
-        while (Date.now() < deadline) {
-          if (child.exitCode !== null) {
-            throw new Error(`child exited early (${child.exitCode}): ${stderr}`);
-          }
-          try {
-            lockBefore = await fsPromises.readFile(lockFile, "utf8");
-            if (lockBefore) break;
-          } catch {
-            // Lock file not created yet.
-          }
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-        expect(lockBefore).not.toBe("");
-        await expect(
-          savePromptWindows(sessionId, [{ submittedAtMs: 10, returnedAtMs: 20 }], env, {
-            lockTimeoutMs: 100,
-          }),
-        ).rejects.toThrow("Timed out acquiring prompt windows lock");
-        expect(await fsPromises.readFile(lockFile, "utf8")).toBe(lockBefore);
-      } finally {
-        child.kill("SIGKILL");
-        await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-      }
-    },
-    15_000,
-  );
-
-  it.skipIf(process.platform !== "darwin")(
-    "caches async OS process start queries across lock contention retries",
-    async () => {
-      const { env } = await setupEnv();
-      const sessionId = "cached-contender-query";
-      const file = promptWindowsPath(sessionId, env);
-      const lockFile = `${file}.lock`;
-      await mkdir(path.dirname(file), { recursive: true });
-      const parentPid = process.ppid;
-      // Warm self start cache before measuring contention queries for the external contender.
-      await savePromptWindows("warm-self-start", [{ submittedAtMs: 0, returnedAtMs: 1 }], env);
-      vi.mocked(childProcess.execFile).mockClear();
-
-      const parentStartId = String(
-        Date.parse(
-          execFileSync("/bin/ps", ["-p", String(parentPid), "-o", "lstart="], {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-            env: { ...process.env, LC_ALL: "C" },
-            timeout: 1_000,
-          }).trim(),
-        ),
-      );
-      await writeFile(
-        lockFile,
-        JSON.stringify({
-          pid: parentPid,
-          startId: parentStartId,
-          token: "external-parent-holder",
-          createdAtMs: Date.now(),
-        }),
-      );
-
-      await expect(
-        savePromptWindows(sessionId, [{ submittedAtMs: 1, returnedAtMs: 2 }], env, {
-          lockTimeoutMs: 120,
-        }),
-      ).rejects.toThrow("Timed out acquiring prompt windows lock");
-
-      // Multiple contention retries happen within 120ms, but OS process start should only be queried once.
-      expect(vi.mocked(childProcess.execFile).mock.calls.length).toBe(1);
-      await rm(lockFile);
-    },
-  );
 });

@@ -38,11 +38,8 @@ import {
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
 import * as nativeBoundaries from "../src/native-turn-boundaries.js";
-import {
-  promptWindowsDirectory,
-  promptWindowsPath,
-  readPromptWindows,
-} from "../src/prompt-windows.js";
+import * as promptWindowsStore from "../src/prompt-windows.js";
+const { promptWindowsDirectory, promptWindowsPath, readPromptWindows } = promptWindowsStore;
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
@@ -3993,6 +3990,111 @@ describe("Antigravity idle wake Turns", () => {
       } finally {
         await restarted.adapter.close();
       }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses persisted prompt windows in AntigravityAdapter.readSnapshot() and degrades when unreadable", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      const inPromptAtMs = Date.now();
+      stampStep(db, 0, inPromptAtMs);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stampStep(db, 2, inPromptAtMs);
+      answerStep(db, 3, "WAKE_RESULT", "in-prompt-wake");
+      stampStep(db, 3, inPromptAtMs);
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      await session.close();
+      await adapter.close();
+
+      const coldAdapter = fixture({ environment: env }).adapter;
+      try {
+        const merged = await coldAdapter.readSnapshot({ cwd: home, nativeRef });
+        assert(merged.ok);
+        expect(merged.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+        ]);
+        expect(merged.value.turns[0]?.items).toMatchObject([
+          { item: { type: "agentMessage", text: "hello there\n\nWAKE_RESULT" } },
+        ]);
+
+        const windowsFile = promptWindowsPath(nativeRef.nativeSessionId, env);
+        await rm(windowsFile, { recursive: true, force: true });
+        await mkdir(windowsFile, { recursive: true });
+
+        const degraded = await coldAdapter.readSnapshot({ cwd: home, nativeRef });
+        assert(degraded.ok);
+        expect(degraded.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+          "wake-2",
+        ]);
+      } finally {
+        await coldAdapter.close();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("closes the active prompt window and disables steering before awaiting persistence on prompt error", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, 1_000);
+      stampStep(db, 1, 1_050);
+      const nativeRef = required(session.initialState.nativeRef);
+      const saveGate = deferred<undefined>();
+      const actualSave = promptWindowsStore.savePromptWindows;
+      const saveSpy = vi
+        .spyOn(promptWindowsStore, "savePromptWindows")
+        .mockImplementation(async (...args) => {
+          await saveGate.promise;
+          return actualSave(...args);
+        });
+
+      now = 2_000;
+      transport.result.reject(new AntigravityTransportError("unavailable", "temporary failure"));
+      await vi.waitFor(() => expect(saveSpy).toHaveBeenCalledOnce());
+
+      expect((session as AntigravitySession).currentPromptWindows()).toEqual([
+        { submittedAtMs: 1_000, returnedAtMs: 2_000 },
+      ]);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "steer after failure" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+
+      now = 3_000;
+      systemStep(db, 2, "post-error-idle", "task_notification");
+      stampStep(db, 2, 3_000);
+      answerStep(db, 3, "IDLE_AFTER_ERROR", "post-error-idle");
+      stampStep(db, 3, 3_100);
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+        "wake-2",
+      ]);
+
+      saveGate.resolve(undefined);
+      await completed(outputs, "t1");
+      expect(
+        await readPromptWindows(nativeRef.nativeSessionId, { HOME: home, USERPROFILE: home }),
+      ).toEqual([{ submittedAtMs: 1_000, returnedAtMs: 2_000 }]);
+      await session.close();
+      await adapter.close();
     } finally {
       db.close();
     }

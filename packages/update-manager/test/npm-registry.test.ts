@@ -187,7 +187,8 @@ it("runs npm from its own directory with global config mode", async () => {
       );
       expect(result.code).toBe(0);
       const [cwd, ...npmArgs] = JSON.parse(result.stdout) as string[];
-      expect(await realpath(cwd!)).toBe(await realpath(bin));
+      expect(cwd).toBeDefined();
+      expect(await realpath(cwd ?? "")).toBe(await realpath(bin));
       expect(npmArgs).toEqual(["--global", ...args]);
     }
   } finally {

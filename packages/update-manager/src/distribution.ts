@@ -265,8 +265,12 @@ async function discoverNpmCliPath(
   });
 }
 
-async function windowsNpmPackageRoot(root: string): Promise<string> {
-  const ordinaryPath = root.replace(/^\\\\\?\\UNC\\/iu, "\\\\").replace(/^\\\\\?\\/u, "");
+function ordinaryWindowsPath(value: string): string {
+  return value.replace(/^\\\\\?\\UNC\\/iu, "\\\\").replace(/^\\\\\?\\(?=[a-z]:[\\/])/iu, "");
+}
+
+async function canonicalWindowsNpmPackageRoot(root: string): Promise<string> {
+  const ordinaryPath = ordinaryWindowsPath(root);
   const metadata = await lstat(ordinaryPath);
   if (metadata.isSymbolicLink()) {
     throw new Error("The npm platform package is a link or junction; update it manually with npm");
@@ -305,12 +309,15 @@ export async function resolveNpmRuntimePaths(
     UPDATE_RUNTIME_ENV.npmPackageRoot,
   );
   const windows = platform === "win32" && process.platform === "win32";
-  const packageRoot = windows ? await windowsNpmPackageRoot(resourcesRoot) : resourcesRoot;
-  const configuredRoot =
+  const ordinaryPackageRoot = windows ? ordinaryWindowsPath(resourcesRoot) : resourcesRoot;
+  const canonicalPackageRoot = windows
+    ? await canonicalWindowsNpmPackageRoot(resourcesRoot)
+    : resourcesRoot;
+  const canonicalConfiguredRoot =
     windows && explicitPackageRoot !== undefined
-      ? await windowsNpmPackageRoot(explicitPackageRoot)
+      ? await canonicalWindowsNpmPackageRoot(explicitPackageRoot)
       : explicitPackageRoot;
-  if (configuredRoot !== undefined && configuredRoot !== packageRoot) {
+  if (canonicalConfiguredRoot !== undefined && canonicalConfiguredRoot !== canonicalPackageRoot) {
     throw new Error("npm platform package root does not own the Host Runtime");
   }
   if (
@@ -323,9 +330,10 @@ export async function resolveNpmRuntimePaths(
       nodePath: explicitNodePath,
       npmCliPath: explicitNpmCliPath,
       npmLauncherPath: explicitLauncherPath,
-      packageRoot,
+      packageRoot: ordinaryPackageRoot,
     };
   }
+  const packageRoot = canonicalPackageRoot;
   const layout = npmPackageLayout(packageRoot);
   if (!layout) {
     if (explicitNodePath === undefined) {

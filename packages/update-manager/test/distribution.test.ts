@@ -454,7 +454,7 @@ it.skipIf(process.platform !== "win32")(
     ]);
     const options = { packageRoot, nodeExecutable, environment: { Path: tools } };
     for (const alias of [
-      packageRoot[0]!.toLowerCase() + packageRoot.slice(1),
+      packageRoot.slice(0, 1).toLowerCase() + packageRoot.slice(1),
       path.toNamespacedPath(packageRoot),
     ]) {
       await expect(
@@ -467,6 +467,20 @@ it.skipIf(process.platform !== "win32")(
         npmCliPath: await realpath(npmCli),
       });
     }
+    const explicit = {
+      [UPDATE_RUNTIME_ENV.npmNodePath]: nodeExecutable,
+      [UPDATE_RUNTIME_ENV.npmCliPath]: npmCli,
+      [UPDATE_RUNTIME_ENV.npmLauncherPath]: path.join(scope, "cli", "bin", "codexhost.js"),
+      [UPDATE_RUNTIME_ENV.npmPackageRoot]: packageRoot,
+    };
+    await expect(
+      resolveNpmRuntimePaths({
+        packageRoot,
+        environment: explicit,
+      }),
+    ).resolves.toMatchObject({
+      packageRoot,
+    });
     const linked = path.join(scope, "cli-win32-arm64");
     await symlink(packageRoot, linked, "junction");
     await expect(resolveNpmRuntimePaths({ ...options, packageRoot: linked })).rejects.toThrow(

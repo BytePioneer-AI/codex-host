@@ -308,12 +308,37 @@ fn desktop_shell_command(request: &UpdateRequest) -> Command {
 
 const SHELL_READY: &str = "desktop-shell-ready.json";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ShellInstance {
+    pid: u32,
+    started_at_micros: u64,
+}
+
 #[derive(Deserialize)]
 struct ShellOwner {
     pid: u32,
     started_at_micros: u64,
     executable: PathBuf,
     version: String,
+}
+
+impl ShellOwner {
+    fn instance(&self) -> ShellInstance {
+        ShellInstance {
+            pid: self.pid,
+            started_at_micros: self.started_at_micros,
+        }
+    }
+}
+
+fn is_new_shell_ready(
+    owner: &ShellOwner,
+    previous_shell: Option<ShellInstance>,
+    expected_version: Option<&str>,
+    recovery_exited: bool,
+) -> bool {
+    (Some(owner.instance()) != previous_shell || recovery_exited)
+        && expected_version.is_none_or(|version| owner.version == version)
 }
 
 fn shell_owner(request: &UpdateRequest) -> Result<Option<ShellOwner>, Box<dyn Error>> {
@@ -343,14 +368,14 @@ fn shell_owner(request: &UpdateRequest) -> Result<Option<ShellOwner>, Box<dyn Er
 
 pub(crate) fn current_desktop_shell(
     request: &UpdateRequest,
-) -> Result<Option<u32>, Box<dyn Error>> {
-    Ok(shell_owner(request)?.map(|owner| owner.pid))
+) -> Result<Option<ShellInstance>, Box<dyn Error>> {
+    Ok(shell_owner(request)?.map(|owner| owner.instance()))
 }
 
 pub(crate) fn relaunch_desktop_shell(
     request: &UpdateRequest,
     expected_version: Option<&str>,
-    previous_pid: Option<u32>,
+    previous_shell: Option<ShellInstance>,
     recovery: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut command = desktop_shell_command(request);
@@ -384,8 +409,12 @@ pub(crate) fn relaunch_desktop_shell(
             .into());
         }
         if let Some(owner) = shell_owner(request)?
-            && (Some(owner.pid) != previous_pid || recovery && child.try_wait()?.is_some())
-            && expected_version.is_none_or(|version| owner.version == version)
+            && is_new_shell_ready(
+                &owner,
+                previous_shell,
+                expected_version,
+                recovery && child.try_wait()?.is_some(),
+            )
         {
             return Ok(());
         }
@@ -760,5 +789,49 @@ mod tests {
         .unwrap();
         verify_available_services(&request).unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_shell_readiness_distinguishes_reused_pids_by_start_time() {
+        let previous = Some(ShellInstance {
+            pid: 4200,
+            started_at_micros: 1_000,
+        });
+        let same_instance = ShellOwner {
+            pid: 4200,
+            started_at_micros: 1_000,
+            executable: PathBuf::from("/fixture/bin/codexhost-shell"),
+            version: "1.2.3".into(),
+        };
+        let reused_pid = ShellOwner {
+            pid: 4200,
+            started_at_micros: 2_000,
+            executable: PathBuf::from("/fixture/bin/codexhost-shell"),
+            version: "1.2.3".into(),
+        };
+        assert!(!is_new_shell_ready(
+            &same_instance,
+            previous,
+            Some("1.2.3"),
+            false
+        ));
+        assert!(is_new_shell_ready(
+            &reused_pid,
+            previous,
+            Some("1.2.3"),
+            false
+        ));
+        assert!(!is_new_shell_ready(
+            &reused_pid,
+            previous,
+            Some("1.2.4"),
+            false
+        ));
+        assert!(is_new_shell_ready(
+            &same_instance,
+            previous,
+            Some("1.2.3"),
+            true
+        ));
     }
 }

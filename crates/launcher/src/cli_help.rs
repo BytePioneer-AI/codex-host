@@ -21,7 +21,10 @@ pub(crate) fn subcommand_usage(arguments: &[String]) -> Option<&'static str> {
              --custom-install is Windows-only.",
             Some(&["--json"]),
         ),
-        "app" => ("codexhost app [--onboarding]", Some(&["--onboarding"])),
+        "app" => (
+            "codexhost app [--onboarding]",
+            Some(&["--onboarding", "--update-recovery"]),
+        ),
         "stop" => (
             "codexhost stop [--node <absolute-file>] [--host-runtime <absolute-file>]\n    \
              [--web-runtime <absolute-file>]",

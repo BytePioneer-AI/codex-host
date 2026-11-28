@@ -54,10 +54,9 @@ pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn 
 }
 
 pub fn spawn_for_update(shell: &Path, data: &Path) -> Result<(), Box<dyn Error>> {
-    let mut child = spawn_command(shell, data, false)?
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+    // Keep the detached long-lived GUI shell on null stdio so it never retains
+    // the Updater's desktop-shell-restart.log handle across its lifetime.
+    let mut child = spawn_command(shell, data, false)?.spawn()?;
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         if let Some(status) = child.try_wait()? {

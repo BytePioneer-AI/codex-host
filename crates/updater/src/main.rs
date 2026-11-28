@@ -78,30 +78,30 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
     let mut service_stop_output = None;
     let mut stopping_started = false;
     let mut services_restored = false;
-    let mut old_shell_pid = None;
+    let mut old_shell = None;
     #[cfg(windows)]
     let mut windows = None;
     #[cfg(windows)]
     let mut installer_started = false;
     #[cfg(windows)]
     let mut installation_verified = false;
-    let mut previous_version = None;
+    let mut recovery_version = None;
     let result = (|| -> Result<(), Box<dyn Error>> {
         // A refusal before acknowledgement leaves the owner running.
         let npm_layout = install::preflight(&request)?;
         #[cfg(windows)]
         if let request::Installation::WindowsInstaller(installation) = &request.installation {
             let transaction = windows_install::WindowsUpdate::inspect(&request, installation)?;
-            previous_version = Some(transaction.previous_version.clone());
+            recovery_version = Some(transaction.previous_version.clone());
             windows = Some(transaction);
         }
         if matches!(request.installation, request::Installation::Npm(_)) {
-            previous_version =
+            recovery_version =
                 install::installed_version(&request.installation.resources_root(), "npm").ok();
         }
-        old_shell_pid = restart::current_desktop_shell(&request)?;
+        old_shell = restart::current_desktop_shell(&request)?;
         // A released Windows Launcher may not set this flag yet.
-        if cfg!(windows) && request.service_managed && old_shell_pid.is_some() {
+        if cfg!(windows) && request.service_managed && old_shell.is_some() {
             request.restart_desktop_shell = true;
         }
         wait_for_launcher_exit(&request)?;
@@ -114,6 +114,7 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
             installer_started = true;
         }
         install(&mut request, npm_layout.as_ref())?;
+        recovery_version = Some(request.version.clone());
         #[cfg(windows)]
         {
             installation_verified = true;
@@ -122,12 +123,7 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
         restart::restore(&request, Some(&request.version))?;
         services_restored = true;
         if request.restart_desktop_shell {
-            restart::relaunch_desktop_shell(
-                &request,
-                Some(&request.version),
-                old_shell_pid,
-                false,
-            )?;
+            restart::relaunch_desktop_shell(&request, Some(&request.version), old_shell, false)?;
         }
         write_status(&request, "succeeded", None, service_stop_output.as_deref())?;
         #[cfg(windows)]
@@ -167,7 +163,7 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
             _ => recover,
         };
         if recover {
-            match restart::restore(&request, previous_version.as_deref()) {
+            match restart::restore(&request, recovery_version.as_deref()) {
                 Ok(()) => {
                     message.push_str("; service recovery succeeded");
                     if request.restart_desktop_shell {
@@ -179,8 +175,8 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
                         );
                         if let Err(error) = restart::relaunch_desktop_shell(
                             &request,
-                            previous_version.as_deref(),
-                            old_shell_pid,
+                            recovery_version.as_deref(),
+                            old_shell,
                             true,
                         ) {
                             message.push_str(&format!("; desktop shell recovery failed: {error}"));

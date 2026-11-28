@@ -90,6 +90,9 @@ impl WindowsUpdate {
 
     pub(crate) fn rollback(&self) -> Result<(), Box<dyn Error>> {
         verify_installation(&self.backup, &self.previous_version, "installer")?;
+        if self.root.exists() {
+            crate::prepare_install::prepare(&self.root)?;
+        }
         match fs::symlink_metadata(&self.root) {
             Ok(_) => rename_with_retry(&self.root, &self.failed)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -112,16 +115,68 @@ impl WindowsUpdate {
 
     pub(crate) fn discard_backup(&self) {
         self.cleanup(&self.backup);
+        self.cleanup_stale_siblings();
+    }
+
+    fn cleanup_stale_siblings(&self) {
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let Some(parent) = self.root.parent() else {
+            return;
+        };
+        let Ok(entries) = fs::read_dir(parent) else {
+            return;
+        };
+        let current_pid = std::process::id();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(suffix) = name
+                .strip_prefix(".codexhost-backup-")
+                .or_else(|| name.strip_prefix(".codexhost-failed-"))
+            else {
+                continue;
+            };
+            let Some(owner_pid) = suffix
+                .split_once('-')
+                .and_then(|(pid, _)| pid.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if owner_pid != current_pid && codexhost_platform::process_exists(owner_pid) {
+                continue;
+            }
+            let path = entry.path();
+            if let Ok(metadata) = fs::symlink_metadata(&path)
+                && metadata.is_dir()
+                && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+            {
+                self.cleanup(&path);
+            }
+        }
     }
 
     fn cleanup(&self, path: &Path) {
-        if let Err(error) = fs::remove_dir_all(path)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            eprintln!(
-                "codexhost updater: could not clean up {}: {error}",
-                path.display()
-            );
+        let mut delays = [50, 100, 250, 500, 1000].into_iter();
+        loop {
+            match fs::remove_dir_all(path) {
+                Ok(()) => return,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+                Err(error) => {
+                    if matches!(error.raw_os_error(), Some(5 | 32 | 33 | 145))
+                        && let Some(delay) = delays.next()
+                    {
+                        thread::sleep(Duration::from_millis(delay));
+                        continue;
+                    }
+                    eprintln!(
+                        "codexhost updater: could not clean up {}: {error}",
+                        path.display()
+                    );
+                    return;
+                }
+            }
         }
     }
 }
@@ -209,6 +264,16 @@ mod tests {
         assert!(!root.join("new-only").exists());
         assert!(!backup.exists());
         assert!(!failed.exists());
+        let stale_backup = parent.join(".codexhost-backup-999999999-1");
+        let stale_failed = parent.join(".codexhost-failed-999999999-2");
+        let unrelated = parent.join("keep-me");
+        fs::create_dir(&stale_backup).unwrap();
+        fs::create_dir(&stale_failed).unwrap();
+        fs::create_dir(&unrelated).unwrap();
+        transaction.discard_backup();
+        assert!(!stale_backup.exists());
+        assert!(!stale_failed.exists());
+        assert!(unrelated.exists());
         fs::remove_dir_all(parent).unwrap();
     }
 }

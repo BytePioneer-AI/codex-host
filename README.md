@@ -14,10 +14,10 @@
   <a href="docs/project/README.ko.md">한국어</a>
 </p>
 
-<h2>Run every coding agent, as one workspace.</h2>
+<h2>Orchestrate every coding agent, right inside Codex.</h2>
 
 <p>
-  Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 15+ more coding agents in one workbench —<br />
+  Unify <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b>, and 19+ coding agents in one workbench —<br />
   ships with a standalone desktop app (no official Codex Desktop required), optionally enhances the official client, and syncs live across Web, Mobile, and remote machines.
 </p>
 

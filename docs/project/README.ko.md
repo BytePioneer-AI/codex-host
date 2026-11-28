@@ -14,7 +14,7 @@
   <strong>한국어</strong>
 </p>
 
-<h2>하나의 워크스페이스에서 모든 코딩 Agent를 지휘하세요.</h2>
+<h2>Codex 안에서 모든 코딩 Agent를 조율하세요.</h2>
 
 <p>
   <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b> 등 19개 이상의 코딩 Agent를 하나의 워크스페이스에 모았습니다.<br />
@@ -166,6 +166,8 @@ codexhost stop     # 백그라운드 서비스 종료 (npm 재설치 전 실행)
 
 ## 하나의 호스트, 세 가지 사용 방식
 
+단일 로컬 Host가 세션, 승인, 대기열, 확장의 유일한 진실 공급원으로 상시 동작하며 상황에 따라 가장 편한 클라이언트로 즉시 전환할 수 있습니다:
+
 <table>
 <tr>
 
@@ -241,6 +243,10 @@ Tauri 기반 경량 CodexHost 네이티브 앱으로 공식 Codex Desktop 없이
     <img src="../imgs/readme-diagram-teamwork-en-light.svg" alt="멀티 Agent 병렬 위임 및 무손실 인계 흐름" width="100%" />
   </picture>
 </p>
+
+> `#claude-code`에게 이번 변경 사항을 독립적으로 리뷰하고 호환성 리스크를 짚어달라고 요청하세요.  
+> `#grok`에게 이 모듈의 동시성 및 엣지 케이스 위험을 점검해 달라고 요청하세요.  
+> `#antigravity`에게 프론트엔드 화면과 사용 문서를 완성해 달라고 요청하세요.
 
 <p align="center">
   <picture>
@@ -318,6 +324,7 @@ Tauri 기반 경량 CodexHost 네이티브 앱으로 공식 Codex Desktop 없이
 
 <br />
 
+Peer Hub 외에도 공식 Codex Desktop 원격 채널을 재사용해 원격 머신의 Agent를 제어할 수 있습니다(양쪽 모두 동일한 버전의 CodexHost 필요):
 - **macOS / Linux (SSH 원격)**: 원격 호스트에서 `codexhost remote install && codexhost remote start` 실행 — [SSH 원격 가이드 →](../platforms/remote/remote-ssh-host.md)
 - **Windows (Remote Control · 실험적)**: 공식 Remote Control 인증을 재사용하며 공용 포트를 열지 않습니다 — [Remote Control 가이드 →](../platforms/remote/remote-control-host.md)
 

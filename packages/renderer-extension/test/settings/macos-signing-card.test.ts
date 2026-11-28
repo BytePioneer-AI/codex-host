@@ -96,7 +96,8 @@ describe("Updates page macOS local signing controls", () => {
 
     const enableButton = card?.querySelector("button");
     expect(enableButton?.textContent).toBe(messages.macosSigningEnableButton);
-    enableButton!.click();
+    if (!enableButton) throw new Error("Expected enable signing button");
+    enableButton.click();
     await flush();
 
     expect(client.setupMacOsSigning).toHaveBeenCalledOnce();
@@ -104,7 +105,8 @@ describe("Updates page macOS local signing controls", () => {
 
     const removeButton = card?.querySelector("button");
     expect(removeButton?.textContent).toBe(messages.macosSigningRemoveButton);
-    removeButton!.click();
+    if (!removeButton) throw new Error("Expected remove signing button");
+    removeButton.click();
     await flush();
 
     expect(client.removeMacOsSigning).toHaveBeenCalledOnce();

@@ -93,6 +93,7 @@ pub fn is_valid_sha1(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub fn parse_openssl_sha1_fingerprint(output: &str) -> Option<String> {
     let line = output
         .lines()
@@ -106,6 +107,7 @@ pub fn parse_openssl_sha1_fingerprint(output: &str) -> Option<String> {
     is_valid_sha1(&normalized).then_some(normalized)
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub fn parse_designated_certificate_leaf_sha1(output: &str) -> Option<String> {
     let marker = "certificate leaf = H\"";
     let start = output.find(marker)? + marker.len();
@@ -115,6 +117,7 @@ pub fn parse_designated_certificate_leaf_sha1(output: &str) -> Option<String> {
     is_valid_sha1(&candidate).then_some(candidate)
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub fn openssl_codesign_config(common_name: &str) -> String {
     let safe_cn = common_name.replace(['\r', '\n'], " ");
     format!(
@@ -134,6 +137,7 @@ pub fn openssl_codesign_config(common_name: &str) -> String {
 }
 
 /// Inner binaries and nested bundles to sign in dependency order before the app root.
+#[cfg(any(target_os = "macos", test))]
 pub fn macos_app_signing_targets(app_path: &Path) -> Vec<PathBuf> {
     let contents = app_path.join("Contents");
     let resources = contents.join("Resources");

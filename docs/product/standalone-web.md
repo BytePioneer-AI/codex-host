@@ -79,7 +79,7 @@ codexhost web --host 0.0.0.0 --port 4500
 codexhost stop
 ```
 
-`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。无参运行 `codexhost` 按 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 路由桌面入口：未安装官方 Codex Desktop 时优先启动原生桌面壳，两者均存在且尚未完成引导时弹出原生模式选择页，已选定官方 Desktop 时拉起官方界面并在后台准备 Web；无可用桌面壳时启动官方 Desktop 或回退打开会话 Web。`CODEXHOST_WEB_SERVICE=0` 禁用随官方 Desktop 自动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
+`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。无参运行 `codexhost` 按 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 路由桌面入口：未记住默认桌面入口且桌面壳可用时弹出原生模式选择页（默认不勾选「记住本次选择」，勾选后仅对两个桌面端生效，点击「Web 浏览器」不跳过选择页，后续可在系统托盘「默认启动方式」切换或恢复「每次启动时询问」）；已记住自有桌面窗口时直接打开原生桌面壳，已记住官方 Codex Desktop 时拉起官方界面并在后台准备 Web（官方缺失时自动回退原生桌面壳或 Web）；无可用桌面壳时启动官方 Desktop 或回退打开会话 Web。`CODEXHOST_WEB_SERVICE=0` 禁用随官方 Desktop 自动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
 
 首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy`、`--relay` 经 Web 处理后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。`--relay` 仅作为自建中转地址的开发覆盖，不改变官方中转卡片。本机连接设备页提供中转配置（无需重启）、首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
 

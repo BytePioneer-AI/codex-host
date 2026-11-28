@@ -459,15 +459,17 @@ async fn choose_surface(
     app: AppHandle,
     shell: State<'_, Shell>,
     surface: Surface,
+    remember: Option<bool>,
 ) -> Result<(), String> {
     if !matches!(shell.view.lock().unwrap().page, Page::Onboarding) {
         return Err("Launch surface can only be chosen on the onboarding page".into());
     }
+    let remember = remember.unwrap_or(false);
     launcher_action(shell.launcher.clone(), move |launcher| {
         if matches!(surface, Surface::CodexDesktop) && !launcher.codex_installed()? {
             return Err("Codex Desktop is not installed / 未安装官方 Codex Desktop".into());
         }
-        launcher.set_surface(surface)?;
+        launcher.set_surface(surface, remember)?;
         if matches!(surface, Surface::CodexDesktop) {
             launcher.launch_codex_desktop()?;
         }

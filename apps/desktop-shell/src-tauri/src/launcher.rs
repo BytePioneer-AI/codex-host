@@ -399,18 +399,19 @@ impl Launcher {
         result
     }
 
-    pub fn set_surface(&self, surface: Surface) -> Result<(), String> {
+    pub fn set_surface(&self, surface: Surface, remember: bool) -> Result<(), String> {
         let surface = match surface {
             Surface::NativeShell => "native-shell",
             Surface::CodexDesktop => "codex-desktop",
         };
+        let onboarding_completed = if remember { "true" } else { "false" };
         self.run(&[
             "launch-prefs",
             "set",
             "--surface",
             surface,
             "--onboarding-completed",
-            "true",
+            onboarding_completed,
         ])
     }
 }

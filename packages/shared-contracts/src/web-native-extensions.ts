@@ -5,13 +5,28 @@ import type {
 } from "./desktop-extensions.js";
 import type { JsonObject, JsonValue } from "./json-value.js";
 
-export const WEB_EXTENSION_REGIONS = ["app", "topbar", "sidebar", "conversation"] as const;
+export const WEB_EXTENSION_REGIONS = [
+  "app",
+  "topbar",
+  "sidebar",
+  "conversation",
+  "composer-dock",
+] as const;
 export type WebExtensionRegion = (typeof WEB_EXTENSION_REGIONS)[number];
 export type WebExtensionDispose = DesktopExtensionDispose;
 export type WebExtensionMount = {
   container: HTMLElement;
   dispose: () => void;
 };
+export interface WebExtensionActiveSession {
+  readonly id: string;
+  readonly title: string;
+  readonly cwd: string | null;
+  readonly workspaceId: string | null;
+  readonly isBlank: boolean;
+  readonly isRemote: boolean;
+  readonly running: boolean;
+}
 export type WebExtensionRender = (
   container: HTMLElement,
   signal: AbortSignal,
@@ -44,6 +59,12 @@ export interface WebExtensionApi {
     onChange(listener: (values: JsonObject) => void): () => void;
   };
   backend: { invoke(method: string, params?: JsonValue): Promise<JsonValue> };
+  session: {
+    /** Current main-view session snapshot, or null when no session is active or a global main panel is shown. */
+    getActive(): WebExtensionActiveSession | null;
+    /** Subscribe to main-view active-session changes without replaying the initial snapshot. */
+    onChange(listener: (session: WebExtensionActiveSession | null) => void): () => void;
+  };
   tabIcon?: { set(pngDataUrl: string | null): void };
   settings: { registerPage(page: WebExtensionContribution): () => void };
   panels: {

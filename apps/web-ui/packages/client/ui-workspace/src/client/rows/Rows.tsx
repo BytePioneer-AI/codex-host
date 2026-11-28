@@ -401,21 +401,6 @@ export function ProjectRowItem({
             </button>
           </Tooltip>
         )}
-        {pin && (
-          <Tooltip label={pinLabel} side="bottom" align="end" delayMs={500}>
-            <button
-              type="button"
-              className={clsx(css.iconButton, css.quickActions)}
-              aria-label={pinLabel}
-              onClick={(e) => {
-                e.stopPropagation();
-                pin.toggle();
-              }}
-            >
-              <PinIcon size={16} />
-            </button>
-          </Tooltip>
-        )}
       </span>
     </div>
   );

@@ -1091,7 +1091,6 @@
     pointer-events: auto;
   }
 
-  .projectRow .quickActions,
   .sessionRow .quickActions {
     display: none;
   }

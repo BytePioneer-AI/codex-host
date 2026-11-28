@@ -634,7 +634,7 @@ Web 侧栏与空会话主视觉共用 `ui-brand-official` 提供的原版“抱�
 
 ### 置顶与 Desktop 同步
 
-Web 的「按工作区」和「工作区树」视图支持置顶本机与远程工作区，可从工作区行的图钉按钮或「…」菜单操作（触屏使用菜单）。本机项目在刷新目录时只读同步 Codex Desktop 全局状态中的 `pinned-project-ids`（绝不改写 `.codex-global-state.json`）；在 Web 侧置顶或取消置顶工作区时，将带官方状态锚点的覆盖记录保存在本机 Web 数据目录的 `workspaces.json` 中，同一 Host 的多浏览器与独立桌面窗口通过 `workspace/follow` 实时共享，纯 Web 工作区与远程工作区同样持久化生效。若本机项目在 Web 置顶后 Desktop 随后也将其置顶（或双方都取消置顶），刷新对账发现官方状态已与目标一致时会自动清除该覆盖条目，只按官方置顶显示一次且不重复，后续 Desktop 再次变更即可自然同步。置顶工作区显示在「置顶」区的置顶会话下方（最近在 Web 置顶的排在前面，其余保持 Desktop 置顶顺序）；工作区继续显示其会话，树形视图中的子工作区随父工作区一起移动，搜索命中已置顶工作区时自动展开「置顶」区；取消置顶后按原有顺序回到工作区列表、父工作区或自定义分区。
+Web 的「按工作区」和「工作区树」视图支持置顶本机与远程工作区，可从工作区行的「…」或右键菜单操作。本机项目在刷新目录时只读同步 Codex Desktop 全局状态中的 `pinned-project-ids`（绝不改写 `.codex-global-state.json`）；在 Web 侧置顶或取消置顶工作区时，将带官方状态锚点的覆盖记录保存在本机 Web 数据目录的 `workspaces.json` 中，同一 Host 的多浏览器与独立桌面窗口通过 `workspace/follow` 实时共享，纯 Web 工作区与远程工作区同样持久化生效。若本机项目在 Web 置顶后 Desktop 随后也将其置顶（或双方都取消置顶），刷新对账发现官方状态已与目标一致时会自动清除该覆盖条目，只按官方置顶显示一次且不重复，后续 Desktop 再次变更即可自然同步。置顶工作区显示在「置顶」区的置顶会话下方（最近在 Web 置顶的排在前面，其余保持 Desktop 置顶顺序）；工作区继续显示其会话，树形视图中的子工作区随父工作区一起移动，搜索命中已置顶工作区时自动展开「置顶」区；取消置顶后按原有顺序回到工作区列表、父工作区或自定义分区。
 
 共享来源统一调用 Host 的 `codexhost/thread/pins/list` / `codexhost/thread/pins/set`，不调用 Renderer 的置顶服务。Host 复用原生 `threadSection/list`、`thread/list(section_position)` 和既有外部 Thread 分区移动逻辑；内置 Pinned 分区使用原生协议的保留标识，并通过原生查询确认存在，不按显示名称猜测或自行创建分区。官方 Codex Thread 的分区成员与顺序由官方 app-server 持久化，Host 通过 `thread/read` 确认当前分区，通过 `thread/section/move` 修改；外部 Thread 的归属与排序锚点只保存于 Mapping Store 的分区记录。`pins/list` 始终读取官方 Pinned 分区并合并可见外部成员，即使没有任何外部置顶也返回官方成员，和 Desktop 的原生 Thread 查询共用同一混合顺序；不修改 `.codex-global-state.json`，不创建镜像会话。展示未归档的本机官方 Codex 与 canonical external Threads 的置顶，不聚合远程 Threads。
 

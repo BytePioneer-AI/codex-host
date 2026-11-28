@@ -134,7 +134,7 @@ Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
 macOS one-line install (recommended, no Gatekeeper prompt):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BytePioneer-AI/codex-host/main/scripts/install-macos.sh | bash
+curl -fsSL https://chost.dev/install.sh | bash
 ```
 
 > [!NOTE]

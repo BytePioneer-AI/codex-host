@@ -113,7 +113,7 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$
 ## 6. 深审与实测
 
 - 3 分的 PR 用 [codexhost-code-review](../codexhost-code-review/SKILL.md) 深审。
-- 需要实测的按 [codexhost-isolated-testing](../codexhost-isolated-testing/SKILL.md) 做，Bug 要先复现再验证修复；复现不了的不给合并结论。
+- 需要实测的按 [codexhost-isolated-testing](../codexhost-isolated-testing/SKILL.md) 做，Bug 要先复现再验证修复；涉及可见页面或 UI 改动的 PR，可用其 CDP 流程核验桌面/手机、亮暗色渲染并对照检查 PR 截图；复现不了的不给合并结论。
 - 多个 PR 尽量并行，每路用独立的 worktree、数据目录和端口。
 - 涉及公共交互习惯分歧的功能，可先派只读子线程实地对照主流工具源码或实现再定修改边界。
 - 异构平台无法在本机复现的 PR：作者未在目标平台验证的标 `awaiting-author` 请补真机验证与对比图；代码干净、仅缺目标平台真机验收的记入待办（如 Notion 并标平台测试标签）跟进。

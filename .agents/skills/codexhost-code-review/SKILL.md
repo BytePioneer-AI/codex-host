@@ -15,7 +15,7 @@ description: 审查 codexhost 的 Pull Request 或本地 diff 的正确性与边
 2. 按改动路径归属到包或 crate，读其公共导出、契约和测试，再读 diff。归属见 [AGENTS.md](../../../AGENTS.md) 的 Code Layout。
 3. 以 [AGENTS.md](../../../AGENTS.md)、[领域术语表](../../../docs/project/领域术语表.md)、`tools/check-boundaries.mjs`、[docs/index.md](../../../docs/index.md) 中对应功能文档为事实来源。
 4. 审查以静态阅读真实 diff、周边调用链与既有验证记录为主：远端 CI 或受委派子 Thread 已在同一 HEAD 提交上通过的构建、测试、lint 与格式检查，不在本地重复执行；仅在需要复现可疑缺陷或补验未覆盖缺口时，运行最小聚焦检查。
-5. 依赖真实界面、Desktop 私有运行时或外部 Harness 未公开行为的改动，静态阅读给不出结论，按 [codexhost-isolated-testing](../codexhost-isolated-testing/SKILL.md) 实测。何时需要实测见 [codexhost-pr-overview](../codexhost-pr-overview/SKILL.md) 第 4 节。
+5. 依赖真实界面、Desktop 私有运行时或外部 Harness 未公开行为的改动，静态阅读给不出结论，按 [codexhost-isolated-testing](../codexhost-isolated-testing/SKILL.md) 实测；涉及可见页面或 UI 改动时，可直接用其 CDP 流程核验桌面/手机视口、亮暗色渲染与控制台报错。何时需要实测见 [codexhost-pr-overview](../codexhost-pr-overview/SKILL.md) 第 4 节。
 
 ## 阻断项
 

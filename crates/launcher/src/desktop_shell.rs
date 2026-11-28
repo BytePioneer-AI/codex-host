@@ -27,7 +27,7 @@ struct ReadyOwner {
     version: String,
 }
 
-pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn Error>> {
+fn spawn_command(shell: &Path, data: &Path, onboarding: bool) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::new(shell);
     if onboarding {
         command.arg("--onboarding");
@@ -41,8 +41,15 @@ pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(path) = codexhost_platform::user_shell_path() {
+        command.env("PATH", path);
+    }
     configure_detached_service_command(&mut command)?;
-    command.spawn()?;
+    Ok(command)
+}
+
+pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn Error>> {
+    spawn_command(shell, data, onboarding)?.spawn()?;
     Ok(())
 }
 
@@ -195,5 +202,58 @@ mod tests {
         assert!(!running(&data).unwrap());
         assert!(!path.exists());
         fs::remove_dir_all(data).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn spawn_command_injects_macos_login_shell_path_under_minimal_path() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        const TEST: &str =
+            "desktop_shell::tests::spawn_command_injects_macos_login_shell_path_under_minimal_path";
+        const MARKER: &str = "CODEXHOST_TEST_DESKTOP_SHELL_MACOS_PATH";
+        if let Some(root) = std::env::var_os(MARKER) {
+            let root = PathBuf::from(root);
+            let command = spawn_command(&root.join("codexhost-shell"), &root, false).unwrap();
+            let path = command
+                .get_envs()
+                .find_map(|(key, value)| (key == "PATH").then_some(value))
+                .flatten()
+                .expect("PATH must be injected on macOS");
+            assert_eq!(
+                path,
+                "/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            );
+            return;
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codexhost-shell-path-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let fake_shell = root.join("zsh");
+        fs::write(
+            &fake_shell,
+            "#!/bin/sh\nprintf '\\0CODEXHOST_LOGIN_PATH_V1\\0/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin\\0'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_shell, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env(MARKER, &root)
+            .env("HOME", &root)
+            .env("SHELL", &fake_shell)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .status()
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
     }
 }

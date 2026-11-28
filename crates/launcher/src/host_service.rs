@@ -229,6 +229,44 @@ fn ensure(arguments: &[String], options: Options) -> Result<(), Box<dyn Error>> 
     result
 }
 
+fn serve_command(options: &Options, node_ready: &Path) -> Result<Command, Box<dyn Error>> {
+    let mut command = Command::new(&options.node);
+    clean(&mut command);
+    command
+        .current_dir(&options.data)
+        .arg("--disable-warning=UNDICI-EHPA")
+        .arg(node_entrypoint_path(&options.runtime))
+        .arg("--codexhost-shared-host")
+        .arg("--data")
+        .arg(&options.data)
+        .arg("--ready-file")
+        .arg(node_ready)
+        .args(&options.extras)
+        .env("CODEXHOST_DATA_DIR", &options.data)
+        .env("CODEXHOST_HOST_RUNTIME_PATH", &options.runtime)
+        .env("CODEXHOST_CLI_NODE_PATH", &options.node)
+        .env("CODEXHOST_HOST_NODE_PATH", &options.node)
+        .env("CODEXHOST_LAUNCHER_EXECUTABLE", env::current_exe()?)
+        .env("CODEXHOST_LAUNCHER_PID", std::process::id().to_string())
+        .env(
+            "CODEXHOST_RUNTIME_DESCRIPTOR_PATH",
+            crate::runtime_instance::default_descriptor_path()?,
+        )
+        .env("CODEXHOST_UPDATE_SERVICE", "1")
+        // Host-side fetch (for example voice transcription) follows the system proxy.
+        .envs(codexhost_platform::proxy_environment());
+    if let Some(shell) =
+        crate::installation_layout::InstalledResources::from_current_executable()?.desktop_shell
+    {
+        command.env("CODEXHOST_DESKTOP_SHELL_PATH", shell);
+    }
+    if let Some(path) = codexhost_platform::user_shell_path() {
+        command.env("PATH", path);
+    }
+    configure_background_command(&mut command);
+    Ok(command)
+}
+
 fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
     let ready = options
         .ready
@@ -251,37 +289,7 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
     }
     let _independent = codexhost_platform::register_independent_service()?;
     let node_ready = ready.with_extension("node");
-    let mut command = Command::new(&options.node);
-    clean(&mut command);
-    command
-        .current_dir(&options.data)
-        .arg("--disable-warning=UNDICI-EHPA")
-        .arg(node_entrypoint_path(&options.runtime))
-        .arg("--codexhost-shared-host")
-        .arg("--data")
-        .arg(&options.data)
-        .arg("--ready-file")
-        .arg(&node_ready)
-        .args(options.extras)
-        .env("CODEXHOST_DATA_DIR", &options.data)
-        .env("CODEXHOST_HOST_RUNTIME_PATH", &options.runtime)
-        .env("CODEXHOST_CLI_NODE_PATH", &options.node)
-        .env("CODEXHOST_HOST_NODE_PATH", &options.node)
-        .env("CODEXHOST_LAUNCHER_EXECUTABLE", env::current_exe()?)
-        .env("CODEXHOST_LAUNCHER_PID", std::process::id().to_string())
-        .env(
-            "CODEXHOST_RUNTIME_DESCRIPTOR_PATH",
-            crate::runtime_instance::default_descriptor_path()?,
-        )
-        .env("CODEXHOST_UPDATE_SERVICE", "1")
-        // Host-side fetch (for example voice transcription) follows the system proxy.
-        .envs(codexhost_platform::proxy_environment());
-    if let Some(shell) =
-        crate::installation_layout::InstalledResources::from_current_executable()?.desktop_shell
-    {
-        command.env("CODEXHOST_DESKTOP_SHELL_PATH", shell);
-    }
-    configure_background_command(&mut command);
+    let mut command = serve_command(&options, &node_ready)?;
     let mut child = spawn_supervised(&mut command)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut published = false;

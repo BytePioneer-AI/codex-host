@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findPiCliEntry, findPiPackageDirectory } from "../src/command.js";
+import { findPiCliEntry, findPiPackageDirectory, withPiNodeRuntimeOnPath } from "../src/command.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -81,5 +81,79 @@ describe("Pi package discovery", () => {
     );
 
     expect(findPiPackageDirectory(executable)).toBeUndefined();
+  });
+});
+
+describe("Pi Node runtime PATH fallback", () => {
+  it("places a sibling node directory after user PATH and before cua_node", () => {
+    const versionBin = "/Users/test/.nvm/versions/node/v22.19.0/bin";
+    const piExecutable = `${versionBin}/pi`;
+    const siblingNode = `${versionBin}/node`;
+    const cuaNode = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node";
+
+    const environment = withPiNodeRuntimeOnPath(
+      { HOME: "/Users/test", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      {
+        command: piExecutable,
+        runtimeExecutable: cuaNode,
+        platform: "darwin",
+        isExecutable: (candidate) => candidate === piExecutable || candidate === siblingNode,
+      },
+    );
+
+    expect(environment.PATH?.split(":")).toEqual([
+      "/usr/bin",
+      "/bin",
+      "/usr/sbin",
+      "/sbin",
+      versionBin,
+      "/Applications/Codex.app/Contents/Resources/cua_node/bin",
+    ]);
+  });
+
+  it("preserves existing user PATH precedence and avoids duplicating the sibling directory", () => {
+    const versionBin = "/Users/test/.nvm/versions/node/v22.19.0/bin";
+    const piExecutable = `${versionBin}/pi`;
+    const siblingNode = `${versionBin}/node`;
+    const cuaNode = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node";
+
+    const environment = withPiNodeRuntimeOnPath(
+      { HOME: "/Users/test", PATH: `/opt/homebrew/bin:${versionBin}:/usr/bin` },
+      {
+        command: piExecutable,
+        runtimeExecutable: cuaNode,
+        platform: "darwin",
+        isExecutable: (candidate) => candidate === piExecutable || candidate === siblingNode,
+      },
+    );
+
+    expect(environment.PATH?.split(":")).toEqual([
+      "/opt/homebrew/bin",
+      versionBin,
+      "/usr/bin",
+      "/Applications/Codex.app/Contents/Resources/cua_node/bin",
+    ]);
+  });
+
+  it("does not add Pi's directory when no sibling node exists beside it", () => {
+    const piDir = "/Users/test/.local/bin";
+    const piExecutable = `${piDir}/pi`;
+    const cuaNode = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node";
+
+    const environment = withPiNodeRuntimeOnPath(
+      { HOME: "/Users/test", PATH: "/usr/bin:/bin" },
+      {
+        command: piExecutable,
+        runtimeExecutable: cuaNode,
+        platform: "darwin",
+        isExecutable: (candidate) => candidate === piExecutable,
+      },
+    );
+
+    expect(environment.PATH?.split(":")).toEqual([
+      "/usr/bin",
+      "/bin",
+      "/Applications/Codex.app/Contents/Resources/cua_node/bin",
+    ]);
   });
 });

@@ -33,7 +33,7 @@ description: 审查 codexhost 的 Pull Request 或本地 diff 的正确性与边
 - **范围与必要性**：当前 `main` 是否已经实现或取代了这个改动；每个新增抽象、状态、选项、兼容路径，是否对应当前契约和生产使用者；与 [AGENTS.md](../../../AGENTS.md) 的 Implementation Principles 对照。
 - **Renderer 绑定**：对 Codex Desktop 私有 DOM / React 状态的依赖是否版本化、能在版本不匹配时安全降级；新绑定是否纳入 `tools/renderer-binding` 探测。
 - **强制执行路径**：沿每条拒绝或校验路径追到真正执行的操作，检查有无绕过的替代入口。
-- **持久化与兼容**：触及 `mapping-store`、插件清单、配置格式时，旧数据如何读取。
+- **持久化与兼容**：触及 `mapping-store`、插件清单、配置格式、共享 RPC 或远端目录字段时，核对旧数据如何读取，并对照上个已发布 tag（`git show <tag>:...`）验证老版本客户端的前向/后向兼容性；涉及硬编码下载链接与 SHA-256 时实测验真。
 - **测试强度**：断言是否会在目标回归出现时失败，是否验证外部状态、事件或释放，而不是复述实现；是否走了真实入口（真实 Loader、插件加载、worker、子进程），而不是手工拼装。
 - **UI 演示图**：涉及可见 UI 改动（Web / Desktop / Android / Renderer / Console）的 PR，确认 PR 描述中已附带脱敏演示图（截图或录屏）；无视觉变化的纯逻辑改动应注明 `No visual changes: <原因>`。
 - **平台**：文件系统、路径、进程、环境变量相关改动，是否考虑 macOS / Windows / Linux（CI 的二级平台只跑平台敏感测试）。

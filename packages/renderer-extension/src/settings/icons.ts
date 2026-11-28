@@ -37,6 +37,7 @@ import RotateCcw from "lucide/dist/esm/icons/rotate-ccw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import ShieldCheck from "lucide/dist/esm/icons/shield-check.mjs";
+import SlidersHorizontal from "lucide/dist/esm/icons/sliders-horizontal.mjs";
 import Sparkles from "lucide/dist/esm/icons/sparkles.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
@@ -110,6 +111,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "chart-column",
   "plug",
   "puzzle",
+  "sliders",
   "sparkles",
 ] as const;
 
@@ -170,6 +172,7 @@ const iconNodes = {
   logs: ScrollText,
   play: Play,
   "shield-check": ShieldCheck,
+  sliders: SlidersHorizontal,
   upload: Upload,
   "file-archive": FileArchive,
   link: Link,

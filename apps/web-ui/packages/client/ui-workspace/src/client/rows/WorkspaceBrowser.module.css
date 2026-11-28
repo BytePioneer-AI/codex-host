@@ -57,6 +57,45 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.activityButton {
+  position: relative;
+}
+
+.activityButtonActive {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.activityButtonActive:hover {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent);
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.activityIconWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.activityDot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 5.5px;
+  height: 5.5px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
+  box-shadow: 0 0 0 1.5px var(--dsw-specific-sidebar-fill);
+  pointer-events: none;
+}
+
+.activityDot[data-attention="pending"] {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
 /* View-options dropdown card: labels are short, so a content-sized card reads
    cramped and its width shifts with the locale — hold a stable floor. */
 .viewOptionsMenu {
@@ -114,13 +153,39 @@
   transition-delay: 0s, 0s, 0s, 0s, 180ms;
 }
 
+.activitySlot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  max-width: 28px;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    max-width 180ms var(--ds-ease-in-out),
+    margin-right 180ms var(--ds-ease-in-out),
+    opacity 120ms var(--ds-ease-in-out),
+    transform 180ms var(--ds-ease-in-out),
+    visibility 0s linear;
+}
+
+.activitySlotHidden {
+  max-width: 0;
+  margin-left: 0;
+  margin-right: -4px;
+  opacity: 0;
+  transform: translateX(-4px);
+  visibility: hidden;
+  pointer-events: none;
+  transition-delay: 0s, 0s, 0s, 0s, 180ms;
+}
+
 .searchSlot {
   flex: 1;
   max-width: 28px;
   min-width: 0;
   display: flex;
   align-items: center;
-  margin-left: auto;
   padding-left: 0;
   box-sizing: border-box;
   transition:
@@ -743,6 +808,7 @@
 
   .search,
   .sectionLabel,
+  .activitySlot,
   .searchSlot,
   .searchInput,
   .headerActions {

@@ -41,7 +41,32 @@ export function RecentShortcut({
     [restoreNavigationFocus],
   );
   return (
-    <div ref={bind} className={css.shortcut} data-active={active || undefined}>
+    <div
+      ref={bind}
+      className={css.shortcut}
+      data-active={active || undefined}
+      onMouseDown={(event) => {
+        if (
+          event.button !== 1 ||
+          !(event.target instanceof Node) ||
+          !event.currentTarget.contains(event.target)
+        )
+          return;
+        event.preventDefault();
+      }}
+      onAuxClick={(event) => {
+        if (
+          event.button !== 1 ||
+          !(event.target instanceof Node) ||
+          !event.currentTarget.contains(event.target)
+        )
+          return;
+        event.preventDefault();
+        event.stopPropagation();
+        restoreNavigationFocus();
+        close(visit.sessionId);
+      }}
+    >
       <button
         type="button"
         className={css.select}

@@ -23,6 +23,7 @@ import {
   deriveAvailableHosts,
   hasRemoteWorkspaces,
   isHostScopeFiltered,
+  isRemoteFallbackWorkspace,
   reconcileHostScopeFilter,
   resetHostScopeFilter,
   selectHostScope,
@@ -79,6 +80,7 @@ function HostScopeWorkspacesEditor({
     [host.workspaces],
   );
   const selectedCount = countSelectedWorkspacesForHost(host, scope);
+  const hostName = hostDisplayLabel(host, t);
 
   return (
     <div className={css.scopeEditor}>
@@ -145,11 +147,13 @@ function HostScopeWorkspacesEditor({
             <div className={css.workspaceList}>
               {host.workspaces.map((workspace) => {
                 const checked = selectedIds.has(workspace.workspaceId);
+                const isFallback = isRemoteFallbackWorkspace(workspace);
+                const label = isFallback ? t("group.remoteOtherSessions") : workspace.title;
                 return (
                   <label
                     key={workspace.workspaceId}
                     className={css.workspaceOption}
-                    title={workspace.path || workspace.title}
+                    title={isFallback ? `${hostName} · ${label}` : workspace.path || label}
                   >
                     <input
                       type="checkbox"
@@ -166,7 +170,7 @@ function HostScopeWorkspacesEditor({
                         );
                       }}
                     />
-                    <span className={css.workspaceOptionName}>{workspace.title}</span>
+                    <span className={css.workspaceOptionName}>{label}</span>
                   </label>
                 );
               })}

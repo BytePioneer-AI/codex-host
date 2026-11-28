@@ -159,12 +159,16 @@ export async function updateHostExtensionConfiguration(dataDir: string, change: 
   });
 }
 
-export async function discoverHostExtensions(dataDir: string): Promise<{
+export async function discoverHostExtensions(
+  dataDir: string,
+  options: { readonly includeScreenshots?: boolean | undefined } = {},
+): Promise<{
   configuration: HostExtensionConfiguration;
   installations: HostExtensionDiskInstallation[];
   extensions: HostExtensionListItem[];
   diagnostics: string[];
 }> {
+  const includeScreenshots = options.includeScreenshots ?? true;
   const diagnostics: string[] = [];
   const configuration = await readHostExtensionConfiguration(dataDir).catch((error: unknown) => {
     diagnostics.push(`Invalid extension configuration: ${errorMessage(error)}`);
@@ -193,16 +197,22 @@ export async function discoverHostExtensions(dataDir: string): Promise<{
       const { icon, screenshots } = await validateHostPackageEntries(metadata.manifest, read);
       const toDataUrl = ({ mime, bytes }: { mime: string | undefined; bytes: Buffer }) =>
         `data:${mime};base64,${bytes.toString("base64")}`;
-      const size = screenshots.reduce((sum, { bytes }) => sum + bytes.length, 0);
-      const fits = size <= screenshotBudget;
-      if (fits) screenshotBudget -= size;
-      else omitted = true;
+      let screenshotDataUrls: string[] | undefined;
+      if (includeScreenshots && screenshots.length > 0) {
+        const size = screenshots.reduce((sum, { bytes }) => sum + bytes.length, 0);
+        if (size <= screenshotBudget) {
+          screenshotBudget -= size;
+          screenshotDataUrls = screenshots.map(toDataUrl);
+        } else {
+          omitted = true;
+        }
+      }
       extensions.push({
         state: "valid",
         ...metadata,
         enabled,
         ...(icon ? { iconDataUrl: toDataUrl(icon) } : {}),
-        ...(fits && screenshots.length ? { screenshotDataUrls: screenshots.map(toDataUrl) } : {}),
+        ...(screenshotDataUrls ? { screenshotDataUrls } : {}),
       });
       installations.push(installation);
     } catch (error) {

@@ -574,6 +574,7 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
       { id: "old", name: "Old", hostSectionIds: { local: "stale" }, itemKeys: ["codex:project:a"] },
     ]),
     "electron-owner-atoms:owner": sections([
+      { hostSectionIds: { local: "official-papers" }, itemKeys: [] },
       {
         id: "papers",
         name: "Papers",
@@ -591,6 +592,9 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
         hostSectionIds: { "remote-control:env": "remote-section" },
         itemKeys: ["codex:project:hidden"],
       },
+      { hostSectionIds: { local: "malformed" }, itemKeys: null },
+      { hostSectionIds: { local: "unknown-items" }, itemKeys: [null] },
+      { hostSectionIds: { local: "empty" }, itemKeys: [] },
       {
         id: "threads",
         name: "Threads",
@@ -602,6 +606,8 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   writeFileSync(file, JSON.stringify(sectioned));
   expect((await readNativeWorkspaceSnapshot(environment)).sectionProjects).toEqual({
     "official-papers": ["selected", "first"],
+    "official-threads": [],
+    empty: [],
   });
   writeFileSync(
     file,
@@ -640,6 +646,24 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   });
   expect((await readNativeWorkspaceSnapshot(environment, [])).assignments).toEqual({});
   expect(readFileSync(file, "utf8")).toBe(JSON.stringify(migrated));
+  const pinnedState = {
+    ...migrated,
+    "pinned-project-ids": ["selected", 123, null, "", "first", "selected", { bad: true }],
+  };
+  writeFileSync(file, JSON.stringify(pinnedState));
+  expect((await readNativeWorkspaceSnapshot(environment)).pinnedProjects).toEqual([
+    "selected",
+    "first",
+  ]);
+  expect((await readNativeWorkspaceSnapshot(environment, [native])).pinnedProjects).toEqual([
+    native.id,
+  ]);
+  expect(readFileSync(file, "utf8")).toBe(JSON.stringify(pinnedState));
+  writeFileSync(file, JSON.stringify({ ...migrated, "pinned-project-ids": [] }));
+  expect((await readNativeWorkspaceSnapshot(environment)).pinnedProjects).toEqual([]);
+  writeFileSync(file, JSON.stringify({ ...migrated, "pinned-project-ids": "not-an-array" }));
+  expect((await readNativeWorkspaceSnapshot(environment)).pinnedProjects).toBeUndefined();
+  writeFileSync(file, JSON.stringify(migrated));
   for (const key of ["a", "duplicate"] as const) {
     writeFileSync(
       file,

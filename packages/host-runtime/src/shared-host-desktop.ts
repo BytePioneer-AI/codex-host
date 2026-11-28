@@ -146,6 +146,7 @@ export function sharedHostDesktop(
         if (attachment.signal.aborted) return 0;
         host = createHost();
         options.connected.add(host);
+        void options.hostExtensions?.seedDefaultDesktopExtensions(undefined, environment);
         running = host.run();
         options.running.add(running);
         return await running;

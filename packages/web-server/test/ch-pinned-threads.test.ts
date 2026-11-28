@@ -366,3 +366,73 @@ it("retains persisted local pin records", async (t) => {
     ["local"],
   );
 });
+
+it("preserves aggregated remote Peer pins across local pin mutations and fallback refreshes", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-pins-remote-merge-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  host.add("local-a", "/project");
+  host.add("local-b", "/project");
+  host.pinnedIds = ["local-a"];
+  const workspaces = new Workspaces(new DataDir(root), root, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  const frames: Array<{ type: string; pinnedSessionIds?: string[] }> = [];
+  const register = streams.register.bind(streams);
+  let follow: StreamHandler | undefined;
+  streams.register = (name, handler) => {
+    if (name === "workspace/follow") follow = handler;
+    register(name, handler);
+  };
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  assert.ok(follow);
+  await follow(
+    {},
+    {
+      id: "pins-merge",
+      closed: false,
+      push: (frame) => frames.push(frame as (typeof frames)[number]),
+      end() {},
+      fail() {},
+      onClose() {},
+    },
+  );
+
+  const remotePinId = "web-remote:WyJyZW1vdGUtcGVlcjpwMSIsInQxIl0";
+  workspaces.setRemotePins([remotePinId]);
+  assert.deepEqual(frames.at(-1), { type: "pinned", pinnedSessionIds: [remotePinId] });
+
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-a", remotePinId]);
+
+  // Local pin/unpin RPC replies must keep aggregated remote pins intact.
+  const pinned = await rpc.dispatch("workspace/pinSession", {
+    args: { request: { sessionId: "local-b" } },
+  });
+  assert.deepEqual(pinned, {
+    ok: true,
+    value: { pinnedSessionIds: ["local-a", "local-b", remotePinId] },
+  });
+  const unpinned = await rpc.dispatch("workspace/unpinSession", {
+    args: { request: { sessionId: "local-a" } },
+  });
+  assert.deepEqual(unpinned, {
+    ok: true,
+    value: { pinnedSessionIds: ["local-b", remotePinId] },
+  });
+
+  // If local pins read fails during refresh, fallback must never pass remote IDs to local thread/read.
+  host.pinError = "temporary local pin failure";
+  const listed = await rpc.dispatch("session/list", { args: {} });
+  assert.equal(listed.ok, true);
+  assert.equal(
+    host.requests.some(
+      (req) => req.method === "thread/read" && req.params.threadId === remotePinId,
+    ),
+    false,
+  );
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-b", remotePinId]);
+});

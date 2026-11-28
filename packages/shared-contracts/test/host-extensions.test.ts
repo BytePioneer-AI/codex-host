@@ -148,7 +148,7 @@ it("normalizes an existing v1 Desktop manifest and reports future versions", () 
 });
 
 it("registers the entire RPC namespace and its invalidation event on the client channel", () => {
-  expect(HOST_EXTENSION_MANAGEMENT_METHODS).toHaveLength(13);
+  expect(HOST_EXTENSION_MANAGEMENT_METHODS).toHaveLength(14);
   for (const method of HOST_EXTENSION_MANAGEMENT_METHODS) {
     expect(isHostExtensionManagementMethod(method)).toBe(true);
     expect(CLIENT_CHANNEL_METHODS).toContain(method);
@@ -221,4 +221,31 @@ it("validates install sources, asset refs, settings revisions, and backend JSON"
   ).toBe(true);
   expect(HOST_EXTENSION_PAGE_API_VERSION).toBe(1);
   expect(Object.values(HOST_EXTENSION_PAGE_CSS_VARIABLES)).toHaveLength(8);
+});
+
+it("validates optional catalog featured and featuredOrder metadata", () => {
+  const baseEntry = {
+    id: "featured-sample",
+    format: "codexhost" as const,
+    name: { en: "Featured Sample", "zh-CN": "精选示例" },
+    description: { en: "A sample extension.", "zh-CN": "一个示例插件。" },
+    author: "codexhost",
+    repository: "https://github.com/owner/repo",
+    version: "1.0.0",
+    sha256: "a".repeat(64),
+    targets: ["desktop", "web"] as const,
+    apis: { page: 1 },
+    downloadUrl: "https://github.com/owner/repo/releases/download/v1.0.0/sample.zip",
+  };
+  expect(hostExtensionCatalogEntrySchema.parse(baseEntry)).toMatchObject({ id: "featured-sample" });
+  expect(
+    hostExtensionCatalogEntrySchema.parse({ ...baseEntry, featured: true, featuredOrder: 0 }),
+  ).toMatchObject({ featured: true, featuredOrder: 0 });
+  expect(
+    hostExtensionCatalogEntrySchema.safeParse({ ...baseEntry, featured: true, featuredOrder: -1 })
+      .success,
+  ).toBe(false);
+  expect(
+    hostExtensionCatalogEntrySchema.safeParse({ ...baseEntry, featuredOrder: 1.5 }).success,
+  ).toBe(false);
 });

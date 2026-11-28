@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   HOST_EXTENSION_ASSETS_PREFIX,
+  HOST_EXTENSION_CATALOG_ICON_PATH,
   HOST_EXTENSION_UPLOAD_PATH,
   HOST_EXTENSION_ZIP_MAX_BYTES,
   HOST_EXTENSIONS_RPC,
@@ -9,6 +10,7 @@ import {
   hostExtensionIdSchema,
   hostExtensionResourcePathSchema,
   hostExtensionsAssetResultSchema,
+  hostExtensionsCatalogIconResultSchema,
   hostExtensionsRpcSchemas,
   type HostExtensionsRpcParams,
 } from "@codexhost/shared-contracts";
@@ -24,7 +26,9 @@ type HostChannel = Pick<NonNullable<ChHostClient["realtime"]>, "request">;
 
 export function isHostExtensionHttpPath(pathname: string): boolean {
   return (
-    pathname === HOST_EXTENSION_UPLOAD_PATH || pathname.startsWith(HOST_EXTENSION_ASSETS_PREFIX)
+    pathname === HOST_EXTENSION_UPLOAD_PATH ||
+    pathname === HOST_EXTENSION_CATALOG_ICON_PATH ||
+    pathname.startsWith(HOST_EXTENSION_ASSETS_PREFIX)
   );
 }
 
@@ -166,6 +170,42 @@ async function serveUpload(
   response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ result }));
 }
 
+async function serveCatalogIcon(
+  channel: HostChannel,
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  const url = request.url ?? "";
+  const queryStart = url.indexOf("?");
+  const query = new URLSearchParams(queryStart === -1 ? "" : url.slice(queryStart + 1));
+  const ids = query.getAll("id");
+  const parsedId = ids.length === 1 ? hostExtensionIdSchema.safeParse(ids[0]) : null;
+  if (!parsedId?.success) {
+    response.writeHead(400).end();
+    return;
+  }
+  let result: unknown;
+  try {
+    result = await channel.request(HOST_EXTENSIONS_RPC.catalogIcon, { id: parsedId.data });
+  } catch {
+    response.writeHead(404).end();
+    return;
+  }
+  const icon = hostExtensionsCatalogIconResultSchema.safeParse(result);
+  if (!icon.success) {
+    response.writeHead(502).end();
+    return;
+  }
+  const bytes = Buffer.from(icon.data.base64, "base64");
+  response
+    .writeHead(200, {
+      "Content-Type": icon.data.mimeType,
+      "Content-Length": bytes.length,
+      "Cache-Control": "private, max-age=86400",
+    })
+    .end(request.method === "HEAD" ? undefined : bytes);
+}
+
 /** Serve a matched extension route after the Web authentication gate. Only the Host owns assets and ZIP validation. */
 export async function serveHostExtensionHttp(
   host: Pick<ChHostClient, "realtime"> | undefined,
@@ -176,6 +216,7 @@ export async function serveHostExtensionHttp(
   { requestAuth, safeMode = false }: { requestAuth: RequestAuth | undefined; safeMode?: boolean },
 ): Promise<void> {
   const upload = pathname === HOST_EXTENSION_UPLOAD_PATH;
+  const catalogIcon = pathname === HOST_EXTENSION_CATALOG_ICON_PATH;
   response.setHeader("Cache-Control", "private, no-store");
   response.setHeader("X-Content-Type-Options", "nosniff");
   if (!upload) response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
@@ -193,5 +234,6 @@ export async function serveHostExtensionHttp(
     return;
   }
   if (upload) await serveUpload(channel, request, response);
+  else if (catalogIcon) await serveCatalogIcon(channel, request, response);
   else await serveAsset(channel, request, response, pathname);
 }

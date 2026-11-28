@@ -38,6 +38,7 @@ pub use macos_aqua_process::{
 mod macos_process_events;
 #[cfg(target_os = "macos")]
 mod macos_process_observation;
+mod macos_shell_path;
 mod process;
 mod process_chain;
 mod process_identity;
@@ -100,6 +101,7 @@ pub use macos_native_harness_broker::{
     NativeHarnessBrokerInstallOutcome, NativeHarnessBrokerStatus, inspect_native_harness_broker,
     install_native_harness_broker, stop_native_harness_broker, uninstall_native_harness_broker,
 };
+pub use macos_shell_path::user_shell_path;
 #[cfg(target_os = "macos")]
 pub use process::force_stop_desktop;
 pub use process::{

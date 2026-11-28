@@ -1,5 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { splitAnnotatedMessage, type ResponseAnnotation } from "@codexhost/shared-contracts";
 import type { PendingSubmissionAttachment } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { FileAttachmentRef, ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
@@ -44,17 +45,83 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
   }
 }
 
-function previewOf(content: InboxState["next-turn"][number]["content"]): string {
-  const flat = content
-    .filter((block) => block.type !== "image" && block.type !== "file")
-    .map((block) => (block.type === "text" ? block.text : `[${block.type}]`))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
+function truncatePreview(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
   const chars = Array.from(flat);
   return chars.length > QUEUE_PREVIEW_CHARS
     ? `${chars.slice(0, QUEUE_PREVIEW_CHARS).join("")}…`
     : flat;
+}
+
+interface QueueRowDisplay {
+  readonly annotations: readonly ResponseAnnotation[];
+  readonly preview: string;
+  readonly fallbackPreview: string;
+  readonly annotationTooltip: string;
+}
+
+function buildRowDisplay(
+  annotations: readonly ResponseAnnotation[],
+  rawPreview: string,
+): QueueRowDisplay {
+  const preview = truncatePreview(rawPreview);
+  if (annotations.length === 0) {
+    return { annotations, preview, fallbackPreview: "", annotationTooltip: "" };
+  }
+  const first = annotations[0]!;
+  const fallbackPreview = preview === "" ? truncatePreview(first.annotation ?? first.text) : "";
+  const annotationTooltip = annotations
+    .map(
+      (entry, index) => `${String(index + 1)}. ${truncatePreview(entry.annotation ?? entry.text)}`,
+    )
+    .join("\n");
+  return { annotations, preview, fallbackPreview, annotationTooltip };
+}
+
+function queueDisplayOf(content: InboxState["next-turn"][number]["content"]): QueueRowDisplay {
+  const annotations: ResponseAnnotation[] = [];
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === "image" || block.type === "file") continue;
+    if (block.type === "text") {
+      const split = splitAnnotatedMessage(block.text);
+      annotations.push(...split.annotations);
+      if (split.body !== "") parts.push(split.body);
+    } else {
+      parts.push(`[${block.type}]`);
+    }
+  }
+  return buildRowDisplay(annotations, parts.join(" "));
+}
+
+function queueTextDisplayOf(text: string): QueueRowDisplay {
+  const split = splitAnnotatedMessage(text);
+  return buildRowDisplay(split.annotations, split.body);
+}
+
+function QueueRowPreview({ display, t }: { display: QueueRowDisplay; t: QueueDockProps["t"] }) {
+  return (
+    <>
+      {display.annotations.length > 0 && (
+        <span
+          className={css.annotationBadge}
+          data-queue-annotations={display.annotations.length}
+          title={display.annotationTooltip}
+        >
+          {t("annotation.trayCount", { count: display.annotations.length })}
+        </span>
+      )}
+      <span
+        className={
+          display.preview === "" && display.fallbackPreview !== ""
+            ? `${css.preview} ${css.previewFallback}`
+            : css.preview
+        }
+      >
+        {display.preview !== "" ? projectUserText(display.preview, []) : display.fallbackPreview}
+      </span>
+    </>
+  );
 }
 
 function textOf(content: InboxState["next-turn"][number]["content"]): string | null {
@@ -67,8 +134,9 @@ export type QueueEditTarget =
       readonly kind: "structured";
       readonly revision: string;
       readonly images: readonly ImageAttachmentRef[];
+      readonly rpcId?: string;
     }
-  | { readonly kind: "legacyText"; readonly text: string };
+  | { readonly kind: "legacyText"; readonly text: string; readonly rpcId?: string };
 
 /** Queue operations injected by the session-scoped registration. */
 export interface QueueDockInjected {
@@ -316,6 +384,9 @@ export function QueueDock({
           {listVisible &&
             queue.map((row) => {
               const attachments = queueAttachments(row.content);
+              const display = queueDisplayOf(row.content);
+              const rpcId =
+                row.source.kind === "user" && "rpcId" in row.source ? row.source.rpcId : undefined;
               const structuredMode = queueState?.editable !== undefined;
               const editTarget: QueueEditTarget | null = structuredMode
                 ? (() => {
@@ -324,11 +395,22 @@ export function QueueDock({
                     const images = attachments.flatMap((item) =>
                       item.type === "image" ? [item.attachment] : [],
                     );
-                    return { kind: "structured", revision, images };
+                    return {
+                      kind: "structured",
+                      revision,
+                      images,
+                      ...(rpcId === undefined ? {} : { rpcId }),
+                    };
                   })()
                 : (() => {
                     const text = textOf(row.content);
-                    return text === null ? null : { kind: "legacyText", text };
+                    return text === null
+                      ? null
+                      : {
+                          kind: "legacyText",
+                          text,
+                          ...(rpcId === undefined ? {} : { rpcId }),
+                        };
                   })();
               const canEdit = editTarget !== null;
               return (
@@ -359,7 +441,7 @@ export function QueueDock({
                       )}
                     </span>
                   )}
-                  <span className={css.preview}>{projectUserText(previewOf(row.content), [])}</span>
+                  <QueueRowPreview display={display} t={t} />
                   {queueMutable && (
                     <div className={css.actions}>
                       {!previewOnly && (
@@ -433,6 +515,7 @@ export function QueueDock({
             })}
           {listVisible &&
             pendingQueue.map((submission) => {
+              const display = queueTextDisplayOf(submission.text);
               return (
                 <li
                   key={submission.requestId}
@@ -467,7 +550,7 @@ export function QueueDock({
                       ))}
                     </span>
                   )}
-                  <span className={css.preview}>{projectUserText(submission.text, [])}</span>
+                  <QueueRowPreview display={display} t={t} />
                   <span className={css.status} role="status">
                     {t("queue.sending")}
                   </span>
@@ -550,18 +633,13 @@ export const queueDockEntry = {
                   const shell = inputHub.shell(sessionId);
                   if (target.kind === "legacyText") {
                     await conversation.updateQueue(itemId, { kind: "remove" });
-                    if (shell.isDisposed)
-                      throw new Error(
-                        "Queued message was removed, but the session composer was closed before restoring.",
-                      );
-                    // Preserve text, references and attachments typed while deletion was pending.
-                    const draft = shell.draftSnapshot;
-                    shell.setDraft({
-                      ...draft,
-                      text: draft.text === "" ? target.text : `${draft.text}\n${target.text}`,
+                    await restoreQueuedMessageToComposer({
+                      sessionId,
+                      shell,
+                      message: { text: target.text, attachments: [] },
+                      imageBlobs: new Map(),
+                      ...(target.rpcId === undefined ? {} : { rpcId: target.rpcId }),
                     });
-                    shell.actions.persistDraft();
-                    shell.focus("end");
                     return;
                   }
                   const editor = ctx.get("queueMessageEditing");
@@ -581,6 +659,7 @@ export const queueDockEntry = {
                     conversation: controller,
                     message,
                     imageBlobs,
+                    ...(target.rpcId === undefined ? {} : { rpcId: target.rpcId }),
                   });
                 } finally {
                   reference.release();

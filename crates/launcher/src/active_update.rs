@@ -35,6 +35,8 @@ struct ActiveUpdateLock {
 struct UpdateStatusProbe {
     schema_version: u8,
     phase: String,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -215,7 +217,7 @@ pub(crate) fn update_waiting_for_launcher_exit() -> io::Result<bool> {
     )
 }
 
-fn read_update_phase(status_path: &Path) -> io::Result<Option<String>> {
+fn read_update_status(status_path: &Path) -> io::Result<Option<UpdateStatusProbe>> {
     let Some(status_bytes) = read_bounded_regular_file(status_path)? else {
         return Ok(None);
     };
@@ -224,28 +226,42 @@ fn read_update_phase(status_path: &Path) -> io::Result<Option<String>> {
     if status.schema_version != 1 {
         return Err(invalid("active update status schema is unsupported"));
     }
-    Ok(Some(status.phase))
+    Ok(Some(status))
+}
+
+fn evaluate_updater_status(status: Option<UpdateStatusProbe>, service: bool) -> io::Result<bool> {
+    let Some(status) = status else {
+        return Ok(false);
+    };
+    match status.phase.as_str() {
+        "waiting-for-exit" => Ok(true),
+        "installing" | "restarting" | "succeeded" if service => Ok(true),
+        "prepared" => Ok(false),
+        "failed" => {
+            let message = status
+                .error
+                .as_deref()
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .unwrap_or("background Updater failed before waiting for Launcher exit");
+            Err(invalid(message))
+        }
+        phase => Err(invalid(format!(
+            "background Updater reported unexpected phase {phase} before waiting for Launcher exit"
+        ))),
+    }
 }
 
 fn wait_for_updater_ready(child: &mut Child, status_path: &Path, service: bool) -> io::Result<()> {
     let started = Instant::now();
     loop {
-        match read_update_phase(status_path)?.as_deref() {
-            Some("waiting-for-exit") => return Ok(()),
-            Some("installing" | "restarting" | "succeeded") if service => return Ok(()),
-            Some("prepared") | None => {}
-            Some("failed") => {
-                return Err(invalid(
-                    "background Updater failed before waiting for Launcher exit",
-                ));
-            }
-            Some(phase) => {
-                return Err(invalid(format!(
-                    "background Updater reported unexpected phase {phase} before waiting for Launcher exit"
-                )));
-            }
+        if evaluate_updater_status(read_update_status(status_path)?, service)? {
+            return Ok(());
         }
         if let Some(status) = child.try_wait()? {
+            if evaluate_updater_status(read_update_status(status_path)?, service)? {
+                return Ok(());
+            }
             return Err(invalid(format!(
                 "background Updater exited before waiting for Launcher exit: {status}"
             )));
@@ -390,9 +406,11 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
     #[cfg(target_os = "macos")]
-    use super::{STATUS_FILE, atomic_replace_file, wait_for_updater_ready};
+    use super::atomic_replace_file;
+    use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
+    #[cfg(unix)]
+    use super::{STATUS_FILE, wait_for_updater_ready};
     use super::{pending_startable_update_at, pending_update_at, transfer_lock_to_updater};
 
     fn fixture_directory(label: &str) -> PathBuf {
@@ -602,5 +620,68 @@ mod tests {
         assert!(waiting_for_launcher_exit_at(&root, 42, &launcher).expect("detect waiting update"));
         assert!(!waiting_for_launcher_exit_at(&root, 43, &launcher).unwrap());
         fs::remove_dir_all(fixture).expect("remove waiting update fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_preflight_failure_error_written_by_updater() {
+        let fixture = fixture_directory("updater-preflight-error");
+        let status_path = fixture.join(STATUS_FILE);
+        let original_error = "npm uses a different global installation than /opt/custom/codexhost; update manually with the npm that installed codexhost";
+        fs::write(
+            &status_path,
+            format!(
+                "{}\n",
+                json!({
+                    "schemaVersion": 1,
+                    "version": "1.2.3",
+                    "installation": "npm",
+                    "phase": "prepared",
+                    "updatedAt": 1,
+                })
+            ),
+        )
+        .expect("write prepared status fixture");
+        let script = format!(
+            "tmp=\"{}.tmp\"\nprintf '%s\\n' '{}' > \"$tmp\"\nmv \"$tmp\" \"{}\"\nexit 1\n",
+            status_path.display(),
+            json!({
+                "schemaVersion": 1,
+                "version": "1.2.3",
+                "installation": "npm",
+                "phase": "failed",
+                "updatedAt": 2,
+                "error": original_error,
+            }),
+            status_path.display(),
+        );
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn failing updater fixture");
+
+        let error = wait_for_updater_ready(&mut child, &status_path, true)
+            .expect_err("preflight failure must error");
+        let _ = child.wait();
+        assert_eq!(error.to_string(), original_error);
+
+        crate::service_update::record_failure(
+            &status_path,
+            &std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "background Updater failed before waiting for Launcher exit",
+            ),
+        )
+        .expect("record failure should preserve existing updater error");
+        let status: serde_json::Value =
+            serde_json::from_slice(&fs::read(&status_path).expect("read status"))
+                .expect("parse status");
+        assert_eq!(status["phase"], "failed");
+        assert_eq!(status["error"], original_error);
+        assert_eq!(status["updatedAt"], 2);
+        fs::remove_dir_all(fixture).expect("remove preflight error fixture");
     }
 }

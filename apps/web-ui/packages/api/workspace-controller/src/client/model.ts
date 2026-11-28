@@ -19,6 +19,8 @@ import type {
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
+  WorkspacePinnedWorkspacesValue,
+  WorkspaceSetPinnedRequest,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
@@ -27,6 +29,8 @@ import type {
   WorkspaceThreadSection,
   WorkspaceMoveSessionToSectionRequest,
   WorkspaceMoveSessionToSectionValue,
+  WorkspaceMoveWorkspaceToSectionRequest,
+  WorkspaceMoveToSectionValue,
 } from "../types.ts";
 
 /** Complete generated `ctx.remote.workspace` namespace. */
@@ -43,6 +47,8 @@ export interface WorkspaceSnapshot {
   readonly archivedSessionIds: WorkspaceArchiveValue["archivedSessionIds"];
   /** Complete registry-global pin set, most recently pinned first. */
   readonly pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"];
+  /** Complete registry-global pinned Workspaces, recent Web pins first then Desktop order. */
+  readonly pinnedWorkspaceIds?: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"];
   readonly threadSections?: readonly WorkspaceThreadSection[];
   readonly state: "idle" | "loading" | "error";
   readonly phase: WorkspaceListPhase;
@@ -63,6 +69,10 @@ export interface WorkspaceFollowSink {
   replaceArchived(sessionIds: WorkspaceArchiveValue["archivedSessionIds"]): void;
   /** Replace the complete pinned Session set. */
   replacePinned(pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"]): void;
+  /** Replace the complete pinned Workspace set. */
+  replacePinnedWorkspaces(
+    pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"],
+  ): void;
   replaceThreadSections(sections: readonly WorkspaceThreadSection[]): void;
 }
 
@@ -74,6 +84,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private items: readonly WorkspaceView[] = [];
   private archivedSessionIds: WorkspaceArchiveValue["archivedSessionIds"] = [];
   private pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"] = [];
+  private pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"] = [];
   private threadSections: readonly WorkspaceThreadSection[] = [];
   private state: WorkspaceSnapshot["state"] = "loading";
   private phase: WorkspaceListPhase = "pending";
@@ -93,6 +104,8 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   >();
   /** Latest pin-set request; a later request or a pushed set supersedes it. */
   private pinRequestSeq = 0;
+  /** Latest pinned-workspace request; a later request or a pushed set supersedes it. */
+  private pinnedWorkspaceRequestSeq = 0;
   /** Locally deleted Workspace ids so delayed snapshots or echoes cannot resurrect them. */
   private readonly removedIds = new Set<WorkspaceId>();
   private readonly listeners = new Set<() => void>();
@@ -303,10 +316,12 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.orderFrameGeneration++;
     this.archiveRequestSeq++;
     this.pinRequestSeq++;
+    this.pinnedWorkspaceRequestSeq++;
     this.canStartProjectless = baseline.canStartProjectless === true;
     this.installViews(baseline.items);
     this.installArchived(baseline.archivedSessionIds);
     this.installPinned(baseline.pinnedSessionIds);
+    this.installPinnedWorkspaces(baseline.pinnedWorkspaceIds ?? []);
     this.threadSections = baseline.threadSections ?? [];
     this.state = "idle";
     this.phase = "ready";
@@ -314,10 +329,31 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.invalidate();
   }
 
+  /**
+   * Pin or unpin one Workspace and install the returned complete pinned Workspace set.
+   * A reply superseded by a later pin request or a pushed set installs nothing.
+   */
+  async setWorkspacePinned(
+    request: WorkspaceSetPinnedRequest,
+  ): Promise<RemoteResult<WorkspacePinnedWorkspacesValue>> {
+    const requestSeq = ++this.pinnedWorkspaceRequestSeq;
+    const result = await this.remote.setWorkspacePinned(request);
+    if (result.ok && requestSeq === this.pinnedWorkspaceRequestSeq) {
+      this.installPinnedWorkspaces(result.value.pinnedWorkspaceIds);
+    }
+    return result;
+  }
+
   moveSessionToSection(
     request: WorkspaceMoveSessionToSectionRequest,
   ): Promise<RemoteResult<WorkspaceMoveSessionToSectionValue>> {
     return this.remote.moveSessionToSection(request);
+  }
+
+  moveWorkspaceToSection(
+    request: WorkspaceMoveWorkspaceToSectionRequest,
+  ): Promise<RemoteResult<WorkspaceMoveToSectionValue>> {
+    return this.remote.moveWorkspaceToSection(request);
   }
 
   /** Merge one decoded Workspace upsert from the current follow generation. */
@@ -352,6 +388,13 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   replacePinned(pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"]): void {
     this.pinRequestSeq++;
     this.installPinned(pinnedSessionIds);
+  }
+
+  replacePinnedWorkspaces(
+    pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"],
+  ): void {
+    this.pinnedWorkspaceRequestSeq++;
+    this.installPinnedWorkspaces(pinnedWorkspaceIds);
   }
 
   replaceThreadSections(sections: readonly WorkspaceThreadSection[]): void {
@@ -413,6 +456,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
         optimistic.size === 0
           ? this.pinnedSessionIds
           : this.pinnedSessionIds.filter((id) => !optimistic.has(id)),
+      pinnedWorkspaceIds: this.pinnedWorkspaceIds,
       threadSections: this.threadSections,
       state: this.state,
       phase: this.phase,
@@ -441,6 +485,18 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     )
       return;
     this.pinnedSessionIds = [...pinnedSessionIds];
+    this.invalidate();
+  }
+
+  private installPinnedWorkspaces(
+    pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"],
+  ): void {
+    if (
+      pinnedWorkspaceIds.length === this.pinnedWorkspaceIds.length &&
+      pinnedWorkspaceIds.every((id, index) => id === this.pinnedWorkspaceIds[index])
+    )
+      return;
+    this.pinnedWorkspaceIds = [...pinnedWorkspaceIds];
     this.invalidate();
   }
 
@@ -484,6 +540,10 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       this.removedIds.add(workspaceId);
     }
     this.committedOrder = this.committedOrder.filter((id) => id !== workspaceId);
+    const nextPinnedWorkspaces = this.pinnedWorkspaceIds.filter((id) => id !== workspaceId);
+    if (nextPinnedWorkspaces.length !== this.pinnedWorkspaceIds.length) {
+      this.pinnedWorkspaceIds = nextPinnedWorkspaces;
+    }
     const items = this.items.filter((item) => item.workspaceId !== workspaceId);
     if (items.length === this.items.length) {
       // A successful unary echo still publishes an earlier increment's

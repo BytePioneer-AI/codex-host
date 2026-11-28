@@ -1,5 +1,9 @@
 import { memo } from "react";
-import { IconChevronDownOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  IconChevronDownOutlineRegular,
+  focusWithoutRing,
+  pointerModality,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatNodeViewProps } from "../contract/slots.ts";
 import { turnProcessAlwaysOpen } from "../contract/turn-process.ts";
 import { formatRunDuration } from "./message-chrome.ts";
@@ -65,7 +69,20 @@ export const TurnProcessNodeView = memo(function TurnProcessNodeView({
         disabled={!canCollapse}
         aria-expanded={turnProcess.hasContent ? open : undefined}
         onClick={(event) => {
-          event.currentTarget.focus();
+          const button = event.currentTarget;
+          const active = button.ownerDocument.activeElement;
+          const insideProcess =
+            active instanceof Element &&
+            active
+              .closest("[data-turn-process-member], [data-step-process]")
+              ?.getAttribute("data-chat-turn") === String(node.data.turn);
+          if (open && insideProcess) {
+            if (event.detail !== 0 || pointerModality()) {
+              focusWithoutRing(button, { preventScroll: true });
+            } else {
+              button.focus({ preventScroll: true });
+            }
+          }
           turnProcess.setOpen(!open);
         }}
       >

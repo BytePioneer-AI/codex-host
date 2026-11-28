@@ -10,6 +10,7 @@ import {
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
+import { DELEGATION_MENTION_MENU_SELECTOR } from "../src/renderer-delegation-mention.js";
 import {
   CODEX_ACCOUNT_LIST_METHOD,
   createRendererModelClient,
@@ -227,6 +228,9 @@ function installFakeBrowser(): void {
     closest(): Element | null {
       return null;
     }
+    matches(): boolean {
+      return false;
+    }
     querySelector(): Element | null {
       return null;
     }
@@ -239,7 +243,9 @@ function installFakeBrowser(): void {
     querySelector: (selector: string) => (selector.includes("textarea") ? testState.editor : null),
   }) as unknown as Element;
   const editor = Object.assign(new FakeElement(), {
-    closest: () => composer,
+    // The editor sits inside the Composer, never inside the delegation mention menu.
+    closest: (selector: string) =>
+      selector === DELEGATION_MENTION_MENU_SELECTOR ? null : composer,
   }) as unknown as Element;
   const sendButton = Object.assign(new FakeElement(), {
     isConnected: true,
@@ -2903,5 +2909,48 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(testState.renderedModelViews).not.toContainEqual(
       expect.objectContaining({ status: "error" }),
     );
+  });
+
+  it("inspects draft external Harness credits using cached account telemetry instead of forcing refresh", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const inspectHarnessAccount = vi.fn(async ({ harnessId }: { harnessId: string }) => ({
+      harnessId,
+      harnessName: "Antigravity",
+      account: { credits: { usedPercent: 18, periodType: "five_hour" as const } },
+    }));
+    const local = {
+      listHarnessPlugins: vi.fn(async () => ({
+        plugins: [{ id: "antigravity", name: "Antigravity", version: "1.0.0" }],
+      })),
+      inspectHarness: vi.fn(async () => readyInspection("gemini-4-neon")),
+      inspectHarnessAccount,
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const applyAgent = vi.fn(() => true);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "antigravity"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      applyAgent,
+      {
+        ...local,
+        currentHostId: () => "local",
+        clientForHost: () => local,
+      } as never,
+    );
+    await vi.waitFor(() => expect(local.inspectHarness).toHaveBeenCalled());
+    await testState.selectAgent?.("antigravity");
+
+    await vi.waitFor(() => expect(inspectHarnessAccount).toHaveBeenCalledTimes(1));
+    expect(inspectHarnessAccount).toHaveBeenCalledWith({ harnessId: "antigravity" });
+    expect(testState.renderedCredits).toMatchObject({ usedPercent: 18, periodType: "five_hour" });
   });
 });

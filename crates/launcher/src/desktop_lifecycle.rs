@@ -75,6 +75,12 @@ struct Owner {
 }
 
 impl Owner {
+    fn managed_ended(&self) -> Result<bool> {
+        Ok(self.controller.live()?.is_none()
+            && self.launcher.live()?.is_none()
+            && port_closed(self.descriptor.control_port)?)
+    }
+
     fn ended(&self) -> Result<bool> {
         Ok(self.controller.live()?.is_none()
             && self.desktop.live()?.is_none()
@@ -82,11 +88,27 @@ impl Owner {
             && port_closed(self.descriptor.control_port)?)
     }
 
+    fn belongs_to_data(&self, data: &Path) -> bool {
+        data.canonicalize().ok().as_ref() == Some(&self.data)
+    }
+
+    fn ignored_for_update_scope(&self, data: &Path) -> Result<bool> {
+        if self.ended()? {
+            return Ok(false);
+        }
+        Ok(self.managed_ended()?
+            || (!self.belongs_to_data(data)
+                && !is_current_installation(&self.launcher.executable)?))
+    }
+
     fn check_scope(&self, data: &Path) -> Result<()> {
-        if data.canonicalize().ok().as_ref() != Some(&self.data) {
-            return Err(
-                "Desktop belongs to a different CODEXHOST_DATA_DIR; no GUI action taken".into(),
-            );
+        if !self.belongs_to_data(data) {
+            return Err(format!(
+                "Desktop belongs to a different CODEXHOST_DATA_DIR ({}, launcher pid {}); no GUI action taken",
+                self.data.display(),
+                self.launcher.pid
+            )
+            .into());
         }
         check_installation(&self.launcher.executable)
     }
@@ -140,9 +162,13 @@ fn same_executable(expected: &Path, observed: &Path) -> bool {
     false
 }
 
-fn check_installation(executable: &Path) -> Result<()> {
+fn is_current_installation(executable: &Path) -> Result<bool> {
     let current = std::env::current_exe()?.canonicalize()?;
-    if !same_executable(&current, executable) {
+    Ok(same_executable(&current, executable))
+}
+
+fn check_installation(executable: &Path) -> Result<()> {
+    if !is_current_installation(executable)? {
         return Err("Desktop belongs to a different installation; no GUI action taken".into());
     }
     Ok(())
@@ -411,7 +437,11 @@ fn wait_until(deadline: Instant, mut predicate: impl FnMut() -> Result<bool>) ->
 }
 
 pub(super) fn running_for_update(data: &Path) -> Result<bool> {
-    let lifecycle = Lifecycle::open(&crate::runtime_instance::existing_descriptor_path()?, false)?;
+    running_for_update_at(&crate::runtime_instance::existing_descriptor_path()?, data)
+}
+
+fn running_for_update_at(descriptor_path: &Path, data: &Path) -> Result<bool> {
+    let lifecycle = Lifecycle::open(descriptor_path, false)?;
     if lifecycle.store.is_none() && read_descriptor(&lifecycle.descriptor)?.is_none() {
         return Ok(false);
     }
@@ -420,6 +450,11 @@ pub(super) fn running_for_update(data: &Path) -> Result<bool> {
         .as_ref()
         .map(|store| store.lock(Instant::now() + Duration::from_secs(40)))
         .transpose()?;
+    if let Some(owner) = lifecycle.read()?
+        && owner.ignored_for_update_scope(data)?
+    {
+        return Ok(false);
+    }
     let guard = lifecycle.launcher_guard()?;
     match lifecycle.inspect(data, guard.is_some())? {
         State::Legacy(descriptor) if guard.is_none() => {
@@ -468,9 +503,18 @@ pub(super) fn launcher_pid_for_inspect(descriptor_path: &Path, data: &Path) -> R
 }
 
 pub(super) fn stop_managed(data: &Path) -> Result<bool> {
+    stop_managed_at(&crate::runtime_instance::default_descriptor_path()?, data)
+}
+
+fn stop_managed_at(descriptor_path: &Path, data: &Path) -> Result<bool> {
     let lock_deadline = Instant::now() + Duration::from_secs(45);
-    let lifecycle = Lifecycle::open(&crate::runtime_instance::default_descriptor_path()?, true)?;
+    let lifecycle = Lifecycle::open(descriptor_path, true)?;
     let _operation = lifecycle.lock(lock_deadline)?;
+    if let Some(owner) = lifecycle.read()?
+        && owner.ignored_for_update_scope(data)?
+    {
+        return Ok(false);
+    }
     let guard = lifecycle.launcher_guard()?;
     // A live Launcher joins any in-flight background Web startup (40s readiness budget)
     // before exiting; give supervised shutdown enough budget to outlast it.

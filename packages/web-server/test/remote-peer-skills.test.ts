@@ -569,7 +569,7 @@ it("executes direct commands by stable ID on the owning Peer, preserving argumen
 it("rejects ineligible Peer commands and propagates Peer write errors without retrying", async (t) => {
   let busy = true;
   const write = Promise.withResolvers<never>();
-  const started = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<undefined>();
   const fx = createFixture({
     peerArchivedIds: ["codex-thread"],
     onPeerRpc(method, params) {
@@ -577,7 +577,7 @@ it("rejects ineligible Peer commands and propagates Peer write errors without re
         return { thread: makeRow("ext-thread", { status: { type: "active" } }) };
       if (method === "codexhost/thread/commands/inspect") return peerCommandCatalog;
       if (method === peerCommandMethod) {
-        started.resolve();
+        started.resolve(undefined);
         return write.promise;
       }
       return undefined;

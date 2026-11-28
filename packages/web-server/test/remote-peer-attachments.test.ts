@@ -450,7 +450,7 @@ it("projector never reads local filesystem even when a matching local file exist
 it("serveFile enforces image-only proxying, security headers, 4xx passthrough, and 502 on upstream failure", async (t) => {
   const largeImage = Buffer.alloc(192 * 1024);
   PNG_BYTES.copy(largeImage);
-  const remaining = Promise.withResolvers<void>();
+  const remaining = Promise.withResolvers<undefined>();
   const remotePeer = await startMockServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const targetPath = url.searchParams.get("path");
@@ -540,7 +540,7 @@ it("serveFile enforces image-only proxying, security headers, 4xx passthrough, a
     assert.equal(streamed.status, 200);
     assert.equal(streamed.headers.get("content-length"), String(largeImage.length));
   } finally {
-    remaining.resolve();
+    remaining.resolve(undefined);
   }
   assert.deepEqual(Buffer.from(await streamed.arrayBuffer()), largeImage);
 

@@ -185,10 +185,10 @@ const USAGE: &str = "usage:
   codexhost project list ...
   codexhost harness list|inspect ...
   codexhost delegate start ...
-  codexhost thread send|cancel|read|wait|watch|watches|list|file ...
+  codexhost thread send|cancel|read|wait|answer|watch|watches|list|file ...
   codexhost thread export <thread> (rarely needed)
-  codexhost client status|on|off|create|list|revoke ...
-  codexhost events pull|ack ...";
+  codexhost client add|list|set|remove ...
+  codexhost events ...";
 
 fn usage() {
     eprintln!("{USAGE}");
@@ -1238,6 +1238,10 @@ fn desktop_environment(
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     #[cfg(target_os = "linux")]
     environment.extend(linux_wayland_runtime_environment(env::vars_os()));
+    #[cfg(target_os = "macos")]
+    if let Some(path) = macos_forwarded_path(codexhost_platform::user_shell_path()) {
+        environment.push((OsString::from("PATH"), path));
+    }
     #[cfg(target_os = "windows")]
     for name in ["PATH", "PATHEXT"] {
         if let Some(value) = env::var_os(name) {
@@ -1245,6 +1249,11 @@ fn desktop_environment(
         }
     }
     environment
+}
+
+#[cfg(target_os = "macos")]
+fn macos_forwarded_path(path: Option<OsString>) -> Option<OsString> {
+    path.filter(|value| value.to_str().is_some_and(|text| !text.is_empty()))
 }
 
 #[cfg(target_os = "linux")]
@@ -1764,15 +1773,13 @@ fn desktop_route(
     codex_installed: bool,
     shell_available: bool,
 ) -> DesktopRoute {
-    if shell_available {
-        return DesktopRoute::Onboarding;
-    }
     match preferences.filter(|prefs| prefs.onboarding_completed) {
         Some(prefs) => match prefs.default_desktop_surface {
             Surface::NativeShell => DesktopRoute::App,
             Surface::CodexDesktop if codex_installed => DesktopRoute::CodexDesktop,
             Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
         },
+        None if shell_available => DesktopRoute::Onboarding,
         None if !codex_installed => DesktopRoute::RememberNative,
         None => DesktopRoute::CodexDesktop,
     }
@@ -2157,12 +2164,15 @@ mod tests {
             (None, true, true, Onboarding),
             (None, true, false, CodexDesktop),
             (incomplete, false, true, Onboarding),
+            (incomplete, false, false, RememberNative),
             (incomplete, true, true, Onboarding),
-            (native, true, true, Onboarding),
+            (incomplete, true, false, CodexDesktop),
+            (native, false, true, App),
+            (native, true, true, App),
             (native, true, false, App),
-            (codex, true, true, Onboarding),
+            (codex, true, true, CodexDesktop),
             (codex, true, false, CodexDesktop),
-            (codex, false, true, Onboarding),
+            (codex, false, true, CodexUnavailable),
             (codex, false, false, CodexUnavailable),
         ] {
             assert_eq!(desktop_route(prefs, installed, shell), expected);
@@ -2816,6 +2826,78 @@ mod tests {
         assert!(missing_status.success());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn desktop_environment_forwards_macos_resolved_path_and_skips_non_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        assert_eq!(super::macos_forwarded_path(None), None);
+        assert_eq!(super::macos_forwarded_path(Some(OsString::new())), None);
+        assert_eq!(
+            super::macos_forwarded_path(Some(OsString::from_vec(vec![
+                0xff, b'/', b'b', b'i', b'n'
+            ]))),
+            None
+        );
+        assert_eq!(
+            super::macos_forwarded_path(Some(OsString::from("/opt/homebrew/bin:/usr/bin"))),
+            Some(OsString::from("/opt/homebrew/bin:/usr/bin"))
+        );
+
+        const TEST: &str =
+            "tests::desktop_environment_forwards_macos_resolved_path_and_skips_non_utf8";
+        const MARKER: &str = "CODEXHOST_TEST_DESKTOP_ENV_MACOS_PATH";
+        if env::var_os(MARKER).is_some() {
+            let environment = desktop_environment(
+                &resolved_options(),
+                &runtime_control(),
+                Path::new("/Applications/codexhost.app/Contents/MacOS/codexhost"),
+                Path::new("/tmp/codexhost/desktop-runtime-v1.json"),
+                None,
+            );
+            assert_eq!(
+                environment
+                    .iter()
+                    .find(|(name, _)| name == "PATH")
+                    .map(|(_, value)| value),
+                Some(&OsString::from(
+                    "/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                ))
+            );
+            return;
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "codexhost-desktop-env-path-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let fake_shell = root.join("zsh");
+        std::fs::write(
+            &fake_shell,
+            "#!/bin/sh\nprintf '\\0CODEXHOST_LOGIN_PATH_V1\\0/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin\\0'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = Command::new(env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env(MARKER, "1")
+            .env("HOME", &root)
+            .env("SHELL", &fake_shell)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .status()
+            .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
     }
 
     #[cfg(target_os = "windows")]

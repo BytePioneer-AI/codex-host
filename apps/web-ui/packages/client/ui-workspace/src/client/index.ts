@@ -473,6 +473,8 @@ export function apply(ctx: Context): void {
     notifyArchivedNotOpenable: () => {
       notify({ kind: "archivedNotOpenable" });
     },
+    setWorkspacePinned: workspaces.setWorkspacePinned?.bind(workspaces),
+    moveWorkspaceToSection: workspaces.moveWorkspaceToSection?.bind(workspaces),
     renameWorkspace: async (workspaceId, title) => {
       await workspaces.rename(workspaceId, title);
     },

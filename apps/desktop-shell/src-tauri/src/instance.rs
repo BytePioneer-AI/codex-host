@@ -18,11 +18,12 @@ const MAX_REQUEST_BYTES: u64 = 4 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Activation {
     Onboarding,
     Show,
+    Route(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -160,7 +161,7 @@ fn claim_with_lock(
         }
 
         let last_problem = match read_live_record(&data_dir) {
-            RecordState::Live(record) => match activate(&record, activation) {
+            RecordState::Live(record) => match activate(&record, activation.clone()) {
                 Ok(()) => return Ok(Claim::Forwarded),
                 Err(error) => Some(error),
             },
@@ -435,6 +436,10 @@ fn handle_activation(
         && serde_json::from_str::<ActivationRequest>(&request)
             .ok()
             .filter(|request| request.nonce == nonce)
+            .filter(|request| match &request.action {
+                Activation::Route(route) => crate::navigation::valid_host_route(route),
+                _ => true,
+            })
             .is_some_and(|request| activations.send(request.action).is_ok());
     stream
         .write_all(if accepted { b"ok\n" } else { b"denied\n" })
@@ -626,6 +631,15 @@ mod tests {
         assert_eq!(
             activations.recv_timeout(Duration::from_secs(1)).unwrap(),
             Activation::Show
+        );
+        let route = Activation::Route("/?session=example%231".into());
+        assert!(matches!(
+            claim_with(&alias_data, route.clone(), test_retry(), || {}).unwrap(),
+            Claim::Forwarded
+        ));
+        assert_eq!(
+            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
+            route
         );
 
         instance.shutdown();

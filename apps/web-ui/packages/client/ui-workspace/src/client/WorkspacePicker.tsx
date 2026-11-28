@@ -28,6 +28,7 @@ import { workspaceDisplayTitle } from "@deepseek-ai/dsh-api-workspace-controller
 import type { SnapshotSelectorHook } from "@deepseek-ai/dsh-client-ui-slots";
 import type { DirectoryFlowOwnerProps, WorkspacePickerProps } from "./contract/slots.ts";
 import { HeroLocationWorkspacePicker } from "./HeroLocationWorkspacePicker.tsx";
+import { isRemoteFallbackWorkspace } from "./rows/host-scope-filter.ts";
 import css from "./WorkspacePicker.module.css";
 
 const ADD_WORKSPACE = "::add-workspace";
@@ -87,7 +88,9 @@ export function WorkspacePickFlow({
   selectedId,
 }: WorkspacePickFlowProps) {
   const workspaceSnapshot = useWorkspaces((state) => state);
-  const workspaces = workspaceSnapshot.items;
+  const workspaces = workspaceSnapshot.items.filter(
+    (workspace) => !isRemoteFallbackWorkspace(workspace),
+  );
   const getAnchorRect = useCallback(
     () => anchorRef?.current?.getBoundingClientRect() ?? null,
     [anchorRef],

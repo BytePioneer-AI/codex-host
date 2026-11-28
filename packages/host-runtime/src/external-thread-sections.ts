@@ -23,6 +23,10 @@ import {
 const MAX_OFFICIAL_PAGES = 256;
 const OFFICIAL_PAGE_SIZE = 100;
 
+export const SHARED_SECTIONS_WATCH_METHOD = "codexhost/shared-threads/sections/watch";
+export const SHARED_SECTIONS_CHANGED_METHOD = "codexhost/shared-threads/sections/changed";
+export const SHARED_SECTIONS_RECONCILE_METHOD = "codexhost/shared-threads/sections/reconcile";
+
 export class ThreadSectionError extends Error {
   constructor(message: string) {
     super(message);
@@ -168,43 +172,138 @@ export async function sectionOrder(input: {
   );
 }
 
+function object(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function officialSectionDefinition(value: unknown): StoredThreadSection | null {
+  if (
+    !object(value) ||
+    typeof value.id !== "string" ||
+    !value.id ||
+    typeof value.name !== "string" ||
+    !value.name.trim()
+  )
+    return null;
+  const appearance = value.appearance;
+  if (appearance != null && !object(appearance)) return null;
+  const icon = appearance?.icon ?? null;
+  const color = appearance?.color ?? null;
+  if ((icon !== null && typeof icon !== "string") || (color !== null && typeof color !== "string"))
+    return null;
+  return {
+    id: value.id,
+    name: value.name,
+    appearance: appearance ? { icon, color } : null,
+  };
+}
+
+/** The last complete definition set, with a confirmed write layered over it until refreshed. */
+export class SectionDefinitions {
+  #complete: ReadonlyMap<string, StoredThreadSection> | undefined;
+  readonly #confirmed = new Map<string, StoredThreadSection | null>();
+
+  constructor(private readonly pinnedSectionId: string) {}
+
+  replace(definitions: ReadonlyMap<string, StoredThreadSection>): void {
+    this.#complete = definitions;
+    this.#confirmed.clear();
+  }
+
+  confirm(sectionId: string, section: StoredThreadSection | null): void {
+    this.#confirmed.set(sectionId, section);
+  }
+
+  project(
+    placements: StoredSectionPlacementV1[],
+    complete = this.#complete,
+  ): StoredSectionPlacementV1[] {
+    let next: StoredSectionPlacementV1[] | undefined;
+    for (const [index, placement] of placements.entries()) {
+      const { section } = placement;
+      const confirmed = complete === this.#complete ? this.#confirmed.get(section.id) : undefined;
+      const current = confirmed !== undefined ? confirmed : complete?.get(section.id);
+      if (
+        section.id !== this.pinnedSectionId &&
+        (current === null || (current === undefined && complete))
+      ) {
+        next ??= placements.slice(0, index);
+      } else if (current && !sameSectionDefinition(section, current)) {
+        next ??= placements.slice(0, index);
+        next.push({ ...placement, section: current });
+      } else {
+        next?.push(placement);
+      }
+    }
+    return next ?? placements;
+  }
+}
+
+function sameSectionDefinition(left: StoredThreadSection, right: StoredThreadSection): boolean {
+  return (
+    left.name === right.name &&
+    (left.appearance === null) === (right.appearance === null) &&
+    left.appearance?.icon === right.appearance?.icon &&
+    left.appearance?.color === right.appearance?.color
+  );
+}
+
+/** Both projections use the same current placements, so only section fields can differ. */
+export function sameProjectedSections(
+  before: readonly StoredSectionPlacementV1[],
+  after: readonly StoredSectionPlacementV1[],
+): boolean {
+  return (
+    before === after ||
+    (before.length === after.length &&
+      before.every((placement, index) => {
+        const next = after[index];
+        return (
+          next !== undefined &&
+          (placement === next ||
+            (placement.hostThreadId === next.hostThreadId &&
+              placement.section.id === next.section.id &&
+              sameSectionDefinition(placement.section, next.section)))
+        );
+      }))
+  );
+}
+
 /** List native section definitions in their official order, across pages. */
 export async function* officialThreadSections(
   requestOfficial: OfficialRequest,
 ): AsyncGenerator<StoredThreadSection> {
   let cursor: string | null = null;
   const seen = new Set<string>();
+  const cursors = new Set<string>();
   for (let page = 0; page < MAX_OFFICIAL_PAGES; page += 1) {
     const response = await requestOfficial("threadSection/list", {
       cursor,
       limit: OFFICIAL_PAGE_SIZE,
     });
     const result = response.result;
-    if (typeof result !== "object" || result === null || Array.isArray(result)) {
-      throw new Error("Official threadSection/list failed");
+    if (
+      !object(result) ||
+      !Array.isArray(result.data) ||
+      (result.nextCursor !== null && typeof result.nextCursor !== "string")
+    ) {
+      throw new Error("Invalid official threadSection/list response");
     }
-    const data = Array.isArray(result.data) ? result.data : [];
-    for (const entry of data) {
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-      if (typeof entry.id !== "string" || !entry.id || seen.has(entry.id)) continue;
-      seen.add(entry.id);
-      const appearance = entry.appearance;
-      yield {
-        id: entry.id,
-        name: typeof entry.name === "string" ? entry.name : "",
-        appearance:
-          typeof appearance === "object" && appearance !== null && !Array.isArray(appearance)
-            ? {
-                icon: typeof appearance.icon === "string" ? appearance.icon : null,
-                color: typeof appearance.color === "string" ? appearance.color : null,
-              }
-            : null,
-      };
+    for (const entry of result.data) {
+      const section = officialSectionDefinition(entry);
+      if (!section || seen.has(section.id))
+        throw new Error("Invalid or duplicate official Thread section");
+      seen.add(section.id);
+      yield section;
     }
-    const next = typeof result.nextCursor === "string" ? result.nextCursor : null;
-    if (next === null || next === cursor) break;
+    const next = result.nextCursor;
+    if (next === null) return;
+    if (!next || cursors.has(next))
+      throw new Error("Official Thread section pagination did not advance");
+    cursors.add(next);
     cursor = next;
   }
+  throw new Error("Official Thread section pagination exceeded its request bound");
 }
 
 /** The official definition of a section, which External placements copy. */

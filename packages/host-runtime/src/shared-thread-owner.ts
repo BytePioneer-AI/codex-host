@@ -15,6 +15,10 @@ import {
 } from "@codexhost/shared-contracts";
 import type { RemoteAppServerSession, RemoteAppServerSessionStreams } from "./remote-app-server.js";
 import { object, rpcId, StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
+import {
+  SHARED_SECTIONS_CHANGED_METHOD,
+  SHARED_SECTIONS_WATCH_METHOD,
+} from "./external-thread-sections.js";
 
 /** One AppServerHost owns every external Session, independent of GUI connections. */
 export class SharedThreadOwner {
@@ -25,11 +29,16 @@ export class SharedThreadOwner {
   readonly #interactions = new Map<string, { nativeId: JsonRpcId; message: JsonObject }>();
   readonly #clients = new Map<(message: JsonObject) => void, () => void>();
   readonly #treeClients = new Map<string, (message: JsonObject) => void>();
+  readonly #sectionClients = new Set<(message: JsonObject) => void>();
   #closed = false;
   readonly #receipts = new Map<string, { fingerprint: string; result: Promise<JsonObject> }>();
 
   constructor() {
     this.#peer.subscribe((message) => {
+      if (message.method === SHARED_SECTIONS_CHANGED_METHOD) {
+        for (const listener of this.#sectionClients) listener(message);
+        return;
+      }
       if (message.method === THREAD_TREE_SNAPSHOT_METHOD) {
         const id = object(message.params) ? message.params.subscriptionId : undefined;
         if (typeof id === "string") this.#treeClients.get(id)?.(message);
@@ -99,6 +108,10 @@ export class SharedThreadOwner {
       closed: ended.promise,
       request: async (method, params) => {
         if (closed) throw new Error("Shared Thread client is closed");
+        if (method === SHARED_SECTIONS_WATCH_METHOD) {
+          this.#sectionClients.add(publish);
+          return { result: {} };
+        }
         if (method === THREAD_TREE_UNWATCH_METHOD) {
           const id = params.subscriptionId;
           if (typeof id !== "string" || this.#treeClients.get(id) !== publish)
@@ -137,6 +150,7 @@ export class SharedThreadOwner {
         if (closed) return;
         closed = true;
         this.#clients.delete(publish);
+        this.#sectionClients.delete(publish);
         for (const [id, listener] of this.#treeClients) {
           if (listener !== publish) continue;
           this.#treeClients.delete(id);

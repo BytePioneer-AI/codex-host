@@ -34,6 +34,7 @@ export class ChRealtime {
   private catalogReason: "hello" | "changed" = "changed";
   private readonly threadDebounceMs: number;
   private closed = false;
+  private sectionsDirty = false;
   private online = false;
   private readonly unsubscribe: () => void;
   constructor(
@@ -42,6 +43,7 @@ export class ChRealtime {
       thread: (id: string) => Promise<unknown>;
       usage: (id: string) => void;
       catalog: (reason?: "hello" | "changed") => Promise<void>;
+      sections?: () => Promise<void>;
       archived?: (id: string, archived: boolean) => void;
       connection: (online: boolean) => void;
       /** `full` is the hello's `reset`: the cursor could not be replayed. */
@@ -85,6 +87,9 @@ export class ChRealtime {
       if (!this.dirty.has("")) this.catalogReason = "hello";
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "projects-changed") {
+      this.schedule("", DEFAULT_DEBOUNCE_MS);
+    } else if (event.type === "sections-changed" && this.callbacks.sections) {
+      this.sectionsDirty = true;
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "changed") {
       if (
@@ -139,14 +144,18 @@ export class ChRealtime {
     this.running.add(id);
     const catalogReason = id ? undefined : this.catalogReason;
     if (!id) this.catalogReason = "changed";
+    const sections = !id && this.sectionsDirty ? this.callbacks.sections : undefined;
+    if (sections) this.sectionsDirty = false;
     let retryDelay: number | undefined;
     try {
       if (id) await this.callbacks.thread(id);
+      else if (sections) await sections();
       else await this.callbacks.catalog(catalogReason);
     } catch (error) {
+      if (sections) this.sectionsDirty = true;
       this.callbacks.error(id, error);
       this.dirty.add(id);
-      if (!id && catalogReason === "hello" && this.catalogReason === "changed") {
+      if (!sections && !id && catalogReason === "hello" && this.catalogReason === "changed") {
         this.catalogReason = "hello";
       }
       retryDelay = 1000;

@@ -108,6 +108,7 @@ import type {
 import {
   storedThreadMetadataV1Schema,
   type StoredSectionPlacementV1,
+  type StoredThreadSection,
   type StoredThreadRecordV1,
   type StoredThreadSummaryV1,
 } from "@codexhost/mapping-store";
@@ -119,6 +120,10 @@ import {
   externalThreadForkParamsSchema,
   clientThreadPinParamsSchema,
   clientThreadSectionMoveSchema,
+  CLIENT_THREAD_SECTION_MUTATIONS,
+  THREAD_SECTION_CAPABILITY,
+  type ClientThreadSectionMutationResult,
+  jsonRpcErrorSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   type HarnessCommandDescriptor,
@@ -295,6 +300,9 @@ import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
+const SECTION_RECONCILE_RETRY_MS = 100;
+const SECTION_RECONCILE_MAX_RETRY_MS = 30_000;
+type SectionMutation = keyof typeof CLIENT_THREAD_SECTION_MUTATIONS;
 
 import { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelHost } from "./client-channel-host.js";
@@ -367,6 +375,11 @@ import {
 import {
   listSectionThreads,
   moveThreadSection,
+  sameProjectedSections,
+  officialSectionDefinition,
+  SectionDefinitions,
+  SHARED_SECTIONS_CHANGED_METHOD,
+  SHARED_SECTIONS_RECONCILE_METHOD,
   officialThreadSections,
   listAllOfficialRows,
 } from "./external-thread-sections.js";
@@ -1028,6 +1041,9 @@ export class AppServerHost {
   readonly #threadTree: ThreadTree;
   readonly #treeWatch: ThreadTreeWatch;
   #sectionOperations: Promise<unknown> = Promise.resolve();
+  #sectionReconcileTimer: NodeJS.Timeout | undefined;
+  #sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
+  readonly #sectionDefinitions = new SectionDefinitions(PINNED_THREAD_SECTION_ID);
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
@@ -1130,7 +1146,7 @@ export class AppServerHost {
       environment: () => this.#options.environment ?? process.env,
       waitForPlugins: () => this.#waitForPlugins(),
       listRecords: () => this.#repository.list(),
-      listSectionPlacements: () => this.#repository.listSectionPlacements(),
+      listSectionPlacements: () => this.#projectSectionPlacements(),
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
       readColdExternalThread: (threadId) =>
@@ -1250,6 +1266,7 @@ export class AppServerHost {
         const replaced = readyGeneration !== undefined && readyGeneration !== owner.generation;
         readyGeneration = owner.generation;
         if (replaced) this.clientEvents.harnessInspectionChanged("codex");
+        if (replaced) this.#scheduleSectionReconciliation();
         return;
       }
       const snapshot = this.#accountControl.snapshot();
@@ -1628,6 +1645,7 @@ export class AppServerHost {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
     this.#releaseExtensionActivity();
+    clearTimeout(this.#sectionReconcileTimer);
     if (!this.#options.hostExtensions) void this.hostExtensions?.close();
     this.#skills?.dispose();
     this.#options.sharedThreads?.close();
@@ -1809,8 +1827,13 @@ export class AppServerHost {
     // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
     this.#options.sharedThreads?.start((message) => {
+      if (message.method === SHARED_SECTIONS_CHANGED_METHOD) {
+        this.clientEvents.sectionsChanged();
+        return;
+      }
       void this.#writer.json(message).catch((error: unknown) => this.#diagnose(error));
     });
+    this.#scheduleSectionReconciliation();
     if (this.#closeRequested) await this.#closeOfficialRuntime();
     try {
       // The Scope proves official exit (and optionally restarts it); this native
@@ -1823,6 +1846,8 @@ export class AppServerHost {
       await this.#closeOfficialRuntime();
       return this.#closeRequested ? 0 : 1;
     } finally {
+      this.#desktopInputEnded = true;
+      clearTimeout(this.#sectionReconcileTimer);
       this.#skills?.dispose();
       this.#treeWatch.close();
       this.#releaseExtensionActivity();
@@ -2240,6 +2265,7 @@ export class AppServerHost {
           if (!isRecord(response.error)) this.#observedSessionUsage.initialized(nativeParams);
           await this.#writer.json({ ...response, id: request.id });
           this.#nativeAccountObserver?.initialized(nativeGeneration);
+          this.#scheduleSectionReconciliation();
         } catch (error) {
           await this.#writer.json(rpcError(request, -32087, errorMessage(error)));
         }
@@ -2268,6 +2294,7 @@ export class AppServerHost {
       );
     }
     this.#desktopInputEnded = true;
+    clearTimeout(this.#sectionReconcileTimer);
     this.#externalRuntime.idleRelease.disable();
     // Cancel loading before draining requests that may be waiting for it.
     this.#pluginLoadAbort.abort();
@@ -2410,9 +2437,40 @@ export class AppServerHost {
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {
-          result: jsonValueSchema.parse(await this.#repository.listSectionPlacements()),
+          result: jsonValueSchema.parse(await this.#projectSectionPlacements()),
         }),
       );
+      return;
+    }
+    if (this.#options.externalOnly && request.method === SHARED_SECTIONS_RECONCILE_METHOD) {
+      await this.#runSectionOperation(async () => {
+        const syncPending = await this.#reconcileSectionPlacements({
+          readOnly: requestObject(request).readOnly === true,
+          refreshEmpty: true,
+        });
+        await this.#publishSectionsChanged();
+        await this.#writer.json(rpcEnvelope(request, { result: { syncPending } }));
+      });
+      return;
+    }
+    const sectionMethod = request.method;
+    const sectionOperation = sectionMethod.startsWith("threadSection/")
+      ? sectionMethod.slice("threadSection/".length)
+      : sectionMethod.startsWith("codexhost/thread/sections/")
+        ? sectionMethod.slice("codexhost/thread/sections/".length)
+        : undefined;
+    if (
+      sectionOperation === "create" ||
+      sectionOperation === "update" ||
+      sectionOperation === "delete"
+    ) {
+      this.#dispatchDesktopReply(request, () =>
+        this.#handleSectionMutation(request, sectionOperation),
+      );
+      return;
+    }
+    if (sectionMethod === "codexhost/thread/sections/move") {
+      this.#dispatchDesktopReply(request, () => this.#handleCustomSectionMove(request));
       return;
     }
     if (
@@ -2424,7 +2482,15 @@ export class AppServerHost {
         this.#options.sharedThreads.handlesControl(request.method))
     ) {
       try {
-        const reply = await this.#options.sharedThreads.route(request);
+        const shared = this.#options.sharedThreads;
+        const ownerMove =
+          !this.#options.externalOnly &&
+          shared.options.delegateCreates &&
+          (request.method === "thread/section/move" ||
+            request.method === "codexhost/thread/pins/set");
+        const reply = ownerMove
+          ? { ...(await shared.request(request.method, requestObject(request))), id: request.id }
+          : await shared.route(request);
         if (reply) {
           await this.#writer.json(reply);
           return;
@@ -2510,83 +2576,63 @@ export class AppServerHost {
       this.#dispatchDesktopReply(request, () => this.#handleThreadPins(request));
       return;
     }
-    if (request.method === "codexhost/thread/sections/move") {
-      const move = clientThreadSectionMoveSchema.safeParse(request.params);
-      if (!move.success || move.data.sectionId === PINNED_THREAD_SECTION_ID) {
-        await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section move"));
-        return;
-      }
-      const params = { ...move.data, beforeThreadId: null };
-      this.#dispatchDesktopReply(request, () =>
-        this.#runSectionOperation(async () => {
-          const location = await this.#locateExternalThread(params.threadId);
-          if (await this.#writeResolutionError(request, location)) return;
-          if (location.kind !== "official") {
-            await this.#writer.json(
-              rpcError(
-                request,
-                -32078,
-                "Only native Codex Threads can change custom sections in Web",
-              ),
-            );
-            return;
-          }
-          const current = await this.#requestOfficial("thread/read", {
-            threadId: params.threadId,
-            includeTurns: false,
-          });
-          const thread = (current.result as JsonObject | undefined)?.thread;
-          if (
-            !isRecord(thread) ||
-            thread.id !== params.threadId ||
-            thread.archived === true ||
-            typeof thread.parentThreadId === "string" ||
-            (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID)
-          ) {
-            await this.#writer.json(
-              rpcError(request, -32078, "An active, unpinned Codex Thread is required"),
-            );
-            return;
-          }
-          const sectionId = isRecord(thread.section) ? (thread.section.id ?? null) : null;
-          if (sectionId === params.sectionId) {
-            await this.#writer.json(rpcEnvelope(request, { result: {} }));
-            return;
-          }
-          await this.#moveThreadSection(
-            {
-              id: request.id,
-              ...(request.jsonrpc ? { jsonrpc: request.jsonrpc } : {}),
-              method: "thread/section/move",
-              params,
-            },
-            params,
-          );
-        }),
-      );
-      return;
-    }
     if (request.method === "codexhost/thread/sections/list") {
       this.#dispatchDesktopReply(request, async () => {
         try {
           const requestOfficial = (method: string, params: JsonObject) =>
             this.#requestOfficial(method, params);
-          const sections = [];
-          for await (const { id, name } of officialThreadSections(requestOfficial)) {
-            if (id !== PINNED_THREAD_SECTION_ID && name) sections.push({ id, name });
+          const definitions = await this.#readSectionDefinitions();
+          const supportsSections =
+            isRecord(request.params) && request.params[THREAD_SECTION_CAPABILITY] === true;
+          const capability = supportsSections ? { [THREAD_SECTION_CAPABILITY]: true } : {};
+          const sections = [...definitions.values()]
+            .filter((section) => section.id !== PINNED_THREAD_SECTION_ID)
+            .map((section) =>
+              supportsSections ? section : { id: section.id, name: section.name },
+            );
+          if (sections.length === 0) {
+            await this.#writer.json(rpcEnvelope(request, { result: { ...capability, sections } }));
+            return;
+          }
+          // Match the live catalog query so the shared Host walk can be reused.
+          const query = decodeThreadListRequest({
+            id: request.id,
+            method: "thread/list",
+            params: { archived: false, sortKey: "updated_at", sortDirection: "desc" },
+          });
+          if (!query) throw new Error("Section Thread list query could not be decoded");
+          const { placements, externalRows } = await this.#sectionThreadCatalog(query, definitions);
+          const placementsBySection = new Map<string, StoredSectionPlacementV1[]>();
+          for (const placement of placements) {
+            const inSection = placementsBySection.get(placement.section.id);
+            if (inSection) inSection.push(placement);
+            else placementsBySection.set(placement.section.id, [placement]);
           }
           const sectionRows = await Promise.all(
-            sections.map(async (section) => ({
-              ...section,
-              threads: await listAllOfficialRows(requestOfficial, {
+            sections.map(async (section) => {
+              const officialRows = await listAllOfficialRows(requestOfficial, {
                 sectionId: section.id,
                 sortKey: "section_position",
                 modelProviders: [],
                 useStateDbOnly: true,
-              }),
-            })),
+              });
+              const inSection = placementsBySection.get(section.id);
+              return {
+                ...section,
+                threads: inSection
+                  ? [
+                      ...officialRows,
+                      ...inSection.flatMap(
+                        ({ hostThreadId }) => externalRows.get(hostThreadId) ?? [],
+                      ),
+                    ]
+                  : officialRows,
+              };
+            }),
           );
-          await this.#writer.json(rpcEnvelope(request, { result: { sections: sectionRows } }));
+          await this.#writer.json(
+            rpcEnvelope(request, { result: { ...capability, sections: sectionRows } }),
+          );
         } catch (error) {
           this.#diagnose(error);
           await this.#writer.json(
@@ -3901,7 +3947,7 @@ export class AppServerHost {
    * keep a copy from before the Thread was shared; the shared Host's row is canonical even when
    * the current query excludes it (archived, moved out of a section).
    */
-  async #localThreadCatalog(): Promise<{
+  async #localThreadCatalog(definitions?: ReadonlyMap<string, StoredThreadSection>): Promise<{
     records: StoredThreadSummaryV1[];
     placements: StoredSectionPlacementV1[];
     officialImportTimes: OfficialImportTimes;
@@ -3909,7 +3955,7 @@ export class AppServerHost {
   }> {
     const [records, placements] = await Promise.all([
       this.#repository.listSummaries(),
-      this.#repository.listSectionPlacements(),
+      this.#projectSectionPlacements(undefined, definitions),
     ]);
     // Matched against every local record, so a shared-owned Thread still hides its official import.
     const officialImportTimes = await readOfficialImportTimes(
@@ -3955,6 +4001,46 @@ export class AppServerHost {
       : null;
   }
 
+  async #sectionThreadCatalog(
+    query: DecodedThreadListRequest,
+    definitions?: ReadonlyMap<string, StoredThreadSection>,
+  ): Promise<{
+    placements: StoredSectionPlacementV1[];
+    externalRows: Map<string, JsonObject>;
+  }> {
+    const shared = this.#options.sharedThreads;
+    const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
+      await Promise.all([
+        this.#localThreadCatalog(definitions),
+        shared?.placements() ?? [],
+        shared?.list(query.params) ?? [],
+      ]);
+    const placementById = new Map<string, StoredSectionPlacementV1>();
+    for (const placement of localPlacements) placementById.set(placement.hostThreadId, placement);
+    for (const placement of sharedPlacements) placementById.set(placement.hostThreadId, placement);
+    const placements = await this.#projectSectionPlacements(
+      [...placementById.values()],
+      definitions,
+    );
+    placementById.clear();
+    for (const placement of placements) placementById.set(placement.hostThreadId, placement);
+    const externalRows = new Map(
+      externalThreadListEntries({
+        records,
+        query,
+        runtimeFor: (threadId) => this.#listRuntimeState(threadId),
+        placementOf: (threadId) => placementById.get(threadId),
+      }).map((entry) => [String(entry.thread.id), entry.thread]),
+    );
+    for (const thread of sharedThreads) {
+      const id = String(thread.id);
+      // Older owners may still return the stored mirror. The section order is
+      // built from the same definitions as the row fields.
+      externalRows.set(id, { ...thread, ...threadSectionFields(placementById.get(id)) });
+    }
+    return { placements, externalRows };
+  }
+
   /** `section_position` lists merge External section placements into the official order. */
   async #listSectionThreads(
     request: JsonRpcRequest,
@@ -3962,35 +4048,11 @@ export class AppServerHost {
     query: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
-        await Promise.all([
-          this.#localThreadCatalog(),
-          this.#options.sharedThreads?.placements() ?? [],
-          this.#options.sharedThreads?.list(query.params) ?? [],
-        ]);
-      const sharedIds = new Set(sharedPlacements.map((p) => p.hostThreadId));
-      const placements = [
-        ...localPlacements.filter((p) => !sharedIds.has(p.hostThreadId)),
-        ...sharedPlacements,
-      ];
-      const placementById = new Map(
-        placements.map((entry) => [entry.hostThreadId as string, entry]),
-      );
-      const externalRows = new Map(
-        externalThreadListEntries({
-          records,
-          query,
-          runtimeFor: (threadId) => this.#listRuntimeState(threadId),
-          placementOf: (threadId) => placementById.get(threadId),
-        }).map((entry) => [String(entry.thread.id), entry.thread]),
-      );
+      const { placements, externalRows } = await this.#sectionThreadCatalog(query);
       const page = await listSectionThreads({
         query,
         placements,
-        externalRows: new Map([
-          ...externalRows,
-          ...sharedThreads.map((thread) => [String(thread.id), thread] as const),
-        ]),
+        externalRows,
         requestOfficial: (method, params) => this.#requestOfficial(method, params),
       });
       if (!page) {
@@ -4012,6 +4074,239 @@ export class AppServerHost {
     const next = this.#sectionOperations.then(run);
     this.#sectionOperations = next.catch(() => undefined);
     return next;
+  }
+
+  async #readSectionDefinitions(): Promise<Map<string, StoredThreadSection>> {
+    let generation: number | undefined;
+    const definitions = new Map<string, StoredThreadSection>();
+    const owner = this.#officialRuntimeScope.owner;
+    for await (const section of officialThreadSections(async (method, params) => {
+      const response = await this.#requestOfficial(method, params);
+      generation ??= owner.generation;
+      if (generation !== owner.generation)
+        throw new Error("Official generation changed while listing Thread sections");
+      return response;
+    }))
+      definitions.set(section.id, section);
+    return definitions;
+  }
+
+  async #projectSectionPlacements(
+    placements?: StoredSectionPlacementV1[],
+    definitions?: ReadonlyMap<string, StoredThreadSection>,
+  ): Promise<StoredSectionPlacementV1[]> {
+    placements ??= await this.#repository.listSectionPlacements();
+    if (!placements.some(({ section }) => section.id !== PINNED_THREAD_SECTION_ID))
+      return placements;
+    if (!definitions) {
+      try {
+        definitions = await this.#readSectionDefinitions();
+      } catch {
+        // Never treat an unavailable or incomplete list as evidence of deletion.
+        return this.#sectionDefinitions.project(placements);
+      }
+    }
+    return this.#sectionDefinitions.project(placements, definitions);
+  }
+
+  #scheduleSectionReconciliation(): void {
+    if (
+      this.#closeRequested ||
+      this.#desktopInputEnded ||
+      (!this.#options.externalOnly && this.#options.sharedThreads?.options.delegateCreates)
+    )
+      return;
+    this.#dispatchDesktopRequest(() =>
+      this.#desktopRequests.run(undefined, () =>
+        this.#runSectionOperation(async () => {
+          await this.#reconcileSectionPlacements({ notifyClients: true });
+        }),
+      ),
+    );
+  }
+
+  #updateSectionReconcileRetry(pending: boolean): void {
+    if (!pending) {
+      clearTimeout(this.#sectionReconcileTimer);
+      this.#sectionReconcileTimer = undefined;
+      this.#sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
+    } else if (!this.#sectionReconcileTimer && !this.#closeRequested && !this.#desktopInputEnded) {
+      this.#sectionReconcileTimer = setTimeout(() => {
+        this.#sectionReconcileTimer = undefined;
+        this.#scheduleSectionReconciliation();
+      }, this.#sectionReconcileDelay);
+      this.#sectionReconcileTimer.unref();
+      this.#sectionReconcileDelay = Math.min(
+        this.#sectionReconcileDelay * 2,
+        SECTION_RECONCILE_MAX_RETRY_MS,
+      );
+    }
+  }
+
+  /** Runs on the MappingStore owner, inside the same serial boundary as moves. */
+  async #reconcileSectionPlacements({
+    readOnly = false,
+    refreshEmpty = false,
+    confirmed,
+    notifyClients = false,
+  }: {
+    readOnly?: boolean;
+    refreshEmpty?: boolean;
+    confirmed?: { id: string; section: StoredThreadSection | null };
+    notifyClients?: boolean;
+  } = {}): Promise<boolean> {
+    let placements: StoredSectionPlacementV1[] | undefined;
+    let previous: StoredSectionPlacementV1[] | undefined;
+    let projected: StoredSectionPlacementV1[] | undefined;
+    let pending = false;
+    try {
+      placements = await this.#repository.listSectionPlacements();
+      if (
+        !refreshEmpty &&
+        !confirmed &&
+        !placements.some(({ section }) => section.id !== PINNED_THREAD_SECTION_ID)
+      )
+        return false;
+      previous = this.#sectionDefinitions.project(placements);
+      if (confirmed) this.#sectionDefinitions.confirm(confirmed.id, confirmed.section);
+      const definitions = await this.#readSectionDefinitions();
+      this.#sectionDefinitions.replace(definitions);
+      projected = this.#sectionDefinitions.project(placements);
+      if (!readOnly && projected !== placements)
+        await this.#repository.replaceSectionPlacements(projected);
+      return false;
+    } catch (error) {
+      this.#diagnose(error);
+      if (!placements && confirmed)
+        this.#sectionDefinitions.confirm(confirmed.id, confirmed.section);
+      if (placements) projected ??= this.#sectionDefinitions.project(placements);
+      pending =
+        !placements || placements.some(({ section }) => section.id !== PINNED_THREAD_SECTION_ID);
+      return pending;
+    } finally {
+      if (!readOnly) this.#updateSectionReconcileRetry(pending);
+      if (notifyClients && previous && projected && !sameProjectedSections(previous, projected)) {
+        await this.#publishSectionsChanged();
+      }
+    }
+  }
+
+  async #publishSectionsChanged(): Promise<void> {
+    this.clientEvents.sectionsChanged();
+    if (this.#options.externalOnly) {
+      await this.#writer
+        .json({ method: SHARED_SECTIONS_CHANGED_METHOD, params: {} })
+        .catch((error: unknown) => this.#diagnose(error));
+    }
+  }
+
+  async #handleSectionMutation(request: JsonRpcRequest, operation: SectionMutation): Promise<void> {
+    const contract = CLIENT_THREAD_SECTION_MUTATIONS[operation];
+    const native = request.method !== contract.method;
+    const raw = requestObject(request);
+    const parsed = native ? undefined : contract.params.safeParse(raw);
+    if (parsed?.success === false || raw.sectionId === PINNED_THREAD_SECTION_ID) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section change"));
+      return;
+    }
+    const params = parsed?.data ?? raw;
+    const shared = this.#options.externalOnly ? undefined : this.#options.sharedThreads;
+    if (shared?.options.delegateCreates) {
+      try {
+        const reply = await shared.request(request.method, params);
+        await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+      } catch (error) {
+        this.#diagnose(error);
+        try {
+          this.#sectionDefinitions.replace(await this.#readSectionDefinitions());
+        } catch (refreshError) {
+          this.#diagnose(refreshError);
+        }
+        await this.#publishSectionsChanged();
+        await this.#writeUnknownSectionMutation(request, native);
+      }
+      return;
+    }
+
+    await this.#runSectionOperation(async () => {
+      let reply: JsonObject | undefined;
+      try {
+        reply = await this.#requestOfficial(`threadSection/${operation}`, params);
+      } catch (error) {
+        this.#diagnose(error);
+      }
+      if (
+        reply &&
+        !Object.hasOwn(reply, "result") &&
+        jsonRpcErrorSchema.safeParse(reply.error).success
+      ) {
+        await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+        return;
+      }
+      const section =
+        operation === "delete" || !isRecord(reply?.result)
+          ? null
+          : officialSectionDefinition(reply.result.section);
+      const sectionId = operation === "create" ? section?.id : raw.sectionId;
+      if (
+        !reply ||
+        Object.hasOwn(reply, "error") ||
+        !isRecord(reply.result) ||
+        typeof sectionId !== "string" ||
+        !sectionId ||
+        sectionId === PINNED_THREAD_SECTION_ID ||
+        (operation !== "delete" && section?.id !== sectionId)
+      ) {
+        // A new snapshot cannot attribute the result of this particular write.
+        await this.#reconcileSectionPlacements({ refreshEmpty: true });
+        if (shared) await this.#refreshSharedSectionPlacements(shared);
+        await this.#publishSectionsChanged();
+        await this.#writeUnknownSectionMutation(request, native);
+        return;
+      }
+
+      let syncPending = await this.#reconcileSectionPlacements({
+        confirmed: { id: sectionId, section },
+      });
+      await this.#publishSectionsChanged();
+      if (shared) {
+        // This Desktop has a separate local store and may also show shared rows.
+        syncPending = (await this.#refreshSharedSectionPlacements(shared)) || syncPending;
+      }
+      const result: ClientThreadSectionMutationResult = {
+        status: "confirmed",
+        sectionId,
+        section,
+        syncPending,
+      };
+      await this.#writer.json(
+        rpcEnvelope(request, native ? { ...reply, id: request.id } : { result }),
+      );
+    });
+  }
+
+  async #refreshSharedSectionPlacements(shared: SharedThreadBridge): Promise<boolean> {
+    try {
+      const reply = await shared.request(SHARED_SECTIONS_RECONCILE_METHOD, {});
+      return (
+        reply.error !== undefined || !isRecord(reply.result) || reply.result.syncPending !== false
+      );
+    } catch (error) {
+      this.#diagnose(error);
+      return true;
+    }
+  }
+
+  #writeUnknownSectionMutation(request: JsonRpcRequest, native: boolean): Promise<void> {
+    return this.#writer.json(
+      native
+        ? rpcError(
+            request,
+            -32093,
+            "Native section change outcome is unknown; do not retry automatically",
+          )
+        : rpcEnvelope(request, { result: { status: "unknown" } }),
+    );
   }
 
   async #handleThreadPins(request: JsonRpcRequest): Promise<void> {
@@ -4039,6 +4334,114 @@ export class AppServerHost {
     }
   }
 
+  async #handleCustomSectionMove(request: JsonRpcRequest): Promise<void> {
+    const parsed = clientThreadSectionMoveSchema.safeParse(request.params);
+    if (!parsed.success || parsed.data.sectionId === PINNED_THREAD_SECTION_ID) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section move"));
+      return;
+    }
+    const { threadId, sectionId } = parsed.data;
+    const shared = this.#options.sharedThreads;
+    if (shared) {
+      try {
+        const reply =
+          shared.options.delegateCreates && !this.#options.externalOnly
+            ? await shared.request(request.method, parsed.data)
+            : await shared.route(request);
+        if (reply) {
+          await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+          return;
+        }
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+        return;
+      }
+    }
+
+    await this.#runSectionOperation(async () => {
+      const location = await this.#locateExternalThread(threadId);
+      if (location.kind === "error") {
+        await this.#writeResolutionError(request, location);
+        return;
+      }
+      const inactive = rpcError(
+        request,
+        -32078,
+        "An active, unpinned top-level Thread is required",
+      );
+      if (location.kind === "external") {
+        const { record } = location;
+        const placements = await this.#repository.listSectionPlacements();
+        const existing = placements.find((entry) => entry.hostThreadId === threadId);
+        if (
+          record.archived ||
+          record.subagent !== undefined ||
+          record.attachedToThreadId !== undefined ||
+          existing?.section.id === PINNED_THREAD_SECTION_ID
+        ) {
+          await this.#writer.json(inactive);
+          return;
+        }
+        const section =
+          sectionId === null ? null : (await this.#readSectionDefinitions()).get(sectionId);
+        if (section === undefined) {
+          await this.#writer.json(rpcError(request, -32602, "Thread section does not exist"));
+          return;
+        }
+        if ((existing?.section.id ?? null) === sectionId) {
+          await this.#writer.json(rpcEnvelope(request, { result: {} }));
+          return;
+        }
+        const next = placements.filter((entry) => entry.hostThreadId !== threadId);
+        if (section !== null) {
+          next.push({
+            hostThreadId: record.hostThreadId,
+            section,
+            enteredAt: new Date().toISOString(),
+            beforeThreadId: null,
+          });
+        }
+        await this.#repository.replaceSectionPlacements(next);
+      } else {
+        const current = await this.#requestOfficial("thread/read", {
+          threadId,
+          includeTurns: false,
+        });
+        const thread = isRecord(current.result) ? current.result.thread : undefined;
+        const currentSectionId =
+          isRecord(thread) && isRecord(thread.section) && typeof thread.section.id === "string"
+            ? thread.section.id
+            : null;
+        if (
+          !isRecord(thread) ||
+          thread.id !== threadId ||
+          thread.archived === true ||
+          typeof thread.parentThreadId === "string" ||
+          currentSectionId === PINNED_THREAD_SECTION_ID
+        ) {
+          await this.#writer.json(inactive);
+          return;
+        }
+        if (currentSectionId === sectionId) {
+          await this.#writer.json(rpcEnvelope(request, { result: {} }));
+          return;
+        }
+        const reply = await this.#requestOfficial("thread/section/move", {
+          threadId,
+          sectionId,
+          beforeThreadId: null,
+        });
+        if (isRecord(reply.error)) {
+          await this.#writer.json(rpcEnvelope(request, { ...reply, id: request.id }));
+          return;
+        }
+      }
+      this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
+      await this.#publishSectionsChanged();
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    });
+  }
+
   async #moveThreadSection(
     request: JsonRpcRequest,
     move: DecodedThreadSectionMoveRequest,
@@ -4048,7 +4451,7 @@ export class AppServerHost {
       if (await this.#writeResolutionError(request, location)) return;
       const [records, placements] = await Promise.all([
         this.#repository.list(),
-        this.#repository.listSectionPlacements(),
+        this.#projectSectionPlacements(),
       ]);
       const outcome = await moveThreadSection({
         move,
@@ -4071,6 +4474,7 @@ export class AppServerHost {
         return;
       } else await this.#writer.json(rpcEnvelope(request, { result: {} }));
       this.clientEvents.changed(move.threadId, "codexhost/thread/tree/changed");
+      await this.#publishSectionsChanged();
     } catch (error) {
       await this.#writer.json(rpcError(request, -32081, "Thread section could not be moved"));
       this.#diagnose(error);
@@ -4078,8 +4482,12 @@ export class AppServerHost {
   }
 
   async #externalSectionFields(threadId: string) {
-    const placements = await this.#repository.listSectionPlacements();
-    return threadSectionFields(placements.find((entry) => entry.hostThreadId === threadId));
+    const placement = (await this.#repository.listSectionPlacements()).find(
+      (entry) => entry.hostThreadId === threadId,
+    );
+    return threadSectionFields(
+      placement ? (await this.#projectSectionPlacements([placement]))[0] : undefined,
+    );
   }
 
   /** Cached External Thread projections predate section moves; responses read the placement. */

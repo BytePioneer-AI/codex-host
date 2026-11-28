@@ -193,6 +193,14 @@ export class WebThreadStates {
     for (const [, view] of this.views()) view.forgetKnownTurns();
   }
 
+  /** Forget a deleted Thread and retire any live view immediately. */
+  delete(id: string): void {
+    const state = this.states.get(id);
+    if (!state) return;
+    if (state.view) state.view.retire();
+    this.states.delete(id);
+  }
+
   /** Forget a Thread nothing is tracked for, so unknown ids cannot accumulate. */
   prune(id: string): void {
     const state = this.states.get(id);

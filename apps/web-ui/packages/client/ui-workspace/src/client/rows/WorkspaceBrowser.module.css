@@ -787,6 +787,8 @@
 .archiveActivity {
   margin: 0 0 8px;
   padding-left: 18px;
+  max-height: 220px;
+  overflow-y: auto;
   font-size: 13px;
   line-height: 20px;
   color: var(--dsw-alias-label-primary);

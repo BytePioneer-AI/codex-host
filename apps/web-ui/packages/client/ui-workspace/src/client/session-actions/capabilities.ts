@@ -38,3 +38,12 @@ export function canForkSession(session: SessionRemoteLike | undefined): boolean 
   if (session === undefined) return false;
   return !isRemoteSessionSummary(session);
 }
+
+/**
+ * Whether a Session supports deleting from the sidebar:
+ * - Local Sessions and Remote Peer (`remote-peer:*`) Sessions: supported.
+ * - Non-Peer remote connections (e.g. `remote-ssh*`, `remote-control:*`): unsupported.
+ */
+export function canDeleteSession(session: SessionRemoteLike | undefined): boolean {
+  return canPinSession(session);
+}

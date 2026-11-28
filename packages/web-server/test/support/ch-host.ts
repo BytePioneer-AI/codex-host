@@ -327,6 +327,13 @@ export class FakeChHost implements ChHostClient {
         if (row) row.name = String(params.name);
         value = {};
         break;
+      case "thread/delete":
+        if (!row) throw new Error("Missing CH Thread");
+        this.threads.delete(row.id);
+        this.archivedIds.delete(row.id);
+        this.pinnedIds = this.pinnedIds.filter((id) => id !== row.id);
+        value = {};
+        break;
       case "turn/interrupt":
         value = {};
         break;

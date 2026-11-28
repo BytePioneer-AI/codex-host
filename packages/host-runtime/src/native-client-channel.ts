@@ -425,6 +425,11 @@ export class NativeClientChannel {
     const asyncQuestionsChanged = this.#asyncQuestions.observe(value.method, params);
     const threadId = threadIdFromParams(params);
     if (threadId) {
+      if (value.method === "thread/deleted") {
+        this.#forgetThread(threadId);
+        this.#host.events.changed(threadId, value.method);
+        return;
+      }
       this.noteThread(threadId);
       if (value.method === "thread/settings/updated" && isJsonObject(params.threadSettings))
         this.#configuration.set(threadId, nativeThreadConfiguration(params.threadSettings));
@@ -490,6 +495,17 @@ export class NativeClientChannel {
     this.#pendingNativeIds.set(requestKey(value.id), publicId);
   }
 
+  #forgetThread(threadId: string): void {
+    this.#knownThreads.delete(threadId);
+    this.#resumedThreads.delete(threadId);
+    this.#startedThreads.delete(threadId);
+    this.#configuration.delete(threadId);
+    this.#interactionErrors.delete(threadId);
+    for (const pending of this.#pending.values()) {
+      if (pending.threadId === threadId) this.#deletePending(pending.requestId);
+    }
+  }
+
   #deletePending(publicId: string): void {
     const pending = this.#pending.get(publicId);
     if (!pending) return;
@@ -502,12 +518,16 @@ export class NativeClientChannel {
     const thread = resultThread(reply);
     const opensThread = ["thread/resume", "thread/start", "thread/fork"].includes(method);
     if (method === "thread/fork" && thread?.id === params.threadId) return;
+    const threadId = threadIdFromParams(params);
+    if (method === "thread/delete") {
+      if (threadId) this.#forgetThread(threadId);
+      return;
+    }
     if (thread && typeof thread.id === "string") {
       this.noteThread(thread.id);
       if (opensThread) this.#resumedThreads.add(thread.id);
       if (method === "thread/start") this.#startedThreads.add(thread.id);
     }
-    const threadId = threadIdFromParams(params);
     if (threadId) {
       this.noteThread(threadId);
       if (method === "thread/resume") this.#resumedThreads.add(threadId);
@@ -650,8 +670,10 @@ export class NativeClientChannel {
     )
       reply = { result: this.#items.project(threadId, reply.result) };
     this.observeResponse(method, params, reply);
-    if (threadId && CHANGED_METHODS.has(method) && !("error" in reply))
-      this.#host.events.changed(threadId, method);
+    if (threadId && !("error" in reply)) {
+      if (method === "thread/delete") this.#host.events.changed(threadId, "thread/deleted");
+      else if (CHANGED_METHODS.has(method)) this.#host.events.changed(threadId, method);
+    }
     return reply;
   }
 

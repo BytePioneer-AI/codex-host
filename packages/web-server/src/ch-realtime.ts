@@ -43,6 +43,7 @@ export class ChRealtime {
       usage: (id: string) => void;
       catalog: (reason?: "hello" | "changed") => Promise<void>;
       archived?: (id: string, archived: boolean) => void;
+      deleted?: (id: string) => void;
       connection: (online: boolean) => void;
       /** `full` is the hello's `reset`: the cursor could not be replayed. */
       reset: (epoch: string, full: boolean) => void;
@@ -96,7 +97,17 @@ export class ChRealtime {
       }
       if (event.method === "thread/archived" || event.method === "thread/unarchived")
         this.callbacks.archived?.(event.threadId, event.method === "thread/archived");
-      if (this.watched.has(event.threadId)) {
+      if (event.method === "thread/deleted") {
+        this.watched.delete(event.threadId);
+        this.dirty.delete(event.threadId);
+        this.urgent.delete(event.threadId);
+        const timer = this.timers.get(event.threadId);
+        if (timer) {
+          clearTimeout(timer.handle);
+          this.timers.delete(event.threadId);
+        }
+        this.callbacks.deleted?.(event.threadId);
+      } else if (this.watched.has(event.threadId)) {
         this.schedule(
           event.threadId,
           isUrgentThreadChange(event.method) ? DEFAULT_DEBOUNCE_MS : this.threadDebounceMs,

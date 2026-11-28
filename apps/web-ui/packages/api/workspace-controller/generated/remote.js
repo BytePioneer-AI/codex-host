@@ -69,6 +69,10 @@ let _deepseek_ai_dsh_api_workspace_controller_workspace_delete_result$schema$val
 const _deepseek_ai_dsh_api_workspace_controller_workspace_delete_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_delete_result$schema$value ??= z.object({
   'deleted': z.literal(true).readonly(),
 }))
+const workspaceDeleteSessionRequest = () => z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+})
+const workspaceDeleteSessionResult = () => z.object({})
 let _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value
 const threadSections = () => z.array(z.object({
   'id': z.string().readonly(),
@@ -588,6 +592,28 @@ export const TYPERT_REMOTE = {
         create: _deepseek_ai_dsh_api_workspace_controller_workspace_unpinSession_result$schema,
       },
       sourceLocation: {"file":"packages/api/workspace-controller/src/index.ts","line":185,"column":3},
+    },
+    {
+      id: '@deepseek-ai/dsh-api-workspace-controller#workspace/deleteSession',
+      service: 'workspaceController',
+      namespace: 'workspace',
+      method: 'deleteSession',
+      invocation: { kind: 'direct' },
+      parameters: [{
+        name: 'request',
+        wire: 'request',
+        source: 'json',
+        codec: {
+          mode: 'strict',
+          typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceDeleteSessionRequest',
+          create: workspaceDeleteSessionRequest,
+        },
+      }],
+      result: {
+        mode: 'strict',
+        typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceDeleteSessionValue',
+        create: workspaceDeleteSessionResult,
+      },
     },
   ],
 }

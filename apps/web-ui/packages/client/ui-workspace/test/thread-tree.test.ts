@@ -20,6 +20,7 @@ import {
 import { threadTreeOrderSource, workspaceTreeMembers } from "../src/client/thread-tree-order.ts";
 import {
   archiveCandidates,
+  deleteCandidates,
   isLocalThreadTreeMember,
   runningSubagentsInThreadSubtree,
   runningThreadSubtree,
@@ -619,4 +620,22 @@ it("matches full derivation when reusing precomputed forest and order sources, a
     pinOrderSource(workspaces, list, state, precomputedOrder),
     pinOrderSource(workspaces, list, state),
   );
+});
+
+it("collects delete candidates in leaf-first order including archived children while excluding forks", () => {
+  const fork = row("fork", null);
+  fork.projectionValues = { ...fork.projectionValues, archiveForkParent: "root" };
+  const grandchild = { ...row("grandchild", "child"), running: true };
+  const list = catalog(
+    row("root"),
+    row("child", "root"),
+    grandchild,
+    row("archived-child", "root"),
+    fork,
+  );
+  assert.deepEqual(deleteCandidates(list, id("root")), [
+    { id: id("grandchild"), title: "grandchild", running: true },
+    { id: id("child"), title: "child", running: false },
+    { id: id("archived-child"), title: "archived-child", running: false },
+  ]);
 });

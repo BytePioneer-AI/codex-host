@@ -134,6 +134,7 @@ export class ChSessions {
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
+  private refreshingDeletedIds: Set<string> | undefined;
   private refreshingProjectAssignments: Map<string, string> | undefined;
   private readonly archiveOperations = new Map<string, symbol>();
   private readonly queueOperations = new Map<string, Promise<void>>();
@@ -214,6 +215,9 @@ export class ChSessions {
           archived: (id, archived) => {
             this.archiveOperations.delete(id);
             this.updateArchive(id, archived);
+          },
+          deleted: (id) => {
+            this.forgetDeleted(id);
           },
           connection: (online) => {
             this.hostOnline = online;
@@ -326,21 +330,25 @@ export class ChSessions {
       this.refreshingTiming = new SessionListTiming();
       const archiveChanges = new Map<string, boolean>();
       this.refreshingArchiveChanges = archiveChanges;
+      const deletedIds = new Set<string>();
+      this.refreshingDeletedIds = deletedIds;
       this.refreshingProjectAssignments = new Map();
       const load = workspace
         ? this.listWorkspacePage(
             this.refreshingTiming,
             includeArchived,
             archiveChanges,
+            deletedIds,
             cursor,
             workspace,
           )
-        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, cursor);
+        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, deletedIds, cursor);
       this.refreshing = load.finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
         this.refreshingArchives = false;
         this.refreshingArchiveChanges = undefined;
+        this.refreshingDeletedIds = undefined;
         this.refreshingProjectAssignments = undefined;
         this.refreshingTiming = undefined;
       });
@@ -363,6 +371,7 @@ export class ChSessions {
     timing: SessionListTiming,
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
+    deletedIds: ReadonlySet<string>,
     cursor: string | undefined,
     { workspaceId, scope }: WorkspaceCatalog,
   ): Promise<CatalogRefresh | undefined> {
@@ -424,6 +433,11 @@ export class ChSessions {
     });
     if (this.closed || !this.workspaces.get(workspaceId)) return;
     for (const [id, row] of members) {
+      if (deletedIds.has(id)) {
+        members.delete(id);
+        rows.delete(id);
+        continue;
+      }
       const moved = this.refreshingProjectAssignments?.get(id);
       if (target.projectId && moved !== undefined && moved !== target.projectId) {
         members.delete(id);
@@ -439,18 +453,24 @@ export class ChSessions {
     const localArchives = new Set(this.workspaces.localArchivedSessionIds());
     const included = this.tree.withAncestors(members.keys());
     for (const [id, row] of rows) {
-      if (!included.has(id)) continue;
+      if (!included.has(id) || deletedIds.has(id)) continue;
       // A supplemented ancestor may omit archive state on thread/read.
       const isArchived =
         archived.has(id) || (!indexed.has(id) && (row.archived ?? localArchives.has(id)));
       if (archiveChanges.get(id) ?? isArchived) localArchives.add(id);
       else localArchives.delete(id);
     }
+    for (const id of deletedIds) localArchives.delete(id);
     this.workspaces.setReferenceArchives([...localArchives].sort());
     const workspaceItems = await timing.measure("summaries", () =>
       Promise.all(
         [...rows.values()]
-          .filter((row) => included.has(row.id) && (includeArchived || !localArchives.has(row.id)))
+          .filter(
+            (row) =>
+              !deletedIds.has(row.id) &&
+              included.has(row.id) &&
+              (includeArchived || !localArchives.has(row.id)),
+          )
           .map((row) => this.summary(row, ownership.get(row.id))),
       ),
     );
@@ -461,6 +481,7 @@ export class ChSessions {
     timing: SessionListTiming,
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
+    deletedIds: ReadonlySet<string>,
     cursor?: string,
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
@@ -516,10 +537,10 @@ export class ChSessions {
       "unarchivedRows",
       snapshot.threads.filter((row) => !snapshotArchives.has(row.id)).length,
     );
-    const rows = new Map([...found].filter(([id]) => ownership.has(id)));
+    const rows = new Map([...found].filter(([id]) => ownership.has(id) && !deletedIds.has(id)));
     for (const [id, row] of this.rows) {
       const harnessId = this.threads.harnessId(id);
-      if (found.has(id) || !harnessId) continue;
+      if (found.has(id) || !harnessId || deletedIds.has(id)) continue;
       // Omission from an official page is not deletion or archive evidence.
       // External metadata is complete on the head page, so missing rows may leave only when cursor is undefined.
       if (
@@ -539,6 +560,11 @@ export class ChSessions {
       if (thread.archived === true) archivedIds.add(id);
       return thread;
     });
+    for (const id of deletedIds) {
+      rows.delete(id);
+      ownership.delete(id);
+      archivedIds.delete(id);
+    }
     const assignments = await timing.measure("projects", () =>
       this.host.projects([...rows.keys()]),
     );
@@ -568,9 +594,11 @@ export class ChSessions {
       );
     // Notifications received during catalog or ancestor reads supersede their membership.
     for (const [id, archived] of archiveChanges) {
+      if (deletedIds.has(id)) continue;
       if (archived) archivedIds.add(id);
       else archivedIds.delete(id);
     }
+    for (const id of deletedIds) archivedIds.delete(id);
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
@@ -1383,6 +1411,38 @@ export class ChSessions {
     if (draft.canonicalId || draft.creating || draft.started)
       throw new RpcError("session/busy", "A submitted Thread cannot change Session source.");
     this.drafts.delete(id);
+  }
+
+  private forgetDeleted(id: string): void {
+    this.refreshingDeletedIds?.add(id);
+    this.archiveOperations.delete(id);
+    this.queueOperations.delete(id);
+    this.titleRequests.delete(id);
+    this.workspacePageRows.delete(id);
+    this.rows.delete(id);
+    this.handoffs.delete(id);
+    this.threads.delete(id);
+    this.tree.forget(id);
+    const archived = this.workspaces.localArchivedSessionIds();
+    if (archived.includes(id))
+      this.workspaces.setReferenceArchives(archived.filter((item) => item !== id));
+    const pinned = this.workspaces.localPinnedSessionIds();
+    if (pinned.includes(id)) this.workspaces.setReferencePins(pinned.filter((item) => item !== id));
+    this.publishedCatalog?.delete(id);
+    this.events.emit("api-session/removed", id);
+  }
+
+  private async deleteSession(sessionId: string): Promise<void> {
+    const draft = this.drafts.get(sessionId);
+    if (draft && !draft.canonicalId) {
+      this.discardUnsubmittedDraft(sessionId);
+      this.events.emit("api-session/removed", sessionId);
+      return;
+    }
+    const id = this.id(sessionId);
+    await this.host.request("thread/delete", { threadId: id });
+    this.forgetDeleted(id);
+    await this.refresh().catch(() => undefined);
   }
 
   private updateArchive(id: string, archived: boolean): void {
@@ -2200,6 +2260,12 @@ export class ChSessions {
         return method.startsWith("workspace/")
           ? { archivedSessionIds: this.workspaces.archivedSessionIds() }
           : {};
+      });
+    for (const method of ["workspace/deleteSession", "session/delete"] as const)
+      rpc.register(method, async (args) => {
+        const { sessionId } = requestOf<{ sessionId: string }>(args);
+        await this.deleteSession(sessionId);
+        return {};
       });
     streams.register("session/control", async (_args, sink) => {
       const projections: Record<string, unknown> = {};

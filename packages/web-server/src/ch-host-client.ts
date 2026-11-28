@@ -87,6 +87,7 @@ const METHODS = new Set([
   "codexhost/thread/title/generate",
   "thread/archive",
   "thread/unarchive",
+  "thread/delete",
   "turn/start",
   "turn/interrupt",
   "turn/steer",

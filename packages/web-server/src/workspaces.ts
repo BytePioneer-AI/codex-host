@@ -1504,6 +1504,28 @@ export class Workspaces {
       "workspace/unarchiveSession",
       setMembership("archivedSessionIds", "archived", false),
     );
+    rpc.register("workspace/deleteSession", (args) => {
+      const sessionId = String(requestOf<{ sessionId?: string }>(args).sessionId ?? "");
+      if (sessionId) {
+        const nextArchived = this.state.archivedSessionIds.filter((id) => id !== sessionId);
+        if (nextArchived.length !== this.state.archivedSessionIds.length) {
+          this.state.archivedSessionIds = nextArchived;
+          this.broadcast({ type: "archived", archivedSessionIds: this.archivedSessionIds() });
+        }
+        const nextPinned = this.state.pinnedSessionIds.filter((id) => id !== sessionId);
+        if (nextPinned.length !== this.state.pinnedSessionIds.length) {
+          this.state.pinnedSessionIds = nextPinned;
+          this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
+        }
+        for (const workspace of this.state.items) {
+          if (workspace.sessionIds.includes(sessionId)) {
+            workspace.sessionIds = workspace.sessionIds.filter((id) => id !== sessionId);
+          }
+        }
+        this.save();
+      }
+      return {};
+    });
     rpc.register("workspace/pinSession", setMembership("pinnedSessionIds", "pinned", true));
     rpc.register("workspace/unpinSession", setMembership("pinnedSessionIds", "pinned", false));
     streams.register("workspace/follow", (_args, sink) => {

@@ -58,6 +58,38 @@ export function archiveCandidates(
   return result;
 }
 
+/**
+ * Collect display-tree descendants for a parent deletion in post-order (deepest leaves first)
+ * so deleting children before their parent leaves no dangling attachments.
+ */
+export function deleteCandidates(
+  list: SessionListState,
+  parent: SessionId,
+): { id: SessionId; title: string; running: boolean }[] {
+  const childrenByParent = new Map<string, SessionId[]>();
+  for (const summary of Object.values(list.byId)) {
+    const owner = threadTreeParentOf(summary, list);
+    if (!owner) continue;
+    const siblings = childrenByParent.get(owner) ?? [];
+    siblings.push(summary.id);
+    childrenByParent.set(owner, siblings);
+  }
+  const visited = new Set<string>([parent]);
+  const ordered: { id: SessionId; title: string; running: boolean }[] = [];
+  const visit = (nodeId: string): void => {
+    for (const childId of childrenByParent.get(nodeId) ?? []) {
+      if (visited.has(childId)) continue;
+      visited.add(childId);
+      visit(childId);
+      const summary = list.byId[childId];
+      if (!summary) continue;
+      ordered.push({ id: childId, title: summary.displayTitle, running: summary.running });
+    }
+  };
+  visit(parent);
+  return ordered;
+}
+
 /** Native Subagents retain their own confirmation lines, even below display descendants. */
 export function runningSubagentsInThreadSubtree(
   list: SessionListState,

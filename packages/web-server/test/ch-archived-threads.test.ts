@@ -930,3 +930,30 @@ it("retains persisted local archive records", async (t) => {
   );
   assert.equal(new Workspaces(data, root).isArchived("local"), true);
 });
+
+it("deletes local threads via thread/delete, clears archived/pinned state, and reacts to thread/deleted", async (t) => {
+  const host = nativeCodex(new FakeChChannel());
+  const bench = setup(t, host);
+  host.add("native-live", bench.root).modelProvider = "openai";
+  host.pinnedIds.push("active");
+  await bench.call("session/list", { includeArchived: true });
+  const removed: unknown[] = [];
+  bench.events.emit = (event, id) => {
+    if (event === "api-session/removed") removed.push(id);
+  };
+
+  await bench.call("workspace/deleteSession", { sessionId: "active" });
+  assert.ok(
+    bench.host.requests.some(
+      (request) => request.method === "thread/delete" && request.params.threadId === "active",
+    ),
+  );
+  assert.equal(bench.sessions["rows"].has("active"), false);
+  assert.equal(bench.workspaces.pinnedSessionIds().includes("active"), false);
+  assert.ok(removed.includes("active"));
+
+  host.threads.delete("native-live");
+  host.changed("native-live", "thread/deleted");
+  assert.equal(bench.sessions["rows"].has("native-live"), false);
+  assert.ok(removed.includes("native-live"));
+});

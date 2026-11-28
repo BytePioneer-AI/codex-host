@@ -572,6 +572,36 @@ it("projects resolution IDs per client and retires another client's answered req
   }
 });
 
+it.each(["thread/archive", "thread/delete"])(
+  "retires active work after a successful %s",
+  async (method) => {
+    const f = fixture();
+    const { client } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      const params = { threadId: "thread-one" };
+      f.connection().emit({ method: "turn/started", params });
+      await vi.waitFor(() => expect(f.owner.activeThreadIds).toContain(params.threadId));
+      f.connection().setResponse((request) => ({
+        id: request.id ?? null,
+        error: { code: -32000, message: "not archived" },
+      }));
+      await client.request(method, params);
+      expect(f.owner.activeThreadIds).toContain(params.threadId);
+      f.connection().setResponse((request) => ({ id: request.id ?? null, result: {} }));
+      await client.request("thread/unsubscribe", params);
+      expect(f.owner.activeThreadIds).toContain(params.threadId);
+      await client.request(method, params);
+      expect(f.owner.activeThreadIds).toEqual([]);
+    } finally {
+      client.close();
+      await f.owner.stop();
+    }
+  },
+);
+
 it("does not treat resumed historical inProgress Turns as active work on this backend", async () => {
   const f = fixture();
   const { client } = f.attach();

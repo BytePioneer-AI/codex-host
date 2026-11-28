@@ -49,9 +49,10 @@ export async function startClientChannelServer(options: {
   environment: NodeJS.ProcessEnv;
   directory?: string;
   owner?: "service";
-  shutdown?: { runningTasks(): number; stop(): void };
+  shutdown?: { runningTasks(): number; stop(): void; isStopping?(): boolean };
   /** When provided, advertises `capabilities.peerDelegation=1` and routes internal peer delegation exclusively here. */
   peerDelegation?: (params: unknown) => Promise<{ result: JsonValue }>;
+  nativeSession?: (streams: RemoteAppServerSessionStreams) => RemoteAppServerSession;
   externalSession?: (streams: RemoteAppServerSessionStreams) => RemoteAppServerSession;
   desktopSession?: (
     streams: RemoteAppServerSessionStreams,
@@ -149,22 +150,31 @@ export async function startClientChannelServer(options: {
   const desktop = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 * 1024 });
   const desktopSessions = new Set<ReturnType<typeof attachRemoteAppServerSession>>();
   let closing: Promise<void> | undefined;
+  const routes = new Map<string, typeof options.desktopSession>([
+    ["/v1/desktop", options.desktopSession],
+    ["/v1/external", options.externalSession],
+    ["/v1/native", options.nativeSession],
+  ]);
   server.on("upgrade", (request, socket, head) => {
-    const session =
-      request.url === "/v1/external"
-        ? options.externalSession
-        : request.url === "/v1/desktop"
-          ? options.desktopSession
-          : undefined;
-    if (closing || !session || !authorized(request)) {
+    const session = routes.get(request.url ?? "");
+    if (!authorized(request)) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    if (!session) {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    if (closing || options.shutdown?.isStopping?.()) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       return;
     }
     desktop.handleUpgrade(request, socket, head, (connection) => {
       try {
         const binding = attachRemoteAppServerSession({
           socket: connection,
-          framing: "ndjson",
+          framing: request.url === "/v1/native" ? "messages" : "ndjson",
+          drainInputOnDisconnect: request.url !== "/v1/native",
           diagnosticOutput: process.stderr,
           createSession: (streams) => session(streams, request),
         });

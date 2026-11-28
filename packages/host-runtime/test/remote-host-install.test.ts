@@ -73,9 +73,13 @@ describe("remote SSH Host installation", () => {
       expect(await readFile(original.profilePath, "utf8")).not.toContain(
         "REMOTE_EXECUTION_SESSION",
       );
-      await installRemoteHost({ ...options, executionSession: "desktop" });
+      await installRemoteHost({ ...options, executionSession: "desktop", nativeHost: "shared" });
       const updated = await installRemoteHost(options);
       expect(updated.executionSession).toBe("desktop");
+      expect(updated.nativeHost).toBe("shared");
+      expect(await readFile(updated.profilePath, "utf8")).toContain(
+        "CODEXHOST_SSH_NATIVE_HOST='shared'",
+      );
       expect(await inspectRemoteHostInstallation(options)).toMatchObject({
         state: "ready",
         executionSession: "desktop",
@@ -87,7 +91,15 @@ describe("remote SSH Host installation", () => {
       expect(await readFile(updated.profilePath, "utf8")).toContain(
         `CODEXHOST_SHARED_DATA_DIR=${shellQuote(sharedDataDirectory)}`,
       );
-      const reset = await installRemoteHost({ ...options, executionSession: "ssh" });
+      const reset = await installRemoteHost({
+        ...options,
+        environment: { ...options.environment, CODEXHOST_SSH_NATIVE_HOST: "shared" },
+        executionSession: "ssh",
+        nativeHost: "ssh",
+      });
+      expect(await readFile(reset.profilePath, "utf8")).toContain(
+        "CODEXHOST_SSH_NATIVE_HOST='ssh'",
+      );
       expect(reset.executionSession).toBeUndefined();
       expect(reset.sharedDataDirectory).toBe(sharedDataDirectory);
       expect(await readFile(reset.profilePath, "utf8")).not.toContain("REMOTE_EXECUTION_SESSION");

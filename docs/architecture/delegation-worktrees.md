@@ -1,5 +1,8 @@
 # 委派的独立 Git worktree
 
+
+原生 Codex 子会话沿用父会话工作目录时，也沿用父会话已登记的项目 ID。指定其他工作目录或创建独立 worktree 时，由目标工作区决定项目归属。委派给外部 Harness 时，子会话沿用选定的工作目录，项目 ID 不从父会话继承。
+
 `delegate start --worktree <branch>` 在 CLI 所在机器创建分支和 Git worktree，将新路径作为该次委派的 `cwd`。HTTP `POST /v1/delegate/start` 和 MCP `delegate_start` 使用 `worktree`、可选 `base` 在接收请求的 Host 上创建。CLI 和 Host 共用 `delegation-worktree.ts` 的创建与失败处理逻辑。这不是 Harness 原生隔离选项，也不改变未指定 worktree 的委派行为。
 
 ```sh

@@ -15,6 +15,7 @@ import { prepareLocalCodex } from "./native-account-host.js";
 import { startClientChannelServer } from "./client-channel-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
 import { SharedThreadOwner } from "./shared-thread-owner.js";
+import { nativeRelaySession } from "./native-relay.js";
 import { sharedHostDesktop } from "./shared-host-desktop.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
@@ -213,19 +214,19 @@ export async function runSharedHostService(
           channel = await startClientChannelServer({
             environment: env,
             owner: "service",
-            externalSession: (streams) => {
-              if (stopping) throw new Error("Shared Host is stopping");
-              return owner.createSession(streams);
-            },
+            nativeSession: (streams) => nativeRelaySession(official.officialRuntimeScope, streams),
+            externalSession: (streams) => owner.createSession(streams),
             shutdown: {
+              isStopping: () => stopping,
               runningTasks: () =>
-                new Set([host, ...desktops].flatMap((owner) => owner.runningThreadIds())).size,
+                new Set([
+                  ...official.officialRuntimeScope.owner.activeThreadIds,
+                  ...[host, ...desktops].flatMap((owner) => owner.runningThreadIds()),
+                ]).size,
               stop,
             },
-            desktopSession: (streams, request) => {
-              if (stopping) throw new Error("Shared Host is stopping");
-              return sharedHostDesktop(desktopOptions, streams, request);
-            },
+            desktopSession: (streams, request) =>
+              sharedHostDesktop(desktopOptions, streams, request),
             target: {
               clientEvents: host.clientEvents,
               handleClientRequest: (method, params) => host.handleClientRequest(method, params),

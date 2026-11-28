@@ -19,6 +19,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Only locally classified handshake facts are safe to include in private-channel diagnostics. */
+export class PrivateOfficialHandshakeError extends Error {
+  constructor(cause: unknown) {
+    const message = errorMessage(cause);
+    const status = /^Unexpected server response: ([1-5]\d{2})$/u.exec(message)?.[1];
+    const reason = status
+      ? `HTTP ${status}`
+      : message === "Opening handshake has timed out"
+        ? "timeout"
+        : "transport unavailable";
+    super(`Private official connection failed (${reason})`);
+  }
+}
+
 /**
  * Adapts one native app-server WebSocket client to the LF-delimited streams
  * consumed by AppServerHost. Every remote Desktop client gets its own socket,
@@ -27,7 +41,7 @@ function errorMessage(error: unknown): string {
  */
 export async function createRemoteOfficialAppServerConnection(
   endpoint: string,
-  options: { capabilityToken?: string } = {},
+  options: { capabilityToken?: string; handshakeTimeoutMs?: number } = {},
 ): Promise<OfficialAppServerConnection> {
   const describeError = options.capabilityToken
     ? (): string => "Private official connection failed"
@@ -48,6 +62,7 @@ export async function createRemoteOfficialAppServerConnection(
     // The native Codex daemon client uses tokio-tungstenite without offering
     // permessage-deflate. Keep the same handshake for every private listener.
     perMessageDeflate: false,
+    handshakeTimeout: options.handshakeTimeoutMs,
     ...(options.capabilityToken === undefined
       ? {}
       : { headers: { Authorization: `Bearer ${options.capabilityToken}` } }),
@@ -185,6 +200,7 @@ export async function createRemoteOfficialAppServerConnection(
       signal: null,
       error: new Error(describeError(error)),
     });
+    if (options.capabilityToken) throw new PrivateOfficialHandshakeError(error);
     throw new Error(`Shared official app-server connection failed: ${describeError(error)}`);
   }
 

@@ -1355,7 +1355,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       model: legacyModel,
     });
-    await answerOfficialParentCwd(fixture);
     const modelList = await readJsonLine(fixture.official.stdin);
     expect(modelList).toMatchObject({ method: "model/list", params: {} });
     fixture.official.stdout.write(
@@ -1364,6 +1363,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         result: { data: [{ model: "gpt-5.6-luna", isDefault: true }] },
       })}\n`,
     );
+    await answerOfficialParentCwd(fixture);
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
@@ -1396,6 +1396,85 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it.each([
+    { cwd: "/synthetic", expected: "project-a" },
+    { cwd: "/synthetic/", expected: "project-a" },
+    { cwd: "/elsewhere", expected: undefined },
+  ])(
+    "preserves the external parent's project when delegating Codex in $cwd",
+    async ({ cwd, expected }) => {
+      let api: DelegationControlApi | undefined;
+      const fixture = createFixture({
+        onDelegationApi(value) {
+          api = value;
+          return undefined;
+        },
+      });
+      try {
+        await fixture.ready;
+        if (!api) throw new Error("Missing delegation API");
+        const parent = await fixture.mappingStore.createProvisional({
+          hostThreadId: hostThreadIdSchema.parse("external-parent"),
+          createRequestId: "external-parent",
+          harnessId: harnessIdSchema.parse("pi"),
+          cwd: "/synthetic",
+          projectId: "project-a",
+          title: "Parent",
+          transportModelId: "codexhost/pi-native",
+          ephemeral: false,
+          historyMode: "paginated",
+        });
+        const started = api.start({
+          harnessId: "codex",
+          parentThreadId: parent.hostThreadId,
+          task: "review",
+          cwd,
+        });
+        const request = await readJsonLine(fixture.official.stdin);
+        const rejected = expect(started).rejects.toThrow();
+        fixture.official.stdout.write(
+          JSON.stringify({ id: request.id, error: { code: -32000, message: "fixture stop" } }) +
+            "\n",
+        );
+        await rejected;
+        expect(request.method).toBe("thread/start");
+        expect((request.params as JsonObject).projectId).toBe(expected);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("rejects native delegation when its parent's project cannot be read", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi(value) {
+        api = value;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!api) throw new Error("Missing delegation API");
+      const pending = api.start({
+        harnessId: "codex",
+        task: "Review",
+        parentThreadId: "parent-thread",
+        cwd: "/synthetic",
+      });
+      const request = await readJsonLine(fixture.official.stdin);
+      expect(request.method).toBe("thread/read");
+      const rejected = expect(pending).rejects.toMatchObject({ code: "DELEGATION_FAILED" });
+      fixture.official.stdout.write(
+        JSON.stringify({ id: request.id, error: { code: -32000, message: "Parent unavailable" } }) +
+          "\n",
+      );
+      await rejected;
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("delegates to native Codex through brokered official requests without echoing internal responses", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -1416,12 +1495,13 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture, "parent-thread", "Main review");
+    await answerOfficialParentCwd(fixture, "parent-thread", "Main review", " project-a ");
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
       params: {
-        cwd: "/synthetic",
+        cwd: path.resolve("/synthetic"),
+        projectId: "project-a",
         approvalPolicy: "never",
         sandbox: "danger-full-access",
       },
@@ -1476,7 +1556,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture, "parent-thread", "Renamed parent");
     const duplicateRead = await readJsonLine(fixture.official.stdin);
     expect(duplicateRead).toMatchObject({
       method: "thread/read",
@@ -1492,6 +1571,15 @@ describe("AppServerHost HarnessAdapter projection", () => {
       threadId: "native-child",
       turnId: "native-turn",
     });
+    await expect(
+      delegationApi.start({
+        harnessId: "codex",
+        task: "different task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "native-request-1",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(fixture.official.stdin.readableLength).toBe(0);
 
     const implicitPending = delegationApi.start({
@@ -1517,7 +1605,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       cwd: "/synthetic",
       parentThreadId: "parent-thread",
     });
-    await answerOfficialParentCwd(fixture);
     await expect(implicitDuplicate).resolves.toMatchObject({ threadId: "implicit-child" });
     expect(fixture.official.stdin.readableLength).toBe(0);
     await stopFixture(fixture);

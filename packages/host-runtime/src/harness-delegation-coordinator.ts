@@ -67,7 +67,14 @@ import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-ru
 const IMPLICIT_DEDUPLICATION_MS = 30_000;
 const NATIVE_REF_TIMEOUT_MS = 10_000;
 
-type ParentMetadata = { cwd?: string; title?: string };
+type ParentMetadata = {
+  cwd?: string;
+  title?: string;
+  projectId?: string;
+};
+type ReadSharedParent = (
+  threadId: string,
+) => Promise<(ParentMetadata & { harnessId: RoutedHarnessId }) | null>;
 type ReadDelegationDefault = (
   harnessId: RoutedHarnessId,
 ) => Promise<HarnessDelegationDefault | undefined>;
@@ -184,9 +191,11 @@ export class HarnessDelegationCoordinator {
   readonly #startOfficial: (
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
     resolveConfiguration: ResolveOfficialConfiguration,
+    readParent: () => Promise<{ harnessId: RoutedHarnessId; projectId?: string }>,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
-  readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
+  readonly #sharedParentMetadata: ReadSharedParent | undefined;
+  readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata | null>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
   readonly #externalQueueWaiting: (thread: ExternalThread) => boolean;
@@ -220,9 +229,11 @@ export class HarnessDelegationCoordinator {
     startOfficial(
       input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
       resolveConfiguration: ResolveOfficialConfiguration,
+      readParent: () => Promise<{ harnessId: RoutedHarnessId; projectId?: string }>,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
-    officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
+    sharedParentMetadata?: ReadSharedParent;
+    officialThreadMetadata(threadId: string): Promise<ParentMetadata | null>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
     /** Desktop or Web follow-ups are queued (running or paused) and own the next Turn. */
@@ -246,6 +257,7 @@ export class HarnessDelegationCoordinator {
     this.#cancelOfficial = input.cancelOfficial;
     this.#startOfficial = input.startOfficial;
     this.#listOfficial = input.listOfficial;
+    this.#sharedParentMetadata = input.sharedParentMetadata;
     this.#officialThreadMetadata = input.officialThreadMetadata;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
@@ -290,14 +302,26 @@ export class HarnessDelegationCoordinator {
           : "--cwd is required when an external client starts work without a parent Thread",
       );
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
-    const parent = await this.#parentMetadata(parentThreadId);
-    const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const title = delegationTitle(input);
     if (input.harnessId === "codex") {
+      const inheritedParent = input.cwd
+        ? undefined
+        : await this.#parentMetadata(parentThreadId, "codex");
+      const selectedCwd = input.cwd ?? inheritedParent?.cwd ?? process.cwd();
       const startInput = { ...input, parentThreadId, cwd: selectedCwd, title };
       // The official owner resolves preferences only after checking the original request digest.
-      const result = await this.#startOfficial(startInput, (model, inspected) =>
-        this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
+      const result = await this.#startOfficial(
+        startInput,
+        (model, inspected) =>
+          this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
+        async () => {
+          const parent = inheritedParent ?? (await this.#parentMetadata(parentThreadId, "codex"));
+          const sameDirectory = parent.cwd && path.relative(parent.cwd, selectedCwd) === "";
+          return {
+            harnessId: parent.harnessId,
+            ...(sameDirectory && parent.projectId ? { projectId: parent.projectId } : {}),
+          };
+        },
       );
       return {
         ...result,
@@ -307,6 +331,8 @@ export class HarnessDelegationCoordinator {
       };
     }
     const targetHarnessId = input.harnessId;
+    const parent = await this.#parentMetadata(parentThreadId, targetHarnessId);
+    const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const adapter = this.#adapters.get(targetHarnessId);
     if (!adapter) {
       throw new DelegationControlError(
@@ -870,10 +896,15 @@ export class HarnessDelegationCoordinator {
 
   async #parentMetadata(
     parentThreadId: string,
+    targetHarnessId: RoutedHarnessId,
   ): Promise<ParentMetadata & { harnessId: RoutedHarnessId }> {
     // A synthetic origin (external client or remote peer) is no Thread; keep the native default.
     if (isSyntheticOrigin(parentThreadId)) {
       return { harnessId: "codex", title: originClientName(parentThreadId) ?? "remote-peer" };
+    }
+    if (targetHarnessId === "codex") {
+      const shared = await this.#sharedParentMetadata?.(parentThreadId);
+      if (shared) return shared;
     }
     const record = await this.#repository.find(parentThreadId);
     if (record)
@@ -881,8 +912,15 @@ export class HarnessDelegationCoordinator {
         harnessId: record.harnessId as RoutedHarnessId,
         cwd: record.cwd,
         title: record.title.trim() || record.preview || "",
+        ...(record.projectId ? { projectId: record.projectId } : {}),
       };
-    const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => ({}));
+    const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => null);
+    if (targetHarnessId === "codex" && metadata === null) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Unable to read the native parent Thread before delegation",
+      );
+    }
     return { harnessId: "codex", ...metadata };
   }
 

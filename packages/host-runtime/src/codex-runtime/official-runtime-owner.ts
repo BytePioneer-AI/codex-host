@@ -54,6 +54,11 @@ const object = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const requestKey = (id: string | number): string => JSON.stringify([typeof id, id]);
 class OfficialThreadRestorationError extends Error {}
+export class RetiredOfficialServerRequestError extends Error {
+  constructor() {
+    super("Retired official server request");
+  }
+}
 const RESUME_FIELDS = new Set([
   "model",
   "modelProvider",
@@ -92,6 +97,10 @@ export class OfficialRuntimeOwner {
   }
   get generation(): number {
     return this.#generation;
+  }
+
+  get activeThreadIds(): readonly string[] {
+    return [...this.#activeTurns];
   }
 
   get hasActiveWork(): boolean {
@@ -142,8 +151,12 @@ export class OfficialRuntimeOwner {
         for (const client of clients) {
           // Attach output immediately. Native notifications and early process
           // failure must not be lost merely because Desktop initialize has not arrived.
-          await this.#connection(client);
-          if (client.initialization) await this.#initialize(client, client.initialization);
+          try {
+            await this.#connection(client);
+            if (client.initialization) await this.#initialize(client, client.initialization);
+          } catch (error) {
+            if (this.#clients.has(client)) throw error;
+          }
         }
         if (generation !== this.#generation || this.#phase !== "starting")
           throw new OfficialAdmissionError("unavailable");
@@ -383,7 +396,7 @@ export class OfficialRuntimeOwner {
         !client.runtime ||
         client.runtime.generation !== this.#generation
       )
-        throw new Error("Retired official server request");
+        throw new RetiredOfficialServerRequestError();
       await client.runtime.send({ ...value, id: original });
       client.serverRequests.delete(String(value.id));
       return;
@@ -500,6 +513,7 @@ export class OfficialRuntimeOwner {
     ) {
       client.threads.delete(params.threadId);
       this.#threadModelSettings.delete(params.threadId);
+      if (method !== "thread/unsubscribe") this.#activeTurns.delete(params.threadId);
     }
     if (
       !["thread/start", "thread/resume", "thread/fork"].includes(method) ||

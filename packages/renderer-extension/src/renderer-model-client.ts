@@ -280,6 +280,9 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   listHostExtensionCatalog?(
     input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalog>>;
+  readHostExtensionCatalogIcon?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalogIcon>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalogIcon>>;
   installHostExtension?(
     input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.install>>;
@@ -822,6 +825,14 @@ export function createRendererModelClient(
       const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.catalog];
       return schema.result.parse(
         await manager.sendRequest(HOST_EXTENSIONS_RPC.catalog, schema.params.parse(input)),
+      );
+    },
+    async readHostExtensionCatalogIcon(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalogIcon>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.catalogIcon];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.catalogIcon, schema.params.parse(input)),
       );
     },
     async installHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>) {

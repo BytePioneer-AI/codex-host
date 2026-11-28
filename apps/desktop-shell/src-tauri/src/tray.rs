@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::launcher::{Launcher, Surface};
-use crate::readiness::ShellReady;
-use crate::{Shell, launcher_action, show_main};
+use crate::readiness::{self, ShellReady};
+use crate::{Shell, launcher_action, show_main, show_onboarding};
 
 fn run_action(
     app: &AppHandle,
@@ -96,17 +96,20 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
         "official",
         label("打开官方 Codex Desktop", "Open Official Codex Desktop"),
     )?;
+    let web = item("web", label("打开 Web 端", "Open Web"))?;
+    let onboarding = item("onboarding", label("打开启动引导页", "Open Launch Chooser"))?;
     let connect = item("connect", label("手机与远程连接", "Phone & Remote Access"))?;
     let native_default = item("native-default", label("自有桌面窗口", "CodexHost Window"))?;
     let official_default = item(
         "official-default",
         label("官方 Codex Desktop", "Official Codex Desktop"),
     )?;
+    let ask_default = item("ask-default", label("每次启动时询问", "Ask Every Time"))?;
     let preferences = Submenu::with_items(
         app,
         label("默认启动方式", "Default Launch Surface"),
         true,
-        &[&native_default, &official_default],
+        &[&native_default, &official_default, &ask_default],
     )?;
     let console = item("console", label("诊断与日志", "Diagnostics & Logs"))?;
     let update_item = item("update", label("检查更新", "Check for Updates"))?;
@@ -121,7 +124,9 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
         &[
             &show,
             &official,
+            &web,
             &first_separator,
+            &onboarding,
             &connect,
             &preferences,
             &second_separator,
@@ -148,13 +153,22 @@ pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app, None),
             "official" => run_action(app, Launcher::open_codex),
-            "connect" => show_main(app, Some("connect-devices")),
-            "native-default" => {
-                run_action(app, |launcher| launcher.set_surface(Surface::NativeShell))
-            }
-            "official-default" => {
-                run_action(app, |launcher| launcher.set_surface(Surface::CodexDesktop))
-            }
+            "web" => run_action(app, |launcher| {
+                let ready = readiness::ensure_web_ready(launcher)?;
+                codexhost_platform::open_external_url(ready.login_url.as_str())
+                    .map_err(|error| format!("Could not open the system browser: {error}"))
+            }),
+            "onboarding" => show_onboarding(app),
+            "connect" => show_main(app, Some("/#connect-devices")),
+            "native-default" => run_action(app, |launcher| {
+                launcher.set_surface(Surface::NativeShell, true)
+            }),
+            "official-default" => run_action(app, |launcher| {
+                launcher.set_surface(Surface::CodexDesktop, true)
+            }),
+            "ask-default" => run_action(app, |launcher| {
+                launcher.set_surface(Surface::NativeShell, false)
+            }),
             "console" => run_action(app, |launcher| launcher.run(&["console"])),
             "update" => update(app),
             "quit" => quit(app),

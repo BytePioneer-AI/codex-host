@@ -2,8 +2,8 @@
  * Workspace browser tree row components (figma Cell set 14:3080): pure presentational —
  * all data and callbacks arrive via props. Folder color/shape follows expansion;
  * hover swaps for time and action buttons are CSS-only. Titles stay still; dwelling
- * on a row reveals its full title in the existing hover card. Workspace row
- * menus are visual-only except Rename/Delete. A Session row's "..." menu and
+ * on a row reveals its full title in the existing hover card. Workspace rows share one
+ * action menu between right-click and the ellipsis button. A Session row's "..." menu and
  * its hover buttons are the `sidebar.workspaces.session.menu.item` and
  * `sidebar.workspaces.session.row.action` lists, rendered through the
  * browser's `renderSlot` with the menu's open state as the occurrence's hook
@@ -22,6 +22,9 @@ import {
   IconFolderCloseRegular,
   IconFolderOpenRegular,
   IconNewChatOutlineRegular,
+  IconPinFillRegular,
+  IconPinOutlineRegular,
+  IconQueueOutlineRegular,
   IconTrashOutlineRegular,
   IconUnarchiveOutlineRegular,
   Menu,
@@ -30,6 +33,7 @@ import {
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
+import { SessionId } from "@deepseek-ai/dsh-session/types";
 import { abbreviateHomePath } from "@deepseek-ai/dsh-util-workspace-path";
 import type { MenuOpenState, WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { GroupNode, SearchResultNode, SessionNode } from "../tree.ts";
@@ -41,6 +45,7 @@ import { SessionRowContent } from "./SessionRowContent.tsx";
 import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
+import { isRemoteFallbackWorkspace } from "./host-scope-filter.ts";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadTreeSummary, useThreadChildGroup } from "./ThreadTreeControls.tsx";
 import { ThreadTreeRing } from "./ThreadTreeRing.tsx";
@@ -190,6 +195,7 @@ export function ProjectRowItem({
   foldedActivity,
   onToggle,
   onCreate,
+  pin,
   actions: suppliedActions,
   drag: suppliedDrag,
   showHost = true,
@@ -203,8 +209,9 @@ export function ProjectRowItem({
   newShortcut?: ShortcutCatalogEntry | undefined;
   onToggle: () => void;
   onCreate: () => void;
-  /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
-  actions?: { rename: () => void; delete: () => void } | undefined;
+  pin?: { pinned: boolean; toggle: () => void } | undefined;
+  /** Local Workspace actions; absent for the ungrouped bucket and remote Workspaces. */
+  actions?: { rename: () => void; moveToSection?: () => void; delete: () => void } | undefined;
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined;
   /** Whether to show remote host accent rail and tag when viewing multiple hosts. */
@@ -223,8 +230,15 @@ export function ProjectRowItem({
         ];
   const actions = group.remote ? undefined : suppliedActions;
   const drag = suppliedDrag;
-  // The ungrouped bucket has no workspace title: its label is dictionary copy.
-  const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
+  const isRemoteFallback = isRemoteFallbackWorkspace(row);
+  // The ungrouped bucket has no workspace title; remote fallback groups use the
+  // localized "Uncategorized" label instead of repeating the remote host name.
+  const label =
+    row.workspaceId === undefined
+      ? t("group.ungrouped")
+      : isRemoteFallback
+        ? t("group.remoteOtherSessions")
+        : row.label;
   const remoteColor =
     row.remote !== undefined
       ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
@@ -232,9 +246,24 @@ export function ProjectRowItem({
   const showRemoteIndicator = showHost && row.workspaceId !== undefined && row.remote !== undefined;
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
+  const pinLabel = t(pin?.pinned ? "menu.unpinWorkspace" : "menu.pinWorkspace");
+  const PinIcon = pin?.pinned ? IconPinFillRegular : IconPinOutlineRegular;
   const workspaceMenuItems = [
-    { id: "rename", label: t("rename"), icon: <IconEditOutlineRegular /> },
-    { id: "delete", label: t("delete.workspace"), icon: <IconTrashOutlineRegular />, danger: true },
+    ...(pin ? [{ id: "pin", label: pinLabel, icon: <PinIcon /> }] : []),
+    ...(actions
+      ? [
+          { id: "rename", label: t("rename"), icon: <IconEditOutlineRegular /> },
+          ...(actions.moveToSection
+            ? [{ id: "move", label: t("menu.moveToSection"), icon: <IconFolderCloseRegular /> }]
+            : []),
+          {
+            id: "delete",
+            label: t("delete.workspace"),
+            icon: <IconTrashOutlineRegular />,
+            danger: true,
+          },
+        ]
+      : []),
   ];
   const ownRow = (
     <div
@@ -244,13 +273,13 @@ export function ProjectRowItem({
       aria-expanded={row.expanded}
       tabIndex={-1}
       onContextMenu={(e) => {
-        if (!actions || (e.target as HTMLElement).closest("button")) return;
+        if (!workspaceMenuItems.length || (e.target as HTMLElement).closest("button")) return;
         e.preventDefault();
         setContextPoint(new DOMRect(e.clientX, e.clientY, 0, 0));
         setMenuOpen(true);
       }}
       onKeyDown={(e) => {
-        if (e.target !== e.currentTarget || !actions) return;
+        if (e.target !== e.currentTarget || !workspaceMenuItems.length) return;
         if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
           e.preventDefault();
           setContextPoint(null);
@@ -271,7 +300,13 @@ export function ProjectRowItem({
       onDragEnd={drag?.end}
     >
       <span className={clsx(css.slot, row.expanded && css.folderExpanded)}>
-        {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
+        {isRemoteFallback ? (
+          <IconQueueOutlineRegular size={16} />
+        ) : row.expanded ? (
+          <IconFolderOpenRegular />
+        ) : (
+          <IconFolderCloseRegular />
+        )}
         {showRemoteIndicator && row.remote && remoteColor !== undefined && (
           <RemoteFolderGlobe color={remoteColor} state={row.remote.state} />
         )}
@@ -309,7 +344,7 @@ export function ProjectRowItem({
         </span>
       )}
       <span className={css.rowActions}>
-        {actions !== undefined && (
+        {workspaceMenuItems.length > 0 && (
           <Menu
             open={menuOpen}
             onClose={() => {
@@ -318,12 +353,10 @@ export function ProjectRowItem({
             items={workspaceMenuItems}
             onSelect={(id) => {
               setMenuOpen(false);
-              // Unknown ids leave before the dispatch: a future menu row must
-              // not inherit the destructive branch as an else fallback.
-              /* v8 ignore next -- Menu can emit only the rename and delete rows supplied above. */
-              if (id !== "rename" && id !== "delete") return;
-              if (id === "rename") actions.rename();
-              else actions.delete();
+              if (id === "pin") pin?.toggle();
+              if (id === "rename") actions?.rename();
+              if (id === "move") actions?.moveToSection?.();
+              if (id === "delete") actions?.delete();
             }}
             portal
             autoFocus
@@ -346,7 +379,7 @@ export function ProjectRowItem({
             }
           />
         )}
-        {(!row.remote || (row.remote.state === "connected" && !!group.cwd)) && (
+        {(!row.remote || (row.remote.state === "connected" && !isRemoteFallback)) && (
           <Tooltip
             label={t("actions.newSession")}
             shortcutKeys={newShortcut?.keys}
@@ -368,6 +401,21 @@ export function ProjectRowItem({
             </button>
           </Tooltip>
         )}
+        {pin && (
+          <Tooltip label={pinLabel} side="bottom" align="end" delayMs={500}>
+            <button
+              type="button"
+              className={clsx(css.iconButton, css.quickActions)}
+              aria-label={pinLabel}
+              onClick={(e) => {
+                e.stopPropagation();
+                pin.toggle();
+              }}
+            >
+              <PinIcon size={16} />
+            </button>
+          </Tooltip>
+        )}
       </span>
     </div>
   );
@@ -381,7 +429,7 @@ export function ProjectRowItem({
       anchor={ownRow}
       content={
         <WorkspaceHoverContent
-          label={row.label}
+          label={label}
           cwd={cwd === undefined ? undefined : abbreviateHomePath(cwd, home)}
           createdAt={row.createdAt}
           t={t}
@@ -601,7 +649,14 @@ export function SessionNodeItem({
   const row = node;
   const { expansion, toggle, markCompletionsRead, collapseStyle } = useThreadTreeView();
   const childGroupId = useThreadChildGroup();
-  const depth = node.tree?.depth ?? 0;
+  const tree = node.tree;
+  const depth = tree?.depth ?? 0;
+  const markChildThreadsRead =
+    !row.archived && tree !== undefined && tree.activity.completed > 0
+      ? () => {
+          markCompletionsRead(tree.descendantIds.map(SessionId));
+        }
+      : undefined;
   const expanded = expansion[node.id] === true;
   const drag = depth === 0 ? suppliedDrag : undefined;
   const title = displayTitle(node, t);
@@ -836,7 +891,12 @@ export function SessionNodeItem({
                 >
                   {renderSlot(
                     "sidebar.workspaces.session.menu.item",
-                    { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
+                    {
+                      sessionId: node.id,
+                      displayTitle: row.title,
+                      threadTreeChild: depth > 0,
+                      ...(markChildThreadsRead === undefined ? {} : { markChildThreadsRead }),
+                    },
                     { hookContext: menuOpenState },
                   )}
                 </Menu>

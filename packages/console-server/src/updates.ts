@@ -19,7 +19,9 @@ import {
   createNpmReleaseAvailability,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
+  fetchLatestNpmRelease,
   recoverUpdateOperationLock,
+  resolveNpmRuntimePaths,
   selectInstallerReleaseArtifact,
   readRuntimeMetadata,
   type BackgroundUpdateManager,
@@ -27,6 +29,7 @@ import {
   type CodexhostLatestRelease,
   type CommonUpdateOptions,
   type DistributionMetadata,
+  type NpmRuntimePaths,
   type PreparedBackgroundUpdate,
   type NpmReleaseAvailability,
 } from "@codexhost/update-manager";
@@ -104,17 +107,6 @@ function installationKind(metadata: DistributionMetadata): UpdateInstallation {
   return "linux-archive";
 }
 
-function absoluteEnvironmentPath(environment: NodeJS.ProcessEnv, name: string): string {
-  const value = environment[name];
-  if (!value || !path.isAbsolute(value)) {
-    throw new ConsoleUpdateError(
-      "unsupported",
-      `${name} is unavailable; run 'codexhost console' from the npm command to update`,
-    );
-  }
-  return path.normalize(value);
-}
-
 export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): ConsoleUpdates {
   const environment = options.environment ?? process.env;
   const platform = options.platform ?? process.platform;
@@ -136,6 +128,35 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     });
   let candidate: CodexhostLatestRelease | null = null;
   let handedOff = false;
+
+  const resolveConsoleNpmPaths = async (target: ConsoleUpdateTarget): Promise<NpmRuntimePaths> => {
+    try {
+      return await resolveNpmRuntimePaths({
+        packageRoot: path.dirname(target.appDirectory),
+        environment,
+        platform,
+      });
+    } catch (error) {
+      throw new ConsoleUpdateError("unsupported", boundedError(error));
+    }
+  };
+
+  /**
+   * The stable version the npm registry advertises, when GitHub Release version
+   * discovery is unavailable (e.g. anonymous API rate limiting). Only npm
+   * installations can proceed without the Release; native ones still need it.
+   */
+  const npmFallbackRelease = async (
+    metadata: DistributionMetadata,
+    target: ConsoleUpdateTarget,
+    error: unknown,
+  ): Promise<CodexhostLatestRelease> => {
+    if (!metadata || installationKind(metadata) !== "npm") throw error;
+    const npm = await resolveConsoleNpmPaths(target);
+    const fallback = await fetchLatestNpmRelease(npm.nodePath, npm.npmCliPath);
+    if (!fallback) throw error;
+    return fallback;
+  };
 
   let currentStatusPath: string | null = null;
 
@@ -163,10 +184,11 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   ): Promise<{ available: boolean; error: string | null }> {
     if (installationKind(metadata) === "npm") {
       try {
+        const npm = await resolveConsoleNpmPaths(target);
         const available = await npmRelease.installable({
-          nodePath: absoluteEnvironmentPath(environment, "CODEXHOST_NPM_NODE_PATH"),
-          npmCliPath: absoluteEnvironmentPath(environment, "CODEXHOST_NPM_CLI_PATH"),
-          packageRoot: path.dirname(target.appDirectory),
+          nodePath: npm.nodePath,
+          npmCliPath: npm.npmCliPath,
+          packageRoot: npm.packageRoot,
           version: release.version,
         });
         return { available, error: null };
@@ -209,19 +231,13 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     };
     const kind = installationKind(metadata);
     if (kind === "npm") {
-      const packageRoot = absoluteEnvironmentPath(environment, "CODEXHOST_NPM_PACKAGE_ROOT");
-      if (packageRoot !== resourcesRoot) {
-        throw new ConsoleUpdateError(
-          "unsupported",
-          "npm platform package root does not own this console",
-        );
-      }
+      const npm = await resolveConsoleNpmPaths(target);
       return manager.prepareNpm({
         ...common,
-        packageRoot,
-        nodePath: absoluteEnvironmentPath(environment, "CODEXHOST_NPM_NODE_PATH"),
-        npmCliPath: absoluteEnvironmentPath(environment, "CODEXHOST_NPM_CLI_PATH"),
-        npmLauncherPath: absoluteEnvironmentPath(environment, "CODEXHOST_NPM_LAUNCHER_PATH"),
+        packageRoot: npm.packageRoot,
+        nodePath: npm.nodePath,
+        npmCliPath: npm.npmCliPath,
+        npmLauncherPath: npm.npmLauncherPath,
       });
     }
     const artifact = selectInstallerReleaseArtifact(release, metadata.target).source;
@@ -263,7 +279,9 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         await recoverUpdateOperationLock(stateDirectory());
         await cleanupTerminalUpdateState(stateDirectory());
         status = await latestStatus();
-        const release = await fetchLatest(signal);
+        const release = await fetchLatest(signal).catch((error) =>
+          npmFallbackRelease(metadata, target, error),
+        );
         candidate = release;
         const updateAvailable = compareSemanticVersions(metadata.version, release.version) < 0;
         const { available: installationAvailable, error } = updateAvailable
@@ -312,7 +330,9 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
       }
       currentStatusPath = null;
       try {
-        const release = await fetchLatest();
+        const release = await fetchLatest().catch((error) =>
+          npmFallbackRelease(metadata, target, error),
+        );
         if (
           compareSemanticVersions(metadata.version, release.version) >= 0 ||
           (candidate && candidate.version !== release.version)

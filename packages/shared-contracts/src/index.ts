@@ -5,6 +5,7 @@ export * from "./thread-tree-watch.js";
 export * from "./desktop-extensions.js";
 export * from "./web-native-extensions.js";
 export * from "./host-extensions.js";
+export * from "./extension-services.js";
 export * from "./host-extension-management.js";
 export * from "./thread-archive-confirm.js";
 export * from "./voice.js";
@@ -435,6 +436,7 @@ export {
   parseAnnotatedMessage,
   responseAnnotationIndex,
   responseAnnotationsOf,
+  splitAnnotatedMessage,
   type ParsedAnnotatedMessage,
   type ResponseAnnotation,
 } from "./response-annotation.js";

@@ -17,6 +17,8 @@ import { listDevinSessions } from "./sessions.js";
 /** Devin's agent-type auth method; accepts `_meta.api_key` in place of its PKCE flow. */
 const DEVIN_API_KEY_AUTH_METHOD = "devin-browser";
 const REPLAY_LIMIT = 100_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const OPTIONAL_LIST_STEPS_TIMEOUT_MS = 2_000;
 
 export interface DevinTransportOptions {
   cwd: string;
@@ -43,6 +45,7 @@ export class DevinTransport {
   #callbacks: DevinCallbacks | undefined;
   #collecting = false;
   #replayOverflow = false;
+  #optionalListStepsPending = false;
   #closed = false;
   #closePromise: Promise<void> | undefined;
   #fault: Error | undefined;
@@ -59,7 +62,11 @@ export class DevinTransport {
     return this.#closed || this.#fault !== undefined || this.#connection?.signal.aborted === true;
   }
 
-  async #bounded<T>(work: Promise<T>, timeout = this.options.timeoutMs ?? 30_000): Promise<T> {
+  async #bounded<T>(
+    work: Promise<T>,
+    timeout = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    closeOnTimeout = true,
+  ): Promise<T> {
     if (this.#fault) throw this.#fault;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -69,7 +76,7 @@ export class DevinTransport {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             reject(new Error("Devin ACP request timed out"));
-            void this.close();
+            if (closeOnTimeout) void this.close();
           }, timeout);
         }),
       ]);
@@ -240,6 +247,31 @@ export class DevinTransport {
         ...params,
         sessionId: this.sessionId,
       }),
+    );
+  }
+
+  /**
+   * Optional `listSteps` read with a short timeout budget and at most one unsettled request per
+   * connection. Timeouts leave a healthy connection open; subsequent calls return `undefined`
+   * until the unsettled request settles or the connection closes.
+   */
+  async optionalListSteps(): Promise<unknown> {
+    if (!this.nativeHistory || !this.#connection || this.#closed || !this.sessionId)
+      throw new Error("Devin native history extension is unavailable");
+    if (this.#fault) throw this.#fault;
+    if (this.#optionalListStepsPending) return undefined;
+    const work = this.#connection.request("_cognition.ai/revert/listSteps", {
+      sessionId: this.sessionId,
+    });
+    this.#optionalListStepsPending = true;
+    const clear = () => {
+      this.#optionalListStepsPending = false;
+    };
+    void work.then(clear, clear);
+    return this.#bounded(
+      work,
+      Math.min(this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS, OPTIONAL_LIST_STEPS_TIMEOUT_MS),
+      false,
     );
   }
 

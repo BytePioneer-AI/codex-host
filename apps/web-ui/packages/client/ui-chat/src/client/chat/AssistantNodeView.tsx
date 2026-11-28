@@ -9,8 +9,11 @@ import type {
 import { AssistantMarkdown } from "./AssistantMarkdown.tsx";
 import { ResponseAnnotationMarks } from "./ResponseAnnotationMarks.tsx";
 import { annotationLabels } from "../markdown-labels.ts";
-import { EXCLUDED_SELECTION } from "./response-selection.ts";
-import type { MarkdownResponseAnnotations } from "@deepseek-ai/dsh-client-ui-primitives";
+import { clampMultiClickSelection } from "./response-selection.ts";
+import type {
+  MarkdownFileMentions,
+  MarkdownResponseAnnotations,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import css from "./SelectionActions.module.css";
 
 function insideAnnotationMark(element: Element | null, host: Element): boolean {
@@ -18,45 +21,6 @@ function insideAnnotationMark(element: Element | null, host: Element): boolean {
     if (node.classList.contains(css.annotationMark)) return true;
   }
   return false;
-}
-
-function lastSelectableText(host: Element): Text | null {
-  const walker = host.ownerDocument.createTreeWalker(host, NodeFilter.SHOW_TEXT);
-  let last: Text | null = null;
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    const parent = node.parentElement;
-    if (
-      node.nodeValue &&
-      parent !== null &&
-      parent.closest(EXCLUDED_SELECTION) === null &&
-      !insideAnnotationMark(parent, host)
-    ) {
-      last = node as Text;
-    }
-  }
-  return last;
-}
-
-/** Keep native double/triple-click selection inside this answer when WebKit extends past the last block. */
-function clampMultiClickSelection(host: Element): void {
-  const selection = host.ownerDocument.defaultView?.getSelection();
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
-  const range = selection.getRangeAt(0);
-  if (!host.contains(range.startContainer) || host.contains(range.endContainer)) return;
-  if (!(host.compareDocumentPosition(range.endContainer) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-    return;
-  }
-  const startElement =
-    range.startContainer instanceof Element
-      ? range.startContainer
-      : range.startContainer.parentElement;
-  if (startElement?.closest(EXCLUDED_SELECTION) != null) return;
-  const last = lastSelectableText(host);
-  if (last === null) return;
-  const clamped = range.cloneRange();
-  clamped.setEnd(last, last.data.length);
-  selection.removeAllRanges();
-  selection.addRange(clamped);
 }
 
 type AssistantNodeViewProps = ChatNodeViewProps<"assistant-step"> &
@@ -93,6 +57,23 @@ export const AssistantNodeView = memo(function AssistantNodeView({
     () => (owner === undefined ? undefined : fileMentions(owner)),
     [fileMentions, owner],
   );
+  // Harness file citations open through the view's own openFile, independent
+  // of the Turn-tail mention vocabulary: a citation names the file it read.
+  const fileCitations = useMemo<MarkdownFileMentions | undefined>(() => {
+    if (openFile === undefined) return undefined;
+    return {
+      resolve: (path: string) => {
+        if (path.trim() === "") return undefined;
+        return {
+          open: () => {
+            void openFile(path);
+          },
+          label: path,
+          title: path,
+        };
+      },
+    };
+  }, [openFile]);
   const reasoningHidden =
     turnProcess !== undefined &&
     turnProcess.foldable &&
@@ -114,7 +95,7 @@ export const AssistantNodeView = memo(function AssistantNodeView({
   );
   const onAnswerClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.detail >= 2 && answer.current !== null) {
-      clampMultiClickSelection(answer.current);
+      clampMultiClickSelection(answer.current, insideAnnotationMark);
     }
   }, []);
   return (
@@ -136,6 +117,7 @@ export const AssistantNodeView = memo(function AssistantNodeView({
         usePresentation={usePresentation}
         revealProcess={revealProcess}
         mentions={mentions}
+        fileCitations={fileCitations}
         responseAnnotations={citations}
         t={t}
       />

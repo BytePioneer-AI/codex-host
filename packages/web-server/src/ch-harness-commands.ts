@@ -8,6 +8,20 @@ import type { ChHostClient } from "./ch-host-client.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import { RpcError } from "./transport.ts";
 
+export const permissionCommand = {
+  definitionId: "@deepseek-ai/dsh-permission-presets",
+  name: "permission",
+  description: "Select a native permission mode",
+  input: { hint: "<mode>" },
+};
+
+export function requireDirectCommand(catalog: HarnessCommandCatalog, commandId: string) {
+  const command = catalog.commands.find((item) => item.id === commandId);
+  if (!command || (command.argumentMode !== "none" && command.invocation !== "/compact"))
+    throw new RpcError("command/unavailable", "Select an available direct command again.");
+  return command;
+}
+
 export class ChHarnessCommands {
   private readonly pending = new Set<string>();
   constructor(
@@ -36,10 +50,7 @@ export class ChHarnessCommands {
       throw new RpcError("session/busy", "The Thread is busy. Direct commands cannot be queued.");
     this.pending.add(thread.id);
     try {
-      const catalog = await this.inspect(sessionId);
-      const command = catalog.commands.find((item) => item.id === commandId);
-      if (!command || (command.argumentMode !== "none" && command.invocation !== "/compact"))
-        throw new RpcError("command/unavailable", "Select an available direct command again.");
+      const command = requireDirectCommand(await this.inspect(sessionId), commandId);
       return threadCommandExecuteResultSchema.parse(
         await this.host.request("codexhost/thread/command/execute", {
           threadId: thread.id,

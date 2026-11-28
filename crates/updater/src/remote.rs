@@ -4,8 +4,9 @@ use serde_json::json;
 use std::{
     error::Error,
     fs,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -23,27 +24,138 @@ struct Request {
     status_path: PathBuf,
     lock_directory: PathBuf,
 }
-fn run(command: &mut Command) -> Result<(), Box<dyn Error>> {
+enum CommandFailure {
+    TimedOut,
+    Exited { status: ExitStatus, stderr: String },
+}
+fn read_tail(mut input: impl Read) -> io::Result<Vec<u8>> {
+    const LIMIT: usize = 16_384;
+    let mut output = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(output);
+        }
+        output.extend_from_slice(&buffer[..count]);
+        if output.len() > LIMIT {
+            output.drain(..output.len() - LIMIT);
+        }
+    }
+}
+fn run_with_stderr(command: &mut Command) -> Result<Result<(), CommandFailure>, Box<dyn Error>> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
+    let stderr = child
+        .stderr
+        .take()
+        .map(|pipe| thread::spawn(move || read_tail(pipe)));
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
-            return if status.success() {
+            let text = stderr
+                .and_then(|handle| handle.join().ok())
+                .and_then(Result::ok)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
+            return Ok(if status.success() {
                 Ok(())
             } else {
-                Err(format!("remote update command failed ({status})").into())
-            };
+                Err(CommandFailure::Exited {
+                    status,
+                    stderr: text,
+                })
+            });
         }
         if start.elapsed() > Duration::from_secs(300) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("remote update command timed out".into());
+            if let Some(handle) = stderr {
+                let _ = handle.join();
+            }
+            return Ok(Err(CommandFailure::TimedOut));
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+fn run(command: &mut Command) -> Result<(), Box<dyn Error>> {
+    match run_with_stderr(command)? {
+        Ok(()) => Ok(()),
+        Err(CommandFailure::TimedOut) => Err("remote update command timed out".into()),
+        Err(CommandFailure::Exited { status, .. }) => {
+            Err(format!("remote update command failed ({status})").into())
+        }
+    }
+}
+fn has_word(text: &str, needle: &str) -> bool {
+    let bytes = text.as_bytes();
+    let is_word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    text.match_indices(needle).any(|(start, _)| {
+        let left_ok = start == 0 || !is_word(bytes[start - 1]);
+        let end = start + needle.len();
+        let right_ok = end == bytes.len() || !is_word(bytes[end]);
+        left_ok && right_ok
+    })
+}
+fn missing_from_registry(stderr: &str) -> bool {
+    has_word(stderr, "E404") || has_word(stderr, "ETARGET")
+}
+fn is_timeout_error(stderr: &str) -> bool {
+    has_word(stderr, "ETIMEDOUT")
+        || has_word(stderr, "ESOCKETTIMEDOUT")
+        || has_word(stderr, "ERR_SOCKET_TIMEOUT")
+        || stderr.to_ascii_lowercase().contains("network timeout")
+}
+fn read_distribution(package_root: &Path) -> Result<serde_json::Value, Box<dyn Error>> {
+    let path = package_root.join("app/codexhost-distribution.json");
+    let bytes = fs::read(&path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            format!(
+                "The remote platform package is missing; reinstall codexhost on the remote computer: {}",
+                path.display()
+            )
+        } else {
+            error.to_string()
+        }
+    })?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+fn prefetch_package(request: &Request, package: &str) -> Result<(), Box<dyn Error>> {
+    let mut command = Command::new(&request.node);
+    command.arg(&request.npm).args([
+        "cache",
+        "add",
+        package,
+        "--fetch-retries=0",
+        "--fetch-timeout=30000",
+    ]);
+    match run_with_stderr(&mut command)? {
+        Ok(()) => Ok(()),
+        Err(CommandFailure::TimedOut) => Err(format!(
+            "Checking or downloading the release from npm timed out; retry later: {package}"
+        )
+        .into()),
+        Err(CommandFailure::Exited { status, stderr }) => {
+            if missing_from_registry(&stderr) {
+                Err(format!(
+                    "The requested release packages are not all available on npm yet; retry later: {package} ({status})"
+                )
+                .into())
+            } else if is_timeout_error(&stderr) {
+                Err(format!(
+                    "Checking or downloading the release from npm timed out; retry later: {package} ({status})"
+                )
+                .into())
+            } else {
+                Err(format!(
+                    "The requested release is unavailable or npm cannot reach the registry: {package} ({status})"
+                )
+                .into())
+            }
+        }
     }
 }
 fn cancel_path(request: &Request) -> PathBuf {
@@ -168,46 +280,41 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
         if cancel_requested(request) || status_already_failed(request)? {
             return Err("Remote update was cancelled before the helper started".into());
         }
-        let before: serde_json::Value = serde_json::from_slice(&fs::read(
-            request.package_root.join("app/codexhost-distribution.json"),
-        )?)?;
+        let before = read_distribution(&request.package_root)?;
         if before["version"].as_str() != Some(&request.installed_version) {
             return Err("The remote installation changed before the update acquired its lock; refresh and retry".into());
         }
         if !request.restart_only {
-            let specs = crate::npm::install_specs(
+            let layout = crate::npm::global_installation(
                 &request.node,
                 &request.npm,
                 &request.launcher,
                 &request.package_root,
-                &request.version,
             )?
             .ok_or("npm uses a different global installation; update this remote manually")?;
-            let package = &specs[0];
-            // Unpublished local builds fail here, before touching the installation or service.
-            run(Command::new(&request.node).arg(&request.npm).args([
-                "view",
-                package,
-                "version",
-                "--fetch-retries=0",
-                "--fetch-timeout=30000",
-            ]))
-            .map_err(|error| {
-                format!(
-                    "The requested release is unavailable or npm cannot reach the registry: {error}"
-                )
-            })?;
+            let specs = layout.required_specs(&request.version);
+            for package in &specs {
+                prefetch_package(request, package)?;
+            }
             status(request, "installing", None)?;
             let mut command = Command::new(&request.node);
             command
                 .arg(&request.npm)
-                .args(["install", "--global", "--no-audit", "--no-fund"])
-                .args(&specs);
+                .args([
+                    "install",
+                    "--global",
+                    "--prefer-offline",
+                    "--include=optional",
+                    "--no-audit",
+                    "--no-fund",
+                ])
+                .arg(&specs[0]);
+            if !layout.uses_nested_platform(&request.package_root) {
+                command.arg(&specs[1]);
+            }
             run(&mut command).map_err(|error| format!("npm installation failed; check remote network access and write permissions: {error}"))?;
         }
-        let metadata: serde_json::Value = serde_json::from_slice(&fs::read(
-            request.package_root.join("app/codexhost-distribution.json"),
-        )?)?;
+        let metadata = read_distribution(&request.package_root)?;
         if metadata["version"].as_str() != Some(&request.version) {
             return Err("Installed remote version does not match the requested version".into());
         }
@@ -239,37 +346,78 @@ mod tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
-    fn fixture(view_failure: bool) -> Fixture {
+    struct FixtureOptions<'a> {
+        nested: bool,
+        cache_failure: Option<(&'a str, &'a str)>,
+        drop_distribution_on_install: bool,
+    }
+    fn fixture(options: FixtureOptions<'_>) -> Fixture {
         let root = std::env::temp_dir().join(format!(
             "codexhost-remote-updater-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        let package_root = root.join("node_modules/@codexhost/cli-darwin-arm64");
+        let cli_root = root.join("node_modules/@codexhost/cli");
+        let package_root = if options.nested {
+            cli_root.join("node_modules/@codexhost/cli-darwin-arm64")
+        } else {
+            root.join("node_modules/@codexhost/cli-darwin-arm64")
+        };
+        let launcher = cli_root.join("bin/codexhost.js");
         fs::create_dir_all(package_root.join("app")).unwrap();
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
         fs::write(
             package_root.join("app/codexhost-distribution.json"),
             br#"{"version":"0.11.0"}"#,
         )
         .unwrap();
+        let (missing_package, cache_stderr) = options.cache_failure.unwrap_or(("", ""));
         // Interpret fixture scripts with the installed shell instead of executing a newly
         // written file, which can race with parallel child spawns on Linux (ETXTBSY).
         // These scripts record commands without invoking npm or a real service.
         let source = format!(
-            "echo \"$1\" >> '{}'\nif [ \"$1\" = root ]; then echo '{}'; fi\nif [ \"$1\" = view ]; then exit {}; fi\nexit 0\n",
+            r#"printf '%s\n' "$*" >> '{}'
+missing='{}'
+cache_stderr='{}'
+drop_dist='{}'
+case "$1" in
+  root) printf '%s\n' '{}' ;;
+  cache)
+    if [ "$3" = "$missing" ]; then
+      printf '%s\n' "$cache_stderr" >&2
+      exit 1
+    fi
+    ;;
+  install)
+    if [ "$drop_dist" = 1 ]; then
+      rm -f '{}'
+    fi
+    ;;
+esac
+exit 0
+"#,
             root.join("calls").display(),
+            missing_package,
+            cache_stderr,
+            if options.drop_distribution_on_install {
+                "1"
+            } else {
+                "0"
+            },
             root.join("node_modules").display(),
-            if view_failure { 1 } else { 0 },
+            package_root
+                .join("app/codexhost-distribution.json")
+                .display(),
         );
         fs::write(root.join("npm"), &source).unwrap();
-        fs::write(root.join("launcher"), &source).unwrap();
+        fs::write(&launcher, &source).unwrap();
         let request = Request {
             version: "0.11.0".into(),
             installed_version: "0.11.0".into(),
             restart_only: false,
             node: PathBuf::from("/bin/sh"),
             npm: root.join("npm"),
-            launcher: root.join("launcher"),
+            launcher,
             package_root,
             status_path: root.join("status.json"),
             lock_directory: root.join("updates"),
@@ -277,38 +425,151 @@ mod tests {
         Fixture { root, request }
     }
     #[test]
-    fn unavailable_release_never_stops_the_service() {
-        let f = fixture(true);
-        let error = apply_locked(&f.request).unwrap_err().to_string();
-        assert!(
-            error.contains("The requested release is unavailable or npm cannot reach the registry"),
-            "unexpected update failure: {error}"
-        );
-        let calls = fs::read_to_string(f.root.join("calls")).unwrap();
-        assert_eq!(calls, "root\nview\n");
-        assert!(
-            !f.request
-                .lock_directory
-                .join("active-update-v1.lock")
-                .exists()
-        );
+    fn unavailable_release_leaves_the_installation_and_service_untouched() {
+        for missing in [
+            "@codexhost/cli@0.11.0",
+            "@codexhost/cli-darwin-arm64@0.11.0",
+        ] {
+            let mut f = fixture(FixtureOptions {
+                nested: true,
+                cache_failure: Some((missing, "npm error code E404")),
+                drop_distribution_on_install: false,
+            });
+            let metadata = f
+                .request
+                .package_root
+                .join("app/codexhost-distribution.json");
+            let before = fs::read(&metadata).unwrap();
+            let error = apply_locked(&f.request).unwrap_err().to_string();
+            let calls = fs::read_to_string(f.root.join("calls")).unwrap();
+            assert!(
+                calls
+                    .lines()
+                    .all(|call| call.starts_with("root ") || call.starts_with("cache add ")),
+                "{calls}"
+            );
+            assert!(calls.contains(&format!("cache add {missing} ")), "{calls}");
+            assert!(
+                error.starts_with(
+                    "The requested release packages are not all available on npm yet; retry later:"
+                ),
+                "unexpected failure: {error}"
+            );
+            assert!(error.contains(missing), "unexpected failure: {error}");
+            assert_eq!(fs::read(&metadata).unwrap(), before);
+            assert!(
+                !f.request
+                    .lock_directory
+                    .join("active-update-v1.lock")
+                    .exists()
+            );
+            // The preserved installation must still be able to restart cleanly.
+            f.request.restart_only = true;
+            apply_locked(&f.request).unwrap();
+        }
+    }
+    #[test]
+    fn prefetch_timeout_and_registry_errors_are_classified_separately() {
+        for (stderr, expected_prefix) in [
+            (
+                "npm error code ETIMEDOUT",
+                "Checking or downloading the release from npm timed out; retry later:",
+            ),
+            (
+                "npm error code ECONNREFUSED",
+                "The requested release is unavailable or npm cannot reach the registry:",
+            ),
+        ] {
+            let f = fixture(FixtureOptions {
+                nested: true,
+                cache_failure: Some(("@codexhost/cli-darwin-arm64@0.11.0", stderr)),
+                drop_distribution_on_install: false,
+            });
+            let error = apply_locked(&f.request).unwrap_err().to_string();
+            assert!(
+                error.starts_with(expected_prefix),
+                "stderr={stderr}, got={error}"
+            );
+            let calls = fs::read_to_string(f.root.join("calls")).unwrap();
+            assert!(!calls.contains("install "), "{calls}");
+            assert!(!calls.contains("remote "), "{calls}");
+        }
     }
     #[test]
     fn same_version_restart_skips_npm_and_reinstalls_the_manifest() {
-        let mut f = fixture(false);
+        let mut f = fixture(FixtureOptions {
+            nested: true,
+            cache_failure: None,
+            drop_distribution_on_install: false,
+        });
         f.request.restart_only = true;
         apply_locked(&f.request).unwrap();
         assert_eq!(
             fs::read_to_string(f.root.join("calls")).unwrap(),
-            "remote\nremote\nremote\n"
+            "remote stop\nremote install\nremote start\n"
         );
         let status: serde_json::Value =
             serde_json::from_slice(&fs::read(&f.request.status_path).unwrap()).unwrap();
         assert_eq!(status["phase"], "succeeded");
     }
     #[test]
+    fn prepares_both_packages_and_preserves_each_layout() {
+        for (nested, expected_install) in [
+            (
+                true,
+                "install --global --prefer-offline --include=optional --no-audit --no-fund @codexhost/cli@0.11.0",
+            ),
+            (
+                false,
+                "install --global --prefer-offline --include=optional --no-audit --no-fund @codexhost/cli@0.11.0 @codexhost/cli-darwin-arm64@0.11.0",
+            ),
+        ] {
+            let f = fixture(FixtureOptions {
+                nested,
+                cache_failure: None,
+                drop_distribution_on_install: false,
+            });
+            apply_locked(&f.request).unwrap();
+            let calls = fs::read_to_string(f.root.join("calls")).unwrap();
+            assert_eq!(
+                calls.lines().collect::<Vec<_>>(),
+                [
+                    "root --global",
+                    "cache add @codexhost/cli@0.11.0 --fetch-retries=0 --fetch-timeout=30000",
+                    "cache add @codexhost/cli-darwin-arm64@0.11.0 --fetch-retries=0 --fetch-timeout=30000",
+                    expected_install,
+                    "remote stop",
+                    "remote install",
+                    "remote start",
+                ],
+                "nested={nested}"
+            );
+        }
+    }
+    #[test]
+    fn missing_platform_package_after_install_reports_clear_error() {
+        let f = fixture(FixtureOptions {
+            nested: true,
+            cache_failure: None,
+            drop_distribution_on_install: true,
+        });
+        let error = apply_locked(&f.request).unwrap_err().to_string();
+        assert!(
+            error.starts_with(
+                "The remote platform package is missing; reinstall codexhost on the remote computer:"
+            ),
+            "unexpected error: {error}"
+        );
+        let calls = fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(!calls.contains("remote "), "{calls}");
+    }
+    #[test]
     fn refuses_concurrent_desktop_update() {
-        let f = fixture(false);
+        let f = fixture(FixtureOptions {
+            nested: true,
+            cache_failure: None,
+            drop_distribution_on_install: false,
+        });
         fs::create_dir_all(&f.request.lock_directory).unwrap();
         fs::write(
             f.request.lock_directory.join("active-update-v1.lock"),
@@ -325,7 +586,11 @@ mod tests {
     }
     #[test]
     fn mismatched_installation_is_not_restarted() {
-        let mut f = fixture(false);
+        let mut f = fixture(FixtureOptions {
+            nested: true,
+            cache_failure: None,
+            drop_distribution_on_install: false,
+        });
         f.request.restart_only = true;
         f.request.version = "0.12.0".into();
         assert!(

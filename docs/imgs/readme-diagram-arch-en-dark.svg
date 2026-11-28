@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" width="960" height="430" role="img" aria-label="CodexHost Architecture: One Shared Local Host, Live Multi-Client Sync">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1320"/>
+      <stop offset="100%" stop-color="#090d14"/>
+    </linearGradient>
+    <linearGradient id="hubGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f2928"/>
+      <stop offset="100%" stop-color="#0d1b2a"/>
+    </linearGradient>
+    <pattern id="dotGrid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="rgba(148, 163, 184, 0.06)"/>
+    </pattern>
+    <filter id="cardShadow" x="-10%" y="-15%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="hubShadow" x="-15%" y="-25%" width="130%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#14b8a6" flood-opacity="0.22"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+  </defs>
+  <rect width="960" height="430" rx="18" fill="url(#bgGrad)"/>
+  <rect width="960" height="430" rx="18" fill="url(#dotGrid)"/>
+  <rect x="0.75" y="0.75" width="958.5" height="428.5" rx="17.25" fill="none" stroke="rgba(148, 163, 184, 0.16)" stroke-width="1.2"/>
+  
+    <!-- Section labels -->
+    <text x="480" y="36" text-anchor="middle" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="600" letter-spacing="1.4">CLIENTS · REAL-TIME SESSION SYNC</text>
+    <text x="480" y="304" text-anchor="middle" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="600" letter-spacing="1.4">NATIVE EXECUTION &amp; MULTI-MACHINE MESH</text>
+
+    <!-- Connection paths -->
+    
+    <path id="p1" d="M 177 132 C 177 160, 330 152, 330 178" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="p2" d="M 480 132 L 480 178" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="p3" d="M 783 132 C 783 160, 630 152, 630 178" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+
+    <path id="p4" d="M 330 264 C 330 292, 177 294, 177 320" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="p5" d="M 480 264 L 480 320" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="p6" d="M 630 264 C 630 292, 783 294, 783 320" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+  
+    <circle r="3.5" fill="#2dd4bf" filter="url(#glow)">
+    <animateMotion dur="2.5s" begin="0s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#p1"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.5s" begin="0s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#60a5fa" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="0.6s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#p2"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="0.6s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#a78bfa" filter="url(#glow)">
+    <animateMotion dur="2.5s" begin="1.2s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#p3"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.5s" begin="1.2s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#60a5fa" filter="url(#glow)">
+    <animateMotion dur="2.4s" begin="0.3s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#p4"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.4s" begin="0.3s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#f97316" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="0.9s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#p5"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="0.9s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#34d399" filter="url(#glow)">
+    <animateMotion dur="2.4s" begin="1.5s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#p6"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.4s" begin="1.5s" repeatCount="indefinite"/>
+  </circle>
+
+    <!-- Top cards -->
+    
+    <g filter="url(#cardShadow)">
+      <rect x="44" y="58" width="266" height="74" rx="12" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="58" y="77" width="36" height="36" rx="9" fill="#2dd4bf" fill-opacity="0.14" stroke="#2dd4bf" stroke-opacity="0.35" stroke-width="1"/>
+      <g transform="translate(64, 83)">
+        <path d="M6 7h12v8H6z M4 17h16" fill="none" stroke="#2dd4bf" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="108" y="92" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Lightweight Standalone App</text>
+      <text x="108" y="112" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Native Tauri · Low footprint</text>
+    </g>
+  
+
+    <g filter="url(#cardShadow)">
+      <rect x="347" y="58" width="266" height="74" rx="12" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="361" y="77" width="36" height="36" rx="9" fill="#60a5fa" fill-opacity="0.14" stroke="#60a5fa" stroke-opacity="0.35" stroke-width="1"/>
+      <g transform="translate(367, 83)">
+        <path d="M5 6h14v12H5z M9 10l2 2-2 2 M13 14h3" fill="none" stroke="#60a5fa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="411" y="92" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Official Codex Desktop</text>
+      <text x="411" y="112" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Non-invasive enhancement</text>
+    </g>
+  
+
+    <g filter="url(#cardShadow)">
+      <rect x="650" y="58" width="266" height="74" rx="12" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="664" y="77" width="36" height="36" rx="9" fill="#a78bfa" fill-opacity="0.14" stroke="#a78bfa" stroke-opacity="0.35" stroke-width="1"/>
+      <g transform="translate(670, 83)">
+        <path d="M8 4h8v16H8z M11 17h2" fill="none" stroke="#a78bfa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="714" y="92" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Web / PWA &amp; Android</text>
+      <text x="714" y="112" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Control from any phone</text>
+    </g>
+  
+
+    <!-- Center Host Hub -->
+    <g filter="url(#hubShadow)">
+      <rect x="96" y="178" width="768" height="86" rx="15" fill="url(#hubGrad)" stroke="#14b8a6" stroke-width="1.6"/>
+      <g>
+    <circle cx="124" cy="204" r="4" fill="#2dd4bf"/>
+    <circle cx="124" cy="204" r="4" fill="none" stroke="#2dd4bf" stroke-width="1.5">
+      <animate attributeName="r" values="4;11" dur="2.4s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0.75;0" dur="2.4s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+      <text x="480" y="209" text-anchor="middle" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700">Shared Local Host (Single Source of Truth)</text>
+      <g>
+        <rect x="143" y="224" width="104" height="24" rx="12" fill="rgba(20, 184, 166, 0.14)" stroke="rgba(45, 212, 191, 0.32)" stroke-width="1"/>
+        <text x="195" y="240" text-anchor="middle" fill="#5eead4" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="500">Threads</text>
+      </g>
+<g>
+        <rect x="257" y="224" width="104" height="24" rx="12" fill="rgba(20, 184, 166, 0.14)" stroke="rgba(45, 212, 191, 0.32)" stroke-width="1"/>
+        <text x="309" y="240" text-anchor="middle" fill="#5eead4" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="500">Queues</text>
+      </g>
+<g>
+        <rect x="371" y="224" width="104" height="24" rx="12" fill="rgba(20, 184, 166, 0.14)" stroke="rgba(45, 212, 191, 0.32)" stroke-width="1"/>
+        <text x="423" y="240" text-anchor="middle" fill="#5eead4" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="500">Approvals</text>
+      </g>
+<g>
+        <rect x="485" y="224" width="104" height="24" rx="12" fill="rgba(20, 184, 166, 0.14)" stroke="rgba(45, 212, 191, 0.32)" stroke-width="1"/>
+        <text x="537" y="240" text-anchor="middle" fill="#5eead4" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="500">Worktrees</text>
+      </g>
+<g>
+        <rect x="599" y="224" width="104" height="24" rx="12" fill="rgba(20, 184, 166, 0.14)" stroke="rgba(45, 212, 191, 0.32)" stroke-width="1"/>
+        <text x="651" y="240" text-anchor="middle" fill="#5eead4" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="500">Usage</text>
+      </g>
+<g>
+        <rect x="713" y="224" width="104" height="24" rx="12" fill="rgba(20, 184, 166, 0.14)" stroke="rgba(45, 212, 191, 0.32)" stroke-width="1"/>
+        <text x="765" y="240" text-anchor="middle" fill="#5eead4" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="500">Extensions</text>
+      </g>
+    </g>
+
+    <!-- Bottom cards -->
+    
+    <g filter="url(#cardShadow)">
+      <rect x="44" y="320" width="266" height="74" rx="12" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="58" y="339" width="36" height="36" rx="9" fill="#60a5fa" fill-opacity="0.14" stroke="#60a5fa" stroke-opacity="0.35" stroke-width="1"/>
+      <g transform="translate(64, 345)">
+        <path d="M12 4l7 4v8l-7 4-7-4V8z" fill="none" stroke="#60a5fa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="108" y="354" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Native Codex Runtime</text>
+      <text x="108" y="374" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Official channel intact</text>
+    </g>
+  
+
+    <g filter="url(#cardShadow)">
+      <rect x="347" y="320" width="266" height="74" rx="12" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="361" y="339" width="36" height="36" rx="9" fill="#f97316" fill-opacity="0.14" stroke="#f97316" stroke-opacity="0.35" stroke-width="1"/>
+      <g transform="translate(367, 345)">
+        <path d="M6 8h4v4H6z M14 8h4v4h-4z M10 14h4v4h-4z" fill="none" stroke="#f97316" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="411" y="354" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">19+ Native Agent Adapters</text>
+      <text x="411" y="374" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Native SDK / RPC &amp; ACP</text>
+    </g>
+  
+
+    <g filter="url(#cardShadow)">
+      <rect x="650" y="320" width="266" height="74" rx="12" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="664" y="339" width="36" height="36" rx="9" fill="#34d399" fill-opacity="0.14" stroke="#34d399" stroke-opacity="0.35" stroke-width="1"/>
+      <g transform="translate(670, 345)">
+        <path d="M6 12a6 6 0 1 1 12 0 M9 12a3 3 0 1 1 6 0 M12 12v5" fill="none" stroke="#34d399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <text x="714" y="354" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Multi-Machine &amp; Relay</text>
+      <text x="714" y="374" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Mac / Linux / Windows mesh</text>
+    </g>
+  
+  
+</svg>

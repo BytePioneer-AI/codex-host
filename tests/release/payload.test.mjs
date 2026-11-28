@@ -68,6 +68,7 @@ describe("release Payload", () => {
     expect(commands[2].args).toContain("codexhost-launcher");
     expect(commands[2].args).toContain("codexhost-shim");
     expect(commands[2].args).toContain("codexhost-updater");
+    expect(commands[2].args).toContain("codexhost-screenshot");
     expect(commands[3].args).toContain("apps/desktop-shell/src-tauri/Cargo.toml");
     expect(commands[3].args).toContain("--release");
     expect(commands[3].args).toContain("--locked");
@@ -77,6 +78,7 @@ describe("release Payload", () => {
     const linux = releaseBuildCommands(releaseTarget("linux-x64"), "linux");
     expect(linux.map((command) => command.command)).toEqual(["npm", "npm", "cargo"]);
     expect(linux[2].args.slice(0, 5)).toEqual(linuxGlibcCargoArguments("x86_64-unknown-linux-gnu"));
+    expect(linux[2].args).not.toContain("codexhost-screenshot");
   });
 
   it.runIf(process.platform === "win32")("starts the current npm CLI without a batch file", () => {
@@ -123,7 +125,7 @@ describe("release Payload", () => {
         37 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
       );
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        36 +
+        37 +
           preinstalledHarnessPluginPaths().length +
           expectedWebPaths(releaseTarget("windows-x64")).length,
       );
@@ -137,7 +139,11 @@ describe("release Payload", () => {
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-node-repl.exe",
       );
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-screenshot.exe",
+      );
       expect(paths).not.toContain("libexec/codexhost-node-repl");
+      expect(paths).not.toContain("libexec/codexhost-screenshot");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );

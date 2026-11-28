@@ -183,6 +183,102 @@ describe("ExternalThreadRuntime register", () => {
     });
   });
 
+  it("prefers confirmed initialState over requested values when both are present", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const requestedModel = adapter.catalog.models[0]?.ref;
+    const confirmedModel = adapter.catalog.models[1]?.ref;
+    const requestedThinking = harnessThinkingOptionIdSchema.parse("low");
+    const confirmedThinking = harnessThinkingOptionIdSchema.parse("high");
+    const requestedMode = harnessPermissionModeIdSchema.parse("ask");
+    const confirmedMode = harnessPermissionModeIdSchema.parse("bypass");
+    if (!requestedModel || !confirmedModel) throw new Error("Fake catalog needs two Models");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: confirmedModel,
+      thinkingOptionId: confirmedThinking,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    Object.defineProperty(opened.value, "initialState", {
+      configurable: true,
+      value: {
+        ...opened.value.initialState,
+        effectiveModel: confirmedModel,
+        effectiveThinkingOptionId: confirmedThinking,
+        effectivePermissionModeId: confirmedMode,
+      },
+    });
+
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { find: async () => null } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+      requestedModel,
+      requestedThinkingOptionId: requestedThinking,
+      requestedPermissionModeId: requestedMode,
+    });
+
+    expect(thread.stateObserver.state).toMatchObject({
+      effectiveModel: confirmedModel,
+      effectiveThinkingOptionId: confirmedThinking,
+      effectivePermissionModeId: confirmedMode,
+    });
+    expect(thread.requestedModel).toEqual(confirmedModel);
+    expect(thread.requestedThinkingOptionId).toBe(confirmedThinking);
+    expect(thread.requestedPermissionModeId).toBe(confirmedMode);
+  });
+
+  it("does not restore requested Thinking when confirmed initialState reports no Thinking options", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const confirmedModel = adapter.catalog.models[0]?.ref;
+    const requestedThinking = harnessThinkingOptionIdSchema.parse("high");
+    const confirmedMode = harnessPermissionModeIdSchema.parse("bypass");
+    if (!confirmedModel) throw new Error("Fake catalog has no default Model");
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: confirmedModel,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    Object.defineProperty(opened.value, "initialState", {
+      configurable: true,
+      value: {
+        nativeRef: opened.value.initialState.nativeRef,
+        effectiveModel: confirmedModel,
+        availableThinkingOptions: [],
+        effectivePermissionModeId: confirmedMode,
+      },
+    });
+
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { find: async () => null } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+      requestedModel: confirmedModel,
+      requestedThinkingOptionId: requestedThinking,
+    });
+
+    expect(thread.stateObserver.state.effectiveThinkingOptionId).toBeUndefined();
+    expect(thread.stateObserver.state.availableThinkingOptions).toEqual([]);
+    expect(thread.requestedThinkingOptionId).toBeUndefined();
+  });
+
   it.each(["current", "legacy", "unavailable", "catalog offline"])(
     "restores an OMP Thread with a saved Model (%s)",
     async (storedModel) => {

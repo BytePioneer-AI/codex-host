@@ -2,6 +2,7 @@
 
 mod active_update;
 mod autostart;
+mod cli_help;
 mod compatibility;
 mod console;
 mod desktop_attachment;
@@ -184,10 +185,10 @@ const USAGE: &str = "usage:
   codexhost project list ...
   codexhost harness list|inspect ...
   codexhost delegate start ...
-  codexhost thread send|cancel|read|wait|watch|watches|list|file ...
+  codexhost thread send|cancel|read|wait|answer|watch|watches|list|file ...
   codexhost thread export <thread> (rarely needed)
-  codexhost client status|on|off|create|list|revoke ...
-  codexhost events pull|ack ...";
+  codexhost client add|list|set|remove ...
+  codexhost events ...";
 
 fn usage() {
     eprintln!("{USAGE}");
@@ -1237,6 +1238,10 @@ fn desktop_environment(
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     #[cfg(target_os = "linux")]
     environment.extend(linux_wayland_runtime_environment(env::vars_os()));
+    #[cfg(target_os = "macos")]
+    if let Some(path) = macos_forwarded_path(codexhost_platform::user_shell_path()) {
+        environment.push((OsString::from("PATH"), path));
+    }
     #[cfg(target_os = "windows")]
     for name in ["PATH", "PATHEXT"] {
         if let Some(value) = env::var_os(name) {
@@ -1244,6 +1249,11 @@ fn desktop_environment(
         }
     }
     environment
+}
+
+#[cfg(target_os = "macos")]
+fn macos_forwarded_path(path: Option<OsString>) -> Option<OsString> {
+    path.filter(|value| value.to_str().is_some_and(|text| !text.is_empty()))
 }
 
 #[cfg(target_os = "linux")]
@@ -1301,6 +1311,7 @@ fn force_stop_external_desktop(
 ) -> Result<(), Box<dyn Error>> {
     let expected = windows_executable_key(&installation.desktop_executable);
     let started = Instant::now();
+    let mut last_termination_error: Option<String> = None;
     loop {
         let process_ids = codexhost_platform::desktop_process_ids_for_installation(installation)?;
         if process_ids.is_empty() {
@@ -1323,11 +1334,18 @@ fn force_stop_external_desktop(
             if let Err(error) = terminate_process_by_id(process_id)
                 && process_exists(process_id)
             {
-                return Err(format!("could not terminate Codex PID {process_id}: {error}").into());
+                // 拒绝访问（os error 5）常见于进程正在退出或权限提升的瞬时状态；
+                // 不立即中止重启流程，记录错误并等待下一轮轮询直到整体超时。
+                last_termination_error = Some(format!(
+                    "could not terminate Codex PID {process_id}: {error}"
+                ));
+                break;
             }
         }
         if started.elapsed() >= timeout {
-            return Err("Codex Desktop did not exit after forced restart".into());
+            return Err(last_termination_error
+                .unwrap_or_else(|| "Codex Desktop did not exit after forced restart".into())
+                .into());
         }
         thread::sleep(Duration::from_millis(50));
     }
@@ -1755,15 +1773,13 @@ fn desktop_route(
     codex_installed: bool,
     shell_available: bool,
 ) -> DesktopRoute {
-    if shell_available {
-        return DesktopRoute::Onboarding;
-    }
     match preferences.filter(|prefs| prefs.onboarding_completed) {
         Some(prefs) => match prefs.default_desktop_surface {
             Surface::NativeShell => DesktopRoute::App,
             Surface::CodexDesktop if codex_installed => DesktopRoute::CodexDesktop,
             Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
         },
+        None if shell_available => DesktopRoute::Onboarding,
         None if !codex_installed => DesktopRoute::RememberNative,
         None => DesktopRoute::CodexDesktop,
     }
@@ -1886,11 +1902,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             codexhost_platform::open_external_url(&url).map_err(Into::into)
         }
         Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
-        Some("desktop-screenshot") if arguments.len() == 1 => {
-            let image = codexhost_platform::capture_primary_desktop()?;
-            std::io::stdout().lock().write_all(&image)?;
-            Ok(())
-        }
+        Some("desktop-screenshot") if arguments.len() == 1 => run_desktop_screenshot(),
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
         Some("host") if is_delegation_host_command(arguments) => run_delegation_cli(arguments),
         Some("host") => host_service::run(&arguments[1..]),
@@ -1909,6 +1921,52 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn run_desktop_screenshot() -> Result<(), Box<dyn Error>> {
+    let image = codexhost_platform::capture_primary_desktop()?;
+    std::io::stdout().lock().write_all(&image)?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_screenshot_helper(
+    executable: &Path,
+    resources: &InstalledResources,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let primary = resources
+        .screenshot_helper
+        .as_deref()
+        .ok_or("desktop-screenshot/unsupported")?;
+    if let Ok(path) = canonical_existing_file(primary) {
+        return Ok(path);
+    }
+    // Cargo target-triple builds place sibling binaries next to the launcher.
+    let sibling = executable.with_file_name("codexhost-screenshot.exe");
+    canonical_existing_file(&sibling).map_err(|_| "desktop-screenshot/unavailable".into())
+}
+
+#[cfg(target_os = "windows")]
+fn run_desktop_screenshot() -> Result<(), Box<dyn Error>> {
+    let executable = env::current_exe()?.canonicalize()?;
+    let resources = InstalledResources::from_executable(&executable)?;
+    let helper = resolve_windows_screenshot_helper(&executable, &resources)?;
+    let mut command = Command::new(helper);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    configure_background_command(&mut command);
+    let mut child = spawn_supervised(&mut command).map_err(|_| "desktop-screenshot/unavailable")?;
+    let status = child
+        .wait()
+        .map_err(|_| "desktop-screenshot/capture-failed")?;
+    if status.success() {
+        Ok(())
+    } else {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
 fn is_delegation_host_command(arguments: &[String]) -> bool {
     arguments.first().is_some_and(|arg| arg == "host")
         && arguments
@@ -1918,6 +1976,10 @@ fn is_delegation_host_command(arguments: &[String]) -> bool {
 
 fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(synopsis) = cli_help::subcommand_usage(&arguments) {
+        println!("usage: {synopsis}");
+        return ExitCode::SUCCESS;
+    }
     #[cfg(target_os = "windows")]
     let start_menu_launch = arguments.as_slice() == [START_MENU_ARGUMENT];
     #[cfg(target_os = "windows")]
@@ -2102,12 +2164,15 @@ mod tests {
             (None, true, true, Onboarding),
             (None, true, false, CodexDesktop),
             (incomplete, false, true, Onboarding),
+            (incomplete, false, false, RememberNative),
             (incomplete, true, true, Onboarding),
-            (native, true, true, Onboarding),
+            (incomplete, true, false, CodexDesktop),
+            (native, false, true, App),
+            (native, true, true, App),
             (native, true, false, App),
-            (codex, true, true, Onboarding),
+            (codex, true, true, CodexDesktop),
             (codex, true, false, CodexDesktop),
-            (codex, false, true, Onboarding),
+            (codex, false, true, CodexUnavailable),
             (codex, false, false, CodexUnavailable),
         ] {
             assert_eq!(desktop_route(prefs, installed, shell), expected);
@@ -2761,6 +2826,78 @@ mod tests {
         assert!(missing_status.success());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn desktop_environment_forwards_macos_resolved_path_and_skips_non_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        assert_eq!(super::macos_forwarded_path(None), None);
+        assert_eq!(super::macos_forwarded_path(Some(OsString::new())), None);
+        assert_eq!(
+            super::macos_forwarded_path(Some(OsString::from_vec(vec![
+                0xff, b'/', b'b', b'i', b'n'
+            ]))),
+            None
+        );
+        assert_eq!(
+            super::macos_forwarded_path(Some(OsString::from("/opt/homebrew/bin:/usr/bin"))),
+            Some(OsString::from("/opt/homebrew/bin:/usr/bin"))
+        );
+
+        const TEST: &str =
+            "tests::desktop_environment_forwards_macos_resolved_path_and_skips_non_utf8";
+        const MARKER: &str = "CODEXHOST_TEST_DESKTOP_ENV_MACOS_PATH";
+        if env::var_os(MARKER).is_some() {
+            let environment = desktop_environment(
+                &resolved_options(),
+                &runtime_control(),
+                Path::new("/Applications/codexhost.app/Contents/MacOS/codexhost"),
+                Path::new("/tmp/codexhost/desktop-runtime-v1.json"),
+                None,
+            );
+            assert_eq!(
+                environment
+                    .iter()
+                    .find(|(name, _)| name == "PATH")
+                    .map(|(_, value)| value),
+                Some(&OsString::from(
+                    "/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                ))
+            );
+            return;
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "codexhost-desktop-env-path-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let fake_shell = root.join("zsh");
+        std::fs::write(
+            &fake_shell,
+            "#!/bin/sh\nprintf '\\0CODEXHOST_LOGIN_PATH_V1\\0/opt/homebrew/bin:/Users/example/.local/bin:/usr/bin\\0'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = Command::new(env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env(MARKER, "1")
+            .env("HOME", &root)
+            .env("SHELL", &fake_shell)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .status()
+            .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
     }
 
     #[cfg(target_os = "windows")]

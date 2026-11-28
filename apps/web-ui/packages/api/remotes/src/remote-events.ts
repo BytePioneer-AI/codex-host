@@ -26,6 +26,14 @@ declare module "@deepseek-ai/cordis" {
     "codexhost/display-settings-changed"(): void;
     "codexhost/harness-inspection-changed"(): void;
     "codexhost/preferences-error"(message: string): void;
+    "codexhost/notification"(message: {
+      kind: "turn" | "approval" | "question" | "error" | "test";
+      title: string;
+      body: string;
+      tag?: string;
+      sessionId?: string;
+      url?: string;
+    }): void;
   }
 }
 
@@ -36,6 +44,7 @@ export const API_REMOTE_FORWARDED_EVENTS = [
   { event: "codexhost/display-settings-changed", mode: "emit" },
   { event: "codexhost/harness-inspection-changed", mode: "emit" },
   { event: "codexhost/preferences-error", mode: "emit" },
+  { event: "codexhost/notification", mode: "emit" },
   { event: "agent-preset/selected", mode: "emit" },
   { event: "approval/request", mode: "waterfall" },
   { event: "api-session/activity", mode: "emit" },

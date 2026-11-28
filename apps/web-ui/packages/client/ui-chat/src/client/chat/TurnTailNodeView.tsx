@@ -111,20 +111,24 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
         clock="end"
         // The branch action owns boundary resolution: it sends the real
         // turn/end seq it already has, and the Host cuts exactly there.
-        onBranch={() => {
-          if (forking.current || !historyReady) return;
-          forking.current = true;
-          setForkPending(true);
-          setForkError(undefined);
-          void forkAt(data.seq)
-            .catch((error: unknown) => {
-              setForkError(error instanceof Error ? error.message : String(error));
-            })
-            .finally(() => {
-              forking.current = false;
-              setForkPending(false);
-            });
-        }}
+        onBranch={
+          forkAt === undefined
+            ? undefined
+            : () => {
+                if (forking.current || !historyReady) return;
+                forking.current = true;
+                setForkPending(true);
+                setForkError(undefined);
+                void forkAt(data.seq)
+                  .catch((error: unknown) => {
+                    setForkError(error instanceof Error ? error.message : String(error));
+                  })
+                  .finally(() => {
+                    forking.current = false;
+                    setForkPending(false);
+                  });
+              }
+        }
         branchUnavailable={
           !historyReady || forkPending || data.branchUnavailable || hasLaterChatNode
         }

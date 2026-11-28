@@ -52,6 +52,8 @@
   color: var(--dsw-alias-state-error-primary);
   font-size: 11px;
   line-height: 16px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .actions {
@@ -64,6 +66,8 @@
 .summary {
   min-width: 0;
   padding: 14px 16px 12px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .title {

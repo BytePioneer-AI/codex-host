@@ -294,6 +294,9 @@ interface HarnessProps {
   findLeaseMaxDurationMs?: number;
   overscanMargin?: string;
   withConversationScroll?: boolean;
+  followingTail?: boolean;
+  onTailScrollClamp?: () => void;
+  onScrollCompensated?: (delta: number) => void;
   onHandle?: (handle: TranscriptVirtualization) => void;
 }
 
@@ -312,6 +315,9 @@ function VirtualizedTranscriptHarness({
   findLeaseMaxDurationMs,
   overscanMargin,
   withConversationScroll = true,
+  followingTail = false,
+  onTailScrollClamp,
+  onScrollCompensated,
   onHandle,
 }: HarnessProps) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -335,6 +341,8 @@ function VirtualizedTranscriptHarness({
     findLeaseTimeoutMs,
     findLeaseMaxDurationMs,
     overscanMargin,
+    onTailScrollClamp,
+    onScrollCompensated,
   });
   onHandle?.(virtualization);
 
@@ -345,36 +353,40 @@ function VirtualizedTranscriptHarness({
     withConversationScroll ? { "data-conversation-scroll": "" } : null,
     createElement(
       "div",
-      { ref: listRef },
+      followingTail ? { "data-chat-following-tail": "" } : null,
       createElement(
         "div",
-        { ref: columnRef, "data-chat-flow": "" },
-        entries.map((entry, index) => {
-          const flowKey = entryFlowKey(entry);
-          const mounted = virtualization.isMounted(index, flowKey);
-          const placeholderHeight = mounted
-            ? undefined
-            : virtualization.placeholderHeight(flowKey, entry.kind);
-          if (entry.kind === "group") {
-            return createElement(ChatGroupSeat, {
+        { ref: listRef },
+        createElement(
+          "div",
+          { ref: columnRef, "data-chat-flow": "" },
+          entries.map((entry, index) => {
+            const flowKey = entryFlowKey(entry);
+            const mounted = virtualization.isMounted(index, flowKey);
+            const placeholderHeight = mounted
+              ? undefined
+              : virtualization.placeholderHeight(flowKey, entry.kind);
+            if (entry.kind === "group") {
+              return createElement(ChatGroupSeat, {
+                ...seatProps,
+                key: `group:${entry.key}`,
+                groupKey: entry.key,
+                mounted,
+                placeholderHeight,
+                registerRow,
+              });
+            }
+            return createElement(ChatNodeSeat, {
               ...seatProps,
-              key: `group:${entry.key}`,
-              groupKey: entry.key,
+              key: `node:${entry.key}:${entry.groupPart ?? ""}`,
+              nodeKey: entry.key,
+              groupPart: entry.groupPart,
               mounted,
               placeholderHeight,
               registerRow,
             });
-          }
-          return createElement(ChatNodeSeat, {
-            ...seatProps,
-            key: `node:${entry.key}:${entry.groupPart ?? ""}`,
-            nodeKey: entry.key,
-            groupPart: entry.groupPart,
-            mounted,
-            placeholderHeight,
-            registerRow,
-          });
-        }),
+          }),
+        ),
       ),
     ),
   );
@@ -1195,6 +1207,7 @@ describe("transcript row-shell content virtualization and find lease", () => {
   it("compensates scrollTop when above-viewport rows expand on engines without overflow-anchor, without disturbing tail-follow", async () => {
     const total = 56;
     const { entries, nodes } = buildEntries(total);
+    const onScrollCompensated = vi.fn();
 
     await act(async () => {
       root.render(
@@ -1202,6 +1215,7 @@ describe("transcript row-shell content virtualization and find lease", () => {
           sessionId: "s-anchor-comp",
           entries,
           nodes,
+          onScrollCompensated,
         }),
       );
     });
@@ -1254,6 +1268,8 @@ describe("transcript row-shell content virtualization and find lease", () => {
     });
     expect(row2.querySelector("[data-rendered-body]")).not.toBeNull();
     expect(scrollTopValue).toBe(1200);
+    expect(onScrollCompensated).toHaveBeenCalledTimes(1);
+    expect(onScrollCompensated).toHaveBeenCalledWith(200);
   });
 
   it("exempts [data-chat-virtualized] row shells from ChatViewport :empty checks during paging and fallback capture", () => {
@@ -1375,5 +1391,419 @@ describe("transcript row-shell content virtualization and find lease", () => {
     } finally {
       globalThis.IntersectionObserver = originalIO;
     }
+  });
+
+  it("tracks empty direct conversation.chat.node slots with data-chat-empty and clears it on populate or virtualization", async () => {
+    const node = makeUserNode(0, 1);
+    const nodes = new Map<string, ChatConversationViewNode>([[node.key, node]]);
+    const { seatProps } = createFakeSeatEnvironment(nodes);
+    let setInnerVisible: ((visible: boolean) => void) | undefined;
+    function DynamicSlotChild() {
+      const [visible, setVisible] = React.useState(false);
+      setInnerVisible = setVisible;
+      return visible ? createElement("span", null, "dynamic-child") : null;
+    }
+
+    const renderSeat = (
+      mounted: boolean,
+      slotContent: React.ReactNode,
+      placeholderHeight?: number,
+    ) =>
+      createElement(ChatNodeSeat, {
+        ...seatProps,
+        renderSlot: (() =>
+          createElement(
+            "div",
+            { "data-slot": "conversation.chat.node" },
+            slotContent,
+          )) as unknown as ChatViewSlotProps["renderSlot"],
+        nodeKey: node.key,
+        mounted,
+        placeholderHeight,
+      });
+
+    const dynamicNode = createElement(DynamicSlotChild);
+    await act(async () => {
+      root.render(renderSeat(true, dynamicNode));
+    });
+    const wrapper = container.querySelector<HTMLElement>(`[data-chat-flow-key="${node.key}"]`)!;
+    const slot = wrapper.querySelector<HTMLElement>('[data-slot="conversation.chat.node"]')!;
+    expect(wrapper.hasAttribute("data-chat-empty")).toBe(true);
+
+    // Comment-only slot content stays empty.
+    await act(async () => {
+      slot.appendChild(document.createComment("placeholder"));
+      await Promise.resolve();
+    });
+    expect(wrapper.hasAttribute("data-chat-empty")).toBe(true);
+
+    // Autonomous slot-child updates (without ChatNodeSeat re-rendering) toggle data-chat-empty via MutationObserver.
+    await act(async () => {
+      setInnerVisible?.(true);
+      await Promise.resolve();
+    });
+    expect(wrapper.hasAttribute("data-chat-empty")).toBe(false);
+
+    await act(async () => {
+      setInnerVisible?.(false);
+      await Promise.resolve();
+    });
+    expect(wrapper.hasAttribute("data-chat-empty")).toBe(true);
+
+    // Synchronous ChatNodeSeat re-renders clear and restore data-chat-empty immediately.
+    await act(async () => {
+      root.render(renderSeat(true, createElement("div", null, "rendered")));
+    });
+    expect(wrapper.hasAttribute("data-chat-empty")).toBe(false);
+
+    await act(async () => {
+      root.render(renderSeat(true, null));
+    });
+    expect(wrapper.hasAttribute("data-chat-empty")).toBe(true);
+
+    // Virtualizing the row clears data-chat-empty so placeholder shells keep height and gap.
+    await act(async () => {
+      root.render(renderSeat(false, null, 120));
+    });
+    expect(wrapper.hasAttribute("data-chat-empty")).toBe(false);
+    expect(wrapper.hasAttribute("data-chat-virtualized")).toBe(true);
+  });
+
+  it("restores tail alignment via onTailScrollClamp when a tail-following virtualization commit clamps scrollTop", async () => {
+    const total = VIRTUALIZE_THRESHOLD + 12;
+    const { entries, nodes } = buildEntries(total);
+    const onTailScrollClamp = vi.fn();
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-tail-clamp",
+          entries,
+          nodes,
+          followingTail: true,
+          onTailScrollClamp,
+        }),
+      );
+    });
+
+    const io = findVirtualizationIO(mockIO.instances)!;
+    const scroller = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-chat-flow-key]"));
+    const row0 = rows[0]!;
+
+    for (const row of rows) {
+      Object.defineProperty(row, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ top: 0, bottom: 100, height: 100, left: 0, right: 600, width: 600 }),
+      });
+    }
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 5000 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 600 });
+    let scrollTopValue = 4400;
+    let simulatedClamp = false;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => {
+        if (!simulatedClamp && row0.hasAttribute("data-chat-virtualized")) {
+          simulatedClamp = true;
+          scrollTopValue = 1800;
+        }
+        return scrollTopValue;
+      },
+      set: (value: number) => {
+        scrollTopValue = value;
+      },
+    });
+    onTailScrollClamp.mockImplementation(() => {
+      scrollTopValue = 4400;
+    });
+
+    await act(async () => {
+      io.emit(
+        rows.map((row, index) => ({
+          target: row,
+          isIntersecting: index >= total - PIN_TAIL,
+          height: 100,
+        })),
+      );
+    });
+
+    expect(row0.hasAttribute("data-chat-virtualized")).toBe(true);
+    expect(onTailScrollClamp).toHaveBeenCalledTimes(1);
+    expect(scrollTopValue).toBe(4400);
+  });
+
+  it("falls back to setting scrollTop to floor when onTailScrollClamp is omitted and skips clamp recovery when scrolled away", async () => {
+    const total = VIRTUALIZE_THRESHOLD + 12;
+    const { entries, nodes } = buildEntries(total);
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-tail-clamp-fallback",
+          entries,
+          nodes,
+          followingTail: true,
+        }),
+      );
+    });
+
+    const io = findVirtualizationIO(mockIO.instances)!;
+    const scroller = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-chat-flow-key]"));
+    const row0 = rows[0]!;
+
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 5000 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 600 });
+    let scrollTopValue = 4400;
+    let simulatedClamp = false;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => {
+        if (!simulatedClamp && row0.hasAttribute("data-chat-virtualized")) {
+          simulatedClamp = true;
+          scrollTopValue = 1200;
+        }
+        return scrollTopValue;
+      },
+      set: (value: number) => {
+        scrollTopValue = value;
+      },
+    });
+
+    await act(async () => {
+      io.emit(
+        rows.map((row, index) => ({
+          target: row,
+          isIntersecting: index >= total - PIN_TAIL,
+          height: 100,
+        })),
+      );
+    });
+    expect(scrollTopValue).toBe(4400);
+
+    // When scrolled away from the tail (even if followingTail attr lingers), never snap back to floor.
+    const onTailScrollClamp = vi.fn();
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-tail-away",
+          entries,
+          nodes,
+          followingTail: true,
+          onTailScrollClamp,
+        }),
+      );
+    });
+    const io2 = findVirtualizationIO(mockIO.instances)!;
+    const scroller2 = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+    const rows2 = Array.from(container.querySelectorAll<HTMLElement>("[data-chat-flow-key]"));
+    Object.defineProperty(scroller2, "scrollHeight", { configurable: true, value: 5000 });
+    Object.defineProperty(scroller2, "clientHeight", { configurable: true, value: 600 });
+    let awayScrollTop = 1000;
+    Object.defineProperty(scroller2, "scrollTop", {
+      configurable: true,
+      get: () => awayScrollTop,
+      set: (value: number) => {
+        awayScrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      io2.emit(
+        rows2.map((row, index) => ({
+          target: row,
+          isIntersecting: index >= 10 && index <= 20,
+          height: 100,
+        })),
+      );
+    });
+    expect(onTailScrollClamp).not.toHaveBeenCalled();
+    expect(awayScrollTop).toBe(1000);
+  });
+
+  it("samples fresh live DOM height with subpixel precision at unmount so height growth after caching never collapses the shell", async () => {
+    const total = VIRTUALIZE_THRESHOLD + 12;
+    const { entries, nodes } = buildEntries(total);
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-fresh-unmount",
+          entries,
+          nodes,
+        }),
+      );
+    });
+
+    const io = findVirtualizationIO(mockIO.instances)!;
+    const row4 = container.querySelector<HTMLElement>('[data-chat-flow-key="node-4"]')!;
+
+    // Initial mount height recorded as 120px when row4 first settles in viewport.
+    mockRowHeight(row4, 120);
+    await act(async () => {
+      io.emit([{ target: row4, isIntersecting: true, height: 120 }]);
+    });
+    expect(row4.querySelector('[data-rendered-body="node-4"]')).not.toBeNull();
+
+    // Row4 dynamically grows to 342.37px (e.g. image loaded or block expanded) before RO fires,
+    // then leaves viewport and unmounts.
+    mockRowHeight(row4, 342.37);
+    await act(async () => {
+      io.emit([{ target: row4, isIntersecting: false, height: 120 }]);
+    });
+
+    expect(row4.querySelector("[data-rendered-body]")).toBeNull();
+    expect(row4.hasAttribute("data-chat-virtualized")).toBe(true);
+    expect(row4.style.minHeight).toBe("342.37px");
+  });
+
+  it("advances scrollTop monotonically across downward unmount/mount batches and recovers from synchronous layout clamps", async () => {
+    const total = 70;
+    const { entries, nodes } = buildEntries(total);
+    const compensatedDeltas: number[] = [];
+
+    await act(async () => {
+      root.render(
+        createElement(VirtualizedTranscriptHarness, {
+          sessionId: "s-monotonic-down",
+          entries,
+          nodes,
+          onScrollCompensated: (delta) => {
+            compensatedDeltas.push(delta);
+          },
+        }),
+      );
+    });
+
+    const io = findVirtualizationIO(mockIO.instances)!;
+    const scroller = container.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-chat-flow-key]"));
+    const clientHeight = 600;
+    const mountedHeights = new Map<number, number>();
+    for (let i = 0; i < total; i += 1) {
+      mountedHeights.set(i, 180 + (i % 4) * 40);
+    }
+
+    const rowHeight = (index: number): number => {
+      const row = rows[index]!;
+      if (row.hasAttribute("data-chat-virtualized")) {
+        const parsed = Number.parseFloat(row.style.minHeight);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : ESTIMATED_NODE_HEIGHT;
+      }
+      return mountedHeights.get(index) ?? 180;
+    };
+
+    const rowDocTop = (index: number): number => {
+      let y = 0;
+      for (let i = 0; i < index; i += 1) y += rowHeight(i);
+      return y;
+    };
+
+    const totalHeight = (): number => {
+      let h = 0;
+      for (let i = 0; i < total; i += 1) h += rowHeight(i);
+      return h;
+    };
+
+    let scrollTopValue = 400;
+    let pureClampFired = false;
+    let mixedClampFired = false;
+    let extraAboveOffset = 0;
+    const pureClampRow = rows[4]!;
+    const mixedClampRow = rows[12]!;
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      get: () => clientHeight,
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => totalHeight() + extraAboveOffset,
+    });
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => {
+        // Pure synchronous clamp on batch 2 (no net above-viewport height change).
+        if (!pureClampFired && pureClampRow.hasAttribute("data-chat-virtualized")) {
+          pureClampFired = true;
+          scrollTopValue = Math.max(0, scrollTopValue - 600);
+        }
+        // Combined synchronous clamp (-400px) + genuine above-viewport height growth (+25px) on batch 4.
+        if (!mixedClampFired && mixedClampRow.hasAttribute("data-chat-virtualized")) {
+          mixedClampFired = true;
+          extraAboveOffset += 25;
+          scrollTopValue = Math.max(0, scrollTopValue - 400);
+        }
+        return scrollTopValue;
+      },
+      set: (value: number) => {
+        const floor = Math.max(0, totalHeight() + extraAboveOffset - clientHeight);
+        scrollTopValue = Math.max(0, Math.min(floor, value));
+      },
+    });
+    Object.defineProperty(scroller, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 0,
+          bottom: clientHeight,
+          height: clientHeight,
+          left: 0,
+          right: 600,
+          width: 600,
+        }) as DOMRect,
+    });
+    for (let i = 0; i < total; i += 1) {
+      const idx = i;
+      Object.defineProperty(rows[idx]!, "getBoundingClientRect", {
+        configurable: true,
+        value: () => {
+          const offset = idx > 12 ? extraAboveOffset : 0;
+          const top = rowDocTop(idx) + offset - scrollTopValue;
+          const height = rowHeight(idx);
+          return { top, bottom: top + height, height, left: 0, right: 600, width: 600 } as DOMRect;
+        },
+      });
+    }
+
+    // Settle initial viewport window around rows 0..14.
+    await act(async () => {
+      io.emit(
+        rows.map((row, idx) => ({
+          target: row,
+          isIntersecting: idx <= 14,
+          height: rowHeight(idx),
+        })),
+      );
+    });
+
+    // Walk downward in batches, simulating wheel increments + above-viewport unmounts + below-viewport mounts,
+    // including a pure synchronous clamp on batch 2 and a clamp + genuine +25px growth on batch 4.
+    let previousTop = scrollTopValue;
+    for (let batch = 1; batch <= 8; batch += 1) {
+      const floor = totalHeight() + extraAboveOffset - clientHeight;
+      scrollTopValue = Math.min(floor, scrollTopValue + 900);
+      const targetBeforeCommit = scrollTopValue;
+      const windowStart = Math.min(total - PIN_TAIL, batch * 4);
+      const windowEnd = Math.min(total - 1, windowStart + 14);
+      await act(async () => {
+        io.emit(
+          rows.map((row, idx) => ({
+            target: row,
+            isIntersecting: idx >= windowStart && idx <= windowEnd,
+            height: rowHeight(idx),
+          })),
+        );
+      });
+      // scrollTop must advance monotonically and never snap backward behind previousTop or targetBeforeCommit.
+      expect(scrollTopValue).toBeGreaterThanOrEqual(previousTop);
+      expect(scrollTopValue).toBeGreaterThanOrEqual(targetBeforeCommit - 1);
+      previousTop = scrollTopValue;
+    }
+    expect(pureClampFired).toBe(true);
+    expect(mixedClampFired).toBe(true);
+    // Pure clamp recovery (batch 2) must NOT report +600; combined clamp + 25px growth (batch 4)
+    // must report only the +25px net height shift, keeping ChatViewport.observation.top unpolluted.
+    expect(compensatedDeltas).toEqual([25]);
   });
 });

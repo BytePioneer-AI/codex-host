@@ -68,6 +68,36 @@ function isIndependentProcessToolNode(node: ChatNode | undefined): boolean {
   return node?.kind === "tool-call" && isIndependentProcessTool(node.data.root.name);
 }
 
+const CHAT_NODE_SLOT_NAME = "conversation.chat.node";
+
+function seatSlotOf(wrapper: Element): Element | null {
+  for (let child = wrapper.firstElementChild; child !== null; child = child.nextElementSibling) {
+    if (child.getAttribute("data-slot") === CHAT_NODE_SLOT_NAME) return child;
+  }
+  return null;
+}
+
+function isElementEmpty(element: Element): boolean {
+  for (let node = element.firstChild; node !== null; node = node.nextSibling) {
+    if (node.nodeType === Node.ELEMENT_NODE) return false;
+    if (
+      (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) &&
+      (node.nodeValue?.length ?? 0) > 0
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function syncSeatEmptyAttribute(wrapper: HTMLElement, slot: Element | null): void {
+  if (slot !== null && isElementEmpty(slot)) {
+    wrapper.setAttribute("data-chat-empty", "");
+  } else {
+    wrapper.removeAttribute("data-chat-empty");
+  }
+}
+
 /**
  * Subscribe, apply Turn-process visibility, and dispatch one stable Context key.
  * Policy reads select this seat's own conclusion, so a mode change re-renders
@@ -185,6 +215,40 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       : groupPart === undefined || groupPart === "response"
         ? routedNode.key
         : JSON.stringify([routedNode.key, groupPart]);
+  const hasRow = routedNode !== undefined && flowKey !== undefined;
+  // Reflect an empty direct `conversation.chat.node` slot onto the row shell so CSS
+  // can collapse empty seats without `:has()` sibling selectors inside container queries.
+  useLayoutEffect(() => {
+    const element = wrapperRef.current;
+    if (element === null) return;
+    if (!mounted || !hasRow) {
+      element.removeAttribute("data-chat-empty");
+      return;
+    }
+    let observedSlot = seatSlotOf(element);
+    syncSeatEmptyAttribute(element, observedSlot);
+    if (typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(() => {
+      const nextSlot = seatSlotOf(element);
+      if (nextSlot !== observedSlot) {
+        observer.disconnect();
+        observer.observe(element, { childList: true });
+        if (nextSlot !== null) observer.observe(nextSlot, { childList: true });
+        observedSlot = nextSlot;
+      }
+      syncSeatEmptyAttribute(element, nextSlot);
+    });
+    observer.observe(element, { childList: true });
+    if (observedSlot !== null) observer.observe(observedSlot, { childList: true });
+    return () => {
+      observer.disconnect();
+    };
+  }, [mounted, hasRow, wrapperRef]);
+  useLayoutEffect(() => {
+    const element = wrapperRef.current;
+    if (element === null || !mounted || !hasRow) return;
+    syncSeatEmptyAttribute(element, seatSlotOf(element));
+  });
   useLayoutEffect(() => {
     if (registerRow === undefined || flowKey === undefined) return;
     const element = wrapperRef.current;

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as c from "@codexhost/shared-contracts";
+import type { ChHostClient } from "./ch-host-client.ts";
 import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
 import {
@@ -29,9 +30,15 @@ export interface PeerHostManagerOptions {
   resolveSelfShare?: ResolvePeerSelfShare;
   /** Optional DNS resolver override for peer probe host validation (used in tests). */
   dnsLookup?: PeerDnsLookup;
+  /** Optional hook attaching to each enabled Peer's realtime channel; returns a cleanup callback. */
+  onPeerRealtime?: (hostId: string, realtime: NonNullable<ChHostClient["realtime"]>) => () => void;
 }
 
 const MAX_LINKED_PEER_IDS = 128;
+
+const normalizedPeerOrigin = (origin: string) => URL.parse(origin)?.origin ?? origin;
+const peerNodeId = (client: PeerHostClient) =>
+  client.manifest ? client.manifest.nodeId : client.record.nodeId;
 
 export interface PeerHostRegisterOptions {
   localHostname?: string;
@@ -42,12 +49,14 @@ export interface PeerHostRegisterOptions {
 export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
   private sources = new Map<string, PeerThreadSource>();
+  private peerRealtimeCleanups = new Map<string, () => void>();
   private readonly allowLoopback: boolean;
   private readonly localNodeId: string | undefined;
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   private readonly resolveSelfShare: ResolvePeerSelfShare | undefined;
   private readonly dnsLookup: PeerDnsLookup | undefined;
+  private readonly onPeerRealtime: PeerHostManagerOptions["onPeerRealtime"];
   onChange?: (hostId?: string) => void;
   onPeerRemoved?: (hostId: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
@@ -70,6 +79,7 @@ export class PeerHostManager {
     this.projector = options.projector;
     this.resolveSelfShare = options.resolveSelfShare;
     this.dnsLookup = options.dnsLookup;
+    this.onPeerRealtime = options.onPeerRealtime;
     for (const record of store.load()) this.install(record);
   }
 
@@ -97,6 +107,8 @@ export class PeerHostManager {
         ? previous.manifest
         : undefined;
     const next = client ?? this.createClient(record, inheritedManifest);
+    this.peerRealtimeCleanups.get(record.peerId)?.();
+    this.peerRealtimeCleanups.delete(record.peerId);
     this.sources.get(record.peerId)?.close();
     this.sources.delete(record.peerId);
     previous?.close();
@@ -136,6 +148,12 @@ export class PeerHostManager {
         },
       });
       this.sources.set(record.peerId, source);
+      if (this.onPeerRealtime) {
+        this.peerRealtimeCleanups.set(
+          record.peerId,
+          this.onPeerRealtime(next.hostId, host.realtime),
+        );
+      }
     }
     void next.start();
     return next;
@@ -233,6 +251,19 @@ export class PeerHostManager {
       throw new PeerEndpointError(400, "Cannot pair this server with itself");
   }
 
+  private assertUniquePeer(origin: string, peerId?: string, nodeId?: string) {
+    const normalizedOrigin = normalizedPeerOrigin(origin);
+    for (const client of this.clients.values()) {
+      if (client.record.peerId === peerId) continue;
+      if (normalizedPeerOrigin(client.record.origin) === normalizedOrigin) {
+        throw new RpcError("remote/duplicate-peer", "A remote peer already uses this origin");
+      }
+      if (nodeId !== undefined && peerNodeId(client) === nodeId) {
+        throw new RpcError("remote/duplicate-peer", "A remote peer already uses this nodeId");
+      }
+    }
+  }
+
   async introducePeer(rawInput: unknown): Promise<c.RemotePeerIntroduceResult> {
     const parsed = c.remotePeerIntroduceParamsSchema.safeParse(rawInput);
     if (!parsed.success) throw new PeerEndpointError(400, "Invalid peer introduction parameters");
@@ -281,23 +312,19 @@ export class PeerHostManager {
         throw new PeerEndpointError(409, "Introduced peer did not match the expected nodeId");
       }
       const clients = [...this.clients.values()];
-      const clientNodeId = (client: PeerHostClient) =>
-        client.manifest ? client.manifest.nodeId : client.record.nodeId;
-      const clientOrigin = (client: PeerHostClient) =>
-        URL.parse(client.record.origin)?.origin ?? client.record.origin;
       const exactMatch = clients.find(
         (client) =>
-          clientOrigin(client) === conn.origin &&
+          normalizedPeerOrigin(client.record.origin) === conn.origin &&
           client.record.token === conn.token &&
           (nodeId === undefined ||
-            clientNodeId(client) === undefined ||
-            clientNodeId(client) === nodeId),
+            peerNodeId(client) === undefined ||
+            peerNodeId(client) === nodeId),
       );
       const existingByNodeId =
-        nodeId === undefined
-          ? undefined
-          : clients.find((client) => clientNodeId(client) === nodeId);
-      const existingByOrigin = clients.find((client) => clientOrigin(client) === conn.origin);
+        nodeId === undefined ? undefined : clients.find((client) => peerNodeId(client) === nodeId);
+      const existingByOrigin = clients.find(
+        (client) => normalizedPeerOrigin(client.record.origin) === conn.origin,
+      );
       const existing = exactMatch ?? existingByNodeId ?? existingByOrigin;
       const old = existing?.record;
       const result = {
@@ -306,9 +333,9 @@ export class PeerHostManager {
         ...(nodeId === undefined ? {} : { nodeId }),
       };
       if (existing && old) {
-        const existingNodeId = clientNodeId(existing);
+        const existingNodeId = peerNodeId(existing);
         const sameBinding =
-          clientOrigin(existing) === conn.origin &&
+          normalizedPeerOrigin(old.origin) === conn.origin &&
           old.token === conn.token &&
           (nodeId === undefined || existingNodeId === undefined || existingNodeId === nodeId);
         if (!sameBinding) {
@@ -547,6 +574,7 @@ export class PeerHostManager {
             linkOptions,
           );
           await this.check(conn.origin);
+          if (add) this.assertUniquePeer(conn.origin);
           const now = new Date().toISOString();
           const record: PeerRecord = {
             peerId: randomUUID(),
@@ -581,6 +609,7 @@ export class PeerHostManager {
           record.name = add.name ?? (client.manifest?.hostname.trim().slice(0, 120) || record.name);
           record.nodeId = client.manifest?.nodeId;
           try {
+            this.assertUniquePeer(record.origin, record.peerId, record.nodeId);
             this.store.save([...this.records(), record]);
           } catch (error) {
             client.close();
@@ -606,6 +635,8 @@ export class PeerHostManager {
         switch (action) {
           case "remove":
             this.store.save(this.records().filter((r) => r.peerId !== peerId));
+            this.peerRealtimeCleanups.get(peerId)?.();
+            this.peerRealtimeCleanups.delete(peerId);
             this.sources.get(peerId)?.close();
             this.sources.delete(peerId);
             client.close();
@@ -637,12 +668,7 @@ export class PeerHostManager {
               ...old,
               origin: conn.origin,
               token: conn.token,
-              nodeId:
-                conn.origin === old.origin
-                  ? client.manifest
-                    ? client.manifest.nodeId
-                    : old.nodeId
-                  : undefined,
+              nodeId: conn.origin === old.origin ? peerNodeId(client) : undefined,
               enabled: p.enabled ?? old.enabled,
               name: p.name ?? old.name,
               updatedAt: new Date().toISOString(),
@@ -654,7 +680,6 @@ export class PeerHostManager {
             }
             let probedClient: PeerHostClient | undefined;
             if (
-              this.localNodeId !== undefined &&
               record.enabled &&
               (conn.origin !== old.origin || conn.token !== old.token || !old.enabled)
             ) {
@@ -674,7 +699,13 @@ export class PeerHostManager {
                 throw Error("Peer changed");
               }
             }
-            this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
+            try {
+              this.assertUniquePeer(record.origin, peerId, record.nodeId);
+              this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
+            } catch (error) {
+              probedClient?.close();
+              throw error;
+            }
             if (
               record.enabled === old.enabled &&
               record.origin === old.origin &&
@@ -714,6 +745,8 @@ export class PeerHostManager {
   }
 
   close() {
+    for (const stop of this.peerRealtimeCleanups.values()) stop();
+    this.peerRealtimeCleanups.clear();
     for (const s of this.sources.values()) s.close();
     this.sources.clear();
     for (const p of this.clients.values()) p.close();

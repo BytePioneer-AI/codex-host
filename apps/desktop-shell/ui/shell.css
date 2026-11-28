@@ -33,9 +33,9 @@
   --error-soft: rgba(200, 62, 73, 0.08);
   --error-border: rgba(200, 62, 73, 0.24);
 
-  --track-idle: rgba(15, 23, 42, 0.09);
-  --track-peer: rgba(30, 107, 97, 0.24);
-  --track-active: rgba(30, 107, 97, 0.56);
+  --track-idle: rgba(15, 23, 42, 0.13);
+  --track-peer: rgba(30, 107, 97, 0.28);
+  --track-active: rgba(30, 107, 97, 0.6);
 
   --otter-body: #112438;
   --otter-accent: #1e6b61;
@@ -43,8 +43,8 @@
   --dialog-shadow:
     0 0 0 0.5px rgba(15, 23, 42, 0.07), 0 24px 64px -22px rgba(15, 23, 42, 0.16),
     0 4px 16px -4px rgba(15, 23, 42, 0.05);
-  --card-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 0 0 0.5px rgba(15, 23, 42, 0.06);
-  --card-shadow-hover: 0 10px 26px -14px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(30, 107, 97, 0.26);
+  --card-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 0 0 1px rgba(15, 23, 42, 0.075);
+  --card-shadow-hover: 0 12px 28px -14px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(30, 107, 97, 0.3);
   --hub-shadow: 0 0 0 0.5px rgba(15, 23, 42, 0.09), 0 8px 20px -10px rgba(15, 23, 42, 0.14);
   --dock-shadow: 0 0 0 0.5px rgba(15, 23, 42, 0.09), 0 12px 30px -12px rgba(15, 23, 42, 0.18);
   --focus-ring: 0 0 0 3px rgba(30, 107, 97, 0.24);
@@ -88,9 +88,9 @@
     --error-soft: rgba(239, 106, 116, 0.12);
     --error-border: rgba(239, 106, 116, 0.3);
 
-    --track-idle: rgba(255, 255, 255, 0.085);
-    --track-peer: rgba(48, 176, 158, 0.28);
-    --track-active: rgba(92, 224, 203, 0.65);
+    --track-idle: rgba(255, 255, 255, 0.12);
+    --track-peer: rgba(48, 176, 158, 0.3);
+    --track-active: rgba(92, 224, 203, 0.68);
 
     --otter-body: #0f2134;
     --otter-accent: #1d6b61;
@@ -98,8 +98,8 @@
     --dialog-shadow:
       0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 28px 72px -20px rgba(0, 0, 0, 0.68),
       0 6px 20px -4px rgba(0, 0, 0, 0.42);
-    --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 0.5px rgba(255, 255, 255, 0.065);
-    --card-shadow-hover: 0 12px 28px -14px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(48, 176, 158, 0.36);
+    --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    --card-shadow-hover: 0 14px 30px -14px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(48, 176, 158, 0.4);
     --hub-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 10px 24px -10px rgba(0, 0, 0, 0.58);
     --dock-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 14px 36px -12px rgba(0, 0, 0, 0.68);
   }
@@ -135,9 +135,9 @@
   --error-soft: rgba(239, 106, 116, 0.12);
   --error-border: rgba(239, 106, 116, 0.3);
 
-  --track-idle: rgba(255, 255, 255, 0.085);
-  --track-peer: rgba(48, 176, 158, 0.28);
-  --track-active: rgba(92, 224, 203, 0.65);
+  --track-idle: rgba(255, 255, 255, 0.12);
+  --track-peer: rgba(48, 176, 158, 0.3);
+  --track-active: rgba(92, 224, 203, 0.68);
 
   --otter-body: #0f2134;
   --otter-accent: #1d6b61;
@@ -145,8 +145,8 @@
   --dialog-shadow:
     0 0 0 0.5px rgba(255, 255, 255, 0.09), 0 28px 72px -20px rgba(0, 0, 0, 0.68),
     0 6px 20px -4px rgba(0, 0, 0, 0.42);
-  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 0.5px rgba(255, 255, 255, 0.065);
-  --card-shadow-hover: 0 12px 28px -14px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(48, 176, 158, 0.36);
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --card-shadow-hover: 0 14px 30px -14px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(48, 176, 158, 0.4);
   --hub-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 10px 24px -10px rgba(0, 0, 0, 0.58);
   --dock-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 14px 36px -12px rgba(0, 0, 0, 0.68);
 }
@@ -174,6 +174,10 @@ body {
     color 200ms ease;
 }
 
+body.page-onboarding {
+  background: var(--bg-card);
+}
+
 .window-drag-bar {
   position: fixed;
   top: 0;
@@ -197,6 +201,16 @@ html[data-windows-titlebar] .shell-page {
   padding-top: 48px;
 }
 
+.page-onboarding .shell-page {
+  padding: 0;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+html[data-windows-titlebar] .page-onboarding .shell-page {
+  padding-top: 0;
+}
+
 @keyframes stage-enter {
   from {
     opacity: 0;
@@ -208,22 +222,23 @@ html[data-windows-titlebar] .shell-page {
   }
 }
 
-/* ---------------- Onboarding Dialog ---------------- */
+/* ---------------- Full-Window Immersive Onboarding ---------------- */
 .dialog {
   position: relative;
-  width: min(848px, 100%);
-  border-radius: 20px;
+  width: 100%;
+  min-height: 100vh;
   background: var(--bg-card);
-  box-shadow: var(--dialog-shadow);
-  overflow: hidden;
-  transition:
-    background 240ms ease,
-    box-shadow 240ms ease;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  transition: background 240ms ease;
 }
 
 .hero {
   position: relative;
-  height: 234px;
+  width: 100%;
+  height: clamp(240px, 44vh, 380px);
+  flex-shrink: 0;
   overflow: hidden;
   background: var(--bg-card);
 }
@@ -234,9 +249,9 @@ html[data-windows-titlebar] .shell-page {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: 50% 66%;
-  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 66%, transparent 99%);
-  mask-image: linear-gradient(to bottom, #000 0%, #000 66%, transparent 99%);
+  object-position: 50% 62%;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 99%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 99%);
   transition: opacity 460ms ease;
   user-select: none;
   pointer-events: none;
@@ -272,7 +287,7 @@ html[data-windows-titlebar] .shell-page {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 68px;
+  height: 96px;
   background: linear-gradient(to bottom, transparent, var(--bg-card));
   pointer-events: none;
   z-index: 2;
@@ -281,14 +296,26 @@ html[data-windows-titlebar] .shell-page {
 /* ---------------- Floating Top Chrome ---------------- */
 .top-bar {
   position: absolute;
-  top: 14px;
-  left: 16px;
-  right: 16px;
-  z-index: 6;
+  top: 16px;
+  left: 20px;
+  right: 20px;
+  z-index: 25;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   pointer-events: none;
+}
+
+html[data-platform="darwin"]:not([data-fullscreen]) .page-onboarding .top-bar {
+  top: 12px;
+  left: max(20px, calc(84px / var(--dsh-shell-zoom, 1)));
+}
+
+html[data-windows-titlebar] .page-onboarding .top-bar {
+  top: 10px;
+  left: 16px;
+  right: calc(var(--dsh-windows-caption-width, 138px) + 14px);
 }
 
 .brand-pill,
@@ -374,15 +401,20 @@ html[data-windows-titlebar] .shell-page {
 .body {
   position: relative;
   z-index: 5;
-  padding: 0 28px 22px;
-  margin-top: -22px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: min(100%, 1040px);
+  margin: -34px auto 0;
+  padding: 0 40px 44px;
 }
 
 .heading {
   text-align: center;
-  margin: 0 0 18px;
+  margin: 0 0 24px;
   font-family: var(--font-display);
-  font-size: 23px;
+  font-size: 26px;
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 1.25;
@@ -396,18 +428,19 @@ html[data-windows-titlebar] .shell-page {
 .cards-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 
 .c-card {
   position: relative;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   text-align: left;
   width: 100%;
-  padding: 16px 16px 15px;
+  padding: 20px 20px 18px;
   border: 0;
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--bg-panel);
   color: inherit;
   font-family: inherit;
@@ -455,14 +488,15 @@ html[data-windows-titlebar] .shell-page {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
   gap: 8px;
-  margin-bottom: 13px;
+  margin-bottom: 15px;
 }
 
 .icon-tile {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -482,19 +516,19 @@ html[data-windows-titlebar] .shell-page {
 }
 
 .icon-tile svg {
-  width: 21px;
-  height: 21px;
+  width: 22px;
+  height: 22px;
   display: block;
 }
 
 .icon-tile--web svg {
-  width: 17px;
-  height: 17px;
+  width: 19px;
+  height: 19px;
 }
 
 .icon-tile--codex img {
-  width: 21px;
-  height: 21px;
+  width: 22px;
+  height: 22px;
   object-fit: contain;
   display: block;
 }
@@ -555,35 +589,43 @@ html[data-windows-titlebar] .shell-page {
 
 .c-card-head {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 5px;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
   flex-wrap: wrap;
 }
 
 .c-card-title {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 14.5px;
+  font-size: 15.5px;
   font-weight: 600;
-  letter-spacing: -0.012em;
+  letter-spacing: -0.014em;
   color: var(--text-primary);
 }
 
 .c-card-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-muted);
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
+#native-badge,
 .c-card-tag[data-running="true"] {
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
 .c-card-desc {
   margin: 0;
-  font-size: 12px;
-  line-height: 1.48;
+  font-size: 13px;
+  line-height: 1.55;
   color: var(--text-secondary);
 }
 
@@ -606,7 +648,7 @@ html[data-windows-titlebar] .shell-page {
 .beam-band {
   position: relative;
   width: 100%;
-  height: 54px;
+  height: 64px;
   pointer-events: none;
 }
 
@@ -691,7 +733,7 @@ html[data-windows-titlebar] .shell-page {
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 15px 7px 11px;
+  padding: 8px 18px 8px 13px;
   border-radius: 999px;
   background: var(--bg-panel);
   box-shadow: var(--hub-shadow);
@@ -729,7 +771,7 @@ html[data-windows-titlebar] .shell-page {
 
 .hub-label {
   font-family: var(--font-display);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text-primary);
@@ -737,19 +779,112 @@ html[data-windows-titlebar] .shell-page {
 
 .hub-sep {
   width: 1px;
-  height: 11px;
+  height: 12px;
   background: var(--line-strong);
 }
 
 .hub-sub {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-secondary);
 }
 
 .card-foot {
-  margin-top: 14px;
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 5px 8px;
   text-align: center;
   font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.remember-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 3px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.35;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    color 150ms ease,
+    opacity 150ms ease;
+}
+
+.remember-toggle:hover:not(:disabled) {
+  color: var(--text-secondary);
+}
+
+.remember-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.remember-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.remember-toggle[aria-checked="true"] {
+  color: var(--text-secondary);
+}
+
+.remember-check {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
+}
+
+.remember-toggle:hover:not(:disabled) .remember-check {
+  border-color: var(--text-muted);
+}
+
+.remember-toggle[aria-checked="true"] .remember-check {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.remember-check svg {
+  width: 9px;
+  height: 9px;
+  display: block;
+  opacity: 0;
+  transform: scale(0.75);
+  transition:
+    opacity 140ms ease,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.remember-toggle[aria-checked="true"] .remember-check svg {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.foot-dot {
+  color: var(--text-muted);
+  opacity: 0.45;
+  user-select: none;
+}
+
+.foot-hint {
   color: var(--text-muted);
 }
 
@@ -1122,10 +1257,16 @@ html[data-windows-titlebar] .shell-page {
 /* ---------------- Responsive ---------------- */
 @media (max-width: 740px) {
   .hero {
-    height: 180px;
+    height: 200px;
   }
   .body {
-    padding: 0 18px 18px;
+    justify-content: flex-start;
+    margin-top: -20px;
+    padding: 0 20px 28px;
+  }
+  .heading {
+    font-size: 22px;
+    margin-bottom: 16px;
   }
   .cards-grid {
     grid-template-columns: 1fr;

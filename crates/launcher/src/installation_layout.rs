@@ -14,6 +14,7 @@ pub struct InstalledResources {
     pub renderer_extension: PathBuf,
     pub console_server: PathBuf,
     pub desktop_shell: Option<PathBuf>,
+    pub screenshot_helper: Option<PathBuf>,
 }
 
 impl InstalledResources {
@@ -103,6 +104,8 @@ impl InstalledResources {
             renderer_extension: resource_root.join("app/renderer-extension.js"),
             console_server: resource_root.join("app/console-server.mjs"),
             desktop_shell,
+            screenshot_helper: cfg!(target_os = "windows")
+                .then(|| resource_root.join("libexec/codexhost-screenshot.exe")),
         })
     }
 
@@ -139,6 +142,8 @@ impl InstalledResources {
                 .join("packages/renderer-extension/dist/production.js"),
             console_server: repository_root.join("packages/console-server/dist/main.js"),
             desktop_shell,
+            screenshot_helper: cfg!(target_os = "windows")
+                .then(|| build_directory.join("codexhost-screenshot.exe")),
         })
     }
 }
@@ -224,6 +229,8 @@ mod tests {
                 renderer_extension: root.join("app/renderer-extension.js"),
                 console_server: root.join("app/console-server.mjs"),
                 desktop_shell: None,
+                screenshot_helper: cfg!(target_os = "windows")
+                    .then(|| root.join("libexec/codexhost-screenshot.exe")),
             }
         );
     }
@@ -263,6 +270,8 @@ mod tests {
                 renderer_extension: root.join("packages/renderer-extension/dist/production.js"),
                 console_server: root.join("packages/console-server/dist/main.js"),
                 desktop_shell: None,
+                screenshot_helper: cfg!(target_os = "windows")
+                    .then(|| root.join("target/debug/codexhost-screenshot.exe")),
             }
         );
     }

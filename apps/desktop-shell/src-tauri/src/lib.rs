@@ -1,6 +1,8 @@
+mod extension_window;
 mod instance;
 mod launcher;
 mod navigation;
+mod notifications;
 mod readiness;
 mod tray;
 mod visibility;
@@ -8,7 +10,7 @@ mod zoom;
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
@@ -18,11 +20,15 @@ use url::Url;
 use instance::{Activation, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
+use notifications::{
+    NotificationController, NotificationPermission, NotificationSendPayload,
+    NotificationStatePayload,
+};
 use readiness::{ShellReady, WebEvent, WebReady};
 use visibility::{WindowVisibility, WindowVisibilityState, compute_window_hidden};
 use zoom::{ZoomController, ZoomState, percent_to_scale};
 
-const MAIN: &str = "main";
+pub(crate) const MAIN: &str = "main";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,7 +78,7 @@ impl Page {
 struct View {
     page: Page,
     last_login: Option<Url>,
-    pending_route: Option<&'static str>,
+    pending_route: Option<String>,
 }
 
 struct Shell {
@@ -84,6 +90,8 @@ struct Shell {
     zoom: Arc<Mutex<ZoomController>>,
     zoom_op: tauri::async_runtime::Mutex<()>,
     zoom_persist: Arc<Mutex<Option<u16>>>,
+    notifications: Arc<Mutex<NotificationController>>,
+    notifications_persist: Arc<Mutex<Option<bool>>>,
 }
 
 fn navigation_for(app: &AppHandle, url: &Url) -> Navigation {
@@ -157,7 +165,9 @@ fn web_event(app: &AppHandle, event: WebEvent) {
             view.page = Page::Web;
             view.last_login = Some(ready.login_url.clone());
             let mut url = ready.login_url;
-            url.set_fragment(view.pending_route.take());
+            if let Some(route) = view.pending_route.take() {
+                navigation::apply_host_route(&mut url, &route);
+            }
             drop(view);
             navigate(app, url);
             return;
@@ -289,7 +299,7 @@ fn refresh_window_hidden(window: &tauri::Window) {
     );
 }
 
-fn set_visible(app: &AppHandle, visible: bool) {
+pub(crate) fn set_visible(app: &AppHandle, visible: bool) {
     let Some(window) = app.get_webview_window(MAIN) else {
         return;
     };
@@ -311,7 +321,7 @@ fn set_visible(app: &AppHandle, visible: bool) {
     }
 }
 
-pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
+pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
         return;
@@ -325,11 +335,11 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
             target = view.last_login.clone().map(|mut url| {
                 // The login redirect forces a fresh document load. The Web UI
                 // reads the section hash on mount, not on hashchange.
-                url.set_fragment(Some(route));
+                navigation::apply_host_route(&mut url, route);
                 url
             });
         } else {
-            view.pending_route = Some(route);
+            view.pending_route = Some(route.to_owned());
         }
     }
     drop(view);
@@ -449,15 +459,17 @@ async fn choose_surface(
     app: AppHandle,
     shell: State<'_, Shell>,
     surface: Surface,
+    remember: Option<bool>,
 ) -> Result<(), String> {
     if !matches!(shell.view.lock().unwrap().page, Page::Onboarding) {
         return Err("Launch surface can only be chosen on the onboarding page".into());
     }
+    let remember = remember.unwrap_or(false);
     launcher_action(shell.launcher.clone(), move |launcher| {
         if matches!(surface, Surface::CodexDesktop) && !launcher.codex_installed()? {
             return Err("Codex Desktop is not installed / 未安装官方 Codex Desktop".into());
         }
-        launcher.set_surface(surface)?;
+        launcher.set_surface(surface, remember)?;
         if matches!(surface, Surface::CodexDesktop) {
             launcher.launch_codex_desktop()?;
         }
@@ -608,10 +620,163 @@ async fn window_zoom_set(
     apply_zoom_update(window, &shell, |controller| controller.resolve_set(percent)).await
 }
 
+fn authorize_web_command(
+    page: &Page,
+    last_login: Option<&Url>,
+    current_url: &Url,
+) -> Result<(), String> {
+    if !matches!(page, Page::Web) {
+        return Err("Notifications are only available on the active Web UI page".into());
+    }
+    if !current_url.username().is_empty() || current_url.password().is_some() {
+        return Err("Notifications are not permitted for URLs with userinfo".into());
+    }
+    let Some(login) = last_login else {
+        return Err("Notifications require an authenticated Web origin".into());
+    };
+    if current_url.origin() != login.origin() {
+        return Err("Notifications are restricted to the active CodexHost Web origin".into());
+    }
+    Ok(())
+}
+
+fn require_live_web_window(window: &tauri::WebviewWindow, shell: &Shell) -> Result<(), String> {
+    let current_url = window.url().map_err(|error| error.to_string())?;
+    let view = shell.view.lock().unwrap();
+    authorize_web_command(&view.page, view.last_login.as_ref(), &current_url)
+}
+
+fn persist_latest_notifications(
+    notifications: &Arc<Mutex<NotificationController>>,
+    persisted: &Arc<Mutex<Option<bool>>>,
+    data_dir: &std::path::Path,
+) {
+    let mut last_persisted = persisted.lock().unwrap();
+    let enabled = notifications.lock().unwrap().enabled();
+    if *last_persisted == Some(enabled) {
+        return;
+    }
+    match notifications::persist(data_dir, enabled) {
+        Ok(_) => *last_persisted = Some(enabled),
+        Err(error) => {
+            eprintln!("CodexHost: could not save desktop shell notification state: {error}")
+        }
+    }
+}
+
+#[tauri::command]
+fn notification_get_state(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+) -> Result<NotificationStatePayload, String> {
+    require_live_web_window(&window, &shell)?;
+    let permission = notifications::permission_state(&app);
+    let mut controller = shell.notifications.lock().unwrap();
+    controller.sync_background_activity(permission);
+    Ok(NotificationStatePayload {
+        enabled: controller.enabled(),
+        permission,
+    })
+}
+
+#[tauri::command]
+fn notification_request_permission(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+) -> Result<NotificationPermission, String> {
+    require_live_web_window(&window, &shell)?;
+    notifications::ensure_windows_aumid();
+    let permission = notifications::request_permission(&app)?;
+    shell
+        .notifications
+        .lock()
+        .unwrap()
+        .sync_background_activity(permission);
+    Ok(permission)
+}
+
+#[tauri::command]
+fn notification_set_enabled(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    enabled: bool,
+) -> Result<bool, String> {
+    require_live_web_window(&window, &shell)?;
+    if enabled {
+        notifications::ensure_windows_aumid();
+    }
+    let permission = notifications::permission_state(&app);
+    let changed = shell
+        .notifications
+        .lock()
+        .unwrap()
+        .set_enabled(enabled, permission);
+    if changed {
+        let notifications = shell.notifications.clone();
+        let persisted = shell.notifications_persist.clone();
+        let data_dir = shell.launcher.data_dir.clone();
+        drop(tauri::async_runtime::spawn_blocking(move || {
+            persist_latest_notifications(&notifications, &persisted, &data_dir);
+        }));
+    }
+    Ok(enabled)
+}
+
+#[tauri::command]
+fn notification_send(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    payload: NotificationSendPayload,
+) -> Result<bool, String> {
+    require_live_web_window(&window, &shell)?;
+    let Some(sanitized) = notifications::sanitize_payload(&payload) else {
+        return Ok(false);
+    };
+    if notifications::permission_state(&app) != NotificationPermission::Granted {
+        return Ok(false);
+    }
+    let allowed = shell
+        .notifications
+        .lock()
+        .unwrap()
+        .try_acquire_send_slot(Instant::now());
+    if !allowed {
+        return Ok(false);
+    }
+    notifications::show_native(&app, &sanitized)?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn notification_open_settings(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+) -> Result<(), String> {
+    require_live_web_window(&window, &shell)?;
+    let url = notifications::system_settings_url().ok_or_else(|| {
+        "System notification settings cannot be opened on this platform".to_owned()
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        codexhost_platform::open_external_url(url)
+            .map_err(|error| format!("Could not open system notification settings: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Notification settings task failed: {error}"))?
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--extension-window")) {
+        return extension_window::run();
+    }
     let options = Options::from_env()?;
     let activation = if options.onboarding {
         Activation::Onboarding
+    } else if let Some(route) = &options.route {
+        Activation::Route(route.clone())
     } else {
         Activation::Show
     };
@@ -622,9 +787,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         } => (instance, activations),
         Claim::Forwarded => return Ok(()),
     };
-    let launcher = Arc::new(Launcher::new(&std::env::current_exe()?, options.data_dir));
+    let launcher = Arc::new(Launcher::new(
+        &std::env::current_exe()?,
+        options.data_dir,
+        options.explicit_data_dir,
+    ));
     let zoom_controller = ZoomController::load(&launcher.data_dir);
     let initial_zoom_percent = zoom_controller.percent();
+    let notifications_controller = NotificationController::load(&launcher.data_dir);
+    let initial_notifications_enabled = notifications_controller.enabled();
     let boot_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -632,11 +803,27 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let boot_id = format!("{}-{boot_nanos}", std::process::id());
     let zoom = Arc::new(Mutex::new(zoom_controller));
     let zoom_persist = Arc::new(Mutex::new(Some(initial_zoom_percent)));
+    let notifications = Arc::new(Mutex::new(notifications_controller));
+    let notifications_persist = Arc::new(Mutex::new(Some(initial_notifications_enabled)));
+    #[cfg(target_os = "macos")]
+    let mut drop_staging = {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .prefix("codexhost-drop-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .ok()
+    };
+    #[cfg(target_os = "macos")]
+    let drop_path = drop_staging
+        .as_ref()
+        .and_then(|dir| std::ffi::CString::new(dir.path().as_os_str().as_encoded_bytes()).ok());
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en".into());
     let (ensure_web, requests) = mpsc::channel();
     let onboarding = options.onboarding;
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(instance)
         .manage(Shell {
             launcher: launcher.clone(),
@@ -647,7 +834,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Page::Loading(Status::Starting, None)
                 },
                 last_login: None,
-                pending_route: None,
+                pending_route: options.route,
             }),
             ensure_web,
             locale: locale.clone(),
@@ -655,6 +842,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             zoom,
             zoom_op: tauri::async_runtime::Mutex::new(()),
             zoom_persist,
+            notifications,
+            notifications_persist,
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -671,7 +860,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window_visibility_get,
             window_zoom_get,
             window_zoom_step,
-            window_zoom_set
+            window_zoom_set,
+            notification_get_state,
+            notification_request_permission,
+            notification_set_enabled,
+            notification_send,
+            notification_open_settings
         ])
         .on_window_event(|window, event| {
             if window.label() != MAIN {
@@ -749,7 +943,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let builder = builder
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true);
-            builder
+            let window = builder
                 .on_permission_request(move |_, kind| {
                     let shell = permission_app.state::<Shell>();
                     let view = shell.view.lock().unwrap();
@@ -779,11 +973,35 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            #[cfg(target_os = "macos")]
+            if let Some(path) = drop_path {
+                let install = window.with_webview(move |webview| {
+                    unsafe extern "C" {
+                        fn codexhost_install_file_drop(
+                            webview: *mut std::ffi::c_void,
+                            directory: *const std::ffi::c_char,
+                        );
+                    }
+                    // Tauri provides the live WKWebView here. The receiver copies the directory path.
+                    unsafe { codexhost_install_file_drop(webview.inner(), path.as_ptr()) };
+                });
+                if install.is_err() {
+                    eprintln!("CodexHost: could not enable macOS file drop staging");
+                }
+            }
             let initial_scale = app.state::<Shell>().zoom.lock().unwrap().scale();
-            if let Some(window) = app.get_webview_window(MAIN)
-                && let Err(error) = window.set_zoom(initial_scale)
-            {
+            if let Err(error) = window.set_zoom(initial_scale) {
                 eprintln!("CodexHost: could not apply initial desktop shell zoom: {error}");
+            }
+            notifications::ensure_windows_aumid();
+            notifications::install_action_handler(&app_handle);
+            {
+                let permission = notifications::permission_state(&app_handle);
+                app.state::<Shell>()
+                    .notifications
+                    .lock()
+                    .unwrap()
+                    .sync_background_activity(permission);
             }
             tray::install(&app_handle, &locale)?;
             let ready = ShellReady::publish(&launcher.data_dir)?;
@@ -813,6 +1031,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let delivered = activation_app.run_on_main_thread(move || match activation {
                     Activation::Onboarding => show_onboarding(&handle),
                     Activation::Show => show_main(&handle, None),
+                    Activation::Route(route) => show_main(&handle, Some(&route)),
                 });
                 if delivered.is_err() {
                     eprintln!("CodexHost: could not deliver a desktop window activation");
@@ -820,11 +1039,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         })?;
-    app.run(|app, event| match event {
+    app.run(move |app, event| match event {
         RunEvent::Exit => {
+            #[cfg(target_os = "macos")]
+            drop(drop_staging.take());
             if let Some(shell) = app.try_state::<Shell>() {
                 // Flush any queued or in-flight zoom update before exiting (no-op if unchanged).
                 persist_latest_zoom(&shell.zoom, &shell.zoom_persist, &shell.launcher.data_dir);
+                persist_latest_notifications(
+                    &shell.notifications,
+                    &shell.notifications_persist,
+                    &shell.launcher.data_dir,
+                );
+                shell
+                    .notifications
+                    .lock()
+                    .unwrap()
+                    .release_background_activity();
             }
             if let Some(ready) = app.try_state::<ShellReady>() {
                 ready.remove_if_owned();
@@ -843,8 +1074,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use tauri::webview::{PermissionKind, PermissionResponse};
+    use url::Url;
 
-    use super::{Page, Status, permission_response};
+    use super::{Page, Status, authorize_web_command, permission_response};
 
     #[test]
     fn onboarding_and_dormant_ignore_background_web_events() {
@@ -877,5 +1109,32 @@ mod tests {
             permission_response(&Page::Web, PermissionKind::Camera),
             PermissionResponse::Default
         );
+    }
+
+    #[test]
+    fn authorizes_notification_commands_only_on_live_web_origin() {
+        let login = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        let same_origin = Url::parse("http://127.0.0.1:4400/session/1").unwrap();
+        let other_port = Url::parse("http://127.0.0.1:4401/").unwrap();
+        let localhost = Url::parse("http://localhost:4400/").unwrap();
+        let embedded_page = Url::parse("tauri://localhost/loading.html").unwrap();
+        let with_userinfo = Url::parse("http://user@127.0.0.1:4400/").unwrap();
+
+        assert!(authorize_web_command(&Page::Web, Some(&login), &same_origin).is_ok());
+        assert!(authorize_web_command(&Page::Onboarding, Some(&login), &same_origin).is_err());
+        assert!(authorize_web_command(&Page::Dormant, Some(&login), &same_origin).is_err());
+        assert!(
+            authorize_web_command(
+                &Page::Loading(Status::Starting, None),
+                Some(&login),
+                &same_origin
+            )
+            .is_err()
+        );
+        assert!(authorize_web_command(&Page::Web, None, &same_origin).is_err());
+        assert!(authorize_web_command(&Page::Web, Some(&login), &other_port).is_err());
+        assert!(authorize_web_command(&Page::Web, Some(&login), &localhost).is_err());
+        assert!(authorize_web_command(&Page::Web, Some(&login), &embedded_page).is_err());
+        assert!(authorize_web_command(&Page::Web, Some(&login), &with_userinfo).is_err());
     }
 }

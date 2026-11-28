@@ -73,3 +73,9 @@
     animation: none;
   }
 }
+
+@media (hover: none), (pointer: coarse) {
+  .bubble:not([data-pinned]):not([data-focus]) {
+    display: none;
+  }
+}

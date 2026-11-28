@@ -132,7 +132,10 @@ export class InputTriggerController {
   private scopedSource: string | null = null;
   /** True while settle() is executing a drill transition so close does not reset source drill state. */
   private drilling = false;
-  private fetch: AbortController | null = null;
+  private readonly sourceFetches = new Map<string, AbortController>();
+  private readonly pendingInvalidations = new Set<InputTriggerSource>();
+  private invalidationScheduled = false;
+  private invalidationToken = 0;
   private disposed = false;
   private menuEpoch: object = {};
   /** Per-source lexicon unsubscribers (sources without the hook never enter). */
@@ -489,6 +492,9 @@ export class InputTriggerController {
     ) {
       this.reduce({ type: "source-failed", generation: state.generation, source: source.name });
     }
+    this.sourceFetches.get(source.name)?.abort();
+    this.sourceFetches.delete(source.name);
+    this.pendingInvalidations.delete(source);
     this.lexiconOffs.get(source)?.();
     this.lexiconOffs.delete(source);
     if (source.lexicon !== undefined) this.refreshLexicon();
@@ -636,19 +642,31 @@ export class InputTriggerController {
           !this.menuSources(hit).includes(source)
         )
           return;
-        // Let every source process the same invalidation before rebuilding the
-        // open menu, so one source cannot contribute its previous catalog.
+        // Coalesce same-turn invalidations into a single microtask and refetch
+        // only the sources that actually invalidated.
+        this.pendingInvalidations.add(source);
+        if (this.invalidationScheduled) return;
+        this.invalidationScheduled = true;
+        const token = ++this.invalidationToken;
         const epoch = this.menuEpoch;
         void Promise.resolve().then(() => {
+          if (this.invalidationToken !== token) return;
+          this.invalidationScheduled = false;
+          const dirty = [...this.pendingInvalidations];
+          this.pendingInvalidations.clear();
           const current = this.hit;
           if (
             this.disposed ||
             current === null ||
             this.menuEpoch !== epoch ||
-            !this.menu.getSnapshot().open
+            !this.menu.getSnapshot().open ||
+            dirty.length === 0
           )
             return;
-          this.fetchCandidates(current, this.menuSources(current));
+          const activeRoster = this.menuSources(current);
+          const targets = activeRoster.filter((candidate) => dirty.includes(candidate));
+          if (targets.length === 0) return;
+          this.fetchSourceCandidates(current, targets);
         });
       }),
     );
@@ -657,11 +675,17 @@ export class InputTriggerController {
   /** Launch the candidate fetch for one hit generation, superseding the previous one. */
   private fetchCandidates(hit: TriggerHit, roster: readonly InputTriggerSource[]): void {
     this.stopFetch();
-    const controller = new AbortController();
-    this.fetch = controller;
+    this.fetchSourceCandidates(hit, roster);
+  }
+
+  /** Fetch candidates for the given sources, aborting only prior requests for those same sources. */
+  private fetchSourceCandidates(hit: TriggerHit, sources: readonly InputTriggerSource[]): void {
     const generation = this.menu.getSnapshot().generation;
     const projection = this.project();
-    for (const source of roster) {
+    for (const source of sources) {
+      this.sourceFetches.get(source.name)?.abort();
+      const controller = new AbortController();
+      this.sourceFetches.set(source.name, controller);
       void source
         .candidates(projection, {
           menuEpoch: this.menuEpoch,
@@ -674,10 +698,16 @@ export class InputTriggerController {
         })
         .then(
           (items) => {
+            if (this.sourceFetches.get(source.name) === controller) {
+              this.sourceFetches.delete(source.name);
+            }
             if (controller.signal.aborted) return;
             this.reduce({ type: "source-settled", generation, source: source.name, items });
           },
           (error: unknown) => {
+            if (this.sourceFetches.get(source.name) === controller) {
+              this.sourceFetches.delete(source.name);
+            }
             if (controller.signal.aborted) return;
             console.error(`[ui-input-trigger] source "${source.name}" candidates failed:`, error);
             this.reduce({ type: "source-failed", generation, source: source.name });
@@ -687,8 +717,11 @@ export class InputTriggerController {
   }
 
   private stopFetch(): void {
-    this.fetch?.abort();
-    this.fetch = null;
+    for (const controller of this.sourceFetches.values()) controller.abort();
+    this.sourceFetches.clear();
+    this.pendingInvalidations.clear();
+    this.invalidationScheduled = false;
+    this.invalidationToken += 1;
   }
 
   /**

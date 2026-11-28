@@ -3,10 +3,12 @@ import { pathToFileURL } from "node:url";
 import { ExtensionBackendProcess } from "@codexhost/extension-backend";
 import {
   discoverHostExtensions,
+  fetchCachedCatalogIcon,
   fetchHostExtensionCatalog,
   hostExtensionDataDirectory,
   HostExtensionInstallConflict,
   HostExtensionRevisionConflict,
+  markDefaultHostExtensionSeeded,
   migrateLegacyDesktopExtensionsOnce,
   prepareHostExtension,
   readHostExtension,
@@ -14,6 +16,7 @@ import {
   readHostExtensionBackend,
   readHostExtensionConfiguration,
   readHostExtensionSettings,
+  readSeededDefaultHostExtensions,
   reportHostExtensionInstall,
   resolveHostExtensionStatsUrl,
   rollbackHostExtension,
@@ -24,12 +27,18 @@ import {
 } from "@codexhost/harness-plugin-files";
 import {
   jsonObjectSchema,
+  resolveDesktopExtensionSlots,
+  type ExtensionActivitySnapshot,
+  type ExtensionHarnessPresentation,
   type HostExtensionListItem,
   type HostExtensionsRpcParams,
   type HostExtensionsRpcResult,
   type HOST_EXTENSIONS_RPC as RPC,
 } from "@codexhost/shared-contracts";
 import { errorMessage } from "./desktop-rpc.js";
+
+export const DEFAULT_DESKTOP_CATALOG_EXTENSIONS = Object.freeze(["sidebar-thread-tree"] as const);
+const DISABLE_DEFAULT_EXTENSIONS_ENV = "CODEXHOST_DISABLE_DEFAULT_EXTENSIONS";
 
 type Valid = Extract<HostExtensionListItem, { state: "valid" }>;
 type Instance = {
@@ -67,8 +76,13 @@ function formatDiagnosticError(error: unknown, depth = 0): string {
 /** One owner for every unified install, regardless of attached frontend sessions. */
 export class HostExtensionManager {
   readonly #instances = new Map<string, Instance>();
+  readonly #activityConsumers = new Set<Instance>();
   readonly #closeController = new AbortController();
   readonly #inFlightOperations = new Set<Promise<unknown>>();
+  readonly #userTouchedIds = new Set<string>();
+  readonly #defaultSeedIds = new Set<string>(DEFAULT_DESKTOP_CATALOG_EXTENSIONS);
+  #userRecovered = false;
+  #defaultSeedTask: Promise<void> | undefined;
   #queue = Promise.resolve();
   // Backend activation/disposal can wait for settings IPC. Do not make IPC wait
   // on the lifecycle queue (or hold the lifecycle queue while invoking handlers).
@@ -81,6 +95,12 @@ export class HostExtensionManager {
     private readonly dataDir: string,
     private readonly changed: (revision: number) => void,
     private readonly diagnose: (message: string) => void = () => undefined,
+    private readonly services: {
+      readActivity?(): Promise<ExtensionActivitySnapshot>;
+      releaseActivity?(): void;
+      describeHarness?(id: string): Promise<ExtensionHarnessPresentation | null>;
+      desktopShell?: string | undefined;
+    } = {},
   ) {}
 
   diagnoseOperationError(method: string, error: unknown): void {
@@ -113,9 +133,43 @@ export class HostExtensionManager {
     return this.#closing;
   }
 
+  seedDefaultDesktopExtensions(
+    ids: readonly string[] = DEFAULT_DESKTOP_CATALOG_EXTENSIONS,
+    environment: NodeJS.ProcessEnv = process.env,
+  ): Promise<void> {
+    if (
+      this.#closing ||
+      ids.length === 0 ||
+      (environment[DISABLE_DEFAULT_EXTENSIONS_ENV] ??
+        process.env[DISABLE_DEFAULT_EXTENSIONS_ENV]) === "1"
+    ) {
+      return Promise.resolve();
+    }
+    for (const id of ids) this.#defaultSeedIds.add(id);
+    return (this.#defaultSeedTask ??= this.#trackInFlight(async () => {
+      try {
+        await this.start();
+        if (this.#closing) return;
+        for (const id of ids) {
+          if (this.#closing) return;
+          await this.#seedDefaultDesktopExtension(id, environment);
+        }
+      } catch (error) {
+        if (!this.#closing && !this.#closeController.signal.aborted) {
+          this.diagnose(
+            `Default Desktop extension seeding failed: ${formatDiagnosticError(error)}`,
+          );
+        }
+      }
+    }));
+  }
+
   list(): Promise<HostExtensionsRpcResult<typeof RPC.list>> {
     return this.#run(async () => {
-      const { extensions, configuration, diagnostics } = await discoverHostExtensions(this.dataDir);
+      const { extensions, configuration, diagnostics } = await discoverHostExtensions(
+        this.dataDir,
+        { includeScreenshots: false },
+      );
       return {
         revision: this.#revision,
         configuration,
@@ -179,7 +233,33 @@ export class HostExtensionManager {
   }
 
   catalog(input: HostExtensionsRpcParams<typeof RPC.catalog>) {
-    return fetchHostExtensionCatalog(input);
+    const forceRefresh = input.forceRefresh ?? false;
+    return fetchHostExtensionCatalog({
+      dataDir: this.dataDir,
+      forceRefresh,
+      staleWhileRevalidate: input.staleWhileRevalidate ?? !forceRefresh,
+      fallbackToCache: true,
+    });
+  }
+
+  async catalogIcon(
+    input: HostExtensionsRpcParams<typeof RPC.catalogIcon>,
+  ): Promise<HostExtensionsRpcResult<typeof RPC.catalogIcon>> {
+    const catalog = await fetchHostExtensionCatalog({
+      dataDir: this.dataDir,
+      staleWhileRevalidate: true,
+      fallbackToCache: true,
+    });
+    const entry = catalog.extensions.find((item) => item.id === input.id);
+    if (!entry?.icon) {
+      throw new Error("Extension icon is not available");
+    }
+    const { mimeType, bytes } = await fetchCachedCatalogIcon({
+      dataDir: this.dataDir,
+      iconUrl: entry.icon,
+      signal: this.#closeController.signal,
+    });
+    return { mimeType, base64: bytes.toString("base64") };
   }
 
   install({ source }: HostExtensionsRpcParams<typeof RPC.install>) {
@@ -194,6 +274,7 @@ export class HostExtensionManager {
       try {
         const installed = await this.#run(async () => {
           const committed = await staged.commit({ expectedDigest: null });
+          this.#userTouchedIds.add(committed.id);
           // An enabled ID can survive a damaged/missing install; honor the selection.
           try {
             if ((await readHostExtensionConfiguration(this.dataDir)).enabled.includes(committed.id))
@@ -304,9 +385,17 @@ export class HostExtensionManager {
         if (change.action === "enable" && !enabledEntry)
           throw new Error("Extension is not installed or is invalid");
         const configuration = await updateHostExtensionConfiguration(this.dataDir, change);
-        if (change.action === "disableAll") await this.#stopAll();
-        else if (change.action === "disable") await this.#stop(change.id);
-        else if (enabledEntry) {
+        if (change.action === "disableAll") {
+          this.#userRecovered = true;
+          await this.#stopAll();
+          for (const defaultId of this.#defaultSeedIds) {
+            await markDefaultHostExtensionSeeded(this.dataDir, defaultId);
+          }
+        } else if (change.action === "disable") {
+          this.#userTouchedIds.add(change.id);
+          await this.#stop(change.id);
+        } else if (enabledEntry) {
+          this.#userTouchedIds.add(change.id);
           if (this.#instances.get(change.id)?.state === "failed") await this.#stop(change.id);
           await this.#startBackend(enabledEntry);
         }
@@ -329,8 +418,13 @@ export class HostExtensionManager {
       )
         throw new HostExtensionInstallConflict("Extension activation changed");
       await this.#stop(id);
+      this.#userTouchedIds.add(id);
       try {
-        return { id, removed: await uninstallHostExtension({ dataDir: this.dataDir, ...input }) };
+        const removed = await uninstallHostExtension({ dataDir: this.dataDir, ...input });
+        if (removed && this.#defaultSeedIds.has(id)) {
+          await markDefaultHostExtensionSeeded(this.dataDir, id);
+        }
+        return { id, removed };
       } catch (error) {
         const { installations, configuration } = await discoverHostExtensions(this.dataDir);
         const installed = installations.find((entry) => entry.id === id);
@@ -386,6 +480,96 @@ export class HostExtensionManager {
     return pending;
   }
 
+  async #seedDefaultDesktopExtension(id: string, environment: NodeJS.ProcessEnv): Promise<void> {
+    try {
+      const shouldPrepare = await this.#run(async () => {
+        const seeded = await readSeededDefaultHostExtensions(this.dataDir);
+        if (seeded.includes(id)) return false;
+        if (this.#userRecovered || this.#userTouchedIds.has(id)) {
+          await markDefaultHostExtensionSeeded(this.dataDir, id);
+          return false;
+        }
+        const { extensions } = await discoverHostExtensions(this.dataDir);
+        if (extensions.some((entry) => entry.id === id)) {
+          await markDefaultHostExtensionSeeded(this.dataDir, id);
+          return false;
+        }
+        return true;
+      });
+      if (!shouldPrepare || this.#closing) return;
+
+      const staged = await prepareHostExtension({
+        dataDir: this.dataDir,
+        source: { type: "catalog", id },
+        expected: { id },
+        signal: this.#closeController.signal,
+      });
+      let reportInstall = false;
+      try {
+        reportInstall = await this.#run(async () => {
+          const seeded = await readSeededDefaultHostExtensions(this.dataDir);
+          if (seeded.includes(id)) return false;
+          if (this.#userRecovered || this.#userTouchedIds.has(id)) {
+            await markDefaultHostExtensionSeeded(this.dataDir, id);
+            return false;
+          }
+          let committed: HostExtensionDiskInstallation & { replaced: boolean };
+          try {
+            committed = await staged.commit({ expectedDigest: null });
+          } catch (error) {
+            if (error instanceof HostExtensionInstallConflict) {
+              await markDefaultHostExtensionSeeded(this.dataDir, id);
+              return false;
+            }
+            throw error;
+          }
+          const { configuration, installations } = await discoverHostExtensions(this.dataDir);
+          const conflictWith =
+            committed.manifest.desktop && committed.manifest.slots?.length
+              ? resolveDesktopExtensionSlots(
+                  [
+                    ...configuration.enabled.filter((entry) => entry !== committed.id),
+                    committed.id,
+                  ],
+                  installations
+                    .filter(({ manifest }) => manifest.desktop)
+                    .map(({ id: extensionId, manifest }) => ({
+                      id: extensionId,
+                      slots: manifest.slots ?? [],
+                    })),
+                ).conflicts.get(committed.id)
+              : undefined;
+          if (conflictWith !== undefined) {
+            this.diagnose(
+              `Default Desktop extension ${id} was installed without enabling due to slot conflict with ${conflictWith}`,
+            );
+            await markDefaultHostExtensionSeeded(this.dataDir, id);
+            this.#publish();
+            return true;
+          }
+          try {
+            await updateHostExtensionConfiguration(this.dataDir, { action: "enable", id });
+            await this.#startBackend(committed);
+            await markDefaultHostExtensionSeeded(this.dataDir, id);
+          } finally {
+            this.#publish();
+          }
+          return true;
+        });
+      } finally {
+        await staged.dispose();
+      }
+      if (reportInstall) {
+        void reportHostExtensionInstall(id, resolveHostExtensionStatsUrl(environment));
+      }
+    } catch (error) {
+      if (this.#closing || this.#closeController.signal.aborted) return;
+      this.diagnose(
+        `Default Desktop extension ${id} could not be installed: ${formatDiagnosticError(error)}`,
+      );
+    }
+  }
+
   async #location({ id, activationId }: HostExtensionsRpcParams<typeof RPC.settingsGet>) {
     const location = { dataDir: this.dataDir, id };
     const entry = await readHostExtension(location);
@@ -416,6 +600,7 @@ export class HostExtensionManager {
       const wasRunning = instance.state === "running";
       instance.state = "failed";
       instance.error = "Extension backend stopped or could not start";
+      this.#releaseActivityConsumer(instance);
       this.diagnose(`Host extension backend (${id}): ${message}`);
       if (wasRunning) this.#publish();
     };
@@ -425,8 +610,21 @@ export class HostExtensionManager {
       const dataDir = await hostExtensionDataDirectory(location, true);
       const info = await stat(entry.directory, { bigint: true });
       if (this.#closing) return true;
+      const readActivity = this.services.readActivity;
       const process = new ExtensionBackendProcess({
         diagnose: fail,
+        ...(readActivity
+          ? {
+              readActivity: async () => {
+                assertCurrent();
+                this.#activityConsumers.add(instance);
+                return readActivity();
+              },
+            }
+          : {}),
+        ...(this.services.describeHarness
+          ? { describeHarness: this.services.describeHarness }
+          : {}),
         readSettings: async () => {
           assertCurrent();
           return (await readHostExtensionSettings(location)).values;
@@ -444,6 +642,8 @@ export class HostExtensionManager {
         url: pathToFileURL(entry.scriptPath).href,
         hash: entry.hash,
         installation: `${info.dev}:${info.ino}`,
+        desktopShell: this.services.desktopShell,
+        hostDataDir: this.dataDir,
       });
       assertCurrent();
       instance.state = "running";
@@ -466,6 +666,13 @@ export class HostExtensionManager {
       this.diagnose(`Host extension backend (${id} dispose): ${errorMessage(error)}`);
     } finally {
       this.#instances.delete(id);
+      if (instance) this.#releaseActivityConsumer(instance);
+    }
+  }
+
+  #releaseActivityConsumer(instance: Instance): void {
+    if (this.#activityConsumers.delete(instance) && this.#activityConsumers.size === 0) {
+      this.services.releaseActivity?.();
     }
   }
 

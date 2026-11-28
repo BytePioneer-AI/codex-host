@@ -29,7 +29,7 @@
 
 .panel {
   position: relative;
-  isolation: isolate;
+  z-index: 0;
   overflow: hidden;
   width: 100%;
   padding: 2px 0;
@@ -44,6 +44,7 @@
   inset: 0;
   border-radius: inherit;
   background: var(--dsw-specific-menu);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
   content: "";
   pointer-events: none;
@@ -203,6 +204,21 @@
   object-fit: cover;
 }
 
+.annotationBadge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, transparent);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .preview {
   flex: 1 1 auto;
   min-width: 0;
@@ -216,6 +232,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   word-break: break-word;
+}
+
+.previewFallback {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .actions {

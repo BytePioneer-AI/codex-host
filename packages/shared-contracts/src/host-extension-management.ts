@@ -27,6 +27,7 @@ export const HOST_EXTENSION_CATALOG_URL =
 export const HOST_EXTENSION_CATALOG_MIRROR_URL =
   "https://cdn.jsdelivr.net/gh/BytePioneer-AI/codexhost-extensions-registry@main/catalog.v2.json";
 export const HOST_EXTENSION_UPLOAD_PATH = "/api/extensions/upload";
+export const HOST_EXTENSION_CATALOG_ICON_PATH = "/api/extensions/catalog-icon";
 
 export const hostExtensionRevisionSchema = z.int().nonnegative();
 export const hostExtensionConfigurationSchema = z.strictObject({
@@ -37,6 +38,15 @@ export const hostExtensionConfigurationSchema = z.strictObject({
     .refine((ids) => new Set(ids).size === ids.length, "Duplicate extension IDs"),
 });
 export type HostExtensionConfiguration = z.infer<typeof hostExtensionConfigurationSchema>;
+
+export const hostExtensionDefaultSeedsSchema = z.strictObject({
+  version: z.literal(1),
+  seeded: z
+    .array(hostExtensionIdSchema)
+    .max(DESKTOP_EXTENSION_LIMIT)
+    .refine((ids) => new Set(ids).size === ids.length, "Duplicate extension IDs"),
+});
+export type HostExtensionDefaultSeeds = z.infer<typeof hostExtensionDefaultSeedsSchema>;
 
 const { downloadUrl, ...catalogMetadata } = desktopExtensionCatalogEntrySchema.shape;
 export const hostExtensionCatalogEntrySchema = z
@@ -57,6 +67,8 @@ export const hostExtensionCatalogEntrySchema = z
       backend: z.int().positive().optional(),
     }),
     downloadUrl: downloadUrl.refine((url) => url.startsWith("https://"), "Expected HTTPS"),
+    featured: z.boolean().optional(),
+    featuredOrder: z.int().nonnegative().optional(),
   })
   .refine(({ targets, apis }) => {
     const derived = targetsForCapabilities({
@@ -83,6 +95,7 @@ export const hostExtensionsCatalogResultSchema = hostExtensionCatalogSchema.exte
   catalogUrl: desktopExtensionHttpUrlSchema,
   fetchedAt: z.iso.datetime(),
   cached: z.boolean(),
+  stale: z.boolean().optional(),
 });
 export type HostExtensionCatalog = z.infer<typeof hostExtensionCatalogSchema>;
 export type HostExtensionCatalogEntry = z.infer<typeof hostExtensionCatalogEntrySchema>;
@@ -228,6 +241,7 @@ export const HOST_EXTENSIONS_RPC = {
   list: "codexhost/extensions/list",
   snapshot: "codexhost/extensions/snapshot",
   catalog: "codexhost/extensions/catalog",
+  catalogIcon: "codexhost/extensions/catalogIcon",
   install: "codexhost/extensions/install",
   update: "codexhost/extensions/update",
   enable: "codexhost/extensions/enable",
@@ -266,6 +280,10 @@ export const hostExtensionsAssetResultSchema = z.strictObject({
   base64: base64(DESKTOP_EXTENSION_ASSET_MAX_BYTES),
   digest: active.digest,
 });
+export const hostExtensionsCatalogIconResultSchema = z.strictObject({
+  mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+  base64: base64(DESKTOP_EXTENSION_ICON_MAX_BYTES),
+});
 export const hostExtensionSettingsSchema = z.strictObject({
   settingsRevision: hostExtensionRevisionSchema,
   values: jsonObjectSchema,
@@ -276,8 +294,15 @@ export const hostExtensionsRpcSchemas = {
   [HOST_EXTENSIONS_RPC.list]: { params: noParams, result: hostExtensionsListResultSchema },
   [HOST_EXTENSIONS_RPC.snapshot]: { params: noParams, result: hostExtensionsSnapshotResultSchema },
   [HOST_EXTENSIONS_RPC.catalog]: {
-    params: z.strictObject({ forceRefresh: z.boolean().optional() }),
+    params: z.strictObject({
+      forceRefresh: z.boolean().optional(),
+      staleWhileRevalidate: z.boolean().optional(),
+    }),
     result: hostExtensionsCatalogResultSchema,
+  },
+  [HOST_EXTENSIONS_RPC.catalogIcon]: {
+    params: z.strictObject({ ...id }),
+    result: hostExtensionsCatalogIconResultSchema,
   },
   [HOST_EXTENSIONS_RPC.install]: {
     params: z.strictObject({ source: hostExtensionInstallSourceSchema }),

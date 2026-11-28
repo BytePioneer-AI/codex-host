@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  catalogModelForRef,
+  harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import { CursorAdapter, CursorSession } from "../src/adapter.js";
@@ -177,21 +183,35 @@ describe("Cursor parameterized Thinking", () => {
       await f.done;
     }
   });
-  it("restores non-Thinking parameters from the saved effective Model Ref", async () => {
+  it("replays explicit legacy bracketed parameters while keeping effectiveModel catalog-stable", async () => {
     const f = setup();
     await f.session.execute({ type: "model.select", model: cursorModelRef("alpha[context=1m]") });
-    const saved = structuredClone(f.session.initialState);
-    expect(saved.effectiveModel).toEqual(cursorModelRef("alpha[context=1m]"));
+    expect(f.transport.configure).toHaveBeenCalledWith("context", "1m");
+    expect(f.session.initialState.effectiveModel).toEqual(cursorModelRef("alpha"));
     await f.session.close();
     await f.done;
+
+    const fast = (value: string) => select("fast", value, ["false", "true"], "model_config");
+    const fastInfo: CursorSessionInfo = {
+      ...structuredClone(info),
+      configOptions: [model, thinking, effort, context, fast("false")],
+      nativeModels: [
+        {
+          value: "alpha",
+          name: "Alpha",
+          configOptions: [thinking, effort, context, fast("false")],
+        },
+        { value: "auto", name: "Auto", configOptions: [] },
+      ],
+    };
     vi.spyOn(CursorTransport.prototype, "open").mockImplementation(async function (
       this: CursorTransport,
     ) {
       this.sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-      return structuredClone(info);
+      return structuredClone(fastInfo);
     });
     vi.spyOn(CursorTransport.prototype, "close").mockResolvedValue();
-    let config = structuredClone(info.configOptions ?? []);
+    let config = structuredClone(fastInfo.configOptions ?? []);
     const configure = vi
       .spyOn(CursorTransport.prototype, "configure")
       .mockImplementation(async (id, value) => {
@@ -202,19 +222,133 @@ describe("Cursor parameterized Thinking", () => {
       });
     const adapter = new CursorAdapter();
     try {
+      const fastAlpha = cursorModelRef("alpha[fast=true]");
       const resumed = await adapter.open({
         kind: "resume",
         cwd: process.cwd(),
-        nativeRef: required(saved.nativeRef),
-        model: required(saved.effectiveModel),
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "cursor-cli",
+          nativeSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          formatVersion: 1,
+        }),
+        model: fastAlpha,
       });
       if (!resumed.ok) throw Error(resumed.error.message);
-      expect(configure).toHaveBeenCalledWith("context", "1m");
-      expect(resumed.value.initialState.effectiveModel).toEqual(saved.effectiveModel);
+      expect(configure).toHaveBeenCalledWith("fast", "true");
+      expect(resumed.value.initialState.effectiveModel).toEqual(fastAlpha);
     } finally {
       await adapter.close();
     }
   });
+  it.each(["create", "resume"] as const)(
+    "does not buffer startup session.state.changed events during %s and still emits post-open updates",
+    async (kind) => {
+      const sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const modeOption = select("mode", "agent", ["agent", "plan", "ask"], "mode");
+      const initial: CursorSessionInfo = {
+        ...structuredClone(info),
+        configOptions: [modeOption, ...structuredClone(info.configOptions ?? [])],
+      };
+      vi.spyOn(CursorTransport.prototype, "open").mockImplementation(async function (
+        this: CursorTransport,
+      ) {
+        this.sessionId = sessionId;
+        return structuredClone(initial);
+      });
+      vi.spyOn(CursorTransport.prototype, "close").mockResolvedValue();
+      let config = structuredClone(initial.configOptions ?? []);
+      vi.spyOn(CursorTransport.prototype, "configure").mockImplementation(async (id, value) => {
+        config = config.map((entry) =>
+          entry.id === id ? ({ ...entry, currentValue: value } as SessionConfigOption) : entry,
+        );
+        return { configOptions: structuredClone(config) };
+      });
+      const lowThinking = required(
+        cursorThinking(info.configOptions).find(({ values }) =>
+          values.some(([id, value]) => id === "effort" && value === "low"),
+        ),
+      ).id;
+      // On create, request the already-selected model to also cover the no-op confirmation branch.
+      const requestedModel = cursorModelRef(kind === "create" ? "alpha" : "alpha[context=1m]");
+      const expectedModel = cursorModelRef("alpha");
+      const planMode = harnessPermissionModeIdSchema.parse("plan");
+      const askMode = harnessPermissionModeIdSchema.parse("ask");
+      const adapter = new CursorAdapter();
+      try {
+        const opened = await adapter.open(
+          kind === "create"
+            ? {
+                kind,
+                cwd: process.cwd(),
+                model: requestedModel,
+                thinkingOptionId: lowThinking,
+                permissionModeId: planMode,
+              }
+            : {
+                kind,
+                cwd: process.cwd(),
+                nativeRef: nativeSessionRefSchema.parse({
+                  harnessId: "cursor-cli",
+                  nativeSessionId: sessionId,
+                  formatVersion: 1,
+                }),
+                model: requestedModel,
+                thinkingOptionId: lowThinking,
+                permissionModeId: planMode,
+              },
+        );
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        expect(session.initialState).toMatchObject({
+          effectiveModel: expectedModel,
+          effectiveThinkingOptionId: lowThinking,
+          effectivePermissionModeId: planMode,
+        });
+        const outputs: HarnessOutput[] = [];
+        const done = (async () => {
+          for await (const output of session.outputs) outputs.push(output);
+        })();
+        try {
+          expect((await session.execute({ type: "model.select", model: expectedModel })).ok).toBe(
+            true,
+          );
+          expect(
+            (await session.execute({ type: "permissionMode.select", permissionModeId: askMode }))
+              .ok,
+          ).toBe(true);
+        } finally {
+          await session.close();
+          await done;
+        }
+        expect(outputs).toEqual([
+          {
+            kind: "event",
+            event: {
+              type: "session.state.changed",
+              state: expect.objectContaining({
+                effectiveModel: expectedModel,
+                effectiveThinkingOptionId: lowThinking,
+                effectivePermissionModeId: planMode,
+              }),
+            },
+          },
+          {
+            kind: "event",
+            event: {
+              type: "session.state.changed",
+              state: expect.objectContaining({
+                effectiveModel: expectedModel,
+                effectiveThinkingOptionId: lowThinking,
+                effectivePermissionModeId: askMode,
+              }),
+            },
+          },
+        ]);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
   it("validates every legacy variant parameter before modifying native configuration", () => {
     expect(
       cursorModelSelection(info, cursorModelRef("alpha[thinking=true,context=1m,effort=low]").id),
@@ -278,8 +412,8 @@ describe("Cursor Auto Optimize For", () => {
     ).toEqual(["Intelligence", "Balance", "Cost"]);
     expect(catalog.defaultModel).toEqual(cursorModelRef("auto-smart"));
     expect(catalog.defaultThinkingOptionId).toBe(choice("balanced").id);
-    // Other model_config parameters still travel in the Ref.
-    expect(cursorCatalog(info).defaultModel).toEqual(cursorModelRef("alpha[context=200k]"));
+    // Non-Fast model_config parameters such as context also stay out of the Model Ref.
+    expect(cursorCatalog(info).defaultModel).toEqual(cursorModelRef("alpha"));
   });
 
   it("applies an Optimize For choice and keeps the confirmed Model selectable", async () => {
@@ -436,14 +570,11 @@ describe("Cursor catalog parameter defaults", () => {
     ],
   };
 
-  it("pins parameters only for the live model and pairs every model with its Fast variant", () => {
+  it("uses the same Fast-only Ref shape for live and non-live models", () => {
     const catalog = cursorCatalog(liveInfo);
-    expect(catalog.defaultModel).toEqual(cursorModelRef("alpha[context=200k,fast=false]"));
+    expect(catalog.defaultModel).toEqual(cursorModelRef("alpha[fast=false]"));
     expect(catalog.models.map(({ ref, fastModel }) => [ref, fastModel])).toEqual([
-      [
-        cursorModelRef("alpha[context=200k,fast=false]"),
-        cursorModelRef("alpha[context=200k,fast=true]"),
-      ],
+      [cursorModelRef("alpha[fast=false]"), cursorModelRef("alpha[fast=true]")],
       [cursorModelRef("grok[fast=false]"), cursorModelRef("grok[fast=true]")],
     ]);
     expect(catalog.models[1]?.supportedThinkingOptionIds).toHaveLength(2);
@@ -492,7 +623,8 @@ describe("Cursor catalog parameter defaults", () => {
     }
   });
 
-  it("keeps the user's remembered parameters when switching to another catalog model", async () => {
+  it("keeps the user's remembered parameters and matches the inspection catalog when switching models", async () => {
+    const inspectCatalog = cursorCatalog(liveInfo);
     const transport = new CursorTransport({ cwd: process.cwd(), environment: {} });
     transport.sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     const remembered = [
@@ -511,26 +643,146 @@ describe("Cursor catalog parameter defaults", () => {
       for await (const output of session.outputs) void output;
     })();
     try {
-      const grok = required(
-        cursorCatalog(liveInfo).models.find(({ label }) => label === "grok"),
-      ).ref;
+      const grok = required(inspectCatalog.models.find(({ label }) => label === "grok")).ref;
       expect(await session.execute({ type: "model.select", model: grok })).toEqual({
         ok: true,
         value: { completed: true },
       });
       expect(configure).toHaveBeenCalledTimes(1);
       expect(configure).not.toHaveBeenCalledWith("fast", expect.anything());
-      expect(session.initialState.effectiveModel).toEqual(
-        cursorModelRef("grok[context=256k,fast=false]"),
+      expect(configure).not.toHaveBeenCalledWith("context", expect.anything());
+      expect(session.initialState.effectiveModel).toEqual(cursorModelRef("grok[fast=false]"));
+      expect(catalogModelForRef(inspectCatalog, session.initialState.effectiveModel)?.ref).toEqual(
+        grok,
       );
       expect(
-        cursorCatalog(session.info).models.some(
-          ({ ref }) => ref.id === session.initialState.effectiveModel?.id,
-        ),
-      ).toBe(true);
+        catalogModelForRef(cursorCatalog(session.info), session.initialState.effectiveModel)?.ref,
+      ).toEqual(grok);
     } finally {
       await session.close();
       await done;
     }
+  });
+
+  it("matches the inspection catalog and allows Thinking selection after switching to a context-bearing model without Fast", async () => {
+    const startInfo: CursorSessionInfo = {
+      sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      configOptions: [select("model", "auto-smart", ["auto-smart", "grok-4.7"], "model")],
+      nativeModels: [
+        { value: "auto-smart", name: "Auto", configOptions: [] },
+        { value: "grok-4.7", name: "Grok 4.7", configOptions: [effort, grokContext] },
+      ],
+    };
+    const inspectCatalog = cursorCatalog(startInfo);
+    const transport = new CursorTransport({ cwd: process.cwd(), environment: {} });
+    transport.sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    let currentOptions = structuredClone(startInfo.configOptions ?? []);
+    const configure = vi.spyOn(transport, "configure").mockImplementation(async (id, value) => {
+      if (id === "model" && value === "grok-4.7") {
+        currentOptions = [
+          select("model", "grok-4.7", ["auto-smart", "grok-4.7"], "model"),
+          structuredClone(effort),
+          structuredClone(grokContext),
+        ];
+      } else {
+        currentOptions = currentOptions.map((option) =>
+          option.id === id ? ({ ...option, currentValue: value } as SessionConfigOption) : option,
+        );
+      }
+      return { configOptions: structuredClone(currentOptions) };
+    });
+    vi.spyOn(transport, "close").mockResolvedValue();
+    const session = new CursorSession(transport, structuredClone(startInfo), () => {});
+    const done = (async () => {
+      for await (const output of session.outputs) void output;
+    })();
+    try {
+      const grokEntry = required(
+        inspectCatalog.models.find(({ ref }) => ref.id === cursorModelRef("grok-4.7").id),
+      );
+      expect(grokEntry.supportedThinkingOptionIds).toHaveLength(2);
+      expect(await session.execute({ type: "model.select", model: grokEntry.ref })).toEqual({
+        ok: true,
+        value: { completed: true },
+      });
+      expect(configure).toHaveBeenCalledWith("model", "grok-4.7");
+      expect(configure).not.toHaveBeenCalledWith("context", expect.anything());
+      expect(session.initialState.effectiveModel).toEqual(grokEntry.ref);
+      expect(catalogModelForRef(inspectCatalog, session.initialState.effectiveModel)).toEqual(
+        grokEntry,
+      );
+      const lowEffort = required(
+        cursorThinking(session.info.configOptions).find(({ values }) =>
+          values.some(([id, value]) => id === "effort" && value === "low"),
+        ),
+      );
+      expect(
+        await session.execute({ type: "thinking.select", thinkingOptionId: lowEffort.id }),
+      ).toEqual({ ok: true, value: { completed: true } });
+      expect(session.initialState.effectiveModel).toEqual(grokEntry.ref);
+      expect(session.initialState.effectiveThinkingOptionId).toBe(lowEffort.id);
+    } finally {
+      await session.close();
+      await done;
+    }
+  });
+
+  it("normalizes legacy parameterized Cursor Model Refs to the matching catalog entry", () => {
+    const adapter = new CursorAdapter();
+    const mixedInfo: CursorSessionInfo = {
+      sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      configOptions: [select("model", "auto-smart", ["auto-smart", "grok", "grok-4.7"], "model")],
+      nativeModels: [
+        { value: "auto-smart", name: "Auto", configOptions: [] },
+        { value: "grok", name: "Grok", configOptions: [effort, grokContext, fast("true")] },
+        { value: "grok-4.7", name: "Grok 4.7", configOptions: [effort, grokContext] },
+      ],
+    };
+    const catalog = cursorCatalog(mixedInfo);
+    expect(adapter.normalizeStoredModelRef(cursorModelRef("grok-4.7"), catalog)).toEqual(
+      cursorModelRef("grok-4.7"),
+    );
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("grok-4.7[context=256k]"), catalog),
+    ).toEqual(cursorModelRef("grok-4.7"));
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("grok-4.7[context=256k,fast=true]"), catalog),
+    ).toEqual(cursorModelRef("grok-4.7"));
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("grok[context=256k,fast=false]"), catalog),
+    ).toEqual(cursorModelRef("grok[fast=false]"));
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("grok[context=256k,fast=true]"), catalog),
+    ).toEqual(cursorModelRef("grok[fast=true]"));
+    expect(adapter.normalizeStoredModelRef(cursorModelRef("grok"), catalog)).toEqual(
+      cursorModelRef("grok[fast=false]"),
+    );
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("missing[context=256k]"), catalog),
+    ).toBeUndefined();
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("grok[context=256k,fast=maybe]"), catalog),
+    ).toBeUndefined();
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("grok[context=256k,context=500k]"), catalog),
+    ).toBeUndefined();
+    expect(
+      adapter.normalizeStoredModelRef(cursorModelRef("grok[broken]"), catalog),
+    ).toBeUndefined();
+    expect(
+      adapter.normalizeStoredModelRef(harnessModelRefSchema.parse({ id: "other.Z3Jvaw" }), catalog),
+    ).toBeUndefined();
+    expect(
+      adapter.normalizeStoredModelRef(
+        harnessModelRefSchema.parse({ id: "cursor.Z3Jvaw==" }),
+        catalog,
+      ),
+    ).toBeUndefined();
+    expect(
+      adapter.normalizeStoredModelRef(
+        harnessModelRefSchema.parse({ id: cursorModelRef("grok-4.7").id, serviceTier: "priority" }),
+        catalog,
+      ),
+    ).toBeUndefined();
   });
 });

@@ -8,6 +8,7 @@ import { HostClientChannel } from "@codexhost/desktop-control";
 import {
   DEFAULT_HOST_EXTENSION_STATS_URL,
   installHostExtension,
+  readSeededDefaultHostExtensions,
   updateHostExtensionConfiguration,
 } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
@@ -24,7 +25,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import { AppServerHost } from "../src/app-server-host.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
-import { HostExtensionManager } from "../src/host-extension-manager.js";
+import {
+  DEFAULT_DESKTOP_CATALOG_EXTENSIONS,
+  HostExtensionManager,
+} from "../src/host-extension-manager.js";
 import { handleHostExtensionRequest } from "../src/host-extension-requests.js";
 import { JsonLineCollector, writeRequest } from "./app-server-host-fixture.js";
 
@@ -721,4 +725,311 @@ it("downloads extensions concurrently without blocking other operations, logs ca
   });
   const entriesAfterClose = await readdir(path.join(dataDir, "host-extensions"));
   expect(entriesAfterClose.filter((name) => name.startsWith(".staging-"))).toEqual([]);
+});
+
+function buildSidebarThreadTreeArchive(version = "0.1.5") {
+  return makeZip([
+    {
+      name: "pkg/manifest.json",
+      data: JSON.stringify({
+        manifestVersion: 2,
+        id: "sidebar-thread-tree",
+        version,
+        name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
+        description: { en: "Delegation tree", "zh-CN": "委派树" },
+        desktop: { apiVersion: 1, script: "desktop.js" },
+        slots: ["sidebar.thread-layout"],
+      }),
+    },
+    { name: "pkg/desktop.js", data: "define({ activate() {} });" },
+  ]);
+}
+
+function stubSidebarThreadTreeCatalog(
+  zip: Buffer,
+  options: {
+    version?: string;
+    onDownload?: (signal: AbortSignal | null | undefined) => Promise<Response>;
+    failNetwork?: () => boolean;
+    onFetch?: (href: string) => void;
+  } = {},
+) {
+  const version = options.version ?? "0.1.5";
+  const downloadUrl = `https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/releases/download/v${version}/sidebar-thread-tree.zip`;
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", "off");
+  vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+    const href = String(input);
+    options.onFetch?.(href);
+    if (options.failNetwork?.()) throw new TypeError("network offline");
+    if (href === HOST_EXTENSION_CATALOG_URL || href === HOST_EXTENSION_CATALOG_MIRROR_URL) {
+      return Response.json({
+        schemaVersion: 2,
+        generatedAt: "2026-11-28T00:00:00.000Z",
+        extensions: [
+          {
+            id: "sidebar-thread-tree",
+            version,
+            format: "codexhost",
+            targets: ["desktop"],
+            apis: { desktop: 1 },
+            name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
+            description: { en: "Delegation tree", "zh-CN": "委派树" },
+            author: "sduhantao-maker",
+            repository: "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree",
+            downloadUrl,
+            sha256: createHash("sha256").update(zip).digest("hex"),
+          },
+        ],
+      });
+    }
+    if (href === downloadUrl) {
+      if (options.onDownload) return options.onDownload(init?.signal);
+      return new Response(Uint8Array.from(zip));
+    }
+    throw new Error(`Unexpected fetch: ${href}`);
+  });
+}
+
+it("seeds default Desktop catalog extension once and respects subsequent disable, recover, and uninstall", async () => {
+  expect(DEFAULT_DESKTOP_CATALOG_EXTENSIONS).toEqual(["sidebar-thread-tree"]);
+  const zip = buildSidebarThreadTreeArchive();
+  const fetches: string[] = [];
+  stubSidebarThreadTreeCatalog(zip, { onFetch: (href) => fetches.push(href) });
+
+  const changes: number[] = [];
+  const firstManager = new HostExtensionManager(dataDir, (revision) => changes.push(revision));
+  cleanup.push(() => firstManager.close());
+
+  // Concurrent calls within the same process share one seeding run.
+  await Promise.all([
+    firstManager.seedDefaultDesktopExtensions(),
+    firstManager.seedDefaultDesktopExtensions(),
+  ]);
+
+  expect(changes).toEqual([1]);
+  expect(await firstManager.list()).toMatchObject({
+    configuration: { enabled: ["sidebar-thread-tree"] },
+    extensions: [
+      {
+        id: "sidebar-thread-tree",
+        state: "valid",
+        enabled: true,
+        source: { type: "catalog", id: "sidebar-thread-tree" },
+      },
+    ],
+  });
+  expect(
+    JSON.parse(await readFile(path.join(dataDir, "host-extensions", "enabled.json"), "utf8")),
+  ).toMatchObject({ enabled: ["sidebar-thread-tree"] });
+  expect(
+    JSON.parse(
+      await readFile(path.join(dataDir, "host-extensions", ".default-extensions.json"), "utf8"),
+    ),
+  ).toEqual({ version: 1, seeded: ["sidebar-thread-tree"] });
+
+  // User disables the extension -> a fresh manager on restart must not re-enable or re-fetch.
+  const disabled = await firstManager.select({
+    action: "disable",
+    id: "sidebar-thread-tree",
+    expectedRevision: 1,
+  });
+  expect(disabled).toMatchObject({ state: "saved", configuration: { enabled: [] } });
+  await firstManager.close();
+
+  const fetchesBeforeDisableRestart = fetches.length;
+  const afterDisable = new HostExtensionManager(dataDir, () => undefined);
+  cleanup.push(() => afterDisable.close());
+  await afterDisable.seedDefaultDesktopExtensions();
+  expect(fetches).toHaveLength(fetchesBeforeDisableRestart);
+  expect((await afterDisable.list()).configuration.enabled).toEqual([]);
+
+  // Re-enable then recover (disableAll) -> a fresh manager on restart must not re-enable.
+  await afterDisable.select({
+    action: "enable",
+    id: "sidebar-thread-tree",
+    expectedRevision: 2,
+  });
+  await afterDisable.select({ action: "disableAll" });
+  await afterDisable.close();
+
+  const afterRecover = new HostExtensionManager(dataDir, () => undefined);
+  cleanup.push(() => afterRecover.close());
+  await afterRecover.seedDefaultDesktopExtensions();
+  expect(fetches).toHaveLength(fetchesBeforeDisableRestart);
+  expect((await afterRecover.list()).configuration.enabled).toEqual([]);
+
+  // User uninstalls the extension -> a fresh manager on restart must not reinstall.
+  expect(await afterRecover.uninstall({ id: "sidebar-thread-tree" })).toEqual({
+    id: "sidebar-thread-tree",
+    removed: true,
+  });
+  await afterRecover.close();
+
+  const afterUninstall = new HostExtensionManager(dataDir, () => undefined);
+  cleanup.push(() => afterUninstall.close());
+  await afterUninstall.seedDefaultDesktopExtensions();
+  expect(fetches).toHaveLength(fetchesBeforeDisableRestart);
+  expect((await afterUninstall.list()).extensions).toEqual([]);
+});
+
+it("marks pre-existing local installs as seeded without overwriting or force-enabling them", async () => {
+  const existing = await installHostExtension({
+    dataDir,
+    source: await source(
+      "sidebar-thread-tree",
+      {
+        version: "0.0.1-local",
+        desktop: { apiVersion: 1, script: "desktop.js" },
+        slots: ["sidebar.thread-layout"],
+      },
+      { "desktop.js": "define({ activate() { /* user local */ } });" },
+    ),
+  });
+  const fetchSpy = vi.fn(() => {
+    throw new Error("must not fetch catalog when already installed");
+  });
+  vi.stubGlobal("fetch", fetchSpy);
+
+  const manager = new HostExtensionManager(dataDir, () => undefined);
+  cleanup.push(() => manager.close());
+  await manager.seedDefaultDesktopExtensions();
+
+  expect(fetchSpy).not.toHaveBeenCalled();
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual(["sidebar-thread-tree"]);
+  expect(await manager.list()).toMatchObject({
+    configuration: { enabled: [] },
+    extensions: [
+      {
+        id: "sidebar-thread-tree",
+        state: "valid",
+        enabled: false,
+        digest: existing.digest,
+        manifest: { version: "0.0.1-local" },
+      },
+    ],
+  });
+});
+
+it("leaves default Desktop extension disabled and seeded when an enabled Desktop extension owns the same slot", async () => {
+  await installHostExtension({
+    dataDir,
+    source: await source(
+      "custom-sidebar-layout",
+      {
+        desktop: { apiVersion: 1, script: "desktop.js" },
+        slots: ["sidebar.thread-layout"],
+      },
+      { "desktop.js": "define({ activate() {} });" },
+    ),
+  });
+  await updateHostExtensionConfiguration(dataDir, {
+    action: "enable",
+    id: "custom-sidebar-layout",
+  });
+
+  stubSidebarThreadTreeCatalog(buildSidebarThreadTreeArchive());
+  const diagnostics: string[] = [];
+  const manager = new HostExtensionManager(
+    dataDir,
+    () => undefined,
+    (message) => diagnostics.push(message),
+  );
+  cleanup.push(() => manager.close());
+
+  await manager.seedDefaultDesktopExtensions();
+
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual(["sidebar-thread-tree"]);
+  expect(diagnostics).toContainEqual(
+    expect.stringContaining("slot conflict with custom-sidebar-layout"),
+  );
+  const listed = await manager.list();
+  expect(listed.configuration.enabled).toEqual(["custom-sidebar-layout"]);
+  expect(listed.extensions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: "custom-sidebar-layout",
+        enabled: true,
+      }),
+      expect.objectContaining({
+        id: "sidebar-thread-tree",
+        enabled: false,
+      }),
+    ]),
+  );
+  expect(
+    listed.extensions.filter((entry) => entry.state === "valid" && entry.desktopConflictWith),
+  ).toEqual([]);
+});
+
+it("retries on restart after a network failure without marking seeded, aborts cleanly on close, and honors opt-out env", async () => {
+  const zip = buildSidebarThreadTreeArchive();
+
+  // Opt-out via CODEXHOST_DISABLE_DEFAULT_EXTENSIONS=1 skips completely.
+  const optOutFetch = vi.fn(() => {
+    throw new Error("must not fetch when disabled");
+  });
+  vi.stubEnv("CODEXHOST_DISABLE_DEFAULT_EXTENSIONS", "1");
+  vi.stubGlobal("fetch", optOutFetch);
+  const disabledManager = new HostExtensionManager(dataDir, () => undefined);
+  cleanup.push(() => disabledManager.close());
+  await disabledManager.seedDefaultDesktopExtensions();
+  expect(optOutFetch).not.toHaveBeenCalled();
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
+  await disabledManager.close();
+  vi.stubEnv("CODEXHOST_DISABLE_DEFAULT_EXTENSIONS", undefined);
+
+  // Network failure records a non-fatal diagnostic and does NOT mark seeded.
+  let offline = true;
+  stubSidebarThreadTreeCatalog(zip, { failNetwork: () => offline });
+  const offlineDiagnostics: string[] = [];
+  const offlineManager = new HostExtensionManager(
+    dataDir,
+    () => undefined,
+    (message) => offlineDiagnostics.push(message),
+  );
+  cleanup.push(() => offlineManager.close());
+  await expect(offlineManager.seedDefaultDesktopExtensions()).resolves.toBeUndefined();
+  expect(offlineDiagnostics).toContainEqual(
+    expect.stringContaining("Default Desktop extension sidebar-thread-tree could not be installed"),
+  );
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
+  await offlineManager.close();
+
+  // In-flight download aborts cleanly when close() is called, leaving no marker or staging dir.
+  offline = false;
+  const downloadStarted = Promise.withResolvers<undefined>();
+  let aborted = false;
+  stubSidebarThreadTreeCatalog(zip, {
+    onDownload: (signal) =>
+      new Promise<Response>((_resolve, reject) => {
+        downloadStarted.resolve(undefined);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(signal.reason ?? new Error("aborted"));
+          },
+          { once: true },
+        );
+      }),
+  });
+  const closingManager = new HostExtensionManager(dataDir, () => undefined);
+  const seedPromise = closingManager.seedDefaultDesktopExtensions();
+  await downloadStarted.promise;
+  await closingManager.close();
+  await expect(seedPromise).resolves.toBeUndefined();
+  expect(aborted).toBe(true);
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
+
+  // Next manager after network recovers installs and enables cleanly.
+  stubSidebarThreadTreeCatalog(zip);
+  const recoveredChanges: number[] = [];
+  const recoveredManager = new HostExtensionManager(dataDir, (revision) =>
+    recoveredChanges.push(revision),
+  );
+  cleanup.push(() => recoveredManager.close());
+  await recoveredManager.seedDefaultDesktopExtensions();
+  expect(recoveredChanges).toEqual([1]);
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual(["sidebar-thread-tree"]);
+  expect((await recoveredManager.list()).configuration.enabled).toEqual(["sidebar-thread-tree"]);
 });

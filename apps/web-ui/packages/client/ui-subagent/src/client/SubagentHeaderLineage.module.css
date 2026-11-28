@@ -117,6 +117,7 @@
   inset: 0;
   border-radius: inherit;
   background: var(--dsw-specific-menu);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
 }
 

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { composeAnnotatedMessage } from "@codexhost/shared-contracts";
 import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatViewInjected, ChatViewSlotProps, SentMessageEditing } from "../contract/slots.ts";
@@ -77,6 +77,18 @@ export function SentMessageEditor({
   t: ChatViewSlotProps["t"];
 }) {
   const draft = editing.draft;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const hasDraft = draft !== null;
+
+  useEffect(() => {
+    const field = textareaRef.current;
+    if (!hasDraft || !field || field.disabled) return;
+    field.focus({ preventScroll: true });
+    const end = field.value.length;
+    field.setSelectionRange(end, end);
+    field.scrollTop = field.scrollHeight;
+  }, [hasDraft]);
+
   if (!draft) return null;
   return (
     <form
@@ -88,7 +100,7 @@ export function SentMessageEditor({
       }}
     >
       <textarea
-        autoFocus
+        ref={textareaRef}
         aria-label={t("message.edit")}
         value={draft.text}
         disabled={draft.pending}

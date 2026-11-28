@@ -60,7 +60,7 @@ export interface SessionStatus {
   readonly running: boolean | undefined;
   /** Highest-precedence domain request currently awaiting user interaction. */
   readonly pendingInteraction: SessionPendingInteraction | undefined;
-  /** Whether an observed stop outside the main view still needs acknowledgement. */
+  /** Whether a background completion or manual unread mark still needs acknowledgement. */
   readonly completionUnread: boolean;
 }
 
@@ -414,6 +414,21 @@ export class UiSession extends Service {
     return (interaction, delegate) => domain.publish(interaction, delegate);
   }
 
+  /** Mark an idle background Session unread without opening it. */
+  markCompletionUnread(sessionId: SessionId): void {
+    const session = this.sessions.list.getSnapshot().byId[sessionId];
+    if (
+      session === undefined ||
+      (session.retainedBy.mainView ?? 0) > 0 ||
+      (this.running.get(sessionId) ?? session.running) ||
+      this.pendingSnapshot.has(sessionId) ||
+      this.completionUnread.has(sessionId)
+    )
+      return;
+    this.completionUnread.add(sessionId);
+    this.publishStatus();
+  }
+
   /**
    * Acknowledge unread completion reminders for the given Sessions without opening them.
    * @param sessionIds - Session identities whose completion reminders should be cleared.
@@ -508,8 +523,9 @@ export class UiSession extends Service {
     const previous = this.running.get(sessionId);
     const beforeBaseline = this.sessions.list.getSnapshot().phase === "pending";
     this.running.set(sessionId, running);
-    if (running) this.completionUnread.delete(sessionId);
-    else if (
+    if (running) {
+      if (previous !== true) this.completionUnread.delete(sessionId);
+    } else if (
       (previous === true || (previous === undefined && beforeBaseline)) &&
       !this.isMain(sessionId)
     )

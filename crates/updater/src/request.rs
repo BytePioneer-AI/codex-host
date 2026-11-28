@@ -17,6 +17,8 @@ pub(crate) struct UpdateRequest {
     #[serde(default)]
     pub(crate) restart_target: RestartTarget,
     #[serde(default)]
+    pub(crate) restart_desktop_shell: bool,
+    #[serde(default)]
     pub(crate) data_directory: Option<PathBuf>,
     #[serde(default)]
     pub(crate) service_managed: bool,
@@ -281,7 +283,10 @@ impl UpdateRequest {
         require_absolute_path(&self.status_path, "update status path")?;
         if let Some(data) = &self.data_directory {
             require_absolute_path(data, "service data directory")?;
-        } else if self.restart_target == RestartTarget::Web || self.service_managed {
+        } else if self.restart_target == RestartTarget::Web
+            || self.restart_desktop_shell
+            || self.service_managed
+        {
             return Err("service updates require an explicit data directory".into());
         }
         match &self.installation {
@@ -380,6 +385,7 @@ mod tests {
         });
         let legacy: UpdateRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(legacy.restart_target, RestartTarget::Desktop);
+        assert!(!legacy.restart_desktop_shell);
         assert!(!legacy.service_managed);
         legacy.validate().unwrap();
         value["restart_target"] = "web".into();
@@ -401,9 +407,25 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
+        value["restart_desktop_shell"] = true.into();
+        let shell_web: UpdateRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(shell_web.restart_target, RestartTarget::Web);
+        assert!(shell_web.restart_desktop_shell);
+        shell_web.validate().unwrap();
         value["restart_target"] = "desktop".into();
-        value["service_managed"] = true.into();
+        let shell_desktop: UpdateRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(shell_desktop.restart_target, RestartTarget::Desktop);
+        assert!(shell_desktop.restart_desktop_shell);
+        shell_desktop.validate().unwrap();
         value.as_object_mut().unwrap().remove("data_directory");
+        assert!(
+            serde_json::from_value::<UpdateRequest>(value.clone())
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        value["restart_desktop_shell"] = false.into();
+        value["service_managed"] = true.into();
         assert!(
             serde_json::from_value::<UpdateRequest>(value)
                 .unwrap()
@@ -434,6 +456,7 @@ mod tests {
                 .unwrap()
                 .join("desktop-runtime-v1.json"),
             restart_target: RestartTarget::Desktop,
+            restart_desktop_shell: false,
             data_directory,
             service_managed: false,
             status_path: status_path.to_path_buf(),

@@ -16,7 +16,11 @@ const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(250);
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Options {
     pub onboarding: bool,
+    pub route: Option<String>,
     pub data_dir: PathBuf,
+    /// True when the data directory came from `--data-dir` or an absolute
+    /// `CODEXHOST_DATA_DIR`, rather than being derived from the home directory.
+    pub explicit_data_dir: bool,
 }
 
 impl Options {
@@ -26,11 +30,20 @@ impl Options {
         home: Option<OsString>,
     ) -> Result<Self, String> {
         let mut onboarding = false;
+        let mut route = None;
         let mut data_dir = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--onboarding") if !onboarding => onboarding = true,
+                Some("--route") if route.is_none() => {
+                    route = Some(
+                        args.next()
+                            .and_then(|value| value.into_string().ok())
+                            .filter(|value| crate::navigation::valid_host_route(value))
+                            .ok_or("--route requires a root-relative route")?,
+                    );
+                }
                 Some("--data-dir") if data_dir.is_none() => {
                     let path = args.next().map(PathBuf::from);
                     data_dir = Some(
@@ -40,11 +53,18 @@ impl Options {
                 }
                 _ => {
                     return Err(
-                        "Usage: codexhost-shell [--onboarding] [--data-dir <absolute path>]".into(),
+                        "Usage: codexhost-shell [--onboarding] [--data-dir <absolute path>] [--route <relative route>]".into(),
                     );
                 }
             }
         }
+        if onboarding && route.is_some() {
+            return Err("--route cannot be combined with --onboarding".into());
+        }
+        let explicit_data_dir = data_dir.is_some()
+            || data_env
+                .as_deref()
+                .is_some_and(|value| Path::new(value).is_absolute());
         let data_dir = data_dir
             .or_else(|| {
                 data_env
@@ -59,7 +79,9 @@ impl Options {
             .ok_or("Cannot locate the CodexHost data directory")?;
         Ok(Self {
             onboarding,
+            route,
             data_dir,
+            explicit_data_dir,
         })
     }
 
@@ -125,18 +147,23 @@ struct LaunchPreferences {
 pub(crate) struct Launcher {
     executable: Option<PathBuf>,
     pub data_dir: PathBuf,
+    /// Whether `data_dir` was explicitly configured; when false the launcher must
+    /// not inject `CODEXHOST_DATA_DIR` so the shim uses the implicit default
+    /// directory, matching a plain `codexhost launch`.
+    explicit_data_dir: bool,
     command_lock: Mutex<()>,
     stopping: AtomicBool,
 }
 
 impl Launcher {
-    pub fn new(shell: &Path, data_dir: PathBuf) -> Self {
+    pub fn new(shell: &Path, data_dir: PathBuf, explicit_data_dir: bool) -> Self {
         Self {
             executable: find_launcher(
                 shell,
                 env::var_os("CODEXHOST_LAUNCHER_EXECUTABLE").map(PathBuf::from),
             ),
             data_dir,
+            explicit_data_dir,
             command_lock: Mutex::new(()),
             stopping: AtomicBool::new(false),
         }
@@ -158,11 +185,11 @@ impl Launcher {
             "CodexHost launcher not found. Reinstall CodexHost or set CODEXHOST_LAUNCHER_EXECUTABLE.",
         )?;
         let mut command = Command::new(executable);
-        command
-            .args(args)
-            .env("CODEXHOST_DATA_DIR", &self.data_dir)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null());
+        command.args(args);
+        if self.explicit_data_dir {
+            command.env("CODEXHOST_DATA_DIR", &self.data_dir);
+        }
+        command.stdin(Stdio::null()).stderr(Stdio::null());
         Ok(command)
     }
 
@@ -372,18 +399,19 @@ impl Launcher {
         result
     }
 
-    pub fn set_surface(&self, surface: Surface) -> Result<(), String> {
+    pub fn set_surface(&self, surface: Surface, remember: bool) -> Result<(), String> {
         let surface = match surface {
             Surface::NativeShell => "native-shell",
             Surface::CodexDesktop => "codex-desktop",
         };
+        let onboarding_completed = if remember { "true" } else { "false" };
         self.run(&[
             "launch-prefs",
             "set",
             "--surface",
             surface,
             "--onboarding-completed",
-            "true",
+            onboarding_completed,
         ])
     }
 }
@@ -391,6 +419,34 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injects_data_directory_only_when_explicit() {
+        let root = tempfile::tempdir().unwrap();
+        let launcher = Launcher {
+            executable: Some(root.path().join("codexhost")),
+            data_dir: root.path().to_owned(),
+            explicit_data_dir: false,
+            command_lock: Mutex::new(()),
+            stopping: AtomicBool::new(false),
+        };
+        let command = launcher.command(&["console"]).unwrap();
+        assert!(
+            command
+                .get_envs()
+                .all(|(key, _)| key != std::ffi::OsStr::new("CODEXHOST_DATA_DIR"))
+        );
+        let launcher = Launcher {
+            explicit_data_dir: true,
+            ..launcher
+        };
+        let command = launcher.command(&["console"]).unwrap();
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, _)| key == std::ffi::OsStr::new("CODEXHOST_DATA_DIR"))
+        );
+    }
 
     #[test]
     fn parses_startup_options_and_keeps_data_directory_precedence() {
@@ -417,18 +473,32 @@ mod tests {
             .unwrap(),
             Options {
                 onboarding: true,
-                data_dir: cli
+                route: None,
+                data_dir: cli,
+                explicit_data_dir: true,
             }
         );
         assert_eq!(parse(vec![], Some(&env)).unwrap().data_dir, env);
+        let default = parse(vec![], Some(Path::new("relative"))).unwrap();
+        assert_eq!(default.data_dir, home.join(".codexhost"));
+        assert!(!default.explicit_data_dir);
+        assert!(!parse(vec![], None).unwrap().explicit_data_dir);
+        assert!(parse(vec![], Some(&env)).unwrap().explicit_data_dir);
         assert_eq!(
-            parse(vec![], Some(Path::new("relative"))).unwrap().data_dir,
-            home.join(".codexhost")
+            parse(
+                vec!["--route".into(), "/?session=thread-1".into()],
+                Some(&env),
+            )
+            .unwrap()
+            .route,
+            Some("/?session=thread-1".into())
         );
         for args in [
             vec!["--data-dir"],
             vec!["--data-dir", "relative"],
             vec!["--onboarding", "--onboarding"],
+            vec!["--onboarding", "--route", "/?session=thread-1"],
+            vec!["--route", "/settings"],
             vec!["unexpected"],
         ] {
             assert!(parse(args.into_iter().map(OsString::from).collect(), None).is_err());
@@ -463,6 +533,7 @@ esac
         let launcher = Launcher {
             executable: Some(executable),
             data_dir: root.path().to_owned(),
+            explicit_data_dir: true,
             command_lock: Mutex::new(()),
             stopping: AtomicBool::new(false),
         };
@@ -534,6 +605,7 @@ exit 1
         let launcher = Launcher {
             executable: Some(executable),
             data_dir: root.path().to_owned(),
+            explicit_data_dir: true,
             command_lock: Mutex::new(()),
             stopping: AtomicBool::new(false),
         };

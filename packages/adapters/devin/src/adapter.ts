@@ -54,10 +54,12 @@ import { DevinInteractions } from "./interactions.js";
 import {
   DevinHistoryError,
   deriveDevinHistory,
+  devinAddedPromptKey,
   devinCheckpoint,
   devinHistorySteps,
   readDevinHistory,
   type DevinHistoryInput,
+  type DevinHistoryStep,
 } from "./history.js";
 
 export interface DevinAdapterOptions {
@@ -87,6 +89,7 @@ export function devinError(error: unknown): HarnessError {
 function rejected(code: HarnessError["code"], message: string): { ok: false; error: HarnessError } {
   return { ok: false, error: { code, message, retryable: false } };
 }
+const openingSessions = new WeakSet<DevinSession>();
 export class DevinAdapter implements HarnessAdapter {
   readonly normalizeStoredModelRef = normalizeStoredDevinModelRef;
   readonly harnessId = harnessIdSchema.parse("devin");
@@ -227,6 +230,7 @@ export class DevinAdapter implements HarnessAdapter {
         },
         input.kind === "create",
       );
+      openingSessions.add(openedSession);
       session = openedSession;
       if ("model" in input && input.model) {
         const selected = await session.execute({ type: "model.select", model: input.model });
@@ -262,6 +266,7 @@ export class DevinAdapter implements HarnessAdapter {
       }
       if (this.#closed)
         throw new DevinHistoryError("invalidState", "Devin adapter closed during session startup");
+      openingSessions.delete(openedSession);
       this.#sessions.add(session);
       return { ok: true, value: session };
     } catch (error) {
@@ -393,6 +398,15 @@ export class DevinAdapter implements HarnessAdapter {
   }
 }
 
+interface DevinActiveTurn {
+  command: TurnStartCommand;
+  cancelled: boolean;
+  phase: "beforePrompt" | "prompting" | "afterPrompt";
+  beforePromptCancelled: Promise<undefined>;
+  settleBeforePrompt(): void;
+  task: Promise<void>;
+}
+
 export class DevinSession implements HarnessSession {
   readonly harnessId = harnessIdSchema.parse("devin");
   get capabilities() {
@@ -404,7 +418,7 @@ export class DevinSession implements HarnessSession {
   readonly outputs = this.#channel.outputs;
   readonly #interactions = new DevinInteractions((output) => this.#channel.emit(output));
   readonly #submitted = new Set<string>();
-  #active: { command: TurnStartCommand; cancelled: boolean; task: Promise<void> } | undefined;
+  #active: DevinActiveTurn | undefined;
   #configuring = false;
   #closed = false;
   #fresh: boolean;
@@ -446,7 +460,7 @@ export class DevinSession implements HarnessSession {
     delete this.initialState.effectiveModel;
     delete this.initialState.effectiveThinkingOptionId;
     Object.assign(this.initialState, state);
-    if (isDeepStrictEqual(this.initialState, previous)) return;
+    if (isDeepStrictEqual(this.initialState, previous) || openingSessions.has(this)) return;
     this.#channel.emit({
       kind: "event",
       event: { type: "session.state.changed", state: structuredClone(this.initialState) },
@@ -518,15 +532,22 @@ export class DevinSession implements HarnessSession {
       const active = this.#active;
       active.cancelled = true;
       this.#interactions.cancel();
+      // Only an in-flight native session/prompt accepts session/cancel or needs a force-close timer.
+      if (active.phase !== "prompting") {
+        if (active.phase === "beforePrompt") active.settleBeforePrompt();
+        return { ok: true, value: { cancellationRequested: true } };
+      }
       try {
         await this.transport.cancel();
       } catch {
         await this.transport.close();
       }
-      const timer = setTimeout(() => {
-        if (this.#active === active) void this.transport.close();
-      }, 5_000);
-      void active.task.finally(() => clearTimeout(timer));
+      if (active.phase === "prompting") {
+        const timer = setTimeout(() => {
+          if (this.#active === active && active.phase === "prompting") void this.transport.close();
+        }, 5_000);
+        void active.task.finally(() => clearTimeout(timer));
+      }
       return { ok: true, value: { cancellationRequested: true } };
     }
     if (
@@ -544,7 +565,18 @@ export class DevinSession implements HarnessSession {
       )
         return rejected("invalidRequest", "Devin requires nonempty text input");
       this.#submitted.add(command.turnId);
-      const active = { command, cancelled: false, task: Promise.resolve() };
+      let settleBeforePrompt = () => {};
+      const beforePromptCancelled = new Promise<undefined>((resolve) => {
+        settleBeforePrompt = () => resolve(undefined);
+      });
+      const active: DevinActiveTurn = {
+        command,
+        cancelled: false,
+        phase: "beforePrompt",
+        beforePromptCancelled,
+        settleBeforePrompt,
+        task: Promise.resolve(),
+      };
       this.#active = active;
       active.task = this.#run(command);
       return { ok: true, value: { turnId: command.turnId } };
@@ -608,30 +640,44 @@ export class DevinSession implements HarnessSession {
     };
     let nativeTurnRef: ReturnType<typeof nativeTurnRefSchema.parse> | undefined;
     try {
-      const result = await this.transport.prompt(
-        command.input.map((part) => part.text).join("\n"),
-        {
-          update: (event) => {
-            if (event.update.sessionUpdate === "current_mode_update") {
-              this.initialState.effectivePermissionModeId = harnessPermissionModeIdSchema.parse(
-                event.update.currentModeId,
-              );
-              if (this.info.modes)
-                this.info.modes.currentModeId = this.initialState.effectivePermissionModeId;
-              this.#channel.emit({
-                kind: "event",
-                event: {
-                  type: "session.state.changed",
-                  state: { ...this.initialState },
-                },
-              });
-            }
-            output.update(event);
-          },
-          permission: (request) => this.#interactions.permission(command.turnId, request),
-          extension: () => this.#interactions.extension(),
-        },
-      );
+      const active = this.#active;
+      // Without native history the prompt is sent without awaiting first.
+      const before =
+        this.transport.nativeHistory && active
+          ? await Promise.race([this.#stepsBeforePrompt(), active.beforePromptCancelled])
+          : undefined;
+      const prompted = !active?.cancelled;
+      let result: Awaited<ReturnType<DevinTransport["prompt"]>> | { stopReason: "cancelled" };
+      if (!prompted) {
+        result = { stopReason: "cancelled" };
+      } else {
+        if (active) active.phase = "prompting";
+        try {
+          result = await this.transport.prompt(command.input.map((part) => part.text).join("\n"), {
+            update: (event) => {
+              if (event.update.sessionUpdate === "current_mode_update") {
+                this.initialState.effectivePermissionModeId = harnessPermissionModeIdSchema.parse(
+                  event.update.currentModeId,
+                );
+                if (this.info.modes)
+                  this.info.modes.currentModeId = this.initialState.effectivePermissionModeId;
+                this.#channel.emit({
+                  kind: "event",
+                  event: {
+                    type: "session.state.changed",
+                    state: { ...this.initialState },
+                  },
+                });
+              }
+              output.update(event);
+            },
+            permission: (request) => this.#interactions.permission(command.turnId, request),
+            extension: () => this.#interactions.extension(),
+          });
+        } finally {
+          if (active) active.phase = "afterPrompt";
+        }
+      }
       outcome =
         this.#active?.cancelled || result.stopReason === "cancelled"
           ? { status: "cancelled" }
@@ -645,7 +691,23 @@ export class DevinSession implements HarnessSession {
                   retryable: false,
                 },
               };
-      const key = devinPromptTurnKey(result);
+      let key = devinPromptTurnKey(result);
+      if (prompted && this.transport.nativeHistory && (key || before)) {
+        try {
+          const response = key
+            ? await this.transport.historyRequest("listSteps")
+            : await this.transport.optionalListSteps();
+          if (response !== undefined) {
+            const steps = devinHistorySteps(response);
+            key ??= before ? devinAddedPromptKey(before, steps) : undefined;
+            const checkpoint = key && devinCheckpoint(this.transport.sessionId, key, steps);
+            if (checkpoint) outcome = { ...outcome, checkpoint };
+          }
+        } catch (error) {
+          // Optional checkpoint or identity-recovery errors do not make a healthy transport unusable.
+          if (this.transport.isClosedOrFaulted) fault = devinError(error);
+        }
+      }
       if (key) {
         nativeTurnRef = nativeTurnRefSchema.parse({
           harnessId: "devin",
@@ -655,19 +717,6 @@ export class DevinSession implements HarnessSession {
         });
         this.#turns += 1;
         this.#fresh = false;
-        if (this.transport.nativeHistory) {
-          try {
-            const checkpoint = devinCheckpoint(
-              this.transport.sessionId,
-              key,
-              devinHistorySteps(await this.transport.historyRequest("listSteps")),
-            );
-            if (checkpoint) outcome = { ...outcome, checkpoint };
-          } catch (error) {
-            // Optional checkpoint errors do not make a healthy transport unusable.
-            if (this.transport.isClosedOrFaulted) fault = devinError(error);
-          }
-        }
       } else if (outcome.status === "succeeded") {
         // Never publish a success terminal with guessed identity.
         outcome = {
@@ -702,11 +751,23 @@ export class DevinSession implements HarnessSession {
       void this.close().catch(() => {});
     }
   }
+  /** Steps before a Turn, so a result without its user message ID can be matched exactly. */
+  async #stepsBeforePrompt(): Promise<DevinHistoryStep[] | undefined> {
+    try {
+      const response = await this.transport.optionalListSteps();
+      return response === undefined ? undefined : devinHistorySteps(response);
+    } catch {
+      return undefined;
+    }
+  }
   async close() {
     if (this.#closed) return;
     this.#closed = true;
     const active = this.#active;
-    if (active) active.cancelled = true;
+    if (active) {
+      active.cancelled = true;
+      active.settleBeforePrompt();
+    }
     this.#interactions.cancel();
     this.transport.onConfigOptions = undefined;
     try {

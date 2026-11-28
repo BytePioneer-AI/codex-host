@@ -75,6 +75,20 @@
   white-space: nowrap;
 }
 
+.previewBadgeDesktop {
+  display: none;
+}
+
+:global(html[data-codexhost-shell]) .previewBadgeWeb,
+:global(html[data-tauri-shell]) .previewBadgeWeb {
+  display: none;
+}
+
+:global(html[data-codexhost-shell]) .previewBadgeDesktop,
+:global(html[data-tauri-shell]) .previewBadgeDesktop {
+  display: inline;
+}
+
 /* Keep hover detection on a stationary box while the mark moves within it;
    hover rules target the hitbox so a slot-occupant mark swims too. */
 .fishHitbox {

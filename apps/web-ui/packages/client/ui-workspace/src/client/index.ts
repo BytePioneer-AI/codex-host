@@ -44,6 +44,7 @@ import {
   type ArchiveSessionInjected,
   type CopySessionLinkInjected,
   type ForkSessionInjected,
+  type MarkSessionUnreadInjected,
   menuOpenStateFactory,
   type PinSessionInjected,
   type SessionArchiveConfirmInjected,
@@ -77,6 +78,10 @@ import {
   type ThreadSectionMoveRequest,
 } from "./session-actions/MoveThreadSection.tsx";
 import { ForkSessionMenuItem } from "./session-actions/ForkSession.tsx";
+import {
+  MarkChildThreadsReadMenuItem,
+  MarkSessionUnreadMenuItem,
+} from "./session-actions/MarkSessionUnread.tsx";
 import { CopySessionLinkMenuItem } from "./session-actions/CopySessionLink.tsx";
 import {
   threadReferenceOf,
@@ -148,6 +153,7 @@ const NS = "workspace";
 export const inject = [
   "slots",
   "sessions",
+  "uiSession",
   "workspaces",
   "locale",
   "remote",
@@ -391,6 +397,10 @@ export function apply(ctx: Context): void {
     },
     stopAndArchiveSession: (sessionId, children = []) => runArchive(sessionId, children, true),
   });
+  const markUnreadInjected = (): MarkSessionUnreadInjected => ({
+    hooks: { archived: archivedSet },
+    markCompletionUnread: (sessionId) => ctx.uiSession.markCompletionUnread(sessionId),
+  });
   const forkInjected = (): ForkSessionInjected => ({
     forkSession: (sessionId) => {
       uiWorkspace
@@ -463,6 +473,8 @@ export function apply(ctx: Context): void {
     notifyArchivedNotOpenable: () => {
       notify({ kind: "archivedNotOpenable" });
     },
+    setWorkspacePinned: workspaces.setWorkspacePinned?.bind(workspaces),
+    moveWorkspaceToSection: workspaces.moveWorkspaceToSection?.bind(workspaces),
     renameWorkspace: async (workspaceId, title) => {
       await workspaces.rename(workspaceId, title);
     },
@@ -559,6 +571,25 @@ export function apply(ctx: Context): void {
         inject: renameInjected,
       },
       RenameSessionMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "mark-as-unread",
+        order: 250,
+        locale: NS,
+        inject: markUnreadInjected,
+      },
+      MarkSessionUnreadMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "mark-children-as-read",
+        order: 260,
+        locale: NS,
+      },
+      MarkChildThreadsReadMenuItem,
     );
     yield ctx.slots.register(
       {

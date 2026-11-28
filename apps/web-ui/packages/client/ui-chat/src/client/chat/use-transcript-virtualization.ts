@@ -80,6 +80,8 @@ export interface TranscriptVirtualizationInput {
   readonly columnRef: RefObject<HTMLElement | null>;
   /** Flow key of the user message currently being edited inline. */
   readonly editingFlowKey?: string | null;
+  /** Flow key of the assistant answer currently holding an open selection comment card. */
+  readonly composingFlowKey?: string | null;
   /** Flow key of a response annotation target requested by `viewRequest`. */
   readonly revealTargetFlowKey?: string | null;
   /** Flow key of a saved scroll anchor being restored on initial open. */
@@ -92,6 +94,10 @@ export interface TranscriptVirtualizationInput {
   readonly findLeaseMaxDurationMs?: number;
   /** Override IntersectionObserver rootMargin (defaults to 1.5x `root.clientHeight` in px). */
   readonly overscanMargin?: string;
+  /** Invoked synchronously after commit when virtualization while tail-following clamps `scrollTop`. */
+  readonly onTailScrollClamp?: () => void;
+  /** Invoked after synchronous reading-mode scroll compensation adjusts `scroller.scrollTop`. */
+  readonly onScrollCompensated?: (delta: number) => void;
 }
 
 /** Per-render virtualization handle consumed by `ChatView` and `ChatNodeList`. */
@@ -239,6 +245,10 @@ function readElementHeight(element: HTMLElement): number {
   return element.offsetHeight;
 }
 
+function normalizeMeasuredHeight(height: number): number {
+  return Math.round(height * 100) / 100;
+}
+
 function recordMeasuredHeight(
   heights: Map<string, number>,
   flowKey: string,
@@ -251,7 +261,7 @@ function recordMeasuredHeight(
       ? measuredHeight
       : readElementHeight(element);
   if (height > 0) {
-    heights.set(flowKey, Math.round(height));
+    heights.set(flowKey, normalizeMeasuredHeight(height));
   } else if (isEmptyRowShell(element)) {
     heights.set(flowKey, 0);
   }
@@ -430,6 +440,15 @@ interface PendingScrollCompensation {
   readonly anchorEl: HTMLElement;
   readonly prevTop: number;
   readonly prevScrollTop: number;
+  readonly scrollVersion: number;
+}
+
+function mountedSetChanged(prev: ReadonlySet<string>, next: ReadonlySet<string>): boolean {
+  if (prev.size !== next.size) return true;
+  for (const key of prev) {
+    if (!next.has(key)) return true;
+  }
+  return false;
 }
 
 /**
@@ -444,12 +463,15 @@ export function useTranscriptVirtualization({
   listRef,
   columnRef,
   editingFlowKey = null,
+  composingFlowKey = null,
   revealTargetFlowKey = null,
   savedAnchorFlowKey = null,
   busyTurn = null,
   findLeaseTimeoutMs = FIND_LEASE_TIMEOUT_MS,
   findLeaseMaxDurationMs = FIND_LEASE_MAX_DURATION_MS,
   overscanMargin,
+  onTailScrollClamp,
+  onScrollCompensated,
 }: TranscriptVirtualizationInput): TranscriptVirtualization {
   const hasIntersectionObserver = typeof IntersectionObserver !== "undefined";
   const enabled = entries.length > VIRTUALIZE_THRESHOLD && hasIntersectionObserver;
@@ -466,6 +488,12 @@ export function useTranscriptVirtualization({
   const findLeaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const findLeaseStartedAtRef = useRef<number | null>(null);
   const pendingScrollCompensationRef = useRef<PendingScrollCompensation | null>(null);
+  const pendingTailRestoreRef = useRef<HTMLElement | null>(null);
+  const scrollVersionRef = useRef(0);
+  const onTailScrollClampRef = useRef(onTailScrollClamp);
+  onTailScrollClampRef.current = onTailScrollClamp;
+  const onScrollCompensatedRef = useRef(onScrollCompensated);
+  onScrollCompensatedRef.current = onScrollCompensated;
 
   if (sessionRef.current !== sessionId) {
     sessionRef.current = sessionId;
@@ -475,6 +503,7 @@ export function useTranscriptVirtualization({
     ioSettledRef.current = false;
     findLeaseStartedAtRef.current = null;
     pendingScrollCompensationRef.current = null;
+    pendingTailRestoreRef.current = null;
   }
 
   const [visibleState, setVisibleState] = useState<{
@@ -631,6 +660,23 @@ export function useTranscriptVirtualization({
       ro.disconnect();
     };
   }, [enabled, listRef, overscanMargin, sessionId]);
+
+  // Track scroll events on the active scrollport so pre-commit compensation skips
+  // commits interrupted by an asynchronous scroll event while still recovering from
+  // synchronous engine layout clamps during React DOM commits.
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const list = listRef.current;
+    const scroller = list?.closest<HTMLElement>("[data-conversation-scroll]") ?? list ?? null;
+    if (scroller === null) return;
+    const onScroll = (): void => {
+      scrollVersionRef.current += 1;
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+    };
+  }, [enabled, listRef, sessionId]);
 
   // Shared IntersectionObserver tracking top-level row shells within overscan of the scrollport.
   useLayoutEffect(() => {
@@ -851,6 +897,7 @@ export function useTranscriptVirtualization({
     };
 
     if (editingFlowKey !== null) pinned.add(editingFlowKey);
+    if (composingFlowKey !== null) pinAnchorKey(composingFlowKey, 0);
     if (focusedFlowKey !== null) pinned.add(focusedFlowKey);
     if (revealTargetFlowKey !== null) pinAnchorKey(revealTargetFlowKey, 0);
     if (savedAnchorFlowKey !== null) pinAnchorKey(savedAnchorFlowKey, JUMP_TARGET_FOLLOWING_ROWS);
@@ -865,6 +912,7 @@ export function useTranscriptVirtualization({
     return pinned;
   }, [
     busyTurn,
+    composingFlowKey,
     editingFlowKey,
     entries,
     flowKeyToIndex,
@@ -925,33 +973,49 @@ export function useTranscriptVirtualization({
     return set;
   }, [enabled, entries.length, flowKeys, isMounted]);
 
-  // Capture a viewport anchor before commit when rows above the viewport mount from
-  // placeholder shells, compensating height growth on engines without CSS overflow-anchor.
+  // Capture a viewport anchor before commit when rows above the viewport mount or
+  // unmount, keeping reading scroll position stable deterministically across engines
+  // and recovering from synchronous layout clamps. Also mark tail-following commits.
   pendingScrollCompensationRef.current = null;
+  pendingTailRestoreRef.current = null;
   if (enabled && mountedKeysRef.current.size > 0) {
     const prevMounted = mountedKeysRef.current;
     const list = listRef.current;
     const scroller = list?.closest<HTMLElement>("[data-conversation-scroll]") ?? list ?? null;
     if (scroller !== null && scroller.isConnected) {
       const floor = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-      const followingTail =
-        floor <= 0 ||
-        floor - scroller.scrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX ||
-        list?.closest("[data-chat-following-tail]") !== null;
-      if (!followingTail) {
+      const prevScrollTop = scroller.scrollTop;
+      const followingTailAttr = list?.closest("[data-chat-following-tail]") !== null;
+      const nearTail = floor <= 0 || floor - prevScrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX;
+      if (nearTail) {
+        if (followingTailAttr && floor > 0 && mountedSetChanged(prevMounted, currentMountedKeys)) {
+          pendingTailRestoreRef.current = scroller;
+        }
+      } else {
         const scrollerTop = scroller.getBoundingClientRect().top;
         const elements = rowElementsRef.current;
-        let hasAboveViewportMount = false;
+        let hasAboveViewportChange = false;
         for (const flowKey of currentMountedKeys) {
           if (prevMounted.has(flowKey)) continue;
           const el = elements.get(flowKey);
           if (el === undefined || !el.isConnected || el.hasAttribute("hidden")) continue;
           if (el.getBoundingClientRect().top < scrollerTop) {
-            hasAboveViewportMount = true;
+            hasAboveViewportChange = true;
             break;
           }
         }
-        if (hasAboveViewportMount) {
+        if (!hasAboveViewportChange) {
+          for (const flowKey of prevMounted) {
+            if (currentMountedKeys.has(flowKey)) continue;
+            const el = elements.get(flowKey);
+            if (el === undefined || !el.isConnected || el.hasAttribute("hidden")) continue;
+            if (el.getBoundingClientRect().top < scrollerTop) {
+              hasAboveViewportChange = true;
+              break;
+            }
+          }
+        }
+        if (hasAboveViewportChange) {
           let bestAnchor: HTMLElement | null = null;
           let bestTop = Number.POSITIVE_INFINITY;
           let fallbackAnchor: HTMLElement | null = null;
@@ -988,7 +1052,8 @@ export function useTranscriptVirtualization({
               scroller,
               anchorEl,
               prevTop,
-              prevScrollTop: scroller.scrollTop,
+              prevScrollTop,
+              scrollVersion: scrollVersionRef.current,
             };
           }
         }
@@ -1000,18 +1065,39 @@ export function useTranscriptVirtualization({
     const prevMounted = mountedKeysRef.current;
     mountedKeysRef.current = currentMountedKeys;
 
+    const pendingTailRestore = pendingTailRestoreRef.current;
+    pendingTailRestoreRef.current = null;
+    if (pendingTailRestore !== null && pendingTailRestore.isConnected) {
+      const nextFloor = Math.max(
+        0,
+        pendingTailRestore.scrollHeight - pendingTailRestore.clientHeight,
+      );
+      if (nextFloor > 0 && nextFloor - pendingTailRestore.scrollTop > 0.5) {
+        if (onTailScrollClampRef.current !== undefined) {
+          onTailScrollClampRef.current();
+        } else {
+          pendingTailRestore.scrollTop = nextFloor;
+        }
+      }
+    }
+
     const pendingCompensation = pendingScrollCompensationRef.current;
     pendingScrollCompensationRef.current = null;
     if (
       pendingCompensation !== null &&
       pendingCompensation.scroller.isConnected &&
       pendingCompensation.anchorEl.isConnected &&
-      Math.abs(pendingCompensation.scroller.scrollTop - pendingCompensation.prevScrollTop) <= 0.5
+      pendingCompensation.scrollVersion === scrollVersionRef.current
     ) {
+      const beforeScrollTop = pendingCompensation.scroller.scrollTop;
       const nextTop = pendingCompensation.anchorEl.getBoundingClientRect().top;
       const delta = nextTop - pendingCompensation.prevTop;
       if (Math.abs(delta) > 0.5) {
-        pendingCompensation.scroller.scrollTop += delta;
+        pendingCompensation.scroller.scrollTop = beforeScrollTop + delta;
+        const netDelta = pendingCompensation.scroller.scrollTop - pendingCompensation.prevScrollTop;
+        if (Math.abs(netDelta) > 0.01) {
+          onScrollCompensatedRef.current?.(netDelta);
+        }
       }
     }
 
@@ -1095,29 +1181,30 @@ export function useTranscriptVirtualization({
   }, []);
 
   const placeholderHeight = useCallback((flowKey: string, kind: RenderEntry["kind"]): number => {
-    const cached = heightsRef.current.get(flowKey);
-    if (cached !== undefined) return cached;
-    // Fallback: if this row was mounted on the previous render of the same session
-    // and is unmounting before ResizeObserver reported, sample its live shell before commit.
-    const liveEl = mountedKeysRef.current.has(flowKey)
-      ? rowElementsRef.current.get(flowKey)
-      : undefined;
-    if (
-      liveEl !== undefined &&
-      !liveEl.hasAttribute("hidden") &&
-      !liveEl.hasAttribute("data-chat-virtualized")
-    ) {
-      const liveHeight = readElementHeight(liveEl);
-      if (liveHeight > 0) {
-        const rounded = Math.round(liveHeight);
-        heightsRef.current.set(flowKey, rounded);
-        return rounded;
-      }
-      if (isEmptyRowShell(liveEl)) {
-        heightsRef.current.set(flowKey, 0);
-        return 0;
+    // When a mounted row transitions out of the mounted set on this render, sample
+    // its live DOM height right before commit so dynamic height changes never
+    // collapse the placeholder to a stale cached value.
+    if (mountedKeysRef.current.has(flowKey)) {
+      const liveEl = rowElementsRef.current.get(flowKey);
+      if (
+        liveEl !== undefined &&
+        !liveEl.hasAttribute("hidden") &&
+        !liveEl.hasAttribute("data-chat-virtualized")
+      ) {
+        const liveHeight = readElementHeight(liveEl);
+        if (liveHeight > 0) {
+          const normalized = normalizeMeasuredHeight(liveHeight);
+          heightsRef.current.set(flowKey, normalized);
+          return normalized;
+        }
+        if (isEmptyRowShell(liveEl)) {
+          heightsRef.current.set(flowKey, 0);
+          return 0;
+        }
       }
     }
+    const cached = heightsRef.current.get(flowKey);
+    if (cached !== undefined) return cached;
     return kind === "group" ? ESTIMATED_GROUP_HEIGHT : ESTIMATED_NODE_HEIGHT;
   }, []);
 

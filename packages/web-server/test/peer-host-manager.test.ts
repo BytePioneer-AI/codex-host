@@ -11,6 +11,7 @@ import {
   DELEGATION_HOST_HARNESSES_METHOD,
   DELEGATION_REMOTE_HOSTS_METHOD,
   REMOTE_PEERS_METHODS as methods,
+  remotePeerHostId,
   remotePeerIntroduceResultSchema,
   remotePeerPairingReportSchema,
   remotePeerSummarySchema,
@@ -377,13 +378,13 @@ it("pairs authenticated mobile callers with independent peers and recovers event
       },
     };
   };
-  const [a, b] = await Promise.all([mock(), mock()]);
+  const [a, b, revoked] = await Promise.all([mock(), mock(), mock()]);
   const store = new PeerHostStore(new DataDir(root));
   store.save([
     {
       peerId: "bad",
       name: "Revoked",
-      origin: b.origin,
+      origin: revoked.origin,
       token: "revoked",
       enabled: true,
       createdAt: "now",
@@ -400,6 +401,7 @@ it("pairs authenticated mobile callers with independent peers and recovers event
     manager.close();
     a.close();
     b.close();
+    revoked.close();
     rmSync(root, { recursive: true, force: true });
   });
   const rpc = new RpcRegistry();
@@ -1722,7 +1724,7 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
 
   // 2. Helper stub peers: one with localNodeId (self via alias URL), one modern peer B, one legacy peer (no nodeId).
   const secretToken = "peer-identity-secret";
-  const makeStubPeer = async (manifestExtra: Record<string, unknown>, failManifest = false) => {
+  const makeStubPeer = async (manifestExtra: Record<string, unknown>) => {
     const epoch = randomUUID();
     const server = createServer((req, res) => {
       if (req.headers.authorization !== `Bearer ${secretToken}`) {
@@ -1731,10 +1733,6 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
       }
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (url.pathname === "/api/peer/v1/manifest") {
-        if (failManifest) {
-          res.writeHead(503).end();
-          return;
-        }
         res.writeHead(200, { "content-type": "application/json" }).end(
           JSON.stringify({
             version: "0.26.1",
@@ -1771,17 +1769,29 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
 
   const selfAlias = await makeStubPeer({ nodeId: localNodeId });
   const peerB = await makeStubPeer({ nodeId: "node-b-id" });
-  const peerBOffline = await makeStubPeer({ nodeId: "node-b-id" }, true);
   const legacyPeer = await makeStubPeer({});
   t.after(() => {
     selfAlias.close();
     peerB.close();
-    peerBOffline.close();
     legacyPeer.close();
   });
 
-  // Pre-seed an offline enabled peer sharing node-b-id via persisted record + offline state.
+  // Load duplicate bindings from disk to exercise routing for existing configurations.
+  const peerBId = "peer-b";
+  const peerB2HostId = remotePeerHostId("peer-b-duplicate");
+  const now = new Date().toISOString();
   const store = new PeerHostStore(data);
+  store.save(
+    [peerBId, "peer-b-duplicate"].map((peerId) => ({
+      peerId,
+      name: "Modern B",
+      origin: peerB.origin,
+      token: secretToken,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    })),
+  );
   const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
     allowLoopback: true,
     localNodeId,
@@ -1815,16 +1825,11 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
   assert.equal(addedSelf.ok, false);
   assert.match(addedSelf.error.message, /Cannot pair this server with itself/u);
 
-  // 4. Add modern Peer B and legacy Peer (no nodeId); verify summary, delegationHosts, and update self-pair block.
-  const addedB = await rpc.dispatch(
-    methods.add,
-    { args: { connectionUrl: `${peerB.origin}/#token=${secretToken}`, name: "Modern B" } },
-    localAuth,
-  );
-  assert.equal(addedB.ok, true);
-  const peerBInfo = (addedB.value as { peer: { peerId: string; hostId: string; nodeId?: string } })
-    .peer;
-  assert.equal(peerBInfo.nodeId, "node-b-id");
+  // 4. Add a legacy Peer (no nodeId) and verify the update self-pair block.
+  const peerBHostId = remotePeerHostId(peerBId);
+  await manager.waitForInitialConnection(peerBHostId);
+  await manager.waitForInitialConnection(peerB2HostId);
+  assert.equal(manager.nodeIdForHostId(peerBHostId), "node-b-id");
 
   const addedLegacy = await rpc.dispatch(
     methods.add,
@@ -1839,7 +1844,7 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
     methods.update,
     {
       args: {
-        peerId: peerBInfo.peerId,
+        peerId: peerBId,
         connectionUrl: `${selfAlias.origin}/#token=${secretToken}`,
       },
     },
@@ -1847,17 +1852,10 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
   );
   assert.equal(updatedToSelf.ok, false);
   assert.match(updatedToSelf.error.message, /Cannot pair this server with itself/u);
-  assert.equal(manager.client(peerBInfo.hostId)?.record.origin, peerB.origin);
+  assert.equal(manager.client(peerBHostId)?.record.origin, peerB.origin);
 
   // 5. Multiple peers with same nodeId: hostIdForNodeId prefers state === "connected".
-  const addedB2 = await rpc.dispatch(
-    methods.add,
-    { args: { connectionUrl: `${peerB.origin}/#token=${secretToken}`, name: "Modern B Dup" } },
-    localAuth,
-  );
-  assert.equal(addedB2.ok, true);
-  const peerB2HostId = (addedB2.value as { peer: { hostId: string } }).peer.hostId;
-  const firstClient = manager.client(peerBInfo.hostId);
+  const firstClient = manager.client(peerBHostId);
   assert.ok(firstClient);
   firstClient.state = "offline";
   assert.equal(manager.hostIdForNodeId("node-b-id"), peerB2HostId);
@@ -1923,7 +1921,6 @@ async function pairingNode(
   const rpc = new RpcRegistry();
   const ws = new Workspaces(data, root, true);
   const epoch = randomUUID();
-  let origin: string;
   const manager = new PeerHostManager(store, async () => [origin], new EventHub(root), {
     allowLoopback: options.allowLoopback ?? true,
     ...(options.dnsLookup === undefined ? {} : { dnsLookup: options.dnsLookup }),
@@ -1991,7 +1988,7 @@ async function pairingNode(
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const connection = {
     origin,
     token,
@@ -2092,10 +2089,11 @@ it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates 
     [b, ab.peer, ac.peer, "node-c"],
     [c, ac.peer, ab.peer, "node-b"],
   ] as const) {
-    const targetClient = a.manager.client(own.hostId)!;
+    const targetClient = a.manager.client(own.hostId);
+    assert.ok(targetClient);
     const peerNodes = targetClient.manifest?.peerNodes;
-    const inTarget = target.manager.hostIdForNodeId(otherNodeId)!;
-    const localInTarget = target.manager.hostIdForNodeId("node-a")!;
+    const inTarget = target.manager.hostIdForNodeId(otherNodeId);
+    const localInTarget = target.manager.hostIdForNodeId("node-a");
     assert.ok(inTarget && localInTarget);
     const links = `${link("self", "local")} ${link("other", other.hostId)}`;
     const translated = translateThreadLinksForPeer(`${links} ${link("target", own.hostId)}`, {
@@ -2161,6 +2159,37 @@ it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates 
   assert.deepEqual(peersRestored.find((p) => p.peerId === ac.peer.peerId)?.linkedPeerIds, [
     ab.peer.peerId,
   ]);
+});
+
+it("rejects duplicate origins and nodeIds on local add and update without changing existing peers", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const b = await pairingNode(t, "B", { nodeId: "node-b" });
+  const alias = await pairingNode(t, "B alias", { nodeId: "node-b" });
+  const legacy = await pairingNode(t, "Legacy");
+  const { peer: modernPeer } = await a.add(b.connection);
+  assert.equal(modernPeer.nodeId, "node-b");
+  const { peer: legacyPeer } = await a.add(legacy.connection);
+  const stored = a.store.load();
+  const sameOrigin = {
+    connectionUrl: `${legacy.connection.origin}/different-path#token=${legacy.connection.token}`,
+  };
+
+  for (const [method, args, conflict] of [
+    [methods.add, sameOrigin, /origin/u],
+    [methods.add, alias.connection, /nodeId/u],
+    [methods.update, { ...sameOrigin, peerId: modernPeer.peerId }, /origin/u],
+    [methods.update, { ...alias.connection, peerId: legacyPeer.peerId }, /nodeId/u],
+  ] as const) {
+    const rejected = await a.rpc.dispatch(method, { args }, pairingAuth);
+    assert.equal(rejected.ok, false, `${method} must reject a duplicate ${conflict}`);
+    assert.equal(rejected.error.code, "remote/duplicate-peer");
+    assert.match(rejected.error.message, conflict);
+    assert.deepEqual(a.store.load(), stored);
+    assert.deepEqual(
+      a.manager.hosts().map((host) => host.hostId),
+      [modernPeer.hostId, legacyPeer.hostId],
+    );
+  }
 });
 
 it("keeps verified introductions idempotent and rejects silent origin or token replacement on existing peers", async (t) => {
@@ -2361,14 +2390,14 @@ it("blocks DNS-rebinding SSRF in peer probes, pins verified IPs with original Ho
 });
 
 it("does not send a peer's credentials in syncPeerMesh after the peer is removed mid-flight and caps linkedPeerIds", async (t) => {
-  const selfShareGate = Promise.withResolvers<void>();
-  const selfShareStarted = Promise.withResolvers<void>();
+  const selfShareGate = Promise.withResolvers<undefined>();
+  const selfShareStarted = Promise.withResolvers<undefined>();
   const cIntroducedBodies: string[] = [];
 
   const a = await pairingNode(t, "A", {
     nodeId: "node-a",
     resolveSelfShare: async (origin, token, preferredOrigin) => {
-      selfShareStarted.resolve();
+      selfShareStarted.resolve(undefined);
       await selfShareGate.promise;
       const share = resolvePeerSelfOrigin([], preferredOrigin, origin);
       return "error" in share ? share : { ...share, token, name: "A" };
@@ -2382,7 +2411,7 @@ it("does not send a peer's credentials in syncPeerMesh after the peer is removed
 
   const ab = await a.add(b.connection);
   const ac = await a.add(c.connection);
-  const clientB = a.manager.client(ab.peer.hostId)!;
+  const clientB = a.manager.client(ab.peer.hostId);
   assert.ok(clientB);
 
   const syncPromise = a.rpc.dispatch(
@@ -2402,7 +2431,7 @@ it("does not send a peer's credentials in syncPeerMesh after the peer is removed
   assert.equal(clientB.closed, true);
   assert.equal(clientB.record.token, "");
 
-  selfShareGate.resolve();
+  selfShareGate.resolve(undefined);
   const synced = await syncPromise;
   assert.ok(synced.ok);
   const report = remotePeerPairingReportSchema.parse(synced.value);
@@ -2452,7 +2481,8 @@ it("does not send a peer's credentials in syncPeerMesh after the peer is removed
   ]);
   const capManager = new PeerHostManager(capStore, async () => [], new EventHub(capRoot));
   t.after(() => capManager.close());
-  const targetClient = capManager.client("remote-peer:target-peer")!;
+  const targetClient = capManager.client("remote-peer:target-peer");
+  assert.ok(targetClient);
   targetClient.manifest = {
     version: "1",
     platform: process.platform,

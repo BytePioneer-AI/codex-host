@@ -157,10 +157,12 @@ export function SelectionActions({
   labels,
   onAdd,
   container,
+  onComposingAnswerChange,
 }: {
   labels: SelectionActionsLabels;
   onAdd: (annotation: DraftResponseAnnotationInput) => boolean;
   container: RefObject<Element>;
+  onComposingAnswerChange?: ((answerKey: string | null) => void) | undefined;
 }): ReactNode {
   const [selection, setSelection] = useState<AnswerSelection | null>(null);
   // The passage a note is being written for. Held apart from `selection`: the
@@ -249,10 +251,17 @@ export function SelectionActions({
       // the transcript moving away from the passage.
       const target = event.target;
       if (target instanceof Element && target.closest("[data-selection-actions]") !== null) return;
-      // Opening the keyboard can also scroll the transcript. Keep the card
-      // mounted while editing or when closing it would discard a draft.
+      // Opening the keyboard or incoming messages can also scroll the transcript.
+      // Keep the card mounted while editing, focused inside the card, or holding a draft.
       const field = commentFieldRef.current;
-      if (field !== null && (field === document.activeElement || field.value !== "")) return;
+      const card = field?.closest("[data-selection-actions]") ?? null;
+      if (
+        field !== null &&
+        (field === document.activeElement ||
+          card?.contains(document.activeElement) === true ||
+          field.value !== "")
+      )
+        return;
       updateSelection(null);
       closeComposing();
     };
@@ -320,9 +329,13 @@ export function SelectionActions({
     };
   }, [composingRect, composingRange]);
 
-  /** Whether the answer a passage came from is still on the page. */
-  const owned = (passage: AnswerSelection): boolean =>
-    passage.host.isConnected && container.current?.contains(passage.host) === true;
+  const composingAnswerKey = composing?.anchor?.answerKey ?? null;
+  useEffect(() => {
+    onComposingAnswerChange?.(composingAnswerKey);
+    return () => {
+      if (composingAnswerKey !== null) onComposingAnswerChange?.(null);
+    };
+  }, [composingAnswerKey, onComposingAnswerChange]);
 
   if (composing !== null) {
     const placed = composing.placement;
@@ -339,13 +352,17 @@ export function SelectionActions({
           transform: `${placed.transform} translateZ(0)`,
         }}
         onSubmit={(comment) => {
-          if (!owned(composing)) return false;
+          // The selected text and answer anchor were already captured when the
+          // card opened, and SelectionActions remounts on session switch. Do
+          // not fail submission if an incoming message virtualized or replaced
+          // the original DOM host element while the user was typing.
+          if (container.current === null) return false;
           const annotation: DraftResponseAnnotationInput =
             composing.anchor === undefined
               ? { text: composing.text, annotation: comment }
               : { text: composing.text, annotation: comment, anchor: composing.anchor };
           if (!onAdd(annotation)) return false;
-          clearSelection(composing.host);
+          if (composing.host.isConnected) clearSelection(composing.host);
           closeComposing();
           return true;
         }}

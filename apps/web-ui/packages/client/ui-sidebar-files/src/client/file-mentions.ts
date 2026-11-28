@@ -48,6 +48,40 @@ export function fileMentionAccess(
   return row?.cwd ? "enabled" : "no-workspace";
 }
 
+/** Debounce window before issuing a workspace file-reference search RPC. */
+export const FILE_MENTION_DEBOUNCE_MS = 135;
+
+function abortErrorOf(signal: AbortSignal): unknown {
+  try {
+    signal.throwIfAborted();
+  } catch (error) {
+    return error;
+  }
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function waitForDebounce(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (delayMs <= 0) {
+    signal.throwIfAborted();
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortErrorOf(signal));
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(abortErrorOf(signal));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /**
  * Complete paths through the Host's bounded workspace search.
  * @param remote - workspace listing transport.
@@ -62,11 +96,88 @@ export function fileMentionSource(
   t: TranslateNS<"sidebarFiles">,
   isDisabled?: (id: SessionId) => boolean,
 ): InputTriggerSource {
+  type FileListResult = Awaited<
+    ReturnType<Pick<ClientRemote, "fileReferences">["fileReferences"]["list"]>
+  >;
+  interface InFlightEntry {
+    readonly controller: AbortController;
+    readonly promise: Promise<FileListResult>;
+    waiters: number;
+  }
+  const inFlight = new Map<string, InFlightEntry>();
   const notice = (message: string): InputTriggerCandidate => ({
     name: message,
     disabledReason: message,
     section: t("guide.title"),
   });
+  const listWithDedup = async (
+    sessionId: SessionId,
+    query: string,
+    signal: AbortSignal,
+  ): Promise<FileListResult> => {
+    const key = `${sessionId}\0${query}`;
+    let entry = inFlight.get(key);
+    if (entry === undefined) {
+      await waitForDebounce(FILE_MENTION_DEBOUNCE_MS, signal);
+      signal.throwIfAborted();
+      entry = inFlight.get(key);
+    }
+    if (entry === undefined) {
+      const controller = new AbortController();
+      const promise = remote.fileReferences.list(sessionId, query, controller.signal);
+      entry = { controller, promise, waiters: 0 };
+      inFlight.set(key, entry);
+      // Prevent unhandled rejection when all waiters abort before the transport settles.
+      void promise.then(
+        () => {
+          if (inFlight.get(key) === entry) inFlight.delete(key);
+        },
+        () => {
+          if (inFlight.get(key) === entry) inFlight.delete(key);
+        },
+      );
+    }
+    const activeEntry = entry;
+    activeEntry.waiters += 1;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      activeEntry.waiters -= 1;
+      if (activeEntry.waiters === 0) {
+        if (inFlight.get(key) === activeEntry) inFlight.delete(key);
+        activeEntry.controller.abort();
+      }
+    };
+    return await new Promise<FileListResult>((resolve, reject) => {
+      if (signal.aborted) {
+        release();
+        reject(abortErrorOf(signal));
+        return;
+      }
+      const onAbort = (): void => {
+        release();
+        reject(abortErrorOf(signal));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      activeEntry.promise.then(
+        (result) => {
+          signal.removeEventListener("abort", onAbort);
+          if (released) return;
+          released = true;
+          activeEntry.waiters -= 1;
+          resolve(result);
+        },
+        (error: unknown) => {
+          signal.removeEventListener("abort", onAbort);
+          if (released) return;
+          released = true;
+          activeEntry.waiters -= 1;
+          reject(error);
+        },
+      );
+    });
+  };
   return {
     trigger: "@",
     aliases: ["#"],
@@ -77,7 +188,7 @@ export function fileMentionSource(
       if (isDisabled?.(sessionId)) return [];
       if (!hasWorkspace(sessionId)) return query ? [] : [notice(t("noWorkspace"))];
       signal.throwIfAborted();
-      const result = await remote.fileReferences.list(sessionId, query, signal);
+      const result = await listWithDedup(sessionId, query, signal);
       signal.throwIfAborted();
       if (!result.ok) return [notice(t("error.unavailable", { message: result.error.message }))];
       const rows: InputTriggerCandidate[] = [];

@@ -14,6 +14,10 @@ export { InvalidHostExtensionManifest } from "./host-extension-package.js";
 export { HarnessPreferencesStore, HarnessPreferenceConflict } from "./preferences.js";
 export { migrateLegacyDesktopExtensionsOnce } from "./host-extension-legacy-migration.js";
 export {
+  markDefaultHostExtensionSeeded,
+  readSeededDefaultHostExtensions,
+} from "./host-extension-default-seeds.js";
+export {
   desktopExtensionsStatusPath,
   hostExtensionsRoot,
   hostExtensionDataRoot,
@@ -39,11 +43,14 @@ export {
 } from "./host-extension-files.js";
 export {
   DEFAULT_HOST_EXTENSION_STATS_URL,
+  fetchCachedCatalogIcon,
   fetchHostExtensionCatalog,
   installHostExtension,
   prepareHostExtension,
   reportHostExtensionInstall,
   resolveHostExtensionStatsUrl,
+  type CachedCatalogIcon,
+  type CatalogIconMimeType,
   type HostExtensionPrepareOptions,
 } from "./host-extension-sources.js";
 export {

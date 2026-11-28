@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 370" width="960" height="370" role="img" aria-label="Multi-Agent Parallel Delegation &amp;amp; Lossless Cross-Agent Handoff">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1320"/>
+      <stop offset="100%" stop-color="#090d14"/>
+    </linearGradient>
+    <linearGradient id="hubGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f2928"/>
+      <stop offset="100%" stop-color="#0d1b2a"/>
+    </linearGradient>
+    <pattern id="dotGrid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="rgba(148, 163, 184, 0.06)"/>
+    </pattern>
+    <filter id="cardShadow" x="-10%" y="-15%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="hubShadow" x="-15%" y="-25%" width="130%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#14b8a6" flood-opacity="0.22"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+  </defs>
+  <rect width="960" height="370" rx="18" fill="url(#bgGrad)"/>
+  <rect width="960" height="370" rx="18" fill="url(#dotGrid)"/>
+  <rect x="0.75" y="0.75" width="958.5" height="368.5" rx="17.25" fill="none" stroke="rgba(148, 163, 184, 0.16)" stroke-width="1.2"/>
+  
+    
+    <path id="t1" d="M 350 94 C 350 118, 177 118, 177 142" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="t2" d="M 480 94 L 480 142" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="t3" d="M 610 94 C 610 118, 783 118, 783 142" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+
+    <path id="t4" d="M 177 230 C 177 254, 350 252, 350 276" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="t5" d="M 480 230 L 480 276" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+    <path id="t6" d="M 783 230 C 783 254, 610 252, 610 276" fill="none" stroke="rgba(148, 163, 184, 0.34)" stroke-width="1.6"/>
+  
+    <circle r="3.5" fill="#f97316" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="0s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#t1"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="0s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#60a5fa" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="0.35s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#t2"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="0.35s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#a78bfa" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="0.7s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#t3"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="0.7s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#f97316" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="1.1s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#t4"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="1.1s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#60a5fa" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="1.45s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#t5"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="1.45s" repeatCount="indefinite"/>
+  </circle>
+    <circle r="3.5" fill="#a78bfa" filter="url(#glow)">
+    <animateMotion dur="2.2s" begin="1.8s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#t6"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="2.2s" begin="1.8s" repeatCount="indefinite"/>
+  </circle>
+
+    <!-- Top Lead Thread -->
+    <g filter="url(#cardShadow)">
+      <rect x="230" y="26" width="500" height="68" rx="14" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.4"/>
+      <g>
+    <circle cx="258" cy="60" r="4" fill="#2dd4bf"/>
+    <circle cx="258" cy="60" r="4" fill="none" stroke="#2dd4bf" stroke-width="1.5">
+      <animate attributeName="r" values="4;11" dur="2.4s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0.75;0" dur="2.4s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+      <text x="488" y="56" text-anchor="middle" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="15.5" font-weight="700">Codex / Claude Code Lead</text>
+      <text x="488" y="77" text-anchor="middle" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12.5">Type # to dispatch parallel native child sessions</text>
+    </g>
+
+    <!-- Parallel Sub-agents -->
+    
+    <g filter="url(#cardShadow)">
+      <rect x="44" y="142" width="266" height="88" rx="13" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="44" y="142" width="4" height="88" rx="2" fill="#f97316"/>
+      <rect x="62" y="156" width="110" height="22" rx="11" fill="#f97316" fill-opacity="0.15" stroke="#f97316" stroke-opacity="0.35" stroke-width="1"/>
+      <text x="117" y="171" text-anchor="middle" fill="#f97316" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="700">#claude-code</text>
+      <text x="62" y="197" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Isolated Worktree Review</text>
+      <text x="62" y="216" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Audit regressions &amp; compatibility</text>
+    </g>
+  
+
+    <g filter="url(#cardShadow)">
+      <rect x="347" y="142" width="266" height="88" rx="13" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="347" y="142" width="4" height="88" rx="2" fill="#60a5fa"/>
+      <rect x="365" y="156" width="110" height="22" rx="11" fill="#60a5fa" fill-opacity="0.15" stroke="#60a5fa" stroke-opacity="0.35" stroke-width="1"/>
+      <text x="420" y="171" text-anchor="middle" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="700">#grok</text>
+      <text x="365" y="197" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Concurrency &amp; Edge Cases</text>
+      <text x="365" y="216" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Inspect locks &amp; idempotency</text>
+    </g>
+  
+
+    <g filter="url(#cardShadow)">
+      <rect x="650" y="142" width="266" height="88" rx="13" fill="#111827" stroke="rgba(148, 163, 184, 0.22)" stroke-width="1.2"/>
+      <rect x="650" y="142" width="4" height="88" rx="2" fill="#a78bfa"/>
+      <rect x="668" y="156" width="110" height="22" rx="11" fill="#a78bfa" fill-opacity="0.15" stroke="#a78bfa" stroke-opacity="0.35" stroke-width="1"/>
+      <text x="723" y="171" text-anchor="middle" fill="#a78bfa" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="11.5" font-weight="700">#antigravity</text>
+      <text x="668" y="197" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="14.5" font-weight="600">Frontend UI &amp; Docs</text>
+      <text x="668" y="216" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12">Deliver UI polish &amp; guides</text>
+    </g>
+  
+
+    <!-- Bottom Merge / Handoff -->
+    <g filter="url(#hubShadow)">
+      <rect x="116" y="276" width="728" height="68" rx="14" fill="url(#hubGrad)" stroke="#14b8a6" stroke-width="1.5"/>
+      <text x="480" y="306" text-anchor="middle" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="700">Results Flow Back Automatically · Lossless Cross-Agent Handoff Anytime</text>
+      <text x="480" y="327" text-anchor="middle" fill="#5eead4" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Segoe UI', Roboto, sans-serif" font-size="12.5">Transfer full conversation context cleanly to another agent or model mid-thread</text>
+    </g>
+  
+</svg>

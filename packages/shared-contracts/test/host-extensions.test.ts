@@ -149,7 +149,7 @@ it("normalizes an existing v1 Desktop manifest and reports future versions", () 
 });
 
 it("registers the entire RPC namespace and its invalidation event on the client channel", () => {
-  expect(HOST_EXTENSION_MANAGEMENT_METHODS).toHaveLength(14);
+  expect(HOST_EXTENSION_MANAGEMENT_METHODS).toHaveLength(15);
   for (const method of HOST_EXTENSION_MANAGEMENT_METHODS) {
     expect(isHostExtensionManagementMethod(method)).toBe(true);
     expect(CLIENT_CHANNEL_METHODS).toContain(method);

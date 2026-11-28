@@ -9,14 +9,6 @@
 </p>
 
 <p>
-  <a href="https://github.com/BytePioneer-AI/codex-host/stargazers"><img src="https://img.shields.io/github/stars/BytePioneer-AI/codex-host?style=flat-square&label=%E2%98%85&labelColor=27272a&color=0d9488" alt="Stars" /></a>
-  <a href="https://github.com/BytePioneer-AI/codex-host/releases/latest"><img src="https://img.shields.io/github/v/release/BytePioneer-AI/codex-host?label=release&style=flat-square&labelColor=27272a&color=0f766e" alt="최신 릴리스" /></a>
-  <a href="https://www.npmjs.com/package/@codexhost/cli"><img src="https://img.shields.io/npm/d18m/@codexhost/cli?label=npm&style=flat-square&labelColor=27272a&color=0f766e" alt="npm 다운로드" /></a>
-  <a href="../../LICENSE"><img src="https://img.shields.io/github/license/BytePioneer-AI/codex-host?label=license&style=flat-square&labelColor=27272a&color=52525b" alt="라이선스" /></a>
-  <a href="#다운로드-및-설치"><img src="https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Mobile-3f3f46?style=flat-square" alt="지원 플랫폼" /></a>
-</p>
-
-<p>
   <a href="../../README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <strong>한국어</strong>
@@ -209,6 +201,15 @@ Tauri 기반 경량 CodexHost 네이티브 앱으로 공식 Codex Desktop 없이
   <sub>경량 CodexHost 독립 클라이언트 — 상단의 공식 Codex 클라이언트와 동일한 로컬 Host를 공유해 완전히 같은 세션, 위임 트리, 진행 상태를 실시간 동기화합니다.</sub>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mobile-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mobile-en-light.png" />
+    <img src="../imgs/readme-feat-mobile-en-light.png" alt="CodexHost 모바일(Android APK / iOS PWA) 3분할 실기 화면: 워크스페이스 위임 트리, 실시간 멀티 Agent 대화, 원탭 크로스 Agent 인계" width="100%" />
+  </picture>
+  <sub><b>모바일 실시간 제어 (Android APK / iOS PWA)</b> — 자리를 비워도 휴대폰에서 워크스페이스 위임 트리, 멀티 Agent 보고, 원탭 크로스 Agent 인계를 그대로 이어갑니다.</sub>
+</p>
+
 ```mermaid
 flowchart TB
   subgraph Clients["멀티 클라이언트 · 실시간 세션 동기화"]
@@ -335,15 +336,6 @@ flowchart LR
 - **[다중 머신 연동 및 노드 협업](../product/multi-remote-peers.md)**: Mac, Linux 서버, Windows PC를 하나의 사이드바에 연결해 서로 다른 머신의 세션이 호출하고 협업하며 하나의 작업을 함께 완료합니다.
 - **[QR 스캔 모바일 연결](../product/web-remote-access.md)**: 포트 포워딩 없이 LAN, Tailscale 또는 암호화 Relay로 접속하며, 사내 규정 준수를 위한 **[자체 호스팅 Relay](../product/self-hosted-relay.md)** 배포도 지원합니다.
 - **로컬 우선 프라이버시**: 코드, 대화 기록, 자격 증명은 모두 내 컴퓨터에 머물며 공식 서비스에 직접 연결됩니다.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mobile-en-dark.png" />
-    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mobile-en-light.png" />
-    <img src="../imgs/readme-feat-mobile-en-light.png" alt="CodexHost 모바일(Android APK / iOS PWA) 3분할 실기 화면: 워크스페이스 위임 트리, 실시간 멀티 Agent 대화, 원탭 크로스 Agent 인계" width="100%" />
-  </picture>
-  <sub><b>모바일 실시간 제어 (Android APK / iOS PWA)</b> — 자리를 비워도 휴대폰에서 워크스페이스 위임 트리, 멀티 Agent 보고, 원탭 크로스 Agent 인계를 그대로 이어갑니다.</sub>
-</p>
 
 <details>
 <summary><b>고급: SSH 원격 및 Windows Remote Control 연결</b></summary>

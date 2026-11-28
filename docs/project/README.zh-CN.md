@@ -9,14 +9,6 @@
 </p>
 
 <p>
-  <a href="https://github.com/BytePioneer-AI/codex-host/stargazers"><img src="https://img.shields.io/github/stars/BytePioneer-AI/codex-host?style=flat-square&label=%E2%98%85&labelColor=27272a&color=0d9488" alt="Stars" /></a>
-  <a href="https://github.com/BytePioneer-AI/codex-host/releases/latest"><img src="https://img.shields.io/github/v/release/BytePioneer-AI/codex-host?label=release&style=flat-square&labelColor=27272a&color=0f766e" alt="最新版本" /></a>
-  <a href="https://www.npmjs.com/package/@codexhost/cli"><img src="https://img.shields.io/npm/d18m/@codexhost/cli?label=npm&style=flat-square&labelColor=27272a&color=0f766e" alt="npm 下载量" /></a>
-  <a href="../../LICENSE"><img src="https://img.shields.io/github/license/BytePioneer-AI/codex-host?label=license&style=flat-square&labelColor=27272a&color=52525b" alt="开源许可证" /></a>
-  <a href="#下载与安装"><img src="https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Mobile-3f3f46?style=flat-square" alt="支持平台" /></a>
-</p>
-
-<p>
   <a href="../../README.md">English</a> ·
   <strong>简体中文</strong> ·
   <a href="README.ko.md">한국어</a>
@@ -211,6 +203,15 @@ CodexHost 的本地 Host 作为唯一真相源常驻运行，你可以按场景�
   <sub>轻量 CodexHost 独立客户端（与上方官方 Codex 客户端共用同一本地 Host，实时同步完全一致的会话、委派树与进行中状态）</sub>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mobile-zh-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mobile-zh-light.png" />
+    <img src="../imgs/readme-feat-mobile-zh-light.png" alt="CodexHost 手机端实景三联屏：工作区委派树侧栏、多 Agent 实时对话与回流、以及一键跨 Agent 上下文交接" width="100%" />
+  </picture>
+  <sub><b>手机端随时掌控（Android APK / iOS PWA）</b> — 离开电脑照样查看工作区委派树、跟进多 Agent 汇报，并一键发起跨 Agent 交接与追问。</sub>
+</p>
+
 ```mermaid
 flowchart TB
   subgraph Clients["多端入口 · 会话实时同步"]
@@ -341,15 +342,6 @@ flowchart LR
 - **[多机互联与跨节点协作](../product/multi-remote-peers.md)**：把多台 Mac、Linux 与 Windows 开发机连成一张协作网络，收进同一侧栏；不同机器上的会话可以互相委派调用，多个节点联手完成同一项任务。
 - **[手机扫码即连](../product/web-remote-access.md)**：无需折腾公网端口，支持局域网、Tailscale 与加密中转连接；对合规有要求的团队可一键部署 **[私有化自建 Relay](../product/self-hosted-relay.md)**。
 - **本地优先与隐私边界**：代码、对话历史与各家 Agent 凭据全部留在你自己的机器上，直连官方模型服务，不经任何第三方代理。
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../imgs/readme-feat-mobile-zh-dark.png" />
-    <source media="(prefers-color-scheme: light)" srcset="../imgs/readme-feat-mobile-zh-light.png" />
-    <img src="../imgs/readme-feat-mobile-zh-light.png" alt="CodexHost 手机端实景三联屏：工作区委派树侧栏、多 Agent 实时对话与回流、以及一键跨 Agent 上下文交接" width="100%" />
-  </picture>
-  <sub><b>手机端随时掌控（Android APK / iOS PWA）</b> — 离开电脑照样查看工作区委派树、跟进多 Agent 汇报，并一键发起跨 Agent 交接与追问。</sub>
-</p>
 
 <details>
 <summary><b>进阶：SSH 远程与 Windows Remote Control 连接</b></summary>

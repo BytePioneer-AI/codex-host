@@ -9,14 +9,6 @@
 </p>
 
 <p>
-  <a href="https://github.com/BytePioneer-AI/codex-host/stargazers"><img src="https://img.shields.io/github/stars/BytePioneer-AI/codex-host?style=flat-square&label=%E2%98%85&labelColor=27272a&color=0d9488" alt="Stars" /></a>
-  <a href="https://github.com/BytePioneer-AI/codex-host/releases/latest"><img src="https://img.shields.io/github/v/release/BytePioneer-AI/codex-host?label=release&style=flat-square&labelColor=27272a&color=0f766e" alt="Latest release" /></a>
-  <a href="https://www.npmjs.com/package/@codexhost/cli"><img src="https://img.shields.io/npm/d18m/@codexhost/cli?label=npm&style=flat-square&labelColor=27272a&color=0f766e" alt="npm downloads" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/BytePioneer-AI/codex-host?label=license&style=flat-square&labelColor=27272a&color=52525b" alt="License" /></a>
-  <a href="#download--install"><img src="https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Mobile-3f3f46?style=flat-square" alt="Platforms" /></a>
-</p>
-
-<p>
   <strong>English</strong> ·
   <a href="docs/project/README.zh-CN.md">简体中文</a> ·
   <a href="docs/project/README.ko.md">한국어</a>
@@ -211,6 +203,15 @@ Full responsive Web UI paired with the native Android APK and iOS PWA to inspect
   <sub>Lightweight CodexHost standalone desktop app — shares one local Host with the Codex Desktop view above, syncing the exact same sessions, delegation trees, and live status in real time.</sub>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-mobile-en-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-mobile-en-light.png" />
+    <img src="docs/imgs/readme-feat-mobile-en-light.png" alt="CodexHost Mobile UI (Android APK & iOS PWA) syncing workspace delegation trees, live multi-agent replies, and one-tap cross-agent handoff" width="100%" />
+  </picture>
+  <sub><b>Mobile Companion (Android APK / iOS PWA)</b> — browse workspaces &amp; delegation trees, review multi-agent updates, and trigger cross-agent handoffs right from your phone.</sub>
+</p>
+
 ```mermaid
 flowchart TB
   subgraph Clients["Clients · Real-Time Session Sync"]
@@ -341,15 +342,6 @@ flowchart LR
 - **[Multi-Machine Interconnection & Cross-Node Collaboration](docs/product/multi-remote-peers.md)**: Link Macs, Linux servers, and Windows workstations into one unified sidebar—sessions on different machines can invoke each other so multiple nodes collaborate to finish one task together.
 - **[Scan-to-Connect Mobile Access](docs/product/web-remote-access.md)**: Connect over LAN, Tailscale, or encrypted Relay with zero port forwarding; deploy a **[Self-Hosted Relay](docs/product/self-hosted-relay.md)** on your own infrastructure whenever compliance requires it.
 - **Local-First Privacy**: Your code, threads, and agent credentials stay on your own machines and connect directly to official providers—never proxied through third-party servers.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/imgs/readme-feat-mobile-en-dark.png" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/imgs/readme-feat-mobile-en-light.png" />
-    <img src="docs/imgs/readme-feat-mobile-en-light.png" alt="CodexHost Mobile UI (Android APK & iOS PWA) syncing workspace delegation trees, live multi-agent replies, and one-tap cross-agent handoff" width="100%" />
-  </picture>
-  <sub><b>Mobile Companion (Android APK / iOS PWA)</b> — browse workspaces &amp; delegation trees, review multi-agent updates, and trigger cross-agent handoffs right from your phone.</sub>
-</p>
 
 <details>
 <summary><b>Advanced: SSH Remote & Windows Remote Control</b></summary>

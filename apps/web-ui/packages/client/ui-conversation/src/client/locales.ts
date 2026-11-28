@@ -23,6 +23,8 @@ export const zh = {
   "placeholder.hero": "描述你想要构建的内容, / 调用指令, @ 文件或对话",
   "placeholder.workspace": "选择一个工作区开始",
   "placeholder.preparing": "正在准备对话…",
+  "placeholder.loadFailed": "会话加载失败，请重试连接或检查远端主机",
+  "placeholder.loadUnsupported": "远端主机版本不支持加载此会话，请升级远端后再试",
   "placeholder.steerQueue": "Cmd/Ctrl+Enter 插话发送全部排队消息",
   "newSession.loadingModel": "模型加载中…",
   "newSession.loadingHarness": "正在加载 Harness…",
@@ -447,6 +449,9 @@ export const en = {
   "placeholder.hero": "Describe what you want to build, / commands, @ files or sessions",
   "placeholder.workspace": "Choose a workspace to start",
   "placeholder.preparing": "Preparing conversation…",
+  "placeholder.loadFailed": "Failed to load session. Retry or check the remote host.",
+  "placeholder.loadUnsupported":
+    "Remote host version does not support loading this session. Update the remote host and retry.",
   "placeholder.steerQueue": "Cmd/Ctrl+Enter steers all queued messages",
   "newSession.loadingModel": "Loading models…",
   "newSession.loadingHarness": "Loading Harness…",

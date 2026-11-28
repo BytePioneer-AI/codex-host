@@ -193,9 +193,14 @@ export function ConversationContent(props: ConversationContentProps) {
   // The workspace chip already shows the pending location while the old Session
   // still owns the composer and its draft.
   const switchingWorkspace = hero && workspacePick !== undefined;
+  const sessionLoadFailed =
+    !switchingWorkspace && sessionId !== undefined && session?.openState === "error";
+  const sessionUnsupported = sessionLoadFailed && session?.openError?.code === "remote/unsupported";
   const preparingSession =
     switchingWorkspace ||
-    ((sessionId === undefined || session?.openState !== "open") && !workspaceRequired);
+    (!sessionLoadFailed &&
+      (sessionId === undefined || session?.openState !== "open") &&
+      !workspaceRequired);
   const inert =
     switchingWorkspace ||
     sessionId === undefined ||
@@ -221,18 +226,27 @@ export function ConversationContent(props: ConversationContentProps) {
             placeholder: t("placeholder.hero"),
           }
         : inert
-          ? {
-              disabled: true,
-              placeholder: t(preparingSession ? "placeholder.preparing" : "placeholder.workspace"),
-              ...(!preparingSession
-                ? {
-                    workspacePickerOpen: pickerOpen,
-                    onRequestWorkspace: () => {
-                      setPickerOpen(true);
-                    },
-                  }
-                : {}),
-            }
+          ? sessionLoadFailed
+            ? {
+                disabled: true,
+                placeholder: t(
+                  sessionUnsupported ? "placeholder.loadUnsupported" : "placeholder.loadFailed",
+                ),
+              }
+            : {
+                disabled: true,
+                placeholder: t(
+                  preparingSession ? "placeholder.preparing" : "placeholder.workspace",
+                ),
+                ...(!preparingSession
+                  ? {
+                      workspacePickerOpen: pickerOpen,
+                      onRequestWorkspace: () => {
+                        setPickerOpen(true);
+                      },
+                    }
+                  : {}),
+              }
           : blocked
             ? // `blocked`, not `disabled`: the bar refuses input either way, but a
               // block keeps the model seat live because choosing a model is how the

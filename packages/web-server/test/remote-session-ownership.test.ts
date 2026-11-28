@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -133,7 +134,7 @@ async function peerFixture(
   const root = mkdtempSync(join(tmpdir(), "remote-summary-"));
   const hostId = "remote-peer:target";
   const threadId = "peer-thread";
-  const epoch = "peer-epoch";
+  const epoch = randomUUID();
   const probed = Promise.withResolvers<undefined>();
   const listing = Promise.withResolvers<undefined>();
   const connecting = Promise.withResolvers<undefined>();

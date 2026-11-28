@@ -55,7 +55,7 @@ async function inBatches<T>(items: readonly T[], run: (item: T) => Promise<unkno
 }
 
 function unavailable(target: PeerHostClient): string | undefined {
-  if (!target.record.enabled || target.state !== "connected") return "Remote peer is not connected";
+  if (!target.isHttpReady) return "Remote peer is not connected";
   if (target.manifest?.capabilities?.peerPairing !== 1)
     return "Remote peer does not support pairing";
   return undefined;

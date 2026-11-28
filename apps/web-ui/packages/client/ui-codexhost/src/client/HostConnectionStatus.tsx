@@ -96,6 +96,8 @@ export function HostConnectionStatus({
   const lastSyncedAt = useSession((session) =>
     state === undefined ? undefined : session.lastSyncedAt,
   );
+  const openUnsupported = state === "error" && openError?.code === "remote/unsupported";
+  const historyUnsupported = historyError?.code === "remote/unsupported";
   return (
     <>
       {state ? (
@@ -106,7 +108,9 @@ export function HostConnectionStatus({
           data-native-connection={host === "reconnecting" ? host : undefined}
         >
           <div className={css.copy}>
-            <span>{t(`connection.${state}`)}</span>
+            <span>
+              {t(openUnsupported ? "connection.unsupportedHistory" : `connection.${state}`)}
+            </span>
             {lastSyncedAt !== undefined ? (
               <span className={css.detail}>
                 {t("connection.lastSynced", {
@@ -129,9 +133,21 @@ export function HostConnectionStatus({
         </div>
       ) : null}
       {historyError || (state === "error" && (retryError || openError)) ? (
-        <div className={css.status} role="alert" data-remote-history-error={historyError?.code}>
+        <div
+          className={css.status}
+          role="alert"
+          data-remote-history-error={
+            historyError?.code ?? (state === "error" ? openError?.code : undefined)
+          }
+        >
           <div className={css.copy}>
-            {historyError ? <span>{t("connection.historyStale")}</span> : null}
+            {historyError ? (
+              <span>
+                {t(
+                  historyUnsupported ? "connection.unsupportedHistory" : "connection.historyStale",
+                )}
+              </span>
+            ) : null}
             <span className={css.detail}>
               {retryError ?? historyError?.message ?? openError?.message}
             </span>

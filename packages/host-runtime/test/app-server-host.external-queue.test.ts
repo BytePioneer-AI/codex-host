@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   HarnessResult,
+  HostCommand,
   TurnStartAccepted,
   TurnStartCommand,
 } from "@codexhost/harness-adapter";
@@ -833,7 +834,12 @@ describe("External Thread follow-up queue", () => {
       );
       const releaseStart = Promise.withResolvers<HarnessResult<TurnStartAccepted>>();
       const entered = Promise.withResolvers<undefined>();
-      vi.spyOn(session, "execute").mockImplementationOnce((command) => {
+      vi.spyOn(
+        session as unknown as {
+          execute(command: HostCommand): Promise<HarnessResult<unknown>>;
+        },
+        "execute",
+      ).mockImplementationOnce((command) => {
         if (command.type === "turn.start") {
           entered.resolve(undefined);
           return releaseStart.promise;
@@ -878,6 +884,90 @@ describe("External Thread follow-up queue", () => {
         fixture.collector.waitFor((message) => requestId(message, 31)),
       ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
     } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("rejects send-now with -32072 without pausing the queue while a Turn is still being admitted", async () => {
+    const fixture = createFixture();
+    const release = Promise.withResolvers<undefined>();
+    try {
+      const threadId = await startPiThread(fixture);
+      const firstTurnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", firstTurnId),
+      );
+
+      const executable = session as unknown as {
+        execute(command: HostCommand): Promise<HarnessResult<unknown>>;
+      };
+      const originalExecute = executable.execute.bind(session);
+      const entered = Promise.withResolvers<undefined>();
+      vi.spyOn(executable, "execute").mockImplementationOnce(async (command) => {
+        if (command.type === "turn.start") {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+        return originalExecute(command);
+      });
+
+      writeRequest(fixture.desktopInput, {
+        id: 40,
+        method: "turn/start",
+        params: { threadId, input: text("admitting foreground") },
+      });
+      await entered.promise;
+
+      writeRequest(fixture.desktopInput, {
+        id: 41,
+        method: "thread/queue/add",
+        params: { threadId, input: text("queued while admitting"), clientUserMessageId: "q-admit" },
+      });
+      const added = await fixture.collector.waitFor((message) => requestId(message, 41));
+      const item = (added.result as { queuedSubmission: { id: string } }).queuedSubmission;
+
+      const sendNow = await fixture.host.handleClientRequest("codexhost/thread/queue/send-now", {
+        threadId,
+        itemId: item.id,
+      });
+      expect(sendNow).toMatchObject({ error: { code: -32072 } });
+      expect((await fixture.host.clientSnapshot(threadId)).queue).toMatchObject({
+        pausedReason: null,
+        items: [{ id: item.id, clientUserMessageId: "q-admit" }],
+      });
+
+      release.resolve(undefined);
+      const started = await fixture.collector.waitFor((message) => requestId(message, 40));
+      const admittingTurnId = ((started.result as JsonObject).turn as JsonObject).id as string;
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/started", admittingTurnId),
+      );
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", admittingTurnId),
+      );
+
+      // Because the queue was not paused as failed, the queued follow-up advances automatically.
+      const followUpStarted = await fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/started") &&
+          ![firstTurnId, admittingTurnId].includes(
+            (messageParams(message).turn as JsonObject).id as string,
+          ),
+      );
+      expect(followUpStarted).toBeTruthy();
+      session.succeedTurn();
+      await vi.waitFor(async () =>
+        expect((await fixture.host.clientSnapshot(threadId)).queue).toMatchObject({
+          pausedReason: null,
+          items: [],
+        }),
+      );
+    } finally {
+      release.resolve(undefined);
       await stopFixture(fixture);
     }
   });

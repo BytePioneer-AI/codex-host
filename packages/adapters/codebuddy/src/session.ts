@@ -639,7 +639,11 @@ export class CodeBuddySession implements HarnessSession {
   async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
-    if (this.#busy || (this.#active && !this.#active.autonomous))
+    if (
+      this.#busy ||
+      this.#replay ||
+      (this.#active && (!this.#active.autonomous || this.#active.cancelled))
+    )
       return failure("sessionBusy", "Session is executing an operation", this.profile);
     this.#busy = true;
     try {
@@ -765,11 +769,12 @@ export class CodeBuddySession implements HarnessSession {
                 .trim()))
         )
           return failure("invalidRequest", "A nonempty text prompt is required", this.profile);
+        const drainBefore = this.#autonomous.announcements;
         if (this.#needsResume) {
           await this.#resumeClient();
           if (this.#closed || this.#fault)
             return failure("invalidState", "Session is closed or faulted", this.profile);
-          if (this.#active)
+          if (this.#active || this.#autonomous.announcements !== drainBefore)
             return failure("sessionBusy", "Session is executing an operation", this.profile);
         }
         const nativeCommand =
@@ -785,24 +790,13 @@ export class CodeBuddySession implements HarnessSession {
             input: [{ type: "text", text: parsed.value }],
           };
         }
-        // Reading history also yields to native notifications, so a drain announced during
-        // admission is visible before the Host prompt would reach the native process.
-        // If a drain starts and finishes before prompt admission, re-read the baseline so
-        // only drains overlapping the foreground prompt disable single-Turn fallback.
-        let drainBefore = this.#autonomous.announcements;
-        let snapshot = await this.#snapshot();
-        while (
-          !this.#closed &&
-          !this.#fault &&
-          !this.#active &&
-          this.#autonomous.announcements !== drainBefore
-        ) {
-          drainBefore = this.#autonomous.announcements;
-          snapshot = await this.#snapshot();
-        }
+        // Reading history also yields to native notifications. Reject admission whenever a drain
+        // ran during resume or history read so the Host drains the autonomous Turn before starting
+        // a foreground Turn behind it in the output stream.
+        const snapshot = await this.#snapshot();
         if (this.#closed || this.#fault)
           return failure("invalidState", "Session closed before Turn start", this.profile);
-        if (this.#active)
+        if (this.#active || this.#autonomous.announcements !== drainBefore)
           return failure("sessionBusy", "Session is executing an operation", this.profile);
         const active: ActiveTurn = {
           command,

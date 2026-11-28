@@ -319,7 +319,7 @@ export async function executeExternalThreadRollback(input: {
       error: { code: -32076, message: "External rollback source lineage is unsupported" },
     };
   }
-  if (!source.running) {
+  if (!source.running && !source.admittingTurnId) {
     const sourceRefreshError = await runtime.refresh(source);
     if (sourceRefreshError) return { ok: false, error: sourceRefreshError };
   }

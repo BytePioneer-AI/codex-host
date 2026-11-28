@@ -665,10 +665,17 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     await f.session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("stopped") });
     await f.completed();
 
+    expect(await f.session.execute(host("next"))).toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    const afterDrain = await f.completed(2);
+    expect(afterDrain.map((e) => e.outcome.status)).toEqual(["cancelled", "succeeded"]);
+    expect(f.texts(required(f.ids()[0]))).toEqual(["during-resume"]);
+
     expect(await f.session.execute(host("next"))).toMatchObject({ ok: true });
     const completed = await f.completed(3);
     expect(completed.map((e) => e.outcome.status)).toEqual(["cancelled", "succeeded", "succeeded"]);
-    expect(f.texts(required(f.ids()[0]))).toEqual(["during-resume"]);
     const appended = f
       .events()
       .flatMap((e) =>
@@ -1068,7 +1075,7 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     await closed;
   });
 
-  it("does not treat a drain that finished during admission snapshot read as overlapping the foreground prompt", async () => {
+  it("rejects foreground admission with sessionBusy when a drain finishes during snapshot read, then admits the retry cleanly", async () => {
     let gate!: ReturnType<typeof gateHistory>;
     const f = await setup((native) => {
       gate = gateHistory(native, 1);
@@ -1108,17 +1115,40 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     gate.release();
 
     await expect(starting).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    expect(await f.completed(1)).toHaveLength(1);
+
+    await expect(f.session.execute(host("fg-retry", "hello"))).resolves.toMatchObject({
       ok: true,
-      value: { turnId: "fg-after-drain" },
+      value: { turnId: "fg-retry" },
     });
     const completed = await f.completed(2);
     expect(completed).toContainEqual(
       expect.objectContaining({
-        turnId: "fg-after-drain",
+        turnId: "fg-retry",
         outcome: expect.objectContaining({ status: "succeeded" }),
         nativeTurnRef: expect.objectContaining({ nativeTurnKey: "fg-user-1" }),
       }),
     );
+  });
+
+  it("rejects readSnapshot while a cancelled autonomous drain is recovering", async () => {
+    const f = await setup();
+    announce(f.client, "cancel-snap");
+    await vi.waitFor(() => expect(f.ids()).toHaveLength(1));
+    const turnId = required(f.ids()[0]);
+    await expect(f.session.execute({ type: "turn.cancel", turnId })).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(f.session.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    end(f.client, "cancel-snap");
+    await f.completed(1);
+    await expect(f.session.readSnapshot()).resolves.toMatchObject({ ok: true });
   });
 });
 

@@ -328,4 +328,165 @@ describe("CodeBuddy autonomous Turns through AppServerHost", () => {
       await stopFixture(host);
     }
   });
+
+  it("drains an autonomous Turn that finishes during admission snapshot read without corrupting foreground state", async () => {
+    const native = nativeFixture();
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    let reads = 0;
+    const adapter = new CodeBuddyAdapter({
+      ...native,
+      readHistory: async () => {
+        if (++reads === 1) {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+        return native.readHistory();
+      },
+    });
+    const host = createFixture({
+      additionalAdapters: new Map([["codebuddy", adapter]]),
+    });
+    try {
+      const threadId = await startExternalThread(host, codeBuddyModel, 1, { cwd: process.cwd() });
+      const client = native.clients[0];
+      if (!client) throw new Error("Missing CodeBuddy fixture client");
+
+      // Direct turn/start enters admission snapshot read; an autonomous drain starts and completes
+      // inside that await window. Host must reject with sessionBusy rather than promoting fg over
+      // unconsumed autonomous events, then accept the subsequent turn cleanly.
+      writeRequest(host.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: text("hold") },
+      });
+      await entered.promise;
+      announce(client, "snapshot-drain");
+      reply(client, "drain during snapshot", "snapshot-drain");
+      end(client, "snapshot-drain");
+      release.resolve(undefined);
+
+      await expect(
+        host.collector.waitFor((message) => requestId(message, 2)),
+      ).resolves.toMatchObject({ error: { code: -32073 } });
+
+      const autonomousCompleted = await host.collector.waitFor((message) =>
+        method(message, "turn/completed"),
+      );
+      const autonomousTurnId = (messageParams(autonomousCompleted).turn as JsonObject).id as string;
+      expect(messageParams(autonomousCompleted).turn).toMatchObject({ status: "completed" });
+
+      writeRequest(host.desktopInput, {
+        id: 3,
+        method: "turn/start",
+        params: { threadId, input: text("hold") },
+      });
+      const fgResponse = await host.collector.waitFor((message) => requestId(message, 3));
+      expect(fgResponse).not.toHaveProperty("error");
+      const fgTurnId = ((fgResponse.result as JsonObject).turn as JsonObject).id as string;
+      expect(fgTurnId).not.toBe(autonomousTurnId);
+      await host.collector.waitFor((message) => turnEvent(message, "turn/started", fgTurnId));
+
+      // Verify Host still tracks fgTurnId as active and turn/interrupt succeeds (no -32074).
+      writeRequest(host.desktopInput, {
+        id: 4,
+        method: "turn/interrupt",
+        params: { threadId, turnId: fgTurnId },
+      });
+      await expect(
+        host.collector.waitFor((message) => requestId(message, 4)),
+      ).resolves.not.toHaveProperty("error");
+      await expect(
+        host.collector.waitFor((message) => turnEvent(message, "turn/completed", fgTurnId)),
+      ).resolves.toMatchObject({
+        params: { turn: { id: fgTurnId, status: "interrupted" } },
+      });
+      expect(host.diagnosticOutput.read()?.toString() ?? "").toBe("");
+    } finally {
+      release.resolve(undefined);
+      await stopFixture(host);
+    }
+  });
+
+  it("drains an autonomous Turn that completes during post-cancel reconnection without crashing the foreground Turn", async () => {
+    const native = nativeFixture();
+    const adapter = new CodeBuddyAdapter({
+      ...native,
+      clientFactory: (options) => {
+        const client = native.clientFactory(options);
+        if (native.clients.length === 2) {
+          const open = client.open.bind(client);
+          client.open = async (cwd, sessionId) => {
+            const result = await open(cwd, sessionId);
+            announce(client, "resume-drain");
+            reply(client, "drain during resume", "resume-drain");
+            end(client, "resume-drain");
+            return result;
+          };
+        }
+        return client;
+      },
+    });
+    const host = createFixture({
+      additionalAdapters: new Map([["codebuddy", adapter]]),
+    });
+    try {
+      const threadId = await startExternalThread(host, codeBuddyModel, 1, { cwd: process.cwd() });
+      const firstClient = native.clients[0];
+      if (!firstClient) throw new Error("Missing first CodeBuddy fixture client");
+
+      // Cancel a foreground Turn so the next admission triggers #resumeClient().
+      writeRequest(host.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: text("hold") },
+      });
+      const firstResponse = await host.collector.waitFor((message) => requestId(message, 2));
+      const firstTurnId = ((firstResponse.result as JsonObject).turn as JsonObject).id as string;
+      await host.collector.waitFor((message) => turnEvent(message, "turn/started", firstTurnId));
+
+      writeRequest(host.desktopInput, {
+        id: 3,
+        method: "turn/interrupt",
+        params: { threadId, turnId: firstTurnId },
+      });
+      await host.collector.waitFor((message) => requestId(message, 3));
+      await host.collector.waitFor((message) => turnEvent(message, "turn/completed", firstTurnId));
+
+      // Next admission reconnects and observes a completed drain during #resumeClient().
+      writeRequest(host.desktopInput, {
+        id: 4,
+        method: "turn/start",
+        params: { threadId, input: text("after cancel") },
+      });
+      await expect(
+        host.collector.waitFor((message) => requestId(message, 4)),
+      ).resolves.toMatchObject({ error: { code: -32073 } });
+
+      const autonomousCompleted = await host.collector.waitFor(
+        (message) =>
+          method(message, "turn/completed") &&
+          ((messageParams(message).turn as JsonObject).id as string) !== firstTurnId,
+      );
+      expect(messageParams(autonomousCompleted).turn).toMatchObject({ status: "completed" });
+
+      // Follow-up foreground Turn succeeds cleanly on the resumed session.
+      writeRequest(host.desktopInput, {
+        id: 5,
+        method: "turn/start",
+        params: { threadId, input: text("after drain") },
+      });
+      const retryResponse = await host.collector.waitFor((message) => requestId(message, 5));
+      expect(retryResponse).not.toHaveProperty("error");
+      const retryTurnId = ((retryResponse.result as JsonObject).turn as JsonObject).id as string;
+      await expect(
+        host.collector.waitFor((message) => turnEvent(message, "turn/completed", retryTurnId)),
+      ).resolves.toMatchObject({
+        params: { turn: { id: retryTurnId, status: "completed" } },
+      });
+      expect(host.diagnosticOutput.read()?.toString() ?? "").toBe("");
+    } finally {
+      await stopFixture(host);
+    }
+  });
 });

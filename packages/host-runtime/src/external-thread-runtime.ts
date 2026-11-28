@@ -931,7 +931,7 @@ export class ExternalThreadRuntime {
   async retainedFailure(threadId: string) {
     const loaded = this.get(threadId);
     const record = loaded?.record ?? (await this.#repository.find(threadId));
-    if (!record || loaded?.activeTurnId) return;
+    if (!record || loaded?.activeTurnId || loaded?.admittingTurnId) return;
     const turns = this.#mergeFailedTurns(
       record,
       record.turnMappings.map(({ hostTurnId }) => ({ id: hostTurnId })),

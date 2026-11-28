@@ -42,6 +42,7 @@ fn main() {
                 "window_minimize",
                 "window_toggle_maximize",
                 "window_close",
+                "window_set_theme",
                 "window_chrome_state",
                 "window_visibility_get",
                 "window_zoom_get",

@@ -11,6 +11,7 @@
     "allow-window-minimize",
     "allow-window-toggle-maximize",
     "allow-window-close",
+    "allow-window-set-theme",
     "allow-window-chrome-state",
     "allow-window-visibility-get",
     "allow-window-zoom-get",

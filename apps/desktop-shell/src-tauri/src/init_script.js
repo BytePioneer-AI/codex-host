@@ -299,6 +299,48 @@ function __codexhostDesktopShellInit(config) {
     return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
   };
 
+  let lastSyncedWindowTheme = null;
+  let windowThemeObserver = null;
+
+  const resolveWindowThemeSource = (fallbackSystem = false) => {
+    const root = document.documentElement;
+    if (!root) return null;
+    const source = root.getAttribute("data-ds-theme-source");
+    if (source === "light" || source === "dark" || source === "system") return source;
+    const embedded = root.getAttribute("data-theme");
+    if (embedded === "light" || embedded === "dark") return embedded;
+    return fallbackSystem ? "system" : null;
+  };
+
+  const syncWindowTheme = (fallbackSystem = false) => {
+    const next = resolveWindowThemeSource(fallbackSystem);
+    if (!next || next === lastSyncedWindowTheme) return;
+    const request = invoke("window_set_theme", { theme: next });
+    if (!request) return;
+    lastSyncedWindowTheme = next;
+    request.catch?.(() => {
+      if (lastSyncedWindowTheme === next) lastSyncedWindowTheme = null;
+    });
+  };
+
+  const ensureWindowThemeObserver = () => {
+    const root = document.documentElement;
+    if (!root || windowThemeObserver) return;
+    windowThemeObserver = new MutationObserver(() => syncWindowTheme(isEmbeddedPage));
+    windowThemeObserver.observe(root, {
+      attributes: true,
+      attributeFilter: ["data-ds-theme-source", "data-theme"],
+    });
+    syncWindowTheme(false);
+    if (isEmbeddedPage) {
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => syncWindowTheme(true), { once: true });
+      } else {
+        syncWindowTheme(true);
+      }
+    }
+  };
+
   applyZoomCssVar = (percent) => {
     const root = document.documentElement;
     if (!root) return;
@@ -467,6 +509,7 @@ function __codexhostDesktopShellInit(config) {
     applyZoomCssVar(currentZoomState.percent);
     applyWindowHiddenAttr();
     ensureEmbeddedHiddenAnimationStyle();
+    ensureWindowThemeObserver();
     return true;
   };
 

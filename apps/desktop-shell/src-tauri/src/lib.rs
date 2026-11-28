@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
-use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Manager, RunEvent, State, Theme, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 use url::Url;
 
 use instance::{Activation, Claim, PrimaryInstance};
@@ -530,6 +532,23 @@ fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
     window.close().map_err(|error| error.to_string())
 }
 
+fn parse_window_theme(theme: &str) -> Result<Option<Theme>, String> {
+    match theme {
+        "light" => Ok(Some(Theme::Light)),
+        "dark" => Ok(Some(Theme::Dark)),
+        "system" => Ok(None),
+        other => Err(format!("Unsupported window theme: {other}")),
+    }
+}
+
+#[tauri::command]
+fn window_set_theme(window: tauri::WebviewWindow, theme: String) -> Result<(), String> {
+    let resolved = parse_window_theme(&theme)?;
+    window
+        .set_theme(resolved)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn window_chrome_state(window: tauri::WebviewWindow) -> WindowChromeState {
     WindowChromeState {
@@ -856,6 +875,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window_minimize,
             window_toggle_maximize,
             window_close,
+            window_set_theme,
             window_chrome_state,
             window_visibility_get,
             window_zoom_get,
@@ -1076,7 +1096,15 @@ mod tests {
     use tauri::webview::{PermissionKind, PermissionResponse};
     use url::Url;
 
-    use super::{Page, Status, authorize_web_command, permission_response};
+    use super::{Page, Status, authorize_web_command, parse_window_theme, permission_response};
+
+    #[test]
+    fn parses_supported_window_themes() {
+        assert_eq!(parse_window_theme("light"), Ok(Some(tauri::Theme::Light)));
+        assert_eq!(parse_window_theme("dark"), Ok(Some(tauri::Theme::Dark)));
+        assert_eq!(parse_window_theme("system"), Ok(None));
+        assert!(parse_window_theme("auto").is_err());
+    }
 
     #[test]
     fn onboarding_and_dormant_ignore_background_web_events() {

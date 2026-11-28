@@ -55,7 +55,7 @@ export default [
     },
   },
   {
-    files: ["packages/**/test/**/*.ts", "tests/**/*.ts", "**/*.test.ts"],
+    files: ["packages/**/test/**/*.ts", "tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-explicit-any": "off",

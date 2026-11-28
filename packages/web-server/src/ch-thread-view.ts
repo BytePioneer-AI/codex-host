@@ -743,8 +743,8 @@ export class ChThreadView {
         this.turns.set(turn.id, view);
       }
       if (!complete) this.log.clock = undefined;
-      if (view.done) continue;
-      const projector = view.projector!;
+      const projector = view.projector;
+      if (view.done || !projector) continue;
       const reasoningPreviewIds = new Set(
         items.filter((item) => item.type === "reasoning").map((item) => item.id),
       );

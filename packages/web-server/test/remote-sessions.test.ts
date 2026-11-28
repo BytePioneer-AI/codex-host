@@ -5253,9 +5253,9 @@ it("protects followed, running, pending-interaction, and in-flight paging Peer v
     turns: makeTurns(10),
   };
 
-  const pagingStarted = Promise.withResolvers<void>();
-  const releasePaging = Promise.withResolvers<void>();
-  t.after(() => releasePaging.resolve());
+  const pagingStarted = Promise.withResolvers<undefined>();
+  const releasePaging = Promise.withResolvers<undefined>();
+  t.after(() => releasePaging.resolve(undefined));
 
   const interactionsByThread = new Map<string, unknown[]>([
     [
@@ -5286,7 +5286,7 @@ it("protects followed, running, pending-interaction, and in-flight paging Peer v
     interactionsByThread,
     onTurnsList: async (threadId, _params, defaultReply) => {
       if (threadId === pagingRow.id) {
-        pagingStarted.resolve();
+        pagingStarted.resolve(undefined);
         await releasePaging.promise;
       }
       return defaultReply();
@@ -5344,7 +5344,7 @@ it("protects followed, running, pending-interaction, and in-flight paging Peer v
   assert.equal(f.source.history(pagingRow.id, pagingId), views.paging);
 
   // Completing session/page refreshes historyReadAt and resets idle countdown.
-  releasePaging.resolve();
+  releasePaging.resolve(undefined);
   const pageResult = await pagePromise;
   assert.equal(pageResult.ok, true);
 

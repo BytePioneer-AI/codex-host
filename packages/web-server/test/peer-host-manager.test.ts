@@ -1921,7 +1921,6 @@ async function pairingNode(
   const rpc = new RpcRegistry();
   const ws = new Workspaces(data, root, true);
   const epoch = randomUUID();
-  let origin: string;
   const manager = new PeerHostManager(store, async () => [origin], new EventHub(root), {
     allowLoopback: options.allowLoopback ?? true,
     ...(options.dnsLookup === undefined ? {} : { dnsLookup: options.dnsLookup }),
@@ -1989,7 +1988,7 @@ async function pairingNode(
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const connection = {
     origin,
     token,
@@ -2090,10 +2089,11 @@ it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates 
     [b, ab.peer, ac.peer, "node-c"],
     [c, ac.peer, ab.peer, "node-b"],
   ] as const) {
-    const targetClient = a.manager.client(own.hostId)!;
+    const targetClient = a.manager.client(own.hostId);
+    assert.ok(targetClient);
     const peerNodes = targetClient.manifest?.peerNodes;
-    const inTarget = target.manager.hostIdForNodeId(otherNodeId)!;
-    const localInTarget = target.manager.hostIdForNodeId("node-a")!;
+    const inTarget = target.manager.hostIdForNodeId(otherNodeId);
+    const localInTarget = target.manager.hostIdForNodeId("node-a");
     assert.ok(inTarget && localInTarget);
     const links = `${link("self", "local")} ${link("other", other.hostId)}`;
     const translated = translateThreadLinksForPeer(`${links} ${link("target", own.hostId)}`, {
@@ -2390,14 +2390,14 @@ it("blocks DNS-rebinding SSRF in peer probes, pins verified IPs with original Ho
 });
 
 it("does not send a peer's credentials in syncPeerMesh after the peer is removed mid-flight and caps linkedPeerIds", async (t) => {
-  const selfShareGate = Promise.withResolvers<void>();
-  const selfShareStarted = Promise.withResolvers<void>();
+  const selfShareGate = Promise.withResolvers<undefined>();
+  const selfShareStarted = Promise.withResolvers<undefined>();
   const cIntroducedBodies: string[] = [];
 
   const a = await pairingNode(t, "A", {
     nodeId: "node-a",
     resolveSelfShare: async (origin, token, preferredOrigin) => {
-      selfShareStarted.resolve();
+      selfShareStarted.resolve(undefined);
       await selfShareGate.promise;
       const share = resolvePeerSelfOrigin([], preferredOrigin, origin);
       return "error" in share ? share : { ...share, token, name: "A" };
@@ -2411,7 +2411,7 @@ it("does not send a peer's credentials in syncPeerMesh after the peer is removed
 
   const ab = await a.add(b.connection);
   const ac = await a.add(c.connection);
-  const clientB = a.manager.client(ab.peer.hostId)!;
+  const clientB = a.manager.client(ab.peer.hostId);
   assert.ok(clientB);
 
   const syncPromise = a.rpc.dispatch(
@@ -2431,7 +2431,7 @@ it("does not send a peer's credentials in syncPeerMesh after the peer is removed
   assert.equal(clientB.closed, true);
   assert.equal(clientB.record.token, "");
 
-  selfShareGate.resolve();
+  selfShareGate.resolve(undefined);
   const synced = await syncPromise;
   assert.ok(synced.ok);
   const report = remotePeerPairingReportSchema.parse(synced.value);
@@ -2481,7 +2481,8 @@ it("does not send a peer's credentials in syncPeerMesh after the peer is removed
   ]);
   const capManager = new PeerHostManager(capStore, async () => [], new EventHub(capRoot));
   t.after(() => capManager.close());
-  const targetClient = capManager.client("remote-peer:target-peer")!;
+  const targetClient = capManager.client("remote-peer:target-peer");
+  assert.ok(targetClient);
   targetClient.manifest = {
     version: "1",
     platform: process.platform,

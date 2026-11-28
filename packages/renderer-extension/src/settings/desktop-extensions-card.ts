@@ -172,10 +172,10 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   }
 
   // Single muted dot-separated metadata line: Category · Author · vX.Y.Z · ↓ N
-  const primaryCategory =
-    categories && categories.length > 0
-      ? (contentCopy.categories[categories[0]!] ?? categories[0])
-      : undefined;
+  const firstCategory = categories?.[0];
+  const primaryCategory = firstCategory
+    ? (contentCopy.categories[firstCategory] ?? firstCategory)
+    : undefined;
   const trimmedAuthor = author?.trim() || undefined;
   const formattedVersion = formatVersion(version);
   const formattedDownloads = formatPositiveExtensionCount(downloads);

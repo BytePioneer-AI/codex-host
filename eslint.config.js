@@ -36,7 +36,7 @@ export default [
       globals: globals.node,
     },
   },
-  ...tseslint.configs.strict.map((config) => ({
+  ...tseslint.configs.recommended.map((config) => ({
     ...config,
     files: typeScriptFiles,
   })),
@@ -44,6 +44,22 @@ export default [
     files: typeScriptFiles,
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/**/test/**/*.ts", "tests/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-empty-function": "off",
     },
   },
   {

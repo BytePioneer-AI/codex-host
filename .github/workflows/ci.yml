@@ -13,6 +13,7 @@ on:
           - macos-26
           - windows-latest
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - "docs/**"
       - "**/*.md"
@@ -35,9 +36,105 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Classify changed files so docs-only commits and Draft PRs skip heavy lanes,
+  # and ordinary TS/UI PRs do not pay for Rust or cross-platform matrix runs.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-22.04
+    outputs:
+      skip: ${{ steps.filter.outputs.skip }}
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+      ts: ${{ steps.filter.outputs.ts }}
+      web: ${{ steps.filter.outputs.web }}
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - name: Check draft state
+        id: draft
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: echo "is_draft=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.draft.outputs.is_draft != 'true' && github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify changes
+        id: filter
+        run: |
+          if [ "${{ steps.draft.outputs.is_draft }}" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "ts=false" >> "$GITHUB_OUTPUT"
+            echo "web=false" >> "$GITHUB_OUTPUT"
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "ts=true" >> "$GITHUB_OUTPUT"
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+            CHANGED=$(git diff --name-only "$BASE_REF...HEAD" || true)
+          else
+            CHANGED=$(git diff --name-only HEAD^1 HEAD 2>/dev/null || true)
+          fi
+
+          if [ -z "$CHANGED" ]; then
+            # Fallback to full run if diff base cannot be resolved.
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "ts=true" >> "$GITHUB_OUTPUT"
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NON_DOCS=$(echo "$CHANGED" | grep -Ev '^(docs/|.*\.md$|.*\.(png|jpg|jpeg|webp|svg|gif|ico|mp4)$)' || true)
+          if [ -z "$NON_DOCS" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "ts=false" >> "$GITHUB_OUTPUT"
+            echo "web=false" >> "$GITHUB_OUTPUT"
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+
+          if echo "$NON_DOCS" | grep -qE '^(packages/|tests/|tools/|scripts/|apps/|package(-lock)?\.json|tsconfig|eslint\.config|\.github/workflows/ci\.yml)'; then
+            echo "ts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ts=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$NON_DOCS" | grep -qE '^(apps/web-ui/|packages/(web-server|shared-contracts|host-runtime|protocol-core)/|package(-lock)?\.json|\.github/workflows/ci\.yml)'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$NON_DOCS" | grep -qE '^(crates/|Cargo\.(toml|lock)|scripts/release/|\.github/workflows/ci\.yml)'; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
   static:
     name: Static checks
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    needs: changes
+    if: >-
+      needs.changes.outputs.skip != 'true' &&
+      needs.changes.outputs.docs_only != 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04')
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -67,7 +164,11 @@ jobs:
 
   vitest:
     name: Vitest
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    needs: changes
+    if: >-
+      needs.changes.outputs.skip != 'true' &&
+      needs.changes.outputs.ts == 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04')
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -93,7 +194,11 @@ jobs:
 
   web:
     name: Web Host tests
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    needs: changes
+    if: >-
+      needs.changes.outputs.skip != 'true' &&
+      needs.changes.outputs.web == 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04')
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -119,9 +224,15 @@ jobs:
         run: npm run test:web
 
   # Release and repository maintenance require these existing Check job names.
-  # Linux x64 owns native checks here; secondary OS lanes also test OS-sensitive TS.
+  # Native Rust checks and packaging smoke tests run on main, manual dispatch, or
+  # PRs touching Rust/release files; cross-OS TS tests run on main and manual dispatch.
   check:
     name: Check ${{ matrix.os }}
+    needs: changes
+    if: >-
+      needs.changes.outputs.skip != 'true' &&
+      needs.changes.outputs.docs_only != 'true' &&
+      (needs.changes.outputs.rust == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -159,11 +270,9 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
-      # Linux x64 covers governance, browser/contracts, and the nested Gate runner test.
-      # Secondary OS lanes filter both Vitest and Web Host files (tests/platform-tests.mjs);
-      # Linux x64 covers platform-independent logic.
+      # Run OS-sensitive TS tests on macOS/Windows for main pushes and manual dispatch.
       - name: Test TypeScript (cross-platform)
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && github.event_name != 'pull_request'
         env:
           CODEXHOST_TEST_SCOPE: platform
         run: >
@@ -194,23 +303,27 @@ jobs:
           -- -D warnings && npm run test:rust
 
       - name: Setup cargo-zigbuild
-        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
         run: |
           python3 -m venv "$RUNNER_TEMP/zigbuild"
           "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
             --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
           echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
 
-      # Keep packaging evidence even when an unrelated check fails; reuse this runner.
+      # Keep packaging evidence on main or native/release PRs; reuse this runner.
       - name: Smoke-test Linux npm package
-        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
         run: |
           npm run build:typescript
           node scripts/release/smoke-npm-package.mjs --target linux-x64 --version 0.1.6-ci.0
 
   check-linux-arm64:
     name: Check Linux ARM64
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
+    needs: changes
+    if: >-
+      needs.changes.outputs.skip != 'true' &&
+      needs.changes.outputs.docs_only != 'true' &&
+      (needs.changes.outputs.rust == 'true' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.platform == 'all'))
     runs-on: ubuntu-22.04-arm
     steps:
       - name: Checkout

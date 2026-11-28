@@ -45,6 +45,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/archive",
   THREAD_ARCHIVE_CONFIRM_METHOD,
   "thread/unarchive",
+  "thread/delete",
   "turn/start",
   "turn/interrupt",
   "turn/steer",

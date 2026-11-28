@@ -74,6 +74,22 @@ export function RowActionToast({
       />
     );
   }
+  if (toast.kind === "deleted") {
+    return (
+      <Toast
+        key={`toast-${String(toast.seq)}`}
+        text={
+          toast.failedChildren
+            ? t("delete.session.children.partial", { n: toast.failedChildren })
+            : t("toast.deleted")
+        }
+        {...(toast.failedChildren
+          ? { icon: <IconWarningOutlineRegular />, holdMs: LONG_TOAST_HOLD_MS }
+          : { tone: "success" as const })}
+        onDone={dismissToast}
+      />
+    );
+  }
   if (toast.kind === "createFailed" || toast.kind === "forkFailed") {
     return (
       <Toast
@@ -101,7 +117,7 @@ export function RowActionToast({
 function plainNoticeText(
   toast: Exclude<
     RowToastState,
-    { kind: "archived" | "stoppedAndArchived" | "createFailed" | "forkFailed" }
+    { kind: "archived" | "stoppedAndArchived" | "deleted" | "createFailed" | "forkFailed" }
   >,
   t: RowToastProps["t"],
 ): string {
@@ -110,6 +126,8 @@ function plainNoticeText(
       return t("toast.archiveFailed", { message: toast.message });
     case "unarchiveFailed":
       return t("toast.unarchiveFailed", { message: toast.message });
+    case "deleteFailed":
+      return t("toast.deleteFailed", { message: toast.message });
     case "pinFailed":
       return t("toast.pinFailed", { message: toast.message });
     case "unpinFailed":

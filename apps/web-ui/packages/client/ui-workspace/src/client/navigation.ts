@@ -129,6 +129,11 @@ export interface UiWorkspace {
    */
   unarchiveSession(sessionId: SessionId): Promise<void>;
   /**
+   * Delete a Session on the Host and clear it when it is the current selection.
+   * @param sessionId - Session to delete.
+   */
+  deleteSession?(sessionId: SessionId): Promise<void>;
+  /**
    * Pin a Session on the Host, then lead it in its accounts' saved orders
    * (its Workspace group or Ungrouped, and the flat list). The order write
    * reads the memberships current at completion, so reorders that landed
@@ -633,6 +638,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async unarchiveSession(sessionId: SessionId): Promise<void> {
     await this.workspaces.unarchiveSession(sessionId);
+  }
+
+  async deleteSession(sessionId: SessionId): Promise<void> {
+    if (!this.workspaces.deleteSession) {
+      throw new Error("Session deletion is unavailable");
+    }
+    await this.workspaces.deleteSession(sessionId);
+    if (this.mainReference?.sessionId === sessionId) this.clearMain();
   }
 
   async pinSession(sessionId: SessionId): Promise<void> {

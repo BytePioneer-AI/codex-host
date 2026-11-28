@@ -2867,6 +2867,12 @@ export class RemoteSessions {
                 sink.push({ type: "projection", sessionId: id, key, value, seq: 0 });
             return {};
           }
+          case "workspace/deleteSession":
+          case "session/delete": {
+            this.drafts.delete(id);
+            this.events.emit("api-session/removed", id);
+            return {};
+          }
           default:
             throw new RpcError(
               "remote/unsupported",
@@ -3279,6 +3285,46 @@ export class RemoteSessions {
         this.peerPinnedIds.set(identity.hostId, updatedPins);
       }
       return { pinnedSessionIds: this.syncPins() };
+    }
+    if (method === "workspace/deleteSession" || method === "session/delete") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+        throw new RpcError(
+          "remote/unsupported",
+          "Deleting Threads is unavailable for this remote host.",
+        );
+      }
+      let source = this.requireOnlinePeerSource(identity.hostId);
+      let entry = this.entries.get(id);
+      if (!entry) {
+        await this.refresh(identity.hostId);
+        source = this.requireOnlinePeerSource(identity.hostId);
+        entry = this.entries.get(id);
+      }
+      if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+      if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
+      try {
+        await source.deleteSession(identity.threadId);
+      } catch (error) {
+        if (isMethodUnavailableError(error)) {
+          throw new RpcError(
+            "remote/unsupported",
+            "This remote peer does not support deleting Threads.",
+          );
+        }
+        throw error;
+      }
+      if (this.entries.get(id) === entry) {
+        entry.view?.retire();
+        this.entries.delete(id);
+      }
+      const peerArchived = this.peerArchivedIds.get(identity.hostId);
+      if (peerArchived?.delete(identity.threadId)) this.syncArchives();
+      if (this.dropPeerPinnedThreads(identity.hostId, [identity.threadId])) this.syncPins();
+      this.events.emit("api-session/removed", id);
+      if (!this.closed) void this.refresh(identity.hostId).catch(() => undefined);
+      return {};
     }
     if (method === "session/unarchive" || method === "workspace/unarchiveSession") {
       const identity = remoteSessionIdentity(id);

@@ -145,6 +145,24 @@ export class PeerThreadSource {
     }
   }
 
+  forgetDeleted(threadId: string): void {
+    this.knownArchived.delete(threadId);
+    this.confirmedAncestors.delete(threadId);
+    this.tree.forget(threadId);
+    if (this.pinnedIds.includes(threadId)) {
+      this.pinnedIds = this.pinnedIds.filter((id) => id !== threadId);
+      this.pinSeq++;
+    }
+  }
+
+  async deleteSession(threadId: string): Promise<void> {
+    if (this.closed) {
+      throw new RpcError("remote/offline", "Remote peer host client is closed");
+    }
+    await this.host.request("thread/delete", { threadId });
+    if (!this.closed) this.forgetDeleted(threadId);
+  }
+
   private invalidateTree(nextEpoch: string | undefined, clearKnownArchived = false): void {
     this.treeGeneration++;
     this.listGeneration++;
@@ -217,6 +235,9 @@ export class PeerThreadSource {
         },
         archived: (threadId, archived) => {
           this.setArchived(threadId, archived);
+        },
+        deleted: (threadId) => {
+          this.forgetDeleted(threadId);
         },
         connection: (online) => {
           if (!online) {

@@ -61,6 +61,7 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "thread/metadata/update": "native",
   "thread/archive": "native",
   "thread/unarchive": "native",
+  "thread/delete": "native",
   "turn/start": "native",
   "turn/steer": "native",
   "turn/interrupt": "native",
@@ -119,6 +120,7 @@ export interface ClientChannelHostDependencies {
   /** Reads persisted handoff provenance without waking a cold Thread. */
   readThreadHandoff?(threadId: string): Promise<ThreadHandoffMetadata | null>;
   onNativeTurnStart?(): void;
+  onNativeThreadDeleted?(threadId: string): void | Promise<void>;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
   diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
@@ -162,11 +164,16 @@ export class ClientChannelHost {
       const params = value.params;
       const thread = isRecord(params.thread) ? params.thread : undefined;
       const id = typeof params.threadId === "string" ? params.threadId : thread?.id;
+      if (typeof id !== "string") return;
+      if (value.method === "thread/deleted") {
+        this.#clientOwnedThreads.delete(id);
+        this.clientEvents.changed(id, value.method);
+        return;
+      }
       if (
-        typeof id === "string" &&
-        (this.#clientOwnedThreads.has(id) ||
-          thread?.modelProvider === "codexhost" ||
-          this.#host.loadedThread(id))
+        this.#clientOwnedThreads.has(id) ||
+        thread?.modelProvider === "codexhost" ||
+        this.#host.loadedThread(id)
       ) {
         this.#clientOwnedThreads.add(id);
         this.clientEvents.changed(id, value.method);
@@ -412,7 +419,10 @@ export class ClientChannelHost {
         }
       }
       if (method === "turn/start") this.#host.onNativeTurnStart?.();
-      return normalize(await nativeChannel.request(method, nativeParams));
+      const reply = normalize(await nativeChannel.request(method, nativeParams));
+      if (method === "thread/delete" && !("error" in reply) && typeof params.threadId === "string")
+        await this.#host.onNativeThreadDeleted?.(params.threadId);
+      return reply;
     };
     const operation = native ? nativeSubmit : submit;
     if (native && method === "codexhost/thread/queue/send-now")

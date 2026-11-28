@@ -145,6 +145,14 @@ export interface WorkspaceUnarchiveSessionRequest {
   readonly scope?: "single";
 }
 
+/** Session requested for deletion from Workspace grouping surfaces. */
+export interface WorkspaceDeleteSessionRequest {
+  readonly sessionId: SessionId;
+}
+
+/** Result returned after deleting a Session. */
+export type WorkspaceDeleteSessionValue = Record<string, never>;
+
 /** Complete archived Session set after a mutation. */
 export interface WorkspaceArchiveValue {
   readonly archivedSessionIds: readonly SessionId[];

@@ -361,8 +361,10 @@ export type SessionRowActionProps<Injected extends object = object> =
 /** One transient Workspace notice rendered by the overlay toast entry. */
 export type RowToast =
   | { kind: "archived" | "stoppedAndArchived"; sessionId: SessionId; failedChildren?: number }
+  | { kind: "deleted"; failedChildren?: number }
   | { kind: "archiveFailed"; message: string }
   | { kind: "unarchiveFailed"; message: string }
+  | { kind: "deleteFailed"; message: string }
   | { kind: "pinFailed"; message: string }
   | { kind: "unpinFailed"; message: string }
   | { kind: "archivedNotOpenable" }
@@ -433,6 +435,26 @@ export interface ArchiveChildrenInjected {
   hooks: { archiveChildrenRequest: HostObservable<ArchiveChildrenRequest | null> };
   dismiss: () => void;
   choose: (request: ArchiveChildrenRequest, includeChildren: boolean) => void;
+}
+
+/** Delete action share (menu row): opens the delete confirmation dialog. */
+export interface DeleteSessionInjected {
+  requestSessionDelete: (sessionId: SessionId) => void;
+}
+
+/** A Session delete confirmation request, optionally including display-tree descendants. */
+export interface DeleteSessionRequest {
+  sessionId: SessionId;
+  title: string;
+  running: boolean;
+  children: readonly { id: SessionId; title: string; running: boolean }[];
+}
+
+/** Delete confirmation dialog share. */
+export interface DeleteSessionDialogInjected {
+  hooks: { deleteRequest: HostObservable<DeleteSessionRequest | null> };
+  dismiss: () => void;
+  deleteSession: (request: DeleteSessionRequest, includeChildren: boolean) => Promise<void>;
 }
 
 /**
@@ -549,6 +571,12 @@ export type SessionArchiveConfirmProps = PropsRuntime<"shell.overlay"> &
   PropsLocale<"workspace"> &
   Omit<SessionArchiveConfirmInjected, "hooks"> &
   PropsHooks<SessionArchiveConfirmInjected["hooks"]>;
+
+/** Props of the delete-session dialog entry in `shell.overlay`. */
+export type DeleteSessionDialogProps = PropsRuntime<"shell.overlay"> &
+  PropsLocale<"workspace"> &
+  Omit<DeleteSessionDialogInjected, "hooks"> &
+  PropsHooks<DeleteSessionDialogInjected["hooks"]>;
 
 /**
  * Props of the row toast entry in `shell.overlay`. The declared viewing store

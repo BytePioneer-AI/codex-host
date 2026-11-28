@@ -18,6 +18,13 @@ export class ChThreadTree {
     this.parents = {};
   }
 
+  forget(id: string): void {
+    delete this.parents[id];
+    for (const [child, parent] of Object.entries(this.parents)) {
+      if (parent === id) delete this.parents[child];
+    }
+  }
+
   async refresh(isCurrent: () => boolean = () => true): Promise<boolean> {
     const parents = clientThreadTreeSchema.parse(
       await this.host.request("codexhost/thread/tree/read", {}),

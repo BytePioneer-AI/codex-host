@@ -674,3 +674,70 @@ it("only reports official admission failures as notInstalled and preserves other
     await fixture.host.handleClientRequest("codexhost/harness/inspect", { harnessId: "codex" }),
   ).toMatchObject({ result: { status: "error", error: { message: "catalog query failed" } } });
 });
+
+it("routes thread/delete to native Codex and external Host and emits thread/deleted", async () => {
+  const events = new ClientChannelEvents();
+  const observed: Array<{ threadId: string; method: string }> = [];
+  events.subscribe((event) => {
+    if (event.type === "changed") observed.push({ threadId: event.threadId, method: event.method });
+  });
+  const nativeCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const submitted: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const forgotten: string[] = [];
+  const host = new ClientChannelHost({
+    events,
+    interactions: {
+      approvals: new Map(),
+      questions: () => new Map(),
+      isApprovalRequestId: (_value): _value is number => false,
+      isQuestionRequestId: (_value): _value is number => false,
+      respondApproval: async () => false,
+      respondQuestion: async () => false,
+    },
+    environment: () => ({}),
+    waitForPlugins: async () => {},
+    listRecords: async () => [],
+    listSectionPlacements: async () => [],
+    locateExternalThread: async (threadId) =>
+      threadId === "ext-1"
+        ? ({
+            kind: "external",
+            record: { hostThreadId: "ext-1" },
+          } as never)
+        : ({ kind: "official" } as const),
+    loadedThread: () => undefined,
+    clientHistoryTurns: () => [],
+    queueSnapshot: () => ({ items: [], pausedReason: null }),
+    onNativeThreadDeleted: (threadId) => {
+      forgotten.push(threadId);
+    },
+    native: {
+      events,
+      request: async (method, params) => {
+        nativeCalls.push({ method, params });
+        return { result: {} };
+      },
+      respond: async () => {},
+    },
+    submit: async (method, params) => {
+      submitted.push({ method, params });
+      host.observeDesktopMessage({ method: "thread/deleted", params: { threadId: "ext-1" } });
+      return { result: {} };
+    },
+  });
+
+  expect(await host.handleClientRequest("thread/delete", { threadId: "codex-1" })).toEqual({
+    result: {},
+  });
+  expect(nativeCalls).toEqual([{ method: "thread/delete", params: { threadId: "codex-1" } }]);
+  expect(forgotten).toEqual(["codex-1"]);
+
+  expect(await host.handleClientRequest("thread/delete", { threadId: "ext-1" })).toEqual({
+    result: {},
+  });
+  expect(submitted).toEqual([{ method: "thread/delete", params: { threadId: "ext-1" } }]);
+  expect(observed).toEqual([
+    { threadId: "codex-1", method: "thread/deleted" },
+    { threadId: "ext-1", method: "thread/deleted" },
+  ]);
+});

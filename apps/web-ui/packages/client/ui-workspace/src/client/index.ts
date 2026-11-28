@@ -43,6 +43,9 @@ import {
   type ArchiveChildrenRequest,
   type ArchiveSessionInjected,
   type CopySessionLinkInjected,
+  type DeleteSessionDialogInjected,
+  type DeleteSessionInjected,
+  type DeleteSessionRequest,
   type ForkSessionInjected,
   type MarkSessionUnreadInjected,
   menuOpenStateFactory,
@@ -69,6 +72,7 @@ import {
   SessionArchiveConfirmDialog,
 } from "./session-actions/ArchiveSession.tsx";
 import { ArchiveChildrenDialog } from "./session-actions/ArchiveChildrenDialog.tsx";
+import { DeleteSessionDialog, DeleteSessionMenuItem } from "./session-actions/DeleteSession.tsx";
 import { derive } from "./session-actions/derived.ts";
 import {
   MoveThreadSectionDialog,
@@ -92,7 +96,11 @@ import { RenameSessionMenuItem, SessionRenameDialog } from "./session-actions/Re
 import { RowActionToast } from "./session-actions/RowActionToast.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { en, zh, type WorkspaceKey } from "./locales.ts";
-import { archiveCandidates, runningSubagentsInThreadSubtree } from "./thread-tree-catalog.ts";
+import {
+  archiveCandidates,
+  deleteCandidates,
+  runningSubagentsInThreadSubtree,
+} from "./thread-tree-catalog.ts";
 
 export { ReferenceSessionMenuItem } from "./session-actions/ReferenceSession.tsx";
 export type {
@@ -248,6 +256,7 @@ export function apply(ctx: Context): void {
   const renameRequest = derive(shortcutControls.state, (state) => state.renameTarget);
   const archiveRequest = createSnapshotStore<SessionArchiveConfirmRequest | null>(null);
   const archiveChildrenRequest = createSnapshotStore<ArchiveChildrenRequest | null>(null);
+  const deleteRequest = createSnapshotStore<DeleteSessionRequest | null>(null);
   const requestSessionRename = shortcutControls.rename;
   const unarchiveSession = (sessionId: SessionId): void => {
     uiWorkspace.unarchiveSession(sessionId).catch((reason: unknown) => {
@@ -396,6 +405,41 @@ export function apply(ctx: Context): void {
       archiveRequest.set(null);
     },
     stopAndArchiveSession: (sessionId, children = []) => runArchive(sessionId, children, true),
+  });
+  const deleteInjected = (): DeleteSessionInjected => ({
+    requestSessionDelete: (sessionId) => {
+      const list = sessions.list.getSnapshot();
+      const summary = list.byId[sessionId];
+      deleteRequest.set({
+        sessionId,
+        title: summary?.displayTitle ?? sessionId,
+        running: summary?.running === true,
+        children: deleteCandidates(list, sessionId),
+      });
+    },
+  });
+  const deleteDialogInjected = (): DeleteSessionDialogInjected => ({
+    hooks: { deleteRequest },
+    dismiss: () => {
+      deleteRequest.set(null);
+    },
+    deleteSession: async (request, includeChildren) => {
+      let failedChildren = 0;
+      if (includeChildren) {
+        for (const child of request.children) {
+          try {
+            await uiWorkspace.deleteSession(child.id);
+          } catch {
+            failedChildren++;
+          }
+        }
+      }
+      await uiWorkspace.deleteSession(request.sessionId);
+      notify({
+        kind: "deleted",
+        ...(failedChildren > 0 ? { failedChildren } : {}),
+      });
+    },
   });
   const markUnreadInjected = (): MarkSessionUnreadInjected => ({
     hooks: { archived: archivedSet },
@@ -621,6 +665,16 @@ export function apply(ctx: Context): void {
       },
       ArchiveSessionMenuItem,
     );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "delete",
+        order: 500,
+        locale: NS,
+        inject: deleteInjected,
+      },
+      DeleteSessionMenuItem,
+    );
   });
   ctx.slots.inject("sidebar.workspaces.session.row.action", function* () {
     yield ctx.slots.register(
@@ -682,6 +736,15 @@ export function apply(ctx: Context): void {
         inject: chooseArchiveScope,
       },
       ArchiveChildrenDialog,
+    );
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "workspace.delete-session",
+        locale: NS,
+        inject: deleteDialogInjected,
+      },
+      DeleteSessionDialog,
     );
     // The toast shares the browser's viewing store: it reads the archived
     // filter to drop the archived notice's filter action once rows are visible.

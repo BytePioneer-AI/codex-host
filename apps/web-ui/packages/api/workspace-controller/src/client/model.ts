@@ -14,6 +14,8 @@ import type {
   WorkspaceBaseline,
   WorkspaceCreateRequest,
   WorkspaceCreateValue,
+  WorkspaceDeleteSessionRequest,
+  WorkspaceDeleteSessionValue,
   WorkspaceDeleteValue,
   WorkspaceInsertSessionBeforeRequest,
   WorkspaceOrderValue,
@@ -270,6 +272,23 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     const result = await this.remote.unarchiveSession({ sessionId, scope: "single" });
     if (result.ok && requestSeq === this.archiveRequestSeq) {
       this.installArchived(result.value.archivedSessionIds);
+    }
+    return result;
+  }
+
+  /** Delete one Session from the Host and prune any local archive/pin projection for it. */
+  async deleteSession(
+    sessionId: WorkspaceDeleteSessionRequest["sessionId"],
+  ): Promise<RemoteResult<WorkspaceDeleteSessionValue>> {
+    const result = await this.remote.deleteSession({ sessionId });
+    if (result.ok) {
+      this.pendingArchives.delete(sessionId);
+      if (this.archivedSessionIds.includes(sessionId)) {
+        this.installArchived(this.archivedSessionIds.filter((id) => id !== sessionId));
+      }
+      if (this.pinnedSessionIds.includes(sessionId)) {
+        this.installPinned(this.pinnedSessionIds.filter((id) => id !== sessionId));
+      }
     }
     return result;
   }

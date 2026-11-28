@@ -1149,6 +1149,7 @@ export class AppServerHost {
       queueSnapshot: (threadId) => this.#externalQueue.snapshot(threadId),
       readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
       onNativeTurnStart: () => this.#options.productTelemetry?.recordHarness("codex"),
+      onNativeThreadDeleted: (threadId) => this.#forgetDeletedThread(threadId),
       ...(this.#options.externalOnly
         ? {
             native: {

@@ -1089,13 +1089,17 @@ fn supervise_desktop(
         }
         result => {
             let _ = stop_desktop_controller(&mut controller);
+            let desktop_exit_status = desktop.try_wait().ok().flatten();
             let _ = desktop.kill();
             let _ = desktop.wait();
             return match result {
                 Err(error) => Err(error),
                 Ok(HostChainWaitOutcome::DesktopExited) => {
-                    let message =
+                    let mut message =
                         "Codex Desktop exited before starting the codexhost Host chain".to_owned();
+                    if let Some(status) = desktop_exit_status.as_ref() {
+                        message.push_str(&format!(" (exit status: {status})"));
+                    }
                     if retryable_appx {
                         Err(Box::new(TransientAppxStartupError(message)))
                     } else {

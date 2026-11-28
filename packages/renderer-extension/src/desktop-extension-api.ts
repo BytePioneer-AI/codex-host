@@ -76,6 +76,8 @@ export interface DesktopExtensionApiHostHooks {
   registerSettingsPage?(id: string, page: DesktopExtensionSettingsPageContribution): () => void;
   subscribeStorage?(id: string, listener: (values: Record<string, unknown>) => void): () => void;
   notifyStorage?(id: string, values: Record<string, unknown>): void;
+  onDomMount?(id: string, node: Element): void;
+  onDomReclaim?(id: string): void;
 }
 
 export function cloneStorageValues(values: Record<string, unknown>): Record<string, unknown> {
@@ -262,6 +264,7 @@ export function createDesktopExtensionApi(
           throw new Error("Use mount only for extension-owned DOM");
         nodes.add(node);
         parent[position](node);
+        hooks.onDomMount?.(id, node);
       },
       mark(target, name) {
         guard();
@@ -387,6 +390,7 @@ export function createDesktopExtensionApi(
         }
       }
       teardowns.clear();
+      hooks.onDomReclaim?.(id);
       for (const node of nodes) node.remove();
       nodes.clear();
       for (const [target, names] of marked)

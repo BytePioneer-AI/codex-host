@@ -484,6 +484,8 @@ export type DelegationControlErrorCode =
   | "CURSOR_EXPIRED"
   /** The Question request is unknown, already answered, or no longer pending. */
   | "QUESTION_NOT_PENDING"
+  /** The recipient Thread's pending mailbox reached its message or size limit. */
+  | "MAILBOX_FULL"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

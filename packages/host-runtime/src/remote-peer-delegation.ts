@@ -71,6 +71,7 @@ const VALID_ERROR_CODES: ReadonlySet<string> = new Set<DelegationControlErrorCod
   "UNAUTHORIZED",
   "CURSOR_EXPIRED",
   "QUESTION_NOT_PENDING",
+  "MAILBOX_FULL",
   "INTERNAL_ERROR",
 ]);
 
@@ -88,6 +89,7 @@ const CLIENT_SAFE_ERROR_MESSAGES: Readonly<Record<DelegationControlErrorCode, st
   UNAUTHORIZED: "Peer delegation request is unauthorized",
   CURSOR_EXPIRED: "Cursor expired on remote Peer",
   QUESTION_NOT_PENDING: "Question is no longer pending on remote Peer",
+  MAILBOX_FULL: "Mailbox is full on remote Peer",
   INTERNAL_ERROR: "Peer delegation operation failed",
 };
 

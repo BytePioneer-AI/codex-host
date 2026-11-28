@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 
 import { formatThreadWatchNotice } from "@codexhost/shared-contracts";
@@ -27,6 +28,10 @@ export interface ClientEventSink {
 }
 
 export { DEFAULT_WATCH_TIMEOUT_MS };
+/** Maximum pending mailbox messages kept for one recipient Thread. */
+export const MAX_MAILBOX_MESSAGES_PER_THREAD = 50;
+/** Maximum total UTF-8 bytes of pending mailbox messages kept for one recipient Thread. */
+export const MAX_MAILBOX_BYTES_PER_THREAD = 256 * 1024;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 /** How long a fired notification may wait for a busy or unreachable subscriber. */
 const DELIVERY_WINDOW_MS = 6 * 60 * 60_000;
@@ -344,6 +349,7 @@ export class DelegationWatchService {
     // Rejects unknown Threads, so a message is never kept for a missing recipient.
     const recipient = await this.#api.read({ threadId, view: "result" });
     const senderTitle = await this.#senderTitle(from);
+    this.#assertMailboxCapacity(threadId, message);
     const now = Date.now();
     await this.#add(
       {
@@ -663,12 +669,12 @@ export class DelegationWatchService {
       return;
     }
     if (!(await this.#subscriberReady(notifyThreadId, pending))) return;
-    pending = pending.filter((watch) => this.#deliverable(watch));
+    pending = this.#expirePending(pending.filter((watch) => this.#deliverable(watch)));
     if (pending.length === 0) return;
     for (const watch of pending) watch.delivering = true;
     // Recorded before sending, so a restart during the send delivers again instead of losing it.
     await Promise.all(pending.map((watch) => this.#persist(watch)));
-    pending = pending.filter((watch) => this.#deliverable(watch));
+    pending = this.#expirePending(pending.filter((watch) => this.#deliverable(watch)));
     if (pending.length === 0) return;
     try {
       await this.#api.send({ threadId: notifyThreadId, message: deliveryText(pending) });
@@ -847,6 +853,58 @@ export class DelegationWatchService {
     }
     for (const watch of restored) delete watch.deliverGraceUntil;
     return true;
+  }
+
+  #assertMailboxCapacity(threadId: string, message: string): void {
+    const queued = this.#watches.filter(
+      (entry) =>
+        entry.state === "pendingDelivery" &&
+        entry.notifyThreadId === threadId &&
+        entry.message !== undefined,
+    );
+    const active = [
+      ...queued.filter((entry) => entry.delivering),
+      ...this.#expirePending(queued.filter((entry) => !entry.delivering)),
+    ];
+    const messageBytes = Buffer.byteLength(message, "utf8");
+    const currentMessages = active.length;
+    if (currentMessages >= MAX_MAILBOX_MESSAGES_PER_THREAD) {
+      throw new DelegationControlError(
+        "MAILBOX_FULL",
+        `Mailbox for Thread ${threadId} already has ${MAX_MAILBOX_MESSAGES_PER_THREAD} pending messages`,
+        { maxMessages: MAX_MAILBOX_MESSAGES_PER_THREAD, currentMessages },
+      );
+    }
+    let currentBytes = 0;
+    for (const entry of active) {
+      currentBytes += Buffer.byteLength(entry.message ?? "", "utf8");
+    }
+    if (currentBytes + messageBytes > MAX_MAILBOX_BYTES_PER_THREAD) {
+      throw new DelegationControlError(
+        "MAILBOX_FULL",
+        `Mailbox for Thread ${threadId} would exceed its ${MAX_MAILBOX_BYTES_PER_THREAD}-byte pending limit`,
+        { maxBytes: MAX_MAILBOX_BYTES_PER_THREAD, currentBytes, messageBytes },
+      );
+    }
+  }
+
+  #expirePending(pending: readonly Watch[]): Watch[] {
+    const now = Date.now();
+    const active: Watch[] = [];
+    let expired = false;
+    for (const watch of pending) {
+      if (watch.deliveryDeadline !== undefined && now >= watch.deliveryDeadline) {
+        delete watch.delivering;
+        watch.state = "undeliverable";
+        watch.reason = "The delivery window ended before the Thread became free";
+        void this.#persist(watch);
+        expired = true;
+      } else {
+        active.push(watch);
+      }
+    }
+    if (expired) this.#trimUndeliverable();
+    return active;
   }
 
   #deliverable(watch: Watch): boolean {

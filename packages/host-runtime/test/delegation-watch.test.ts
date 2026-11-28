@@ -8,7 +8,11 @@ import {
   type DelegationThreadStatus,
   type ThreadSendInput,
 } from "../src/delegation-types.js";
-import { DelegationWatchService } from "../src/delegation-watch.js";
+import {
+  DelegationWatchService,
+  MAX_MAILBOX_BYTES_PER_THREAD,
+  MAX_MAILBOX_MESSAGES_PER_THREAD,
+} from "../src/delegation-watch.js";
 
 const POLL_MS = 1_000;
 
@@ -449,6 +453,88 @@ describe("DelegationWatchService", () => {
       code: "DELEGATION_FAILED",
     });
     await expect(service.watches()).resolves.toEqual({ watches: [] });
+  });
+
+  it("rejects mailbox writes once a recipient reaches the pending message count limit", async () => {
+    const fake = runtime({ coord: { status: "running" }, other: { status: "running" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    fake.sendFailures.push(busy());
+    for (let index = 0; index < MAX_MAILBOX_MESSAGES_PER_THREAD; index += 1) {
+      await expect(
+        service.mail({ threadId: "coord", message: `msg-${index}` }),
+      ).resolves.toMatchObject({ delivery: "mailbox" });
+    }
+    await expect(service.mail({ threadId: "coord", message: "overflow" })).rejects.toMatchObject({
+      code: "MAILBOX_FULL",
+    });
+    // Another recipient has its own mailbox quota.
+    fake.sendFailures.push(busy());
+    await expect(service.mail({ threadId: "other", message: "ok" })).resolves.toMatchObject({
+      delivery: "mailbox",
+    });
+    // Once delivered, the recipient accepts new mailbox messages again.
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent.map(({ threadId }) => threadId)).toEqual(["coord", "other"]);
+    fake.sendFailures.push(busy());
+    await expect(service.mail({ threadId: "coord", message: "fresh" })).resolves.toMatchObject({
+      delivery: "mailbox",
+    });
+  });
+
+  it("rejects mailbox writes that would exceed the per-recipient UTF-8 byte limit", async () => {
+    const fake = runtime({ coord: { status: "running" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    fake.sendFailures.push(busy());
+    // Multi-byte UTF-8 characters count by encoded byte length, not UTF-16 code units.
+    const filler = "你".repeat(Math.floor(MAX_MAILBOX_BYTES_PER_THREAD / 3) - 1);
+    await expect(service.mail({ threadId: "coord", message: filler })).resolves.toMatchObject({
+      delivery: "mailbox",
+    });
+    await expect(service.mail({ threadId: "coord", message: "123456" })).rejects.toMatchObject({
+      code: "MAILBOX_FULL",
+    });
+    const { watches } = await service.watches();
+    expect(watches).toHaveLength(1);
+    expect(watches[0]?.message).toBe(filler);
+  });
+
+  it("marks expired pending deliveries undeliverable before sending", async () => {
+    const fake = runtime({ coord: { status: "running" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    fake.sendFailures.push(busy(), busy());
+    await expect(service.mail({ threadId: "coord", message: "stale" })).resolves.toMatchObject({
+      delivery: "mailbox",
+    });
+    // Drain the immediate nudge while busy so only the regular poll remains.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.sent).toEqual([]);
+
+    // Advance just shy of 6 hours, reject once more while busy, then add a fresh message.
+    fake.sendFailures.push(busy(), busy());
+    vi.setSystemTime(Date.now() + 6 * 60 * 60_000 - 1_500);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent).toEqual([]);
+    await expect(service.mail({ threadId: "coord", message: "fresh" })).resolves.toMatchObject({
+      delivery: "mailbox",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.sent).toEqual([]);
+
+    // Cross the first message's 6-hour deadline before the Thread becomes free.
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.message).toContain("fresh");
+    expect(fake.sent[0]?.message).not.toContain("stale");
+    await expect(service.watches()).resolves.toMatchObject({
+      watches: [
+        {
+          threadId: "coord",
+          state: "undeliverable",
+          message: "stale",
+          reason: expect.stringContaining("delivery window ended"),
+        },
+      ],
+    });
   });
 
   it("treats a repeated registration as the same watch", async () => {

@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { remoteWorkspaceId } from "../src/remote-workspaces.ts";
+import { IDLE_VIEW_MS } from "../src/web-thread-state.ts";
 
 function paginatedUsageFixture(inspect: () => unknown) {
   const identity = { hostId: "remote-control:a", threadId: "same" };
@@ -61,6 +62,38 @@ function paginatedUsageFixture(inspect: () => unknown) {
   });
   return { identity, sessionId, host, row, calls, remote };
 }
+
+it("uses remote conversation recency for list and opened-session timestamps", async (t) => {
+  const { sessionId, row, remote } = paginatedUsageFixture(() => ({}));
+  t.after(() => remote.close());
+  Object.assign(row, { updatedAt: 2000, recencyAt: 1000 });
+  const rpc = new RpcRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  remote.install(rpc, new StreamRegistry());
+  await remote.refresh();
+  const result = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(result.ok);
+  const summary = (
+    result.value as {
+      items: Array<{
+        sessionId: string;
+        updatedAt: number;
+        projections: { values: Record<string, unknown> };
+      }>;
+    }
+  ).items.find((item) => item.sessionId === sessionId);
+  assert.equal(summary?.updatedAt, 1_000_000);
+  assert.deepEqual(summary?.projections.values.sessionListMetadata, {
+    blank: false,
+    lastPromptAt: 1_000_000,
+  });
+  const view = await remote.read(sessionId);
+  assert.deepEqual(view.log.projections.sessionListMetadata, {
+    blank: true,
+    lastPromptAt: 1_000_000,
+  });
+  assert.equal(view.thread.updatedAt, 2000, "history keeps the native update timestamp");
+});
 
 it("projects matching remote usage and makes repeat reads within the refresh period inexpensive", async (t) => {
   let usage = { cacheHitRatePercent: 97.8, totalCostUsd: 2.45 };
@@ -1631,6 +1664,12 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
               version: "1.0.0",
               icon: "data:image/png;base64,AA==",
             },
+            {
+              id: "antigravity",
+              name: "Antigravity",
+              version: "1.0.0",
+              icon: "data:image/png;base64,AA==",
+            },
           ],
         } as T;
       }
@@ -1639,6 +1678,22 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
           return {
             status: "notInstalled",
             error: { code: "unavailable", message: "No Codex", retryable: false },
+          } as T;
+        }
+        if (params.harnessId === "antigravity") {
+          return {
+            ...inspection,
+            catalog: {
+              ...inspection.catalog,
+              models: [
+                {
+                  ref: { id: "agy-one" },
+                  label: "Agy One",
+                  supportedThinkingOptionIds: ["medium"],
+                },
+              ],
+              defaultModel: { id: "agy-one" },
+            },
           } as T;
         }
         return inspection as T;
@@ -1884,6 +1939,24 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
   await sleep(160);
   assert.equal(snapshotCalls, snapsAfterClose);
 
+  // Bound Peer thread modelCatalog includes all ready Harnesses on that Peer for @ delegation
+  // while keeping routableProviders locked to the thread's bound Harness.
+  const boundCatalog = await rpc.dispatch("session/modelCatalog", {
+    args: { request: { sessionId: parentSessionId } },
+  });
+  assert.ok(boundCatalog.ok);
+  assert.deepEqual((boundCatalog.value as { routableProviders: string[] }).routableProviders, [
+    "claude-code",
+  ]);
+  assert.deepEqual(
+    (boundCatalog.value as { groups: Array<{ id: string }> }).groups.map((g) => g.id),
+    ["claude-code", "antigravity"],
+  );
+  const crossHarnessSelect = await rpc.dispatch("session/selectModel", {
+    args: { request: { sessionId: parentSessionId, provider: "antigravity", model: "agy-one" } },
+  });
+  assert.equal(crossHarnessSelect.ok, false);
+
   // 3. Peer draft modelCatalog uses source.catalog.models() without projectHarnesses/inspectHarness ops.
   const ws = defined(workspaces.list().find((w) => w.remote?.hostId === hostId));
   const created = await rpc.dispatch("session/create", {
@@ -1897,6 +1970,7 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
   assert.ok(draftCatalog.ok);
   assert.deepEqual((draftCatalog.value as { routableProviders: string[] }).routableProviders, [
     "claude-code",
+    "antigravity",
   ]);
   assert.equal(
     opLog.some((op) => op.kind === "projectHarnesses" || op.kind === "inspectHarness"),
@@ -4827,6 +4901,510 @@ it("merges remote sessions into session/search with case-insensitive matching, b
   assert.ok(emptyVal.items.some((item) => item.sessionId.startsWith("web-remote:")));
 });
 
+function createPeerIdleFixture(options: {
+  hostId: string;
+  threads: ChThread[];
+  interactionsByThread?: Map<string, unknown[]>;
+  onTurnsList?: (
+    threadId: string,
+    params: Record<string, unknown>,
+    defaultReply: () => unknown,
+  ) => unknown | Promise<unknown>;
+}) {
+  const epoch = randomUUID();
+  const threadMap = new Map(options.threads.map((row) => [row.id, row]));
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+  let snapshotCalls = 0;
+  let inspectCalls = 0;
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        snapshotCalls++;
+        const threadId = String(input.threadId);
+        const row = defined(threadMap.get(threadId));
+        return {
+          cursor: { epoch, sequence: 1 },
+          thread: { ...row, turns: [] },
+          turnsPage: {
+            data: structuredClone(row.turns.slice(-5).reverse()),
+            nextCursor: row.turns.length > 5 ? (row.turns.at(-5)?.id ?? null) : null,
+          },
+          configuration: {},
+          queue: { items: [], pausedReason: null },
+          interactions: options.interactionsByThread?.get(threadId) ?? [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      const params = (input.params ?? {}) as Record<string, unknown>;
+      if (method === "codexhost/thread/catalog/read") {
+        const visible = [...threadMap.values()];
+        return {
+          threads: visible.map((row) => ({ ...row, turns: [] })),
+          ownership: visible.map((row) => ({ threadId: row.id, owner: "codex" })),
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/harness/plugins/list") return { plugins: [] } as T;
+      if (method === "codexhost/harness/inspect") {
+        return {
+          status: "notInstalled",
+          error: { code: "unavailable", message: "No Codex", retryable: false },
+        } as T;
+      }
+      if (method === "codexhost/thread/inspect") {
+        inspectCalls++;
+        return { owner: "codex", locked: true } as T;
+      }
+      if (method === "thread/turns/list") {
+        const threadId = String(params.threadId);
+        const defaultReply = () => {
+          const row = defined(threadMap.get(threadId));
+          const ordered = [...row.turns].reverse();
+          const anchor = typeof params.cursor === "string" ? params.cursor : undefined;
+          const start = anchor ? ordered.findIndex((turn) => turn.id === anchor) + 1 : 0;
+          const limit = Number(params.limit ?? 5);
+          const page = ordered.slice(start, start + limit);
+          return {
+            data: structuredClone(page),
+            nextCursor: start + page.length < ordered.length ? (page.at(-1)?.id ?? null) : null,
+          };
+        };
+        return (
+          options.onTurnsList
+            ? await options.onTurnsList(threadId, params, defaultReply)
+            : defaultReply()
+        ) as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-idle",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId: options.hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(options.hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(options.hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(options.hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(options.hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === options.hostId ? source : undefined);
+
+  const discarded: string[] = [];
+  const originalDiscard = source.discard.bind(source);
+  source.discard = (threadId: string) => {
+    discarded.push(threadId);
+    originalDiscard(threadId);
+  };
+
+  const remote = new RemoteSessions(
+    new EventHub("peer-idle-eviction"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId: options.hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Idle",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "usage") {
+        return { threadId: op.threadId, usage: { totalCostUsd: 0 } };
+      }
+      throw new Error(`Unexpected legacy op: ${op.kind}`);
+    },
+    undefined,
+    peerProvider,
+  );
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  for (const method of ["session/projections", "session/page"]) {
+    rpc.register(method, () => ({}));
+  }
+  let streamRouter: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+  streams.routeSessions = (value) => {
+    streamRouter = value;
+  };
+  remote.install(rpc, streams);
+
+  let sinkCounter = 0;
+  const openFollow = async (sessionId: string) => {
+    const frames: unknown[] = [];
+    const closeListeners: Array<() => void> = [];
+    let isClosed = false;
+    const close = () => {
+      if (isClosed) return;
+      isClosed = true;
+      for (const fn of closeListeners.splice(0)) fn();
+    };
+    await defined(streamRouter)(
+      "session/follow",
+      { request: { address: { sessionId } } },
+      {
+        id: `follow-${++sinkCounter}`,
+        get closed() {
+          return isClosed;
+        },
+        push: (frame) => {
+          if (!isClosed) frames.push(frame);
+        },
+        end: close,
+        fail: close,
+        onClose: (fn) => {
+          if (isClosed) fn();
+          else closeListeners.push(fn);
+        },
+      },
+      async () => {},
+    );
+    return { frames, close };
+  };
+
+  const openControl = async () => {
+    const frames: unknown[] = [];
+    const closeListeners: Array<() => void> = [];
+    let isClosed = false;
+    const close = () => {
+      if (isClosed) return;
+      isClosed = true;
+      for (const fn of closeListeners.splice(0)) fn();
+    };
+    await defined(streamRouter)(
+      "session/control",
+      {},
+      {
+        id: `control-${++sinkCounter}`,
+        get closed() {
+          return isClosed;
+        },
+        push: (frame) => {
+          if (!isClosed) frames.push(frame);
+        },
+        end: close,
+        fail: close,
+        onClose: (fn) => {
+          if (isClosed) fn();
+          else closeListeners.push(fn);
+        },
+      },
+      async (wrapped) => {
+        wrapped.push({ type: "baseline", value: { projections: {} } });
+      },
+    );
+    return { frames, close };
+  };
+
+  return {
+    remote,
+    source,
+    rpc,
+    discarded,
+    get snapshotCalls() {
+      return snapshotCalls;
+    },
+    get inspectCalls() {
+      return inspectCalls;
+    },
+    openFollow,
+    openControl,
+    close() {
+      remote.close();
+      source.close();
+    },
+  };
+}
+
+it("evicts unfollowed idle Peer views from RemoteSessions and PeerThreadSource after IDLE_VIEW_MS and advances seq on reopen", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const hostId = "remote-peer:peer-evict";
+  const makeTurns = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `turn-${i + 1}`,
+      status: "completed",
+      items: [
+        { id: `u-${i + 1}`, type: "userMessage", content: [{ type: "text", text: `Q${i + 1}` }] },
+        { id: `a-${i + 1}`, type: "agentMessage", text: `A${i + 1}` },
+      ],
+    }));
+  const row: ChThread = {
+    id: "t-idle",
+    cwd: "/remote/repo",
+    name: "Idle Peer Thread",
+    modelProvider: "openai",
+    historyMode: "paginated",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    turns: makeTurns(8),
+  };
+
+  const f = createPeerIdleFixture({ hostId, threads: [row] });
+  t.after(() => f.close());
+  await f.remote.refresh();
+
+  const sessionId = remoteSessionId(hostId, row.id);
+  const control = await f.openControl();
+  const firstFollow = await f.openFollow(sessionId);
+  const firstSnap = defined(firstFollow.frames[0]) as {
+    type: string;
+    cursor: number;
+    records: Array<{ event: { seq: number } }>;
+  };
+  assert.equal(firstSnap.type, "snapshot");
+  assert.equal(f.snapshotCalls, 1);
+  assert.equal(f.inspectCalls, 1);
+  const firstView = f.source.history(row.id, sessionId);
+  firstFollow.close();
+
+  const t0 = Date.now();
+  // Before IDLE_VIEW_MS: view stays alive in both RemoteSessions and PeerThreadSource.
+  f.remote.discardIdleViews(t0);
+  f.remote.discardIdleViews(t0 + IDLE_VIEW_MS - 1);
+  assert.deepEqual(f.discarded, []);
+  assert.equal(f.source.history(row.id, sessionId), firstView);
+  const projBefore = await f.rpc.dispatch("session/projections", {
+    args: { request: { sessionId } },
+  });
+  assert.equal(projBefore.ok, true);
+  assert.equal(f.snapshotCalls, 1);
+
+  // At IDLE_VIEW_MS: synchronized retirement drops entry.view and PeerThreadSource.histories.
+  f.remote.discardIdleViews(t0 + IDLE_VIEW_MS);
+  assert.deepEqual(f.discarded, [row.id]);
+  await assert.rejects(firstView.refresh(true), { code: "host/resync" });
+
+  // Unchanged catalog refresh while retired does not emit redundant control projection frames.
+  control.frames.length = 0;
+  await f.remote.refresh(hostId);
+  assert.equal(control.frames.length, 0);
+
+  // Reopening seamlessly rebuilds a fresh view with strictly advancing seq (no regression).
+  const snapsBeforeReopen = f.snapshotCalls;
+  const secondFollow = await f.openFollow(sessionId);
+  const secondSnap = defined(secondFollow.frames[0]) as {
+    type: string;
+    cursor: number;
+    records: Array<{ event: { seq: number } }>;
+  };
+  assert.equal(secondSnap.type, "snapshot");
+  assert.equal(f.snapshotCalls, snapsBeforeReopen + 1);
+  assert.equal(f.inspectCalls, 2);
+  const secondView = f.source.history(row.id, sessionId);
+  assert.notEqual(secondView, firstView);
+  assert.ok(secondSnap.cursor >= firstSnap.cursor + 2);
+  assert.ok(secondSnap.records.every((record) => record.event.seq > firstSnap.cursor));
+
+  // Periodic 60s timer automatically evicts after the second follower leaves and IDLE_VIEW_MS passes.
+  secondFollow.close();
+  f.discarded.length = 0;
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(f.discarded, []);
+  t.mock.timers.tick(IDLE_VIEW_MS - 60_000);
+  assert.deepEqual(f.discarded, []);
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(f.discarded, [row.id]);
+  await assert.rejects(secondView.refresh(true), { code: "host/resync" });
+  control.close();
+});
+
+it("protects followed, running, pending-interaction, and in-flight paging Peer views from idle eviction", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const hostId = "remote-peer:peer-protect";
+  const makeTurns = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `turn-${i + 1}`,
+      status: "completed",
+      items: [
+        { id: `u-${i + 1}`, type: "userMessage", content: [{ type: "text", text: `Q${i + 1}` }] },
+        { id: `a-${i + 1}`, type: "agentMessage", text: `A${i + 1}` },
+      ],
+    }));
+
+  const followedRow: ChThread = {
+    id: "t-followed",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    historyMode: "paginated",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    turns: makeTurns(2),
+  };
+  const runningRow: ChThread = {
+    id: "t-running",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    historyMode: "paginated",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "active" },
+    turns: makeTurns(2),
+  };
+  const approvalRow: ChThread = {
+    id: "t-approval",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    historyMode: "paginated",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    turns: makeTurns(2),
+  };
+  const pagingRow: ChThread = {
+    id: "t-paging",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    historyMode: "paginated",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    turns: makeTurns(10),
+  };
+
+  const pagingStarted = Promise.withResolvers<undefined>();
+  const releasePaging = Promise.withResolvers<undefined>();
+  t.after(() => releasePaging.resolve(undefined));
+
+  const interactionsByThread = new Map<string, unknown[]>([
+    [
+      approvalRow.id,
+      [
+        {
+          requestId: "approval-1",
+          threadId: approvalRow.id,
+          kind: "approval",
+          request: { method: "item/commandExecution/requestApproval", params: { command: "ls" } },
+          interaction: {
+            type: "approval",
+            title: "Run ls?",
+            subject: { command: "ls" },
+            actions: [
+              { id: "accept", label: "Allow", effect: "allowOnce" },
+              { id: "decline", label: "Deny", effect: "deny" },
+            ],
+          },
+        },
+      ],
+    ],
+  ]);
+
+  const f = createPeerIdleFixture({
+    hostId,
+    threads: [followedRow, runningRow, approvalRow, pagingRow],
+    interactionsByThread,
+    onTurnsList: async (threadId, _params, defaultReply) => {
+      if (threadId === pagingRow.id) {
+        pagingStarted.resolve(undefined);
+        await releasePaging.promise;
+      }
+      return defaultReply();
+    },
+  });
+  t.after(() => f.close());
+  await f.remote.refresh();
+
+  const followedId = remoteSessionId(hostId, followedRow.id);
+  const runningId = remoteSessionId(hostId, runningRow.id);
+  const approvalId = remoteSessionId(hostId, approvalRow.id);
+  const pagingId = remoteSessionId(hostId, pagingRow.id);
+
+  const followedSink = await f.openFollow(followedId);
+  const runningSink = await f.openFollow(runningId);
+  const approvalSink = await f.openFollow(approvalId);
+  const pagingSink = await f.openFollow(pagingId);
+  const pagingSnap = defined(pagingSink.frames[0]) as {
+    cursor: number;
+    records: Array<{ event: { seq: number } }>;
+  };
+
+  const views = {
+    followed: f.source.history(followedRow.id, followedId),
+    running: f.source.history(runningRow.id, runningId),
+    approval: f.source.history(approvalRow.id, approvalId),
+    paging: f.source.history(pagingRow.id, pagingId),
+  };
+
+  // Unfollow running, approval, and paging; keep followed attached.
+  runningSink.close();
+  approvalSink.close();
+  pagingSink.close();
+
+  // Start an in-flight session/page read on pagingRow.
+  const pagePromise = f.rpc.dispatch("session/page", {
+    args: {
+      request: {
+        sessionId: pagingId,
+        throughSeq: pagingSnap.cursor,
+        beforeSeq: defined(pagingSnap.records[0]).event.seq,
+      },
+    },
+  });
+  await pagingStarted.promise;
+
+  // Even past IDLE_VIEW_MS, all four views stay protected.
+  f.remote.discardIdleViews();
+  t.mock.timers.tick(IDLE_VIEW_MS + 60_000);
+  f.remote.discardIdleViews();
+  assert.deepEqual(f.discarded, []);
+  assert.equal(f.source.history(followedRow.id, followedId), views.followed);
+  assert.equal(f.source.history(runningRow.id, runningId), views.running);
+  assert.equal(f.source.history(approvalRow.id, approvalId), views.approval);
+  assert.equal(f.source.history(pagingRow.id, pagingId), views.paging);
+
+  // Completing session/page refreshes historyReadAt and resets idle countdown.
+  releasePaging.resolve(undefined);
+  const pageResult = await pagePromise;
+  assert.equal(pageResult.ok, true);
+
+  f.remote.discardIdleViews();
+  t.mock.timers.tick(IDLE_VIEW_MS - 1);
+  f.remote.discardIdleViews();
+  assert.deepEqual(f.discarded, []);
+  assert.equal(f.source.history(pagingRow.id, pagingId), views.paging);
+
+  t.mock.timers.tick(1);
+  f.remote.discardIdleViews();
+  assert.deepEqual(f.discarded, [pagingRow.id]);
+
+  // Once running turns idle and followed unfollows, they evict after a fresh IDLE_VIEW_MS.
+  runningRow.status = { type: "idle" };
+  await f.remote.read(runningId, true);
+  followedSink.close();
+  f.remote.discardIdleViews();
+  t.mock.timers.tick(IDLE_VIEW_MS - 1);
+  f.remote.discardIdleViews();
+  assert.deepEqual(f.discarded, [pagingRow.id]);
+
+  t.mock.timers.tick(1);
+  f.remote.discardIdleViews();
+  assert.deepEqual(new Set(f.discarded), new Set([pagingRow.id, runningRow.id, followedRow.id]));
+  assert.equal(f.source.history(approvalRow.id, approvalId), views.approval);
+});
+
 it("re-inspects remote peer external Threads when configuration confirms via snapshot or configuration update", async (t) => {
   const hostId = "remote-peer:peer-config-sync";
   const epoch = "88888888-8888-4888-8888-888888888888";
@@ -5034,4 +5612,285 @@ it("re-inspects remote peer external Threads when configuration confirms via sna
   await inFlight;
   await remote.read(sessionId, true);
   assert.deepEqual(firstView.log.projections.permissions, { currentValue: "default" });
+});
+
+it("forwards and syncs remote Peer pins bidirectionally, isolates Desktop remote hosts, and cleans up on archive or peer removal", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "remote-peer-pins-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const peerHostId = "remote-peer:peer-pins-hub";
+  const desktopHostId = "remote-ssh:desktop-box";
+  const epoch = randomUUID();
+  let peerOnline = true;
+  let peerPresent = true;
+  let peerPinsUnsupported = false;
+  let peerPinned = ["t-1"];
+  const peerArchived = new Set<string>();
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+
+  const peerThreads = new Map<string, ChThread>([
+    [
+      "t-1",
+      {
+        id: "t-1",
+        cwd: "/remote/repo",
+        name: "Peer Thread 1",
+        modelProvider: "codexhost",
+        createdAt: 100,
+        updatedAt: 200,
+        status: { type: "idle" },
+        turns: [],
+      },
+    ],
+    [
+      "t-2",
+      {
+        id: "t-2",
+        cwd: "/remote/repo",
+        name: "Peer Thread 2",
+        modelProvider: "openai",
+        createdAt: 110,
+        updatedAt: 210,
+        status: { type: "idle" },
+        turns: [],
+      },
+    ],
+  ]);
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        const row = defined(peerThreads.get(String(input.threadId)));
+        return {
+          cursor: { epoch, sequence: 1 },
+          thread: { ...row, turns: [] },
+          turnsPage: { data: [], nextCursor: null },
+          configuration: {},
+          queue: { items: [], pausedReason: null },
+          interactions: [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      const params = (input.params ?? {}) as Record<string, unknown>;
+      if (method === "codexhost/thread/catalog/read") {
+        const visible = [...peerThreads.values()].filter((row) => !peerArchived.has(row.id));
+        return {
+          threads: visible.map((row) => ({ ...row, turns: [] })),
+          ownership: visible.map((row) =>
+            row.modelProvider === "codexhost"
+              ? { threadId: row.id, owner: "external", harnessId: "claude-code" }
+              : { threadId: row.id, owner: "codex" },
+          ),
+          officialCursor: { live: null },
+          archivedThreadIds: [...peerArchived],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/thread/pins/list") {
+        if (peerPinsUnsupported) {
+          throw new RpcError("remote/request-failed", "Method not found", { hostCode: -32601 });
+        }
+        return { threadIds: [...peerPinned] } as T;
+      }
+      if (method === "codexhost/thread/pins/set") {
+        if (peerPinsUnsupported) {
+          throw new RpcError("remote/request-failed", "Method not found", { hostCode: -32601 });
+        }
+        const threadId = String(params.threadId);
+        const pinned = Boolean(params.pinned);
+        peerPinned = pinned
+          ? [...new Set([...peerPinned, threadId])]
+          : peerPinned.filter((id) => id !== threadId);
+        return { threadIds: [...peerPinned] } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") return { plugins: [] } as T;
+      throw new Error(`Unexpected peer rpc: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => listeners.delete(listener);
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-box",
+      epoch,
+      projects: [{ id: "p1", name: "Repo", path: "/remote/repo", threadIds: ["t-1", "t-2"] }],
+    }),
+  };
+
+  const workspaces = new Workspaces(new DataDir(dir), dir, true);
+  workspaces.setReferencePins(["local-1"]);
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+
+  const peerProvider: RemotePeerProvider = {
+    source: () => undefined,
+    client: (h) =>
+      h === peerHostId && peerPresent
+        ? ({ state: peerOnline ? "connected" : "disconnected" } as never)
+        : undefined,
+  };
+  const source = new PeerThreadSource({
+    hostId: peerHostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(peerHostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(peerHostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(peerHostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(peerHostId, e, full),
+  });
+  peerProvider.source = (h) => (h === peerHostId && peerPresent ? source : undefined);
+
+  const remote = new RemoteSessions(
+    new EventHub("remote-peer-pins"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          ...(peerPresent
+            ? [
+                {
+                  hostId: peerHostId,
+                  online: peerOnline,
+                  epoch,
+                  displayName: "Peer Box",
+                  projects: [
+                    { id: "p1", name: "Repo", path: "/remote/repo", threadIds: ["t-1", "t-2"] },
+                  ],
+                },
+              ]
+            : []),
+          {
+            hostId: desktopHostId,
+            online: true,
+            epoch: "desktop-epoch",
+            displayName: "Desktop SSH",
+            projects: [{ id: "d1", name: "SSH Repo", path: "/ssh/repo", threadIds: ["d-1"] }],
+          },
+        ];
+      }
+      if (op.kind === "list" && op.hostId === desktopHostId) {
+        return {
+          data: [
+            {
+              id: "d-1",
+              cwd: "/ssh/repo",
+              name: "Desktop Remote Thread",
+              modelProvider: "openai",
+              createdAt: 100,
+              updatedAt: 200,
+              status: { type: "idle" },
+            },
+          ],
+          nextCursor: null,
+          epoch: "desktop-epoch",
+        };
+      }
+      if (op.kind === "archive" && op.hostId === peerHostId) {
+        if (op.archived) {
+          peerArchived.add(op.threadId);
+          peerPinned = peerPinned.filter((id) => id !== op.threadId);
+        } else {
+          peerArchived.delete(op.threadId);
+        }
+        return { accepted: true };
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  remote.install(rpc, streams);
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const peerSid1 = remoteSessionId(peerHostId, "t-1");
+  const peerSid2 = remoteSessionId(peerHostId, "t-2");
+  const desktopSid = remoteSessionId(desktopHostId, "d-1");
+
+  // 1. Initial refresh aggregates Peer's pinned threads alongside Hub's local pins.
+  await remote.refresh();
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1", peerSid1]);
+
+  // 2. Pinning a Peer thread forwards to Peer Host and returns merged local + remote pins.
+  const pinReply = await rpc.dispatch("workspace/pinSession", {
+    args: { request: { sessionId: peerSid2 } },
+  });
+  assert.deepEqual(pinReply, {
+    ok: true,
+    value: { pinnedSessionIds: ["local-1", peerSid1, peerSid2] },
+  });
+  assert.deepEqual(peerPinned, ["t-1", "t-2"]);
+
+  // 3. Unpinning a Peer thread forwards and updates Hub projection.
+  const unpinReply = await rpc.dispatch("workspace/unpinSession", {
+    args: { request: { sessionId: peerSid1 } },
+  });
+  assert.deepEqual(unpinReply, {
+    ok: true,
+    value: { pinnedSessionIds: ["local-1", peerSid2] },
+  });
+  assert.deepEqual(peerPinned, ["t-2"]);
+
+  // 4. Remote codexhost/thread/pins/changed notification syncs peer-side pin changes to Hub.
+  peerPinned = ["t-1", "t-2"];
+  for (const listener of listeners) {
+    listener({
+      type: "changed",
+      cursor: { epoch, sequence: 5 },
+      method: "codexhost/thread/pins/changed",
+      threadId: "t-1",
+    });
+  }
+  const deadline = Date.now() + 2000;
+  while (!workspaces.pinnedSessionIds().includes(peerSid1)) {
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for remote pins/changed sync");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1", peerSid1, peerSid2]);
+
+  // 5. Archiving a pinned Peer thread drops it from pinnedSessionIds without leaving an orphan.
+  const archiveReply = await rpc.dispatch("workspace/archiveSession", {
+    args: { request: { sessionId: peerSid1 } },
+  });
+  assert.equal(archiveReply.ok, true);
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1", peerSid2]);
+
+  // 6. Codex Desktop non-Peer remote sessions still reject pin with remote/unsupported.
+  const desktopPin = await rpc.dispatch("workspace/pinSession", {
+    args: { request: { sessionId: desktopSid } },
+  });
+  assert.equal(desktopPin.ok, false);
+  if (!desktopPin.ok) assert.equal(desktopPin.error.code, "remote/unsupported");
+
+  // 7. Legacy peer returning -32601 on pins/set returns remote/unsupported.
+  peerPinsUnsupported = true;
+  const legacyPin = await rpc.dispatch("workspace/unpinSession", {
+    args: { request: { sessionId: peerSid2 } },
+  });
+  assert.equal(legacyPin.ok, false);
+  if (!legacyPin.ok) assert.equal(legacyPin.error.code, "remote/unsupported");
+  peerPinsUnsupported = false;
+
+  // 8. Offline Peer rejects pin with remote/offline.
+  peerOnline = false;
+  for (const listener of listeners) listener({ type: "connection", online: false });
+  const offlinePin = await rpc.dispatch("workspace/unpinSession", {
+    args: { request: { sessionId: peerSid2 } },
+  });
+  assert.equal(offlinePin.ok, false);
+  if (!offlinePin.ok) assert.equal(offlinePin.error.code, "remote/offline");
+
+  // 9. Removing the Peer clears its remote pins while preserving local Hub pins.
+  peerPresent = false;
+  await remote.refresh();
+  assert.deepEqual(workspaces.pinnedSessionIds(), ["local-1"]);
 });

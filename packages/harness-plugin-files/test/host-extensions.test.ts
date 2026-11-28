@@ -13,6 +13,7 @@ import {
   DEFAULT_HOST_EXTENSION_STATS_URL,
   discoverHostExtensions,
   ExtensionDownloadError,
+  fetchCachedCatalogIcon,
   fetchHostExtensionCatalog,
   HostExtensionInstallConflict,
   HostExtensionRevisionConflict,
@@ -20,12 +21,14 @@ import {
   hostExtensionDataRoot,
   hostExtensionsRoot,
   installHostExtension,
+  markDefaultHostExtensionSeeded,
   prepareHostExtension,
   readHostExtension,
   readHostExtensionAsset,
   readHostExtensionBackend,
   readHostExtensionConfiguration,
   readHostExtensionSettings,
+  readSeededDefaultHostExtensions,
   reportHostExtensionInstall,
   resolveHostExtensionStatsUrl,
   rollbackHostExtension,
@@ -726,5 +729,70 @@ it("retries transient download errors and falls back to cached catalog during fo
   ).rejects.toSatisfy(
     (error: unknown) =>
       error instanceof ExtensionDownloadError && error.message === "Download timed out",
+  );
+});
+
+it("persists one-time default extension seed markers invisibly to extension discovery", async () => {
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual([]);
+  await expect(markDefaultHostExtensionSeeded(dataDir, "../invalid")).rejects.toThrow();
+
+  expect(await markDefaultHostExtensionSeeded(dataDir, "sidebar-thread-tree")).toEqual([
+    "sidebar-thread-tree",
+  ]);
+  expect(await markDefaultHostExtensionSeeded(dataDir, "sidebar-thread-tree")).toEqual([
+    "sidebar-thread-tree",
+  ]);
+  expect(await readSeededDefaultHostExtensions(dataDir)).toEqual(["sidebar-thread-tree"]);
+  expect(
+    JSON.parse(
+      await readFile(path.join(hostExtensionsRoot(dataDir), ".default-extensions.json"), "utf8"),
+    ),
+  ).toEqual({ version: 1, seeded: ["sidebar-thread-tree"] });
+  expect(await discoverHostExtensions(dataDir)).toMatchObject({
+    extensions: [],
+    diagnostics: [],
+  });
+});
+
+it("caches catalog icons to disk with signature validation and supports stripping screenshots from list discovery", async () => {
+  await installHostExtension({
+    dataDir,
+    source: zipSource(
+      manifest("with-shots", { page, icon: "icon.png", screenshots: ["shot.png"] }),
+      {
+        [page.entry]: script,
+        [page.style]: "body {}",
+        "icon.png": png,
+        "shot.png": png,
+      },
+    ),
+  });
+  const slim = await discoverHostExtensions(dataDir, { includeScreenshots: false });
+  const entry = slim.extensions.find((item) => item.id === "with-shots");
+  expect(entry).toMatchObject({
+    state: "valid",
+    iconDataUrl: `data:image/png;base64,${png.toString("base64")}`,
+  });
+  expect(entry && entry.state === "valid" ? entry.screenshotDataUrls : undefined).toBeUndefined();
+
+  const iconUrl = `https://cdn.example.com/icons/${Date.now()}-valid.png`;
+  const badIconUrl = `https://cdn.example.com/icons/${Date.now()}-bad.png`;
+  let fetches = 0;
+  vi.stubGlobal("fetch", async (request: string) => {
+    fetches += 1;
+    if (request === iconUrl) return new Response(Uint8Array.from(png));
+    if (request === badIconUrl) return new Response("not-a-png");
+    throw new Error(`Unexpected URL ${request}`);
+  });
+
+  const first = await fetchCachedCatalogIcon({ dataDir, iconUrl });
+  expect(first.mimeType).toBe("image/png");
+  expect(first.bytes.equals(png)).toBe(true);
+  const second = await fetchCachedCatalogIcon({ dataDir, iconUrl });
+  expect(second.bytes.equals(png)).toBe(true);
+  expect(fetches).toBe(1);
+
+  await expect(fetchCachedCatalogIcon({ dataDir, iconUrl: badIconUrl })).rejects.toThrow(
+    "Unsupported catalog icon image signature",
   );
 });

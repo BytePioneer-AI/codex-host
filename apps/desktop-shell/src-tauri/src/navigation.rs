@@ -14,6 +14,40 @@ pub(crate) fn embedded(path: &str) -> Url {
     Url::parse(&format!("{APP_ORIGIN}{path}")).expect("bundled page URL")
 }
 
+pub(crate) fn valid_host_route(route: &str) -> bool {
+    route.len() <= 2048
+        && (route == "/" || route.starts_with("/?") || route.starts_with("/#"))
+        && !route
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace() || value == '\\')
+        && Url::parse("http://127.0.0.1/")
+            .and_then(|base| base.join(route))
+            .is_ok_and(|target| {
+                target.host_str() == Some("127.0.0.1")
+                    && target.path() == "/"
+                    && !target
+                        .query_pairs()
+                        .any(|(name, _)| name.eq_ignore_ascii_case("token"))
+            })
+}
+
+pub(crate) fn apply_host_route(url: &mut Url, route: &str) {
+    if !valid_host_route(route) {
+        return;
+    }
+    if let Ok(target) = url.join(route) {
+        let token = url
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .map(|(_, value)| value.into_owned());
+        url.set_query(target.query());
+        if let Some(token) = token {
+            url.query_pairs_mut().append_pair("token", &token);
+        }
+        url.set_fragment(target.fragment());
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) enum Navigation {
     Embedded,
@@ -118,6 +152,22 @@ mod tests {
     }
 
     #[test]
+    fn accepts_only_root_routes_and_preserves_the_web_token() {
+        assert!(valid_host_route("/"));
+        assert!(valid_host_route("/?session=thread-1"));
+        assert!(valid_host_route("/#connect-devices"));
+        assert!(!valid_host_route("/settings"));
+        assert!(!valid_host_route("/?token=leak"));
+        assert!(!valid_host_route("/?TOKEN=leak"));
+        let mut url = Url::parse("http://127.0.0.1:4400/?token=secret").unwrap();
+        apply_host_route(&mut url, "/?session=thread-1");
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:4400/?session=thread-1&token=secret"
+        );
+    }
+
+    #[test]
     fn initialization_script_defines_shell_bridges_before_dom_root_access_and_gates_embedded_keys()
     {
         let script = initialization_script(125, "boot-test-1");
@@ -127,12 +177,34 @@ mod tests {
         let zoom_pos = script
             .find("window.__codexhostZoom = Object.freeze")
             .expect("zoom bridge registration must exist");
+        let visibility_pos = script
+            .find("window.__codexhostSetWindowHidden =")
+            .expect("window visibility bridge registration must exist");
+        let notifications_pos = script
+            .find("window.__codexhostNotifications = Object.freeze")
+            .expect("notifications bridge registration must exist");
         let root_pos = script
             .find("document.documentElement")
             .expect("root attribute setup must exist");
         assert!(
-            bridge_pos < root_pos && zoom_pos < root_pos,
+            bridge_pos < root_pos
+                && zoom_pos < root_pos
+                && visibility_pos < root_pos
+                && notifications_pos < root_pos,
             "bridges must be registered before any document.documentElement access at document_start"
+        );
+        let non_embedded_gate = script[..notifications_pos]
+            .rfind("if (!isEmbeddedPage)")
+            .expect("notifications bridge must be inside an !isEmbeddedPage branch");
+        assert!(
+            non_embedded_gate > visibility_pos && non_embedded_gate < notifications_pos,
+            "notifications bridge must be explicitly gated to non-embedded pages"
+        );
+        assert!(
+            script.contains("window_visibility_get")
+                && script.contains("codexhost:window-hidden-change")
+                && script.contains("data-codexhost-window-hidden"),
+            "visibility bridge must sync initial state, notify Web UI, and toggle the root attribute"
         );
 
         let keydown_pos = script

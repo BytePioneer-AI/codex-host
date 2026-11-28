@@ -11,6 +11,7 @@ const EXECUTABLES: &[&str] = &[
     "libexec/codexhost-shim.exe",
     "libexec/codexhost-shell.exe",
     "libexec/codexhost-node-repl.exe",
+    "libexec/codexhost-screenshot.exe",
     "libexec/codexhost-updater.exe",
 ];
 

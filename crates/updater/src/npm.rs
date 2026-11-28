@@ -29,6 +29,12 @@ impl GlobalInstallation {
             &self.global_platform_root
         }
     }
+
+    /// The headless updater stops the previous Host after npm finishes. Preserve the payload
+    /// path recorded in its manifest so the previous Shim can still stop that process.
+    pub(crate) fn uses_nested_platform(&self, package_root: &Path) -> bool {
+        canonical(package_root.to_path_buf()) == self.nested_platform_root
+    }
 }
 
 /// Finds the supported platform package locations when this npm owns the installation.
@@ -68,24 +74,6 @@ pub(crate) fn global_installation(
         nested_platform_root,
         global_platform_root,
     }))
-}
-
-/// The SSH updater restarts the same payload path, so keep its existing npm layout.
-pub(crate) fn install_specs(
-    node: &Path,
-    npm_cli: &Path,
-    launcher: &Path,
-    package_root: &Path,
-    version: &str,
-) -> Result<Option<Vec<String>>, Box<dyn Error>> {
-    let Some(installation) = global_installation(node, npm_cli, launcher, package_root)? else {
-        return Ok(None);
-    };
-    let mut specs = Vec::from(installation.required_specs(version));
-    if canonical(package_root.to_path_buf()) == installation.nested_platform_root {
-        specs.pop();
-    }
-    Ok(Some(specs))
 }
 
 fn canonical(path: PathBuf) -> PathBuf {

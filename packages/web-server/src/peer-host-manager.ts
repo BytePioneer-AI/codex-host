@@ -1,8 +1,17 @@
 import { randomUUID } from "node:crypto";
 import * as c from "@codexhost/shared-contracts";
+import type { ChHostClient } from "./ch-host-client.ts";
 import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
-import { parseConnectionLink, type PeerHostStore, type PeerRecord } from "./peer-host-store.ts";
+import {
+  parseConnectionLink,
+  PeerHostPolicyError,
+  type PeerDnsLookup,
+  type PeerHostStore,
+  type PeerRecord,
+} from "./peer-host-store.ts";
+import { PeerEndpointError } from "./peer-manifest.ts";
+import { syncPeerMesh, type ResolvePeerSelfShare } from "./peer-pairing.ts";
 import { PeerThreadSource, type PeerThreadProjector } from "./peer-thread-source.ts";
 import { translateContentTextParts, translateThreadLinksFromPeer } from "./peer-thread-links.ts";
 import { RpcError, type EventHub, type RpcRegistry } from "./transport.ts";
@@ -18,15 +27,36 @@ export interface PeerHostManagerOptions {
   streamIdleTimeoutMs?: number;
   /** Optional placeholder attachment/image projector for Peer thread views. */
   projector?: (threadId: string) => PeerThreadProjector;
+  resolveSelfShare?: ResolvePeerSelfShare;
+  /** Optional DNS resolver override for peer probe host validation (used in tests). */
+  dnsLookup?: PeerDnsLookup;
+  /** Optional hook attaching to each enabled Peer's realtime channel; returns a cleanup callback. */
+  onPeerRealtime?: (hostId: string, realtime: NonNullable<ChHostClient["realtime"]>) => () => void;
+}
+
+const MAX_LINKED_PEER_IDS = 128;
+
+const normalizedPeerOrigin = (origin: string) => URL.parse(origin)?.origin ?? origin;
+const peerNodeId = (client: PeerHostClient) =>
+  client.manifest ? client.manifest.nodeId : client.record.nodeId;
+
+export interface PeerHostRegisterOptions {
+  localHostname?: string;
+  localDelegationAvailable?: () => boolean;
+  localHarnesses?: () => Promise<c.DelegationHostHarnessOption[]>;
 }
 
 export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
   private sources = new Map<string, PeerThreadSource>();
+  private peerRealtimeCleanups = new Map<string, () => void>();
   private readonly allowLoopback: boolean;
   private readonly localNodeId: string | undefined;
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
+  private readonly resolveSelfShare: ResolvePeerSelfShare | undefined;
+  private readonly dnsLookup: PeerDnsLookup | undefined;
+  private readonly onPeerRealtime: PeerHostManagerOptions["onPeerRealtime"];
   onChange?: (hostId?: string) => void;
   onPeerRemoved?: (hostId: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
@@ -47,6 +77,9 @@ export class PeerHostManager {
     this.localNodeId = options.localNodeId;
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
     this.projector = options.projector;
+    this.resolveSelfShare = options.resolveSelfShare;
+    this.dnsLookup = options.dnsLookup;
+    this.onPeerRealtime = options.onPeerRealtime;
     for (const record of store.load()) this.install(record);
   }
 
@@ -57,6 +90,8 @@ export class PeerHostManager {
 
   private createClient(record: PeerRecord, initialManifest?: c.RemotePeerManifest) {
     return new PeerHostClient(record, this.changed, {
+      allowLoopback: this.allowLoopback,
+      ...(this.dnsLookup === undefined ? {} : { dnsLookup: this.dnsLookup }),
       ...(this.streamIdleTimeoutMs === undefined
         ? {}
         : { streamIdleTimeoutMs: this.streamIdleTimeoutMs }),
@@ -72,6 +107,8 @@ export class PeerHostManager {
         ? previous.manifest
         : undefined;
     const next = client ?? this.createClient(record, inheritedManifest);
+    this.peerRealtimeCleanups.get(record.peerId)?.();
+    this.peerRealtimeCleanups.delete(record.peerId);
     this.sources.get(record.peerId)?.close();
     this.sources.delete(record.peerId);
     previous?.close();
@@ -111,6 +148,12 @@ export class PeerHostManager {
         },
       });
       this.sources.set(record.peerId, source);
+      if (this.onPeerRealtime) {
+        this.peerRealtimeCleanups.set(
+          record.peerId,
+          this.onPeerRealtime(next.hostId, host.realtime),
+        );
+      }
     }
     void next.start();
     return next;
@@ -176,6 +219,23 @@ export class PeerHostManager {
     return peerId === undefined ? undefined : this.sources.get(peerId);
   }
 
+  private summarize(client: PeerHostClient): c.RemotePeerSummary {
+    const base = client.summary();
+    const peerNodes = client.manifest?.peerNodes;
+    if (peerNodes === undefined) return base;
+    const remoteNodeIds = new Set(Object.values(peerNodes));
+    const linkedPeerIds: string[] = [];
+    for (const other of this.clients.values()) {
+      if (linkedPeerIds.length >= MAX_LINKED_PEER_IDS) break;
+      if (other.record.peerId === client.record.peerId) continue;
+      const otherNodeId = other.manifest?.nodeId ?? other.record.nodeId;
+      if (otherNodeId !== undefined && remoteNodeIds.has(otherNodeId)) {
+        linkedPeerIds.push(other.record.peerId);
+      }
+    }
+    return { ...base, linkedPeerIds };
+  }
+
   private get(id: string) {
     const client = this.clients.get(id);
     if (!client) throw Error("Unknown remote peer");
@@ -188,7 +248,160 @@ export class PeerHostManager {
 
   private async check(origin: string) {
     if ((await this.origins()).some((s) => URL.parse(s)?.origin === origin))
-      throw Error("Cannot pair this server with itself");
+      throw new PeerEndpointError(400, "Cannot pair this server with itself");
+  }
+
+  private assertUniquePeer(origin: string, peerId?: string, nodeId?: string) {
+    const normalizedOrigin = normalizedPeerOrigin(origin);
+    for (const client of this.clients.values()) {
+      if (client.record.peerId === peerId) continue;
+      if (normalizedPeerOrigin(client.record.origin) === normalizedOrigin) {
+        throw new RpcError("remote/duplicate-peer", "A remote peer already uses this origin");
+      }
+      if (nodeId !== undefined && peerNodeId(client) === nodeId) {
+        throw new RpcError("remote/duplicate-peer", "A remote peer already uses this nodeId");
+      }
+    }
+  }
+
+  async introducePeer(rawInput: unknown): Promise<c.RemotePeerIntroduceResult> {
+    const parsed = c.remotePeerIntroduceParamsSchema.safeParse(rawInput);
+    if (!parsed.success) throw new PeerEndpointError(400, "Invalid peer introduction parameters");
+    const input = parsed.data;
+    let conn: ReturnType<typeof parseConnectionLink>;
+    try {
+      conn = parseConnectionLink(
+        { origin: input.origin, token: input.token },
+        { allowLoopback: this.allowLoopback },
+      );
+    } catch (error) {
+      // The connection parser uses fixed messages that do not include the supplied URL or token.
+      throw new PeerEndpointError(
+        400,
+        error instanceof Error ? error.message : "Invalid peer connection",
+      );
+    }
+    await this.check(conn.origin);
+    const now = new Date().toISOString();
+    const record: PeerRecord = {
+      peerId: randomUUID(),
+      name: input.name ?? new URL(conn.origin).hostname.slice(0, 120),
+      color: input.color,
+      origin: conn.origin,
+      token: conn.token,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const candidate = this.createClient(record);
+    try {
+      try {
+        await candidate.probe();
+      } catch (error) {
+        if (
+          error instanceof PeerHostPolicyError ||
+          (error instanceof Error && error.message === "Cannot pair this server with itself")
+        ) {
+          throw new PeerEndpointError(400, error.message);
+        }
+        throw new PeerEndpointError(422, "Could not verify the introduced peer connection");
+      }
+      const manifest = candidate.manifest;
+      const nodeId = manifest?.nodeId;
+      if (input.expectedNodeId !== undefined && nodeId !== input.expectedNodeId) {
+        throw new PeerEndpointError(409, "Introduced peer did not match the expected nodeId");
+      }
+      const clients = [...this.clients.values()];
+      const exactMatch = clients.find(
+        (client) =>
+          normalizedPeerOrigin(client.record.origin) === conn.origin &&
+          client.record.token === conn.token &&
+          (nodeId === undefined ||
+            peerNodeId(client) === undefined ||
+            peerNodeId(client) === nodeId),
+      );
+      const existingByNodeId =
+        nodeId === undefined ? undefined : clients.find((client) => peerNodeId(client) === nodeId);
+      const existingByOrigin = clients.find(
+        (client) => normalizedPeerOrigin(client.record.origin) === conn.origin,
+      );
+      const existing = exactMatch ?? existingByNodeId ?? existingByOrigin;
+      const old = existing?.record;
+      const result = {
+        peerId: old?.peerId ?? record.peerId,
+        hostId: c.remotePeerHostId(old?.peerId ?? record.peerId),
+        ...(nodeId === undefined ? {} : { nodeId }),
+      };
+      if (existing && old) {
+        const existingNodeId = peerNodeId(existing);
+        const sameBinding =
+          normalizedPeerOrigin(old.origin) === conn.origin &&
+          old.token === conn.token &&
+          (nodeId === undefined || existingNodeId === undefined || existingNodeId === nodeId);
+        if (!sameBinding) {
+          throw new PeerEndpointError(
+            409,
+            "An existing peer already uses this identity or origin with different connection details; update it locally instead",
+          );
+        }
+        if (old.enabled) {
+          // Keep the running client, but publish a freshly verified identity if it was not known.
+          if (manifest && existing.manifest?.nodeId !== nodeId) {
+            existing.manifest = manifest;
+            this.changed(existing.hostId);
+          }
+          return { status: "existing", ...result };
+        }
+        candidate.record = {
+          ...old,
+          enabled: true,
+          updatedAt: now,
+          ...(nodeId === undefined ? {} : { nodeId }),
+        };
+        const records = this.records();
+        this.store.save(records.map((r) => (r.peerId === old.peerId ? candidate.record : r)));
+        this.install(candidate.record, candidate);
+        this.changed(candidate.hostId);
+        return { status: "updated", ...result };
+      }
+      candidate.record = {
+        ...record,
+        name: input.name ?? (manifest?.hostname.trim().slice(0, 120) || record.name),
+        nodeId,
+      };
+      this.store.save([...this.records(), candidate.record]);
+      this.install(candidate.record, candidate);
+      this.changed(candidate.hostId);
+      return { status: "added", ...result };
+    } finally {
+      if (this.clients.get(candidate.record.peerId) !== candidate) candidate.close();
+    }
+  }
+
+  private syncMesh(params: c.RemotePeerSyncMeshParams, anchor?: PeerHostClient) {
+    const ids = params.peerIds === undefined ? undefined : new Set(params.peerIds);
+    return syncPeerMesh({
+      targets: [...this.clients.values()].filter(
+        (client) =>
+          client !== anchor &&
+          client.record.enabled &&
+          (ids === undefined || ids.has(client.record.peerId)),
+      ),
+      anchor,
+      includeSelf: params.includeSelf !== false,
+      includeMesh: params.includeMesh !== false,
+      selfOrigin: params.selfOrigin,
+      localNodeId: this.localNodeId,
+      resolveSelfShare: this.resolveSelfShare,
+      isActivePeer: (client) =>
+        this.clients.get(client.record.peerId) === client &&
+        client.record.enabled &&
+        !client.closed,
+      peerTokens: () => this.peerTokens(),
+      changed: (client) => {
+        if (this.clients.get(client.record.peerId) === client) this.changed(client.hostId);
+      },
+    });
   }
 
   hosts() {
@@ -223,14 +436,122 @@ export class PeerHostManager {
       }));
   }
 
+  /** Browser-safe reachable delegation hosts from the perspective of `sessionHostId` (Hub A hostId space). */
+  delegationRemoteHosts(
+    sessionHostId = "local",
+    localHost?: { hostname?: string; delegationAvailable?: boolean },
+  ): c.DelegationRemoteHostOption[] {
+    if (sessionHostId === "local") {
+      return [...this.clients.values()]
+        .filter(
+          (p) =>
+            p.record.enabled &&
+            p.state === "connected" &&
+            p.manifest?.capabilities?.delegation === 1,
+        )
+        .map((p) => ({
+          hostId: c.remotePeerHostId(p.record.peerId),
+          name: p.record.name,
+          ...(p.record.color !== undefined ? { color: p.record.color } : {}),
+          ...(p.manifest?.hostname ? { hostname: p.manifest.hostname } : {}),
+        }));
+    }
+    if (c.peerIdFromRemoteHostId(sessionHostId) === undefined) return [];
+    const sourceClient = this.client(sessionHostId);
+    if (!sourceClient || !sourceClient.record.enabled || sourceClient.state !== "connected") {
+      return [];
+    }
+    const peerNodes = sourceClient.manifest?.peerNodes;
+    if (!peerNodes) return [];
+    const reachableNodeIds = new Set<string>();
+    for (const [peerHostId, nodeId] of Object.entries(peerNodes)) {
+      if (c.peerIdFromRemoteHostId(peerHostId) !== undefined && nodeId) {
+        reachableNodeIds.add(nodeId);
+      }
+    }
+    const results: c.DelegationRemoteHostOption[] = [];
+    if (
+      this.localNodeId !== undefined &&
+      reachableNodeIds.has(this.localNodeId) &&
+      localHost?.delegationAvailable !== false
+    ) {
+      const localName = localHost?.hostname?.trim() || "local";
+      results.push({
+        hostId: "local",
+        name: localName,
+        isLocal: true,
+        ...(localHost?.hostname ? { hostname: localHost.hostname } : {}),
+      });
+    }
+    const seenNodeIds = new Set<string>();
+    if (sourceClient.manifest?.nodeId) seenNodeIds.add(sourceClient.manifest.nodeId);
+    if (this.localNodeId) seenNodeIds.add(this.localNodeId);
+    for (const p of this.clients.values()) {
+      if (
+        !p.record.enabled ||
+        p.state !== "connected" ||
+        p.hostId === sessionHostId ||
+        p.manifest?.capabilities?.delegation !== 1
+      ) {
+        continue;
+      }
+      const nodeId = p.manifest?.nodeId;
+      if (!nodeId || !reachableNodeIds.has(nodeId) || seenNodeIds.has(nodeId)) continue;
+      seenNodeIds.add(nodeId);
+      results.push({
+        hostId: c.remotePeerHostId(p.record.peerId),
+        name: p.record.name,
+        ...(p.record.color !== undefined ? { color: p.record.color } : {}),
+        ...(p.manifest?.hostname ? { hostname: p.manifest.hostname } : {}),
+      });
+    }
+    return results;
+  }
+
+  /** Ready Harness options for a delegation target host (`local` or a connected `remote-peer:*`). */
+  async delegationHostHarnesses(
+    hostId: string,
+    localHarnesses?: () => Promise<c.DelegationHostHarnessOption[]>,
+  ): Promise<c.DelegationHostHarnessOption[]> {
+    if (hostId === "local") {
+      return localHarnesses ? await localHarnesses() : [];
+    }
+    const client = this.client(hostId);
+    if (!client || !client.record.enabled || client.state !== "connected") return [];
+    const source = this.source(hostId);
+    if (!source) return [];
+    const catalog = await source.catalog.models().catch(() => undefined);
+    if (!catalog) return [];
+    return catalog.groups.map((group) => ({ id: group.id, name: group.name }));
+  }
+
   call(op: c.RemoteSessionOperation) {
     if (op.kind === "hosts") return Promise.resolve(this.hosts());
     return this.get(c.peerIdFromRemoteHostId(op.hostId) ?? "").call(op);
   }
 
-  register(rpc: RpcRegistry) {
+  register(rpc: RpcRegistry, options: PeerHostRegisterOptions = {}) {
+    rpc.register(c.DELEGATION_REMOTE_HOSTS_METHOD, async (args, ctx) => {
+      if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
+      const { sessionHostId } = c.delegationRemoteHostsParamsSchema.parse(requestOf(args));
+      return c.delegationRemoteHostsResultSchema.parse({
+        hosts: this.delegationRemoteHosts(sessionHostId ?? "local", {
+          ...(options.localHostname === undefined ? {} : { hostname: options.localHostname }),
+          ...(options.localDelegationAvailable === undefined
+            ? {}
+            : { delegationAvailable: options.localDelegationAvailable() }),
+        }),
+      });
+    });
+    rpc.register(c.DELEGATION_HOST_HARNESSES_METHOD, async (args, ctx) => {
+      if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
+      const { hostId } = c.delegationHostHarnessesParamsSchema.parse(requestOf(args));
+      return c.delegationHostHarnessesResultSchema.parse({
+        harnesses: await this.delegationHostHarnesses(hostId, options.localHarnesses),
+      });
+    });
     const linkOptions = { allowLoopback: this.allowLoopback };
-    const localOnlyActions = new Set(["add", "update", "remove", "test"]);
+    const localOnlyActions = new Set(["add", "update", "remove", "test", "syncMesh"]);
     for (const [action, method] of Object.entries(c.REMOTE_PEERS_METHODS))
       rpc.register(method, async (args, ctx) => {
         if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
@@ -241,25 +562,24 @@ export class PeerHostManager {
           );
         }
         const input = requestOf(args);
-        if (action === "list") return { peers: [...this.clients.values()].map((p) => p.summary()) };
+        if (action === "list")
+          return { peers: [...this.clients.values()].map((p) => this.summarize(p)) };
+        if (action === "syncMesh")
+          return this.syncMesh(c.remotePeerSyncMeshParamsSchema.parse(input));
         if (action === "add" || action === "test") {
-          const p =
-            action === "add"
-              ? c.remotePeerAddParamsSchema.parse(input)
-              : c.remotePeerTestParamsSchema.parse(input);
+          const add = action === "add" ? c.remotePeerAddParamsSchema.parse(input) : undefined;
+          const p = add ?? c.remotePeerTestParamsSchema.parse(input);
           const conn = parseConnectionLink(
             "peerId" in p && p.peerId ? this.get(p.peerId).record : p,
             linkOptions,
           );
           await this.check(conn.origin);
+          if (add) this.assertUniquePeer(conn.origin);
           const now = new Date().toISOString();
-          const explicitName =
-            "name" in p && typeof p.name === "string" && p.name.trim() ? p.name.trim() : undefined;
-          const explicitColor = "color" in p ? p.color : undefined;
           const record: PeerRecord = {
             peerId: randomUUID(),
-            name: explicitName ?? new URL(conn.origin).hostname,
-            ...(explicitColor !== undefined ? { color: explicitColor } : {}),
+            name: add?.name ?? new URL(conn.origin).hostname.slice(0, 120),
+            color: add?.color,
             origin: conn.origin,
             token: conn.token,
             enabled: true,
@@ -270,14 +590,12 @@ export class PeerHostManager {
           try {
             await client.probe();
           } catch (e) {
-            if (action === "test")
-              return { ok: false, error: e instanceof Error ? e.message : "Probe failed" };
+            client.close();
+            if (!add) return { ok: false, error: e instanceof Error ? e.message : "Probe failed" };
             throw e;
           }
-          if (!explicitName && client.manifest?.hostname) {
-            record.name = client.manifest.hostname;
-          }
-          if (action === "test")
+          if (!add) {
+            client.close();
             return c.remotePeerTestResultSchema.parse({
               ...client.summary(),
               projects: client.manifest?.projects.map(({ id, name, path }) => ({
@@ -287,16 +605,38 @@ export class PeerHostManager {
               })),
               ok: true,
             });
-          this.store.save([...this.records(), record]);
+          }
+          record.name = add.name ?? (client.manifest?.hostname.trim().slice(0, 120) || record.name);
+          record.nodeId = client.manifest?.nodeId;
+          try {
+            this.assertUniquePeer(record.origin, record.peerId, record.nodeId);
+            this.store.save([...this.records(), record]);
+          } catch (error) {
+            client.close();
+            throw error;
+          }
           const installed = this.install(record, client);
           this.changed(installed.hostId);
-          return { peer: installed.summary() };
+          if (add.pairBack === true || add.meshPeerIds?.length) {
+            const pairing = await this.syncMesh(
+              {
+                peerIds: add.meshPeerIds ?? [],
+                includeSelf: add.pairBack === true,
+                selfOrigin: add.selfOrigin,
+              },
+              installed,
+            );
+            return { peer: this.summarize(installed), pairing };
+          }
+          return { peer: this.summarize(installed) };
         }
         const { peerId } = c.remotePeerIdParamsSchema.parse(input);
         const client = this.get(peerId);
         switch (action) {
           case "remove":
             this.store.save(this.records().filter((r) => r.peerId !== peerId));
+            this.peerRealtimeCleanups.get(peerId)?.();
+            this.peerRealtimeCleanups.delete(peerId);
             this.sources.get(peerId)?.close();
             this.sources.delete(peerId);
             client.close();
@@ -328,6 +668,7 @@ export class PeerHostManager {
               ...old,
               origin: conn.origin,
               token: conn.token,
+              nodeId: conn.origin === old.origin ? peerNodeId(client) : undefined,
               enabled: p.enabled ?? old.enabled,
               name: p.name ?? old.name,
               updatedAt: new Date().toISOString(),
@@ -339,13 +680,13 @@ export class PeerHostManager {
             }
             let probedClient: PeerHostClient | undefined;
             if (
-              this.localNodeId !== undefined &&
               record.enabled &&
               (conn.origin !== old.origin || conn.token !== old.token || !old.enabled)
             ) {
               const candidate = this.createClient(record);
               try {
                 await candidate.probe();
+                record.nodeId = candidate.manifest?.nodeId;
                 probedClient = candidate;
               } catch (e) {
                 candidate.close();
@@ -358,7 +699,13 @@ export class PeerHostManager {
                 throw Error("Peer changed");
               }
             }
-            this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
+            try {
+              this.assertUniquePeer(record.origin, peerId, record.nodeId);
+              this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
+            } catch (error) {
+              probedClient?.close();
+              throw error;
+            }
             if (
               record.enabled === old.enabled &&
               record.origin === old.origin &&
@@ -366,16 +713,16 @@ export class PeerHostManager {
             ) {
               client.record = record;
               this.changed(client.hostId);
-              return { peer: client.summary() };
+              return { peer: this.summarize(client) };
             }
             const next = this.install(record, probedClient);
             this.changed(next.hostId);
-            return { peer: next.summary() };
+            return { peer: this.summarize(next) };
           }
           case "reconnect": {
             const next = this.install(client.record);
             this.changed(next.hostId);
-            return { peer: next.summary() };
+            return { peer: this.summarize(next) };
           }
           case "listDirs":
             return client.listDirs(c.remotePeerListDirsParamsSchema.parse(input).path);
@@ -398,6 +745,8 @@ export class PeerHostManager {
   }
 
   close() {
+    for (const stop of this.peerRealtimeCleanups.values()) stop();
+    this.peerRealtimeCleanups.clear();
     for (const s of this.sources.values()) s.close();
     this.sources.clear();
     for (const p of this.clients.values()) p.close();

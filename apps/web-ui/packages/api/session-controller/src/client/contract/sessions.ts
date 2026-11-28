@@ -191,4 +191,9 @@ export interface ISessions {
    * Keep the replacement retained until those submissions settle; navigation is caller-owned.
    */
   handoffSubmissions(sourceId: SessionId, targetId: SessionId): void;
+  /**
+   * Approximate in-memory byte footprint of a currently retained Session,
+   * or `0` when the Session is not materialized.
+   */
+  estimatedBytes?(id: SessionId): number;
 }

@@ -43,6 +43,7 @@ import {
   type ConfiguredRemotePeer,
   type HeroLocationOption,
 } from "./hero-picker-model.ts";
+import { isRemoteFallbackWorkspace } from "./rows/host-scope-filter.ts";
 import css from "./HeroLocationWorkspacePicker.module.css";
 
 const ADD_REMOTE_WORKSPACE_EVENT = "codexhost:open-add-remote-workspace";
@@ -529,7 +530,9 @@ export function HeroLocationWorkspacePicker({
     () =>
       selectedId === undefined
         ? undefined
-        : workspaces.find((item) => item.workspaceId === selectedId),
+        : workspaces.find(
+            (item) => item.workspaceId === selectedId && !isRemoteFallbackWorkspace(item),
+          ),
     [selectedId, workspaces],
   );
 

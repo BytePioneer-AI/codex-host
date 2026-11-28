@@ -88,6 +88,8 @@ async function dispatch(
       return manager.snapshot();
     case RPC.catalog:
       return manager.catalog(params(method, input));
+    case RPC.catalogIcon:
+      return manager.catalogIcon(params(method, input));
     case RPC.install:
     case RPC.update: {
       const { source } = params(method, input);

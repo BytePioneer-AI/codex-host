@@ -1,5 +1,7 @@
 /** Compose Workspace-owned phone navigation and its local General Settings row. */
 import type { Context } from "@deepseek-ai/cordis";
+import type {} from "@deepseek-ai/dsh-api-session-controller/client";
+import type {} from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-connection/client";
@@ -16,6 +18,9 @@ import {
 import { RecentNavigationRow, type RecentNavigationRowInjected } from "./RecentNavigationRow.tsx";
 import type { RecentNavigationSettings } from "./recent-navigation-settings.ts";
 
+/** Upper bound between checks while visible, guarding against mobile suspension skipping visibility events. */
+const MAX_IDLE_CHECK_DELAY_MS = 60_000;
+
 export function registerRecentNavigation(
   ctx: Context,
   navigation: UiWorkspaceService,
@@ -26,47 +31,84 @@ export function registerRecentNavigation(
   const setIdleTimeout = (minutes: number): Promise<boolean> =>
     preference.set("tabIdleTimeoutMinutes", minutes);
   const viewport = { scrollLeft: 0 };
-  ctx.inject(["uiSession", "connection"], (scope) => {
+  ctx.inject(["uiSession", "connection", "sessions", "workspaces"], (scope) => {
     scope.effect(() => {
-      let timer: ReturnType<typeof setInterval> | undefined;
-      const check = (): void => {
-        const settings = preference.getSnapshot().value;
-        if (
-          settings === undefined ||
-          document.visibilityState !== "visible" ||
-          scope.connection.state.getSnapshot() !== "connected" ||
-          !settings.showRecentVisits ||
-          settings.tabIdleTimeoutMinutes === 0 ||
-          navigation.opening.getSnapshot().state === "loading"
-        )
-          return;
-        const changed = navigation.recentVisits.expireInactive(
-          settings.tabIdleTimeoutMinutes * 60_000,
-          scope.uiSession.sessionStatus.getSnapshot(),
-        );
-        if (changed && navigation.recentVisits.entries.getSnapshot().length === 0)
-          viewport.scrollLeft = 0;
-      };
-      const schedule = (): void => {
-        if (timer !== undefined) clearInterval(timer);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let syncing = false;
+      let resyncRequested = false;
+      let disposed = false;
+      let lastEnabled = preference.getSnapshot().value?.showRecentVisits;
+      let lastTimeoutMinutes = preference.getSnapshot().value?.tabIdleTimeoutMinutes;
+
+      const clearTimer = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
         timer = undefined;
-        const settings = preference.getSnapshot().value;
-        if (
-          document.visibilityState === "visible" &&
-          settings?.showRecentVisits &&
-          settings.tabIdleTimeoutMinutes > 0
-        ) {
-          timer = setInterval(check, 60_000);
+      };
+
+      const sync = (): void => {
+        if (disposed) return;
+        if (syncing) {
+          resyncRequested = true;
+          return;
+        }
+        syncing = true;
+        try {
+          do {
+            resyncRequested = false;
+            clearTimer();
+            const settings = preference.getSnapshot().value;
+            if (
+              settings === undefined ||
+              !settings.showRecentVisits ||
+              settings.tabIdleTimeoutMinutes <= 0 ||
+              document.visibilityState !== "visible" ||
+              scope.connection.state.getSnapshot() !== "connected" ||
+              navigation.opening.getSnapshot().state === "loading"
+            )
+              continue;
+            const { changed, nextDelayMs } = navigation.recentVisits.expireInactive(
+              settings.tabIdleTimeoutMinutes * 60_000,
+              scope.uiSession.sessionStatus.getSnapshot(),
+            );
+            if (changed && navigation.recentVisits.entries.getSnapshot().length === 0)
+              viewport.scrollLeft = 0;
+            if (!disposed && !resyncRequested && nextDelayMs !== undefined) {
+              timer = setTimeout(sync, Math.max(1, Math.min(nextDelayMs, MAX_IDLE_CHECK_DELAY_MS)));
+            }
+          } while (resyncRequested && !disposed);
+        } finally {
+          syncing = false;
         }
       };
-      // Re-arm instead of pruning immediately, allowing existing connection/catalog recovery first.
-      const stop = preference.subscribe(schedule);
-      document.addEventListener("visibilitychange", schedule);
-      schedule();
+
+      const onPreferenceChange = (): void => {
+        const settings = preference.getSnapshot().value;
+        const enabled = settings?.showRecentVisits;
+        const timeoutMinutes = settings?.tabIdleTimeoutMinutes;
+        if (enabled === lastEnabled && timeoutMinutes === lastTimeoutMinutes) return;
+        lastEnabled = enabled;
+        lastTimeoutMinutes = timeoutMinutes;
+        sync();
+      };
+
+      const disposers = [
+        preference.subscribe(onPreferenceChange),
+        scope.connection.state.subscribe(sync),
+        navigation.opening.subscribe(sync),
+        navigation.recentVisits.entries.subscribe(sync),
+        scope.uiSession.sessionStatus.subscribe(sync),
+        scope.sessions.list.subscribe(sync),
+        scope.workspaces.list.subscribe(sync),
+      ];
+      document.addEventListener("visibilitychange", sync);
+      window.addEventListener("pageshow", sync);
+      sync();
       return () => {
-        stop();
-        if (timer !== undefined) clearInterval(timer);
-        document.removeEventListener("visibilitychange", schedule);
+        disposed = true;
+        clearTimer();
+        for (const dispose of disposers) dispose();
+        document.removeEventListener("visibilitychange", sync);
+        window.removeEventListener("pageshow", sync);
       };
     }, "ui-workspace: idle session tabs");
   });

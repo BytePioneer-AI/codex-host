@@ -21,6 +21,10 @@ import {
 } from "./external-thread-list.js";
 
 import type { ThreadListTiming } from "./thread-list-timing.js";
+import {
+  isShadowedOfficialThread,
+  type OfficialImportTimes,
+} from "./official-import-duplicates.js";
 
 const MAX_OFFICIAL_PAGE_REQUESTS = 256;
 const OFFICIAL_TIE_ANCHOR = "\uffff";
@@ -87,6 +91,8 @@ export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
   records: readonly StoredThreadSummaryV1[];
   sharedThreads?: readonly JsonObject[];
+  /** Official Threads Codex imported from Sessions codexhost lists itself; untouched ones are skipped. */
+  officialImportTimes?: OfficialImportTimes;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
@@ -137,9 +143,6 @@ export async function aggregateThreadList(input: {
     kind: "page" | "cursor_repair" = "page",
   ) => {
     officialRequestCount += 1;
-    if (officialRequestCount > MAX_OFFICIAL_PAGE_REQUESTS) {
-      throw new Error("Official thread/list pagination exceeded its request bound");
-    }
     const params = officialParams(query, cursor, limit);
     const request = () => input.requestOfficialPage(params);
     return input.timing ? input.timing.official(kind, params, request) : request();
@@ -156,16 +159,20 @@ export async function aggregateThreadList(input: {
         officialIndex = 0;
         if (officialDone) return null;
       }
+      // A partially consumed page may still require one exact-prefix cursor request.
+      if (officialRequestCount >= MAX_OFFICIAL_PAGE_REQUESTS - 1) return null;
       officialBatchStart = officialCursor;
       const page = await requestOfficial(officialCursor, Math.max(1, query.limit));
       if (firstOfficialBackwardsCursor === undefined) {
         firstOfficialBackwardsCursor = page.backwardsCursor;
       }
+      if (page.nextCursor !== null && page.nextCursor === officialCursor)
+        throw new Error("Official thread/list pagination did not advance");
       officialBatch = page;
       officialEntries = page.data.map((thread) => officialThreadListEntry(thread, externalSortKey));
       officialIndex = 0;
       if (officialEntries.length === 0) {
-        if (page.nextCursor === null || page.nextCursor === officialCursor) {
+        if (page.nextCursor === null) {
           officialDone = true;
           return null;
         }
@@ -181,11 +188,16 @@ export async function aggregateThreadList(input: {
   while (output.length < query.limit) {
     const external = externalPage.data[externalIndex] ?? null;
     let official = await ensureOfficial();
-    while (official && externalIds.has(String(official.thread.id))) {
+    while (
+      official &&
+      (externalIds.has(String(official.thread.id)) ||
+        isShadowedOfficialThread(input.officialImportTimes, official.thread))
+    ) {
       officialIndex += 1;
       official = await ensureOfficial();
     }
-    if (!external && !official) break;
+    // Unknown native rows can sort before the next external row. Resume both sources in order.
+    if (!official && (!officialDone || !external)) break;
     if (
       external &&
       (!official || compareThreadListEntries(external, official, query.sortDirection) <= 0)

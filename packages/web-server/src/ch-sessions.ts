@@ -36,9 +36,10 @@ import { nativePermissionView } from "./session-presentation.ts";
 import { nativeProjectRootOwners, projectGroupRoot } from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { threadRecencyMs } from "./ch-thread-time.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
-import { ChHarnessCommands } from "./ch-harness-commands.ts";
+import { ChHarnessCommands, permissionCommand } from "./ch-harness-commands.ts";
 import { WebSkills } from "./skills.ts";
 import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ChThreadEditing } from "./ch-thread-edit.ts";
@@ -67,7 +68,7 @@ import {
 import type { Workspaces } from "./workspaces.ts";
 import { defaultProjections } from "./session-log.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
-import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output.ts";
+import { toolOutputRecords, toolOutputSink } from "./tool-output.ts";
 import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
@@ -333,7 +334,7 @@ export class ChSessions {
   private refreshPins(): Promise<string[]> {
     return this.pins.refresh().catch((error: unknown) => {
       console.error("[session/list] native pins unavailable", error);
-      return this.workspaces.pinnedSessionIds();
+      return this.workspaces.localPinnedSessionIds();
     });
   }
   private async listAll(
@@ -431,7 +432,12 @@ export class ChSessions {
     const assignments = await timing.measure("projects", () =>
       this.host.projects([...rows.keys()]),
     );
-    const projects = { ...assignments, projects: definitions.projects };
+    const pinnedProjects = assignments.pinnedProjects ?? definitions.pinnedProjects;
+    const projects = {
+      ...assignments,
+      projects: definitions.projects,
+      ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
+    };
     if (this.closed) return;
     // A Host-confirmed move supersedes project metadata from this in-flight read.
     for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {
@@ -494,6 +500,7 @@ export class ChSessions {
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
         this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
+        this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
         return;
       }
       if (this.workspaces.usesNativeProjects) return;
@@ -528,6 +535,7 @@ export class ChSessions {
       }
       timing.count("workspaceReferences", references.length);
       this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
+      this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
     });
   }
   private archiveForkParent(row: ChThread): string | null {
@@ -546,7 +554,7 @@ export class ChSessions {
     return JSON.stringify([
       threadListTitle(row),
       row.cwd,
-      row.updatedAt,
+      threadRecencyMs(row),
       row.status.type,
       row.parentThreadId ?? null,
       this.tree.parent(row.id),
@@ -907,12 +915,12 @@ export class ChSessions {
       title: threadListTitle(row),
       codexhostImportSource: row.codexhostImportSource ?? null,
       harnessIdentity: { id: harnessId, name: await this.catalog.name(harnessId) },
-      sessionListMetadata: { blank: false, lastPromptAt: row.updatedAt * 1000 },
+      sessionListMetadata: { blank: false, lastPromptAt: threadRecencyMs(row) },
     };
     return {
       sessionId: row.id,
       cwd: row.cwd,
-      updatedAt: row.updatedAt * 1000,
+      updatedAt: threadRecencyMs(row),
       running: row.status.type === "active",
       blank: false,
       agentAvailable: true,
@@ -1395,9 +1403,9 @@ export class ChSessions {
         await this.owner(id);
         if (!this.threads.hasHarness(id))
           throw new RpcError("session/not-found", "This Thread is not in the shared catalog.");
-        const pinnedSessionIds = await this.pins.sync({ threadId: id, pinned });
+        await this.pins.sync({ threadId: id, pinned });
         await this.refresh().catch(() => undefined);
-        return { pinnedSessionIds };
+        return { pinnedSessionIds: this.workspaces.pinnedSessionIds() };
       });
     }
     rpc.register("workspace/moveSessionToSection", async (args) => {
@@ -1801,7 +1809,7 @@ export class ChSessions {
       const ref = parsed.data;
       await this.owner(ref.sessionId);
       const view = await this.view(ref.sessionId, true);
-      return readToolOutput(view.log, ref);
+      return this.threads.trackPageRead(view.thread.id, view, () => view.readToolOutput(ref));
     });
     rpc.register("session/attachment", async (args) => {
       const { sessionId, attachmentId } = requestOf<{ sessionId: string; attachmentId: string }>(
@@ -1962,7 +1970,7 @@ export class ChSessions {
         ? (await this.draftSummary(draft)).projections
         : (await this.view(sessionId, true)).log.projectionBaseline();
     });
-    rpc.register("session/page", async (args, context) => {
+    rpc.register("session/page", async (args) => {
       const req = requestOf<{
         address: { sessionId: string };
         throughSeq: number;
@@ -1975,15 +1983,13 @@ export class ChSessions {
       const page = await this.threads.trackPageRead(view.thread.id, view, () =>
         view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages),
       );
-      return context.relay
-        ? {
-            ...page,
-            records: toolOutputRecords(
-              view.log,
-              page.records as Array<{ type: "event"; event: WireEvent }>,
-            ),
-          }
-        : page;
+      return {
+        ...page,
+        records: toolOutputRecords(
+          view.log,
+          page.records as Array<{ type: "event"; event: WireEvent }>,
+        ),
+      };
     });
     rpc.register("session/workspacePathApplications", () => ({ applications: [] }));
     rpc.register("session/openWorkspacePath", async (args, context) => {
@@ -2169,7 +2175,8 @@ export class ChSessions {
     this.idleViewTimer = setInterval(() => {
       this.threads.discardIdleViews(
         Date.now(),
-        (id) => this.rows.get(id)?.status.type === "active",
+        (id) =>
+          this.rows.get(id)?.status.type === "active" || Boolean(this.interactions?.hasPending(id)),
       );
     }, 60_000);
     this.idleViewTimer.unref();
@@ -2218,14 +2225,7 @@ export class ChSessions {
     }));
     // /model is a client-owned contribution backed by the model-selection API,
     // not an executable Host command. Advertising it here breaks the menu roster.
-    rpc.register("commands/list", () => [
-      {
-        definitionId: "@deepseek-ai/dsh-permission-presets",
-        name: "permission",
-        description: "Select a native permission mode",
-        input: { hint: "<mode>" },
-      },
-    ]);
+    rpc.register("commands/list", () => [permissionCommand]);
     rpc.register("commands/execute", async (args) => {
       const id = String(args.agentId ?? "");
       const match = /^\/permission\s+(.+)$/u.exec(String(args.line ?? ""));

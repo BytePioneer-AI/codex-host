@@ -29,9 +29,11 @@ import {
   type RemoteSessionOperation,
   type SkillsListResult,
 } from "@codexhost/shared-contracts";
+import { permissionCommand } from "./ch-harness-commands.ts";
 import { ChInteractions } from "./ch-interactions.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
+import { threadRecencyMs } from "./ch-thread-time.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { isMethodUnavailableError, type PeerThreadSource } from "./peer-thread-source.ts";
@@ -39,7 +41,8 @@ import { translateContentTextParts, translateThreadLinksForPeer } from "./peer-t
 import { RemotePeerAttachments, type PeerAttachmentEndpoint } from "./remote-peer-attachments.ts";
 import type { WebFileRef } from "./web-files.ts";
 import { WEB_IMAGE_LIMITS } from "./web-images.ts";
-import { defaultProjections } from "./session-log.ts";
+import { IDLE_VIEW_MS } from "./web-thread-state.ts";
+import { defaultProjections, type WireEvent } from "./session-log.ts";
 import {
   applyRemoteControls,
   executeRemoteCommand,
@@ -73,7 +76,7 @@ import {
   type StreamRegistry,
   type StreamSink,
 } from "./transport.ts";
-import { readToolOutput, toolOutputSink } from "./tool-output.ts";
+import { toolOutputRecords, toolOutputSink } from "./tool-output.ts";
 import { followRemoteHistory } from "./remote-history-follow.ts";
 import type { Workspaces } from "./workspaces.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
@@ -142,6 +145,10 @@ const PROXY_NOT_FOUND_HEADERS = {
   "Content-Security-Policy": "sandbox; default-src 'none'",
 } as const;
 
+function isEditableThread(entry: Entry): boolean {
+  return !entry.archived && !entry.row.parentThreadId && entry.row.canAcceptDirectInput !== false;
+}
+
 function hasContentPartType(content: unknown, type: string): boolean {
   return (
     Array.isArray(content) &&
@@ -191,6 +198,7 @@ interface Entry {
   view?: ChThreadView;
   viewHarnessId?: string;
   viewOrigin?: number;
+  historyReadAt?: number;
   reading?: Promise<ChThreadView>;
   queueReading?: Promise<void>;
   controls?: RemoteControls;
@@ -223,6 +231,7 @@ export class RemoteSessions {
   private entries = new Map<string, Entry>();
   private hosts = new Map<string, RemoteWorkspaceHost>();
   private peerArchivedIds = new Map<string, Set<string>>();
+  private peerPinnedIds = new Map<string, string[]>();
   private controls = new Set<StreamSink>();
   private pending = new Map<string, { sessionId: string; cancel(): void }>();
   private peerInteractions = new Map<
@@ -230,12 +239,19 @@ export class RemoteSessions {
     { realtime: NonNullable<PeerThreadSource["host"]["realtime"]>; interactions: ChInteractions }
   >();
   private readonly followLifetime = new AbortController();
+  /** When a periodic check first found each view without a follower. */
+  private readonly unfollowedSince = new WeakMap<ChThreadView, number>();
+  /** Active `session/page` reads holding each view against idle eviction. */
+  private readonly paging = new WeakMap<ChThreadView, number>();
   private listing: Promise<void> | undefined;
   private archiveRevision = 0;
   private archiveWrites = 0;
+  private pinRevision = 0;
+  private pinWrites = 0;
   private discoveryUnavailable = false;
   private closed = false;
   private readonly timer: NodeJS.Timeout;
+  private readonly idleViewTimer: NodeJS.Timeout;
   private readonly peerHandlers: {
     onThreadChanged: (hostId: string, threadId: string) => Promise<void>;
     onThreadConfigurationChanged: (hostId: string, threadId: string) => void;
@@ -284,6 +300,10 @@ export class RemoteSessions {
       if (this.controls.size) void this.refreshBackground().catch(() => undefined);
     }, 30_000);
     this.timer.unref();
+    this.idleViewTimer = setInterval(() => {
+      this.discardIdleViews();
+    }, 60_000);
+    this.idleViewTimer.unref();
   }
   private translatePeerOutboundText(hostId: string, text: string): string {
     if (!hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) return text;
@@ -486,6 +506,7 @@ export class RemoteSessions {
     chunks: AsyncIterable<Uint8Array>,
     name?: string,
     imageMediaType?: string,
+    contentLength?: number,
   ): Promise<{ receiptId: string; file: WebFileRef }> {
     if (this.closed) throw new RpcError("remote/offline", "Remote session gateway is closed");
     const draft = this.drafts.get(id);
@@ -500,7 +521,14 @@ export class RemoteSessions {
           );
         }
         const scope = draft.ensureUploadScope();
-        return this.attachments.upload(peer, { scope }, chunks, name, imageMediaType);
+        return this.attachments.upload(
+          peer,
+          { scope },
+          chunks,
+          name,
+          imageMediaType,
+          contentLength,
+        );
       }
       id = draft.canonicalId;
     }
@@ -519,6 +547,7 @@ export class RemoteSessions {
       chunks,
       name,
       imageMediaType,
+      contentLength,
     );
   }
   async servePeerFile(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -694,9 +723,12 @@ export class RemoteSessions {
     this.pendingHostIds.add(hostId);
     this.refreshPending = true;
   }
+  private get hasActiveWrites(): boolean {
+    return this.archiveWrites > 0 || this.pinWrites > 0;
+  }
   private startRefresh(): Promise<void> {
     if (this.listing) return this.listing;
-    if (this.archiveWrites) {
+    if (this.hasActiveWrites) {
       this.refreshPending = true;
       return Promise.resolve();
     }
@@ -707,7 +739,7 @@ export class RemoteSessions {
       // Hosts skipped by discovery and incomplete reads cannot confirm absence.
       for (const lookup of peerLookups.values()) lookup.resolve(false);
       this.listing = undefined;
-      if (!this.closed && !this.archiveWrites && this.hasPendingRefresh()) {
+      if (!this.closed && !this.hasActiveWrites && this.hasPendingRefresh()) {
         this.refreshPending = false;
         void this.startRefresh().catch(() => undefined);
       }
@@ -717,7 +749,7 @@ export class RemoteSessions {
   private queueHostRefresh(hostId: string): void {
     this.clearPeerChangeTimer(hostId);
     this.pendingHostIds.add(hostId);
-    if (this.listing || this.archiveWrites) {
+    if (this.listing || this.hasActiveWrites) {
       this.refreshPending = true;
       return;
     }
@@ -728,7 +760,7 @@ export class RemoteSessions {
     if (!hostId) {
       for (const id of [...this.peerChangeTimers.keys()]) this.clearPeerChangeTimer(id);
       this.fullRefreshPending = true;
-      if (this.listing || this.archiveWrites) {
+      if (this.listing || this.hasActiveWrites) {
         this.refreshPending = true;
         return;
       }
@@ -766,7 +798,7 @@ export class RemoteSessions {
   private refreshBackground(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.backgroundRefreshPending = true;
-    if (this.archiveWrites) {
+    if (this.hasActiveWrites) {
       this.refreshPending = true;
       return this.listing ?? Promise.resolve();
     }
@@ -780,14 +812,14 @@ export class RemoteSessions {
       for (const id of [...this.peerChangeTimers.keys()]) this.clearPeerChangeTimer(id);
       this.fullRefreshPending = true;
     }
-    if (this.archiveWrites) {
+    if (this.hasActiveWrites) {
       this.refreshPending = true;
       return this.listing ?? Promise.resolve();
     }
     return this.startRefresh();
   }
   private async list(peerLookups: Map<string, PromiseWithResolvers<boolean>>): Promise<void> {
-    if (this.archiveWrites) {
+    if (this.hasActiveWrites) {
       for (const [hostId, lookup] of peerLookups) {
         this.deferPeerLookup(hostId, lookup);
       }
@@ -805,6 +837,7 @@ export class RemoteSessions {
       [...this.hosts.values()].filter((host) => host.online).map((host) => host.hostId),
     );
     const archiveRevision = this.archiveRevision;
+    const pinRevision = this.pinRevision;
     let hosts: RemoteWorkspaceHost[];
     try {
       hosts = hostsSchema.parse(await this.invoke({ kind: "hosts" }));
@@ -853,11 +886,13 @@ export class RemoteSessions {
     for (const hostId of draftChangedHostIds) {
       this.publishDraftSummaries(hostId);
     }
+    let removedPeer = false;
     for (const [id, entry] of this.entries) {
       if (
         entry.identity.hostId.startsWith("remote-peer:") &&
         !this.hosts.has(entry.identity.hostId)
       ) {
+        removedPeer = true;
         this.clearPending(id);
         this.retireView(entry);
         this.entries.delete(id);
@@ -871,7 +906,20 @@ export class RemoteSessions {
       }
     }
     for (const hostId of [...this.peerArchivedIds.keys()]) {
-      if (!this.hosts.has(hostId)) this.peerArchivedIds.delete(hostId);
+      if (!this.hosts.has(hostId)) {
+        removedPeer = true;
+        this.peerArchivedIds.delete(hostId);
+      }
+    }
+    for (const hostId of [...this.peerPinnedIds.keys()]) {
+      if (!this.hosts.has(hostId)) {
+        removedPeer = true;
+        this.peerPinnedIds.delete(hostId);
+      }
+    }
+    if (removedPeer) {
+      this.syncArchives();
+      this.syncPins();
     }
     for (const hostId of [...this.peerInteractions.keys()]) {
       if (!this.hosts.has(hostId)) this.clearPeerInteractions(hostId, true);
@@ -922,7 +970,7 @@ export class RemoteSessions {
         .map(async (host) => {
           const peerSource = this.peers?.source(host.hostId);
           if (peerSource) {
-            const outcome = await this.listPeerHost(host, peerSource, archiveRevision);
+            const outcome = await this.listPeerHost(host, peerSource, archiveRevision, pinRevision);
             this.syncGroups();
             const lookup = peerLookups.get(host.hostId);
             if (lookup) {
@@ -1127,6 +1175,7 @@ export class RemoteSessions {
     host: RemoteWorkspaceHost,
     source: PeerThreadSource,
     archiveRevision: number,
+    pinRevision: number,
   ): Promise<"confirmed" | "superseded" | "failed"> {
     const canRetrySuperseded = (): "superseded" | "failed" => {
       const peer = this.peerEndpoint(host.hostId);
@@ -1379,7 +1428,11 @@ export class RemoteSessions {
           this.events.emit("api-session/added", nextSummary);
         }
       }
+      if (pinRevision === this.pinRevision) {
+        this.peerPinnedIds.set(host.hostId, [...listed.pinnedIds]);
+      }
       this.syncArchives();
+      this.syncPins();
       if (listed.treeStale) {
         this.syncedPeerSources.delete(host.hostId);
         this.schedulePeerTreeRetry(host.hostId);
@@ -1751,6 +1804,33 @@ export class RemoteSessions {
     this.workspaces?.setRemoteArchives(ids);
     return this.workspaces?.archivedSessionIds() ?? ids;
   }
+  private syncPins(): string[] {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const [hostId, threadIds] of this.peerPinnedIds) {
+      if (!this.hosts.has(hostId)) continue;
+      const archived = this.peerArchivedIds.get(hostId);
+      for (const threadId of threadIds) {
+        if (archived?.has(threadId)) continue;
+        const sessionId = remoteSessionId(hostId, threadId);
+        const entry = this.entries.get(sessionId);
+        if (!entry || entry.archived || seen.has(sessionId)) continue;
+        seen.add(sessionId);
+        ids.push(sessionId);
+      }
+    }
+    this.workspaces?.setRemotePins(ids);
+    return this.workspaces?.pinnedSessionIds() ?? ids;
+  }
+  private dropPeerPinnedThreads(hostId: string, threadIds: readonly string[]): boolean {
+    const existing = this.peerPinnedIds.get(hostId);
+    if (!existing || existing.length === 0) return false;
+    const removed = new Set(threadIds);
+    const next = existing.filter((id) => !removed.has(id));
+    if (next.length === existing.length) return false;
+    this.peerPinnedIds.set(hostId, next);
+    return true;
+  }
   private summary(id: string, entry: Entry) {
     const attachmentsSupported =
       entry.online && this.peerAttachmentsSupported(entry.identity.hostId);
@@ -1769,7 +1849,7 @@ export class RemoteSessions {
     return {
       sessionId: id,
       cwd: "",
-      updatedAt: entry.row.updatedAt * 1000,
+      updatedAt: threadRecencyMs(entry.row),
       running: entry.online && entry.row.status.type === "active",
       blank: false,
       agentAvailable: entry.online,
@@ -1800,7 +1880,7 @@ export class RemoteSessions {
           remoteHistoryError: entry.historyError ?? null,
           attachmentInput: { enabled: attachmentsSupported },
           ...(attachmentsSupported ? { imageLimits: WEB_IMAGE_LIMITS } : {}),
-          sessionListMetadata: { blank: false, lastPromptAt: entry.row.updatedAt * 1000 },
+          sessionListMetadata: { blank: false, lastPromptAt: threadRecencyMs(entry.row) },
         },
       },
     };
@@ -1931,7 +2011,7 @@ export class RemoteSessions {
           this.retireView(current);
         if (!current.view || current.viewHarnessId !== harnessId) {
           if (current.view) this.retireView(current);
-          current.view = this.createView(row, harnessId, current.viewOrigin);
+          current.view = this.createView(row, harnessId, current.viewOrigin, identity);
           current.viewHarnessId = harnessId;
         }
         try {
@@ -1943,10 +2023,11 @@ export class RemoteSessions {
           )
             throw error;
           this.retireView(current);
-          current.view = this.createView(row, harnessId, current.viewOrigin);
+          current.view = this.createView(row, harnessId, current.viewOrigin, identity);
           current.viewHarnessId = harnessId;
           current.view.update(row);
         }
+        current.row = { ...snapshot.result.thread, turns: current.view.thread.turns };
         for (const [key, value] of Object.entries(this.summary(id, current).projections.values))
           if (
             [
@@ -1987,6 +2068,7 @@ export class RemoteSessions {
         const summary = this.summary(id, current);
         if (JSON.stringify(summary) !== before) this.events.emit("api-session/added", summary);
         this.events.emit("api-session/status", id, summary.running);
+        current.historyReadAt = Date.now();
         return current.view;
       } catch (error) {
         requireCurrent();
@@ -2039,6 +2121,10 @@ export class RemoteSessions {
               !(error instanceof RpcError) ||
               !["host/history-changed", "host/items-replaced"].includes(error.code)
             ) {
+              if (!current.view) {
+                source.discard(current.identity.threadId);
+                history.retire();
+              }
               throw error;
             }
             if (current.view) {
@@ -2101,6 +2187,7 @@ export class RemoteSessions {
           current.row = { ...snapshot.thread, turns: [] } as ChThread;
         }
         current.view = history;
+        current.historyReadAt = Date.now();
         delete current.retiredCatalogProjections;
         current.viewHarnessId = viewHarnessId(current);
 
@@ -2233,11 +2320,12 @@ export class RemoteSessions {
         }
         if (JSON.stringify(summary) !== before) this.events.emit("api-session/added", summary);
         this.events.emit("api-session/status", id, summary.running);
+        current.historyReadAt = Date.now();
         return history;
       } catch (error) {
         requireCurrent();
-        if (error instanceof RpcError && error.code === "remote/offline") this.offline(current);
-        else if (!this.closed) {
+        // The Peer event stream owns connection state; history uses a separate HTTP request.
+        if (!this.closed) {
           if (error instanceof RpcError && error.code === "remote/connection-changed")
             this.clearPending(id);
           current.historyError = {
@@ -2318,7 +2406,10 @@ export class RemoteSessions {
         if (memberEntry) memberEntry.archived = archived;
       }
       this.peerArchivedIds.set(hostId, peerArchived);
-      if (updated.length > 0) this.syncArchives();
+      if (updated.length > 0) {
+        this.syncArchives();
+        if (archived && this.dropPeerPinnedThreads(hostId, updated)) this.syncPins();
+      }
     }
   }
   private loadQueue(id: string, entry: Entry): void {
@@ -2439,8 +2530,67 @@ export class RemoteSessions {
           this.loadUsage(id, entry, view, epoch, rerunForUpdate);
       });
   }
+  private async trackPageRead<T>(
+    id: string,
+    view: ChThreadView,
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    this.paging.set(view, (this.paging.get(view) ?? 0) + 1);
+    this.unfollowedSince.delete(view);
+    try {
+      return await operation();
+    } finally {
+      const remaining = (this.paging.get(view) ?? 1) - 1;
+      if (remaining > 0) this.paging.set(view, remaining);
+      else this.paging.delete(view);
+      const entry = this.entries.get(id);
+      if (entry?.view === view) {
+        entry.historyReadAt = Date.now();
+        this.unfollowedSince.delete(view);
+      }
+    }
+  }
+  private hasPendingInteraction(id: string, entry: Entry): boolean {
+    for (const item of this.pending.values()) {
+      if (item.sessionId === id) return true;
+    }
+    return this.peerInteractions.get(entry.identity.hostId)?.interactions.hasPending(id) === true;
+  }
+  private isEntryActive(id: string, entry: Entry, view: ChThreadView): boolean {
+    return (
+      this.pendingFirstTurns.has(id) ||
+      this.hasPendingInteraction(id, entry) ||
+      (entry.online && (entry.row.status.type === "active" || view.thread.status.type === "active"))
+    );
+  }
+  /** Drop remote/Peer views that stayed unfollowed, unread, and inactive for `IDLE_VIEW_MS`,
+   * releasing both `RemoteSessions` and `PeerThreadSource.histories` while preserving `viewOrigin`
+   * and retired catalog projection fingerprints for seamless reopening. */
+  discardIdleViews(now = Date.now()): void {
+    if (this.closed) return;
+    for (const [id, entry] of this.entries) {
+      const { view } = entry;
+      if (!view) continue;
+      if (
+        view.log.hasFollowers ||
+        entry.reading ||
+        (this.paging.get(view) ?? 0) > 0 ||
+        this.isEntryActive(id, entry, view)
+      ) {
+        this.unfollowedSince.delete(view);
+        continue;
+      }
+      let since = this.unfollowedSince.get(view);
+      if (since === undefined) this.unfollowedSince.set(view, (since = now));
+      // A follower that came and went between two checks still read the view.
+      if (now - Math.max(since, entry.historyReadAt ?? 0) >= IDLE_VIEW_MS) {
+        this.retireView(entry);
+      }
+    }
+  }
   private retireView(entry: Entry, peerSource?: PeerThreadSource): void {
     if (!entry.view) return;
+    this.unfollowedSince.delete(entry.view);
     entry.viewOrigin = Math.max(entry.viewOrigin ?? 0, entry.view.log.lastSeq + 2);
     entry.retiredCatalogProjections = this.captureCatalogFingerprints(entry.view.log.projections);
     if (typeof entry.view.log.projections.threadTreeParent === "string") {
@@ -2451,11 +2601,20 @@ export class RemoteSessions {
     entry.view.log.reconnectFollowers();
     delete entry.view;
     delete entry.viewHarnessId;
+    delete entry.historyReadAt;
     delete entry.peerInspected;
     delete entry.usageRequest;
     delete entry.queueReading;
+    if (entry.row.turns.length > 0) {
+      entry.row = { ...entry.row, turns: [] };
+    }
   }
-  private createView(row: ChThread, harnessId: string, origin = 0): ChThreadView {
+  private createView(
+    row: ChThread,
+    harnessId: string,
+    origin = 0,
+    identity?: { hostId: string; threadId: string },
+  ): ChThreadView {
     const view = new ChThreadView(
       row,
       harnessId,
@@ -2467,6 +2626,18 @@ export class RemoteSessions {
       },
       0,
       origin,
+      undefined,
+      undefined,
+      undefined,
+      identity
+        ? {
+            compactToolOutputs: true,
+            loadTurn: async (turnId) => {
+              const snapshot = await readRemoteHistory((op) => this.invoke(op), identity);
+              return snapshot.result.thread.turns.find((turn) => turn.id === turnId);
+            },
+          }
+        : undefined,
     );
     return view;
   }
@@ -2642,24 +2813,24 @@ export class RemoteSessions {
       const id = request.sessionId ?? request.address?.sessionId ?? request.agentId ?? args.agentId;
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
       if (method === "fileReferences/list") return next();
-      if (method === "commands/list") return [];
+      const draft = this.drafts.get(id);
+      if (method === "commands/list") {
+        const entry = this.entries.get(draft?.canonicalId ?? id);
+        return entry?.identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) &&
+          isEditableThread(entry)
+          ? [permissionCommand]
+          : [];
+      }
       if (method === "session/openWorkspacePath") {
         throw new RpcError(
           "session/open-unavailable",
           "Remote sessions cannot open files on the Hub host.",
         );
       }
-      if (method === "codexhost/executeThreadCommand") {
-        throw new RpcError(
-          "remote/unsupported",
-          "Direct command execution is unavailable for remote Threads.",
-        );
-      }
       if (method === "session/prompt") {
         const pending = this.pendingFirstTurns.get(id);
         if (pending) return this.firstTurn(pending, request as Record<string, unknown>);
       }
-      const draft = this.drafts.get(id);
       if (draft) {
         draft.lastUsed = Date.now();
         const input = request as Record<string, unknown>;
@@ -2674,6 +2845,13 @@ export class RemoteSessions {
             return this.listDraftSkills(draft);
           case "codexhost/threadCommands":
             return this.inspectDraftCommands(draft);
+          case "codexhost/executeThreadCommand":
+            if (draft.target.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX))
+              throw new RpcError("command/unavailable", "Commands require an existing Thread.");
+            throw new RpcError(
+              "remote/unsupported",
+              "Direct command execution requires a remote Peer.",
+            );
           case "codexhost/turnDiffs": {
             const parsed = webTurnDiffsRequestSchema.safeParse(input);
             if (!parsed.success)
@@ -2819,24 +2997,22 @@ export class RemoteSessions {
     const peerSource = this.requireOnlinePeerSource(draft.target.hostId);
     return peerSource.inspectHarnessCommands("codex", draft.target.cwd);
   }
-  private async inspectThreadCommands(id: string): Promise<HarnessCommandCatalog> {
-    const identity = remoteSessionIdentity(id);
-    if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
-    if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
-      throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
-    }
+  private async peerCommandThread(id: string, hostId: string): Promise<PeerThreadSource> {
+    let source = this.requireOnlinePeerSource(hostId);
     let entry = this.entries.get(id);
     if (!entry) {
-      await this.refresh(identity.hostId);
+      await this.refresh(hostId);
+      source = this.requireOnlinePeerSource(hostId);
       entry = this.entries.get(id);
     }
     if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
     if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
-    const peerSource = this.requireOnlinePeerSource(identity.hostId);
-    if (entry.row.parentThreadId || entry.row.canAcceptDirectInput === false) {
+    const epoch = source.host.manifestEpoch();
+    if (entry.epoch !== undefined && epoch !== undefined && entry.epoch !== epoch)
+      throw new RpcError("remote/connection-changed", "Remote peer changed before dispatch.");
+    if (!isEditableThread(entry))
       throw new RpcError("command/unavailable", "Commands require an editable remote Thread.");
-    }
-    return peerSource.inspectThreadCommands(identity.threadId);
+    return source;
   }
   private async search(
     args: Record<string, unknown>,
@@ -2856,7 +3032,7 @@ export class RemoteSessions {
       if (seen.has(id)) continue;
       const snippet = threadListTitle({ ...entry.row, id: entry.identity.threadId });
       if (snippet.toLowerCase().includes(needle)) {
-        remoteMatches.push({ sessionId: id, snippet, updatedAt: entry.row.updatedAt * 1000 });
+        remoteMatches.push({ sessionId: id, snippet, updatedAt: threadRecencyMs(entry.row) });
       }
     }
     for (const draft of this.drafts.values()) {
@@ -2907,8 +3083,22 @@ export class RemoteSessions {
     if (method === "codexhost/skills/list") {
       return this.listThreadSkills(id);
     }
-    if (method === "codexhost/threadCommands") {
-      return this.inspectThreadCommands(id);
+    if (method === "codexhost/threadCommands" || method === "codexhost/executeThreadCommand") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      const execute = method === "codexhost/executeThreadCommand";
+      if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+        if (execute)
+          throw new RpcError(
+            "remote/unsupported",
+            "Direct command execution requires a remote Peer.",
+          );
+        throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
+      }
+      const source = await this.peerCommandThread(id, identity.hostId);
+      return execute
+        ? source.executeThreadCommand(identity.threadId, request)
+        : source.inspectThreadCommands(identity.threadId);
     }
     if (method === "session/attachment") {
       const identity = remoteSessionIdentity(id);
@@ -3042,6 +3232,54 @@ export class RemoteSessions {
       });
       return { accepted: true };
     }
+    if (method === "workspace/pinSession" || method === "workspace/unpinSession") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+        throw new RpcError(
+          "remote/unsupported",
+          "This operation is unavailable for remote Threads",
+        );
+      }
+      const pinned = method === "workspace/pinSession";
+      let source = this.requireOnlinePeerSource(identity.hostId);
+      let entry = this.entries.get(id);
+      if (!entry) {
+        await this.refresh(identity.hostId);
+        source = this.requireOnlinePeerSource(identity.hostId);
+        entry = this.entries.get(id);
+      }
+      if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+      if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
+      if (pinned && entry.archived) {
+        throw new RpcError("remote/unsupported", "Unarchive this remote Thread before pinning it.");
+      }
+      this.pinWrites++;
+      this.pinRevision++;
+      let updatedPins: string[];
+      try {
+        updatedPins = await source.pinSession(identity.threadId, pinned);
+      } catch (error) {
+        if (isMethodUnavailableError(error)) {
+          throw new RpcError(
+            "remote/unsupported",
+            "This remote peer does not support pinning Threads.",
+          );
+        }
+        throw error;
+      } finally {
+        this.pinWrites--;
+        this.pinRevision++;
+        if (!this.hasActiveWrites && !this.closed && !this.listing && this.hasPendingRefresh()) {
+          this.refreshPending = false;
+          void this.startRefresh().catch(() => undefined);
+        }
+      }
+      if (!this.closed && this.hosts.has(identity.hostId)) {
+        this.peerPinnedIds.set(identity.hostId, updatedPins);
+      }
+      return { pinnedSessionIds: this.syncPins() };
+    }
     if (method === "session/unarchive" || method === "workspace/unarchiveSession") {
       const identity = remoteSessionIdentity(id);
       if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
@@ -3076,7 +3314,7 @@ export class RemoteSessions {
       } finally {
         this.archiveWrites--;
         this.archiveRevision++;
-        if (this.archiveWrites === 0 && !this.closed && !this.listing && this.hasPendingRefresh()) {
+        if (!this.hasActiveWrites && !this.closed && !this.listing && this.hasPendingRefresh()) {
           this.refreshPending = false;
           void this.startRefresh().catch(() => undefined);
         }
@@ -3093,6 +3331,11 @@ export class RemoteSessions {
       return method === "workspace/unarchiveSession"
         ? { archivedSessionIds: this.syncArchives() }
         : { accepted: true };
+    }
+    const parsedToolOutput =
+      method === "session/toolOutput" ? webToolOutputReferenceSchema.safeParse(request) : undefined;
+    if (parsedToolOutput && !parsedToolOutput.success) {
+      throw new RpcError("gateway/invalid", "Invalid tool output reference.");
     }
     const readOnly = [
       "session/projections",
@@ -3113,16 +3356,42 @@ export class RemoteSessions {
       const throughSeq = Number(request.throughSeq);
       const beforeSeq = typeof request.beforeSeq === "number" ? request.beforeSeq : undefined;
       const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : 20;
-      if (view instanceof ChThreadHistory) {
-        return view.olderPage(throughSeq, beforeSeq, maxMessages);
-      }
-      return view.log.page(throughSeq, beforeSeq, { maxMessages });
+      const page = await this.trackPageRead(id, view, () =>
+        view instanceof ChThreadHistory
+          ? view.olderPage(throughSeq, beforeSeq, maxMessages)
+          : view.log.page(throughSeq, beforeSeq, { maxMessages }),
+      );
+      return {
+        ...page,
+        records: toolOutputRecords(
+          view.log,
+          page.records as Array<{ type: "event"; event: WireEvent }>,
+        ),
+      };
     }
-    if (method === "session/toolOutput")
-      return readToolOutput(view.log, webToolOutputReferenceSchema.parse(request));
+    if (parsedToolOutput?.success) {
+      return this.trackPageRead(id, view, () => view.readToolOutput(parsedToolOutput.data));
+    }
     const entry = this.entries.get(id);
     if (!entry?.epoch) throw new RpcError("remote/offline", "Remote connection changed");
-    if (method === "session/modelCatalog") return remoteModelCatalog(entry);
+    if (method === "session/modelCatalog") {
+      const base = remoteModelCatalog(entry);
+      const peerSource = this.peers?.source(entry.identity.hostId);
+      if (!peerSource) return base;
+      const peerCatalog = await peerSource.catalog.models().catch(() => undefined);
+      if (!peerCatalog?.groups.length) return base;
+      const bound = base.groups[0];
+      const groups = bound
+        ? peerCatalog.groups.some((group) => group.id === bound.id)
+          ? peerCatalog.groups.map((group) => (group.id === bound.id ? bound : group))
+          : [bound, ...peerCatalog.groups]
+        : peerCatalog.groups;
+      return {
+        ...base,
+        groups,
+        ...(peerCatalog.harnessOrder ? { harnessOrder: peerCatalog.harnessOrder } : {}),
+      };
+    }
     if (method === "session/selectModel")
       return selectRemoteModel(
         id,
@@ -3204,7 +3473,7 @@ export class RemoteSessions {
       if (operation.kind === "archive") {
         this.archiveWrites--;
         this.archiveRevision++;
-        if (this.archiveWrites === 0 && !this.closed && !this.listing && this.hasPendingRefresh()) {
+        if (!this.hasActiveWrites && !this.closed && !this.listing && this.hasPendingRefresh()) {
           this.refreshPending = false;
           void this.startRefresh().catch(() => undefined);
         }
@@ -3221,6 +3490,12 @@ export class RemoteSessions {
         this.peerArchivedIds.set(entry.identity.hostId, peerArchived);
       }
       this.syncArchives();
+      if (
+        operation.archived &&
+        this.dropPeerPinnedThreads(entry.identity.hostId, [entry.identity.threadId])
+      ) {
+        this.syncPins();
+      }
     }
     // A failed read cannot turn an acknowledged mutation into a rejected write.
     await this.read(id).catch(() => undefined);
@@ -3235,6 +3510,7 @@ export class RemoteSessions {
     for (const lookup of this.pendingPeerLookups.values()) lookup.resolve(false);
     this.pendingPeerLookups.clear();
     clearInterval(this.timer);
+    clearInterval(this.idleViewTimer);
     for (const timer of this.peerChangeTimers.values()) clearTimeout(timer);
     this.peerChangeTimers.clear();
     this.peerTreeRetryAttempts.clear();
@@ -3264,6 +3540,7 @@ export class RemoteSessions {
     this.peerInteractions.clear();
     for (const entry of this.entries.values()) entry.view?.log.reconnectFollowers();
     this.peerArchivedIds.clear();
+    this.peerPinnedIds.clear();
     this.controls.clear();
     this.drafts.clear();
     this.titleRequests.clear();

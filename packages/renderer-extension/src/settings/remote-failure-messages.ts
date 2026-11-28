@@ -25,6 +25,10 @@ export const REMOTE_FAILURE_CHINESE: Readonly<Record<string, string>> = Object.f
     "远程服务尚未安装，请使用「安装并连接」",
   "This release is not published on npm, or the remote computer cannot reach the registry":
     "该版本尚未发布到 npm，或远程电脑无法访问 npm 仓库",
+  "The requested release packages are not all available on npm yet; retry later":
+    "新版组件在 npm 仓库中尚未齐备，当前版本可继续使用，请稍后重试",
+  "Checking or downloading the release from npm timed out; retry later":
+    "从 npm 查询或下载新版组件超时，当前版本未受影响，请稍后重试",
   "codexhost was installed but is not on the remote PATH. Update this remote manually":
     "codexhost 已安装，但不在远程电脑的 PATH 中，请在远程电脑上手动更新",
   "Only Mac and Linux remote computers are supported": "只支持 Mac 和 Linux 远程电脑",
@@ -50,6 +54,8 @@ export const REMOTE_FAILURE_CHINESE: Readonly<Record<string, string>> = Object.f
     "远程服务无法停止，请检查远程服务后重试",
   "Remote connection configuration could not be removed. Check file permissions":
     "无法移除远程连接配置，请检查文件权限",
+  "The remote codexhost platform package is missing or incomplete. Reinstall @codexhost/cli on the remote computer, then retry":
+    "远程电脑缺少或不完整的 codexhost 平台组件。请在远程电脑上重新安装 @codexhost/cli 后重试",
   "Another remote installation is in progress. Wait and check again":
     "另一项远程安装正在进行，请稍后重新检测",
   "Remote service was installed but could not start. Check the remote service and retry connecting":
@@ -78,6 +84,8 @@ export const REMOTE_FAILURE_CHINESE: Readonly<Record<string, string>> = Object.f
     "npm 安装失败，请检查远程电脑的网络和写入权限",
   "Installed remote version does not match the requested version":
     "远程安装的版本与请求的版本不一致",
+  "The remote platform package is missing; reinstall codexhost on the remote computer":
+    "远程平台组件缺失，请在远程电脑上重新安装 codexhost",
   "Remote stop failed": "更新已安装，但停止旧服务失败",
   "Remote install failed": "更新已安装，但重新配置远程服务失败",
   "Remote start failed": "更新已安装，但启动远程服务失败",

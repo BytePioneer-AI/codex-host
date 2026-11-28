@@ -250,10 +250,17 @@ button.crumb:hover {
 
 :global([data-phone])
   .root[data-phase="active"]
-  > :global([data-slot="conversation.header.notice"]:not(:empty)) {
-  margin-top: var(--dsh-phone-header-height);
+  > :global([data-slot="conversation.header.notice"])
+  > * {
   position: relative;
   z-index: 5;
+}
+
+:global([data-phone])
+  .root[data-phase="active"]
+  > :global([data-slot="conversation.header.notice"])
+  > :first-child {
+  margin-top: var(--dsh-phone-header-height);
 }
 
 /* Progressive top veil adapts to the active header height (1 row or 2 rows) so scrolled
@@ -530,7 +537,8 @@ button.crumb:hover {
 
   :global([data-phone])
     .root[data-phase="active"]
-    > :global([data-slot="conversation.header.notice"]:not(:empty)) {
+    > :global([data-slot="conversation.header.notice"])
+    > :first-child {
     margin-top: 0;
   }
 
@@ -572,7 +580,8 @@ button.crumb:hover {
 
   :global([data-phone])
     .root[data-phase="active"]
-    > :global([data-slot="conversation.header.notice"]:not(:empty)) {
+    > :global([data-slot="conversation.header.notice"])
+    > :first-child {
     margin-top: 0;
   }
 
@@ -740,6 +749,10 @@ button.crumb:hover {
   display: flex;
   flex: none;
   flex-direction: column;
+  /* Selection boundary between the transcript flow and the sticky footer chrome;
+     editable inputs and prose surfaces inside opt back into text selection. */
+  -webkit-user-select: none;
+  user-select: none;
   /* One cap for every scrolling text region a composer seat can hold: the
      InputBar draft (figma Input 75:8208 max 14 lines × 24px line) and the
      takeover panels' bodies top out at the same height, so electing a
@@ -748,6 +761,11 @@ button.crumb:hover {
      elected overlay are siblings — and custom properties inherit down to
      whichever entry is mounted. */
   --dsh-composer-text-max-height: 336px;
+}
+
+.composerSeat :is(input, textarea, [contenteditable="true"], [contenteditable=""]) {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Active phase: header is ordinary column chrome above the scrollport (not

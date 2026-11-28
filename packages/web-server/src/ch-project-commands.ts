@@ -85,6 +85,7 @@ export function nativeProjectCommands(
             "Codex confirmed the removal. Refresh the project list.",
           );
         workspaces.removeFromDisplayOrder(workspaceId);
+        workspaces.removePinnedWorkspaceOverride(workspaceId);
         return { deleted: true };
       }),
     insertBefore: (workspaceId, beforeWorkspaceId) =>

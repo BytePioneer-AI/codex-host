@@ -40,8 +40,15 @@ import { chatRenderKey } from "./render-entry.ts";
 import { assertNever } from "@deepseek-ai/dsh-util-values";
 import { TurnNavigator } from "./TurnNavigator.tsx";
 import { RunningStatus } from "./RunningStatus.tsx";
-import { mergeTurnRailItems } from "./turn-rail-items.ts";
+import { mergeTurnRailItems, type TurnRailItem } from "./turn-rail-items.ts";
 import { useChatScroll } from "./use-chat-scroll.ts";
+import {
+  entryFlowKey,
+  flowKeyForScrollAnchor,
+  resolveRevealTargetFlowKey,
+  useTranscriptVirtualization,
+  type TranscriptVirtualization,
+} from "./use-transcript-virtualization.ts";
 import {
   REMOTE_PEER_FILE_PROXY_PATH,
   REMOTE_PEER_HOST_ID_PREFIX,
@@ -119,11 +126,15 @@ function observedInputs(
 
 type PendingInput = PendingSubmission | InboxState["next-step"][number];
 
-type ChatNodeListProps = Omit<ComponentProps<typeof ChatNodeSeat>, "nodeKey" | "groupPart"> & {
+type ChatNodeListProps = Omit<
+  ComponentProps<typeof ChatNodeSeat>,
+  "nodeKey" | "groupPart" | "mounted" | "placeholderHeight" | "registerRow"
+> & {
   readonly entries: readonly RenderEntry[];
   readonly useChatGroup: ChatViewSlotProps["useChatGroup"];
   readonly pendingInputs: readonly PendingInput[];
   readonly lastInputTurn: number | undefined;
+  readonly virtualization: TranscriptVirtualization;
 };
 
 const ChatNodeList = memo(function ChatNodeList({
@@ -131,9 +142,16 @@ const ChatNodeList = memo(function ChatNodeList({
   useChatGroup,
   pendingInputs,
   lastInputTurn,
+  virtualization,
   ...seatProps
 }: ChatNodeListProps) {
-  const rows = entries.map((entry) => {
+  const registerRow = virtualization.active ? virtualization.registerRow : undefined;
+  const rows = entries.map((entry, index) => {
+    const flowKey = entryFlowKey(entry);
+    const mounted = virtualization.isMounted(index, flowKey);
+    const placeholderHeight = mounted
+      ? undefined
+      : virtualization.placeholderHeight(flowKey, entry.kind);
     switch (entry.kind) {
       case "node":
         return (
@@ -141,6 +159,9 @@ const ChatNodeList = memo(function ChatNodeList({
             {...seatProps}
             key={chatRenderKey(entry)}
             nodeKey={entry.key}
+            mounted={mounted}
+            placeholderHeight={placeholderHeight}
+            registerRow={registerRow}
             {...(entry.groupPart === undefined ? {} : { groupPart: entry.groupPart })}
           />
         );
@@ -151,6 +172,9 @@ const ChatNodeList = memo(function ChatNodeList({
             key={chatRenderKey(entry)}
             groupKey={entry.key}
             useChatGroup={useChatGroup}
+            mounted={mounted}
+            placeholderHeight={placeholderHeight}
+            registerRow={registerRow}
           />
         );
       default:
@@ -239,6 +263,7 @@ export function ChatView({
 }: ChatViewSlotProps) {
   const order = useChat((s) => s.order);
   const browserAvailable = useBrowserAvailable((available) => available);
+  const groupedChat = useConversation((snapshot) => snapshot.views.grouped("chat"));
   const groupedEntries = useConversation((snapshot) => snapshot.views.grouped("chat")?.entries);
   const entries = useMemo<readonly RenderEntry[]>(
     () => groupedEntries ?? order.map((key) => ({ kind: "node", key: key as NodeKey })),
@@ -312,6 +337,14 @@ export function ChatView({
     [inputActions],
   );
   const running = useSession((s) => s.running);
+  const subagent = useSession((s) => s.subagent);
+  const removed = useSession((s) => s.removed);
+  const canAnnotate =
+    inputActions !== undefined &&
+    !removed &&
+    (subagent === null ||
+      (subagent.address.mode === "continuable" && subagent.parentAvailable === true));
+  const [composingAnswerKey, setComposingAnswerKey] = useState<string | null>(null);
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
   const recoveryLasting = useSustainedRecovery(carrier !== "connected");
   const compacting = useProjection("compacting");
@@ -499,12 +532,113 @@ export function ChatView({
   const annotationToReveal = useInput((state) =>
     state.responseAnnotations.find((annotation) => annotation.id === viewRequest?.focus),
   );
+  const editingFlowKey = useMemo(() => {
+    const seq = messageEditing.draft?.seq;
+    if (seq === undefined) return null;
+    for (const entry of entries) {
+      if (entry.kind !== "node") continue;
+      const node = nodeStore.get(entry.key);
+      if (node?.kind === "user" && node.data.seq === seq) return entryFlowKey(entry);
+    }
+    return null;
+  }, [entries, messageEditing.draft?.seq, nodeStore]);
+  const composingFlowKey = useMemo(
+    () =>
+      composingAnswerKey !== null
+        ? resolveRevealTargetFlowKey(composingAnswerKey, entries, groupedChat)
+        : null,
+    [composingAnswerKey, entries, groupedChat],
+  );
+  const revealTargetFlowKey = useMemo(
+    () =>
+      viewRequest?.view === "chat" && annotationToReveal?.anchor !== undefined
+        ? resolveRevealTargetFlowKey(annotationToReveal.anchor.answerKey, entries, groupedChat)
+        : null,
+    [annotationToReveal?.anchor, entries, groupedChat, viewRequest?.view],
+  );
   const { initialized, revealResponseAnnotation } = scroll;
+  const savedAnchorFlowKey = useMemo(() => {
+    if (initialized) return null;
+    const saved = chatScroll.read();
+    return saved === null ? null : flowKeyForScrollAnchor(saved.anchorKey);
+  }, [chatScroll, initialized, sessionId]);
+  const virtualization = useTranscriptVirtualization({
+    sessionId,
+    entries,
+    nodeStore,
+    listRef: scroll.listRef,
+    columnRef: scroll.columnRef,
+    editingFlowKey,
+    composingFlowKey,
+    revealTargetFlowKey,
+    savedAnchorFlowKey,
+    busyTurn: scroll.busyTurn,
+    onTailScrollClamp: scroll.reconcileTail,
+    onScrollCompensated: scroll.adjustBaseline,
+  });
+  const [pendingTurnJump, setPendingTurnJump] = useState<{
+    readonly sessionId: string;
+    readonly item: TurnRailItem;
+  } | null>(null);
+  const activePendingTurnJump =
+    pendingTurnJump?.sessionId === sessionId ? pendingTurnJump.item : null;
+  const navigateToTurn = useCallback(
+    (item: TurnRailItem) => {
+      const targetAnchorKey = item.anchor.kind === "loaded" ? item.anchor.key : null;
+      virtualization.pinNavigationTarget({ turn: item.turn, anchorKey: targetAnchorKey });
+      if (
+        item.anchor.kind === "loaded" &&
+        virtualization.active &&
+        targetAnchorKey !== null &&
+        !virtualization.isAnchorMounted(targetAnchorKey)
+      ) {
+        setPendingTurnJump({ sessionId, item });
+        return;
+      }
+      setPendingTurnJump(null);
+      scroll.navigateToTurn(item);
+    },
+    [scroll, sessionId, virtualization],
+  );
+  const returnToBottom = useCallback(() => {
+    setPendingTurnJump(null);
+    virtualization.clearNavigationPin();
+    scroll.returnToBottom();
+  }, [scroll, virtualization]);
+  useLayoutEffect(() => {
+    if (activePendingTurnJump === null) return;
+    setPendingTurnJump(null);
+    scroll.navigateToTurn(activePendingTurnJump);
+  }, [activePendingTurnJump, scroll]);
   useLayoutEffect(() => {
     if (!initialized || viewRequest?.view !== "chat") return;
+    if (revealTargetFlowKey !== null) {
+      virtualization.pinNavigationTarget({ turn: null, anchorKey: revealTargetFlowKey });
+      const targetInEntries = entries.some(
+        (entry) =>
+          entryFlowKey(entry) === revealTargetFlowKey ||
+          (entry.kind === "node" && entry.key === revealTargetFlowKey),
+      );
+      if (
+        virtualization.active &&
+        targetInEntries &&
+        !virtualization.isAnchorMounted(revealTargetFlowKey)
+      ) {
+        return;
+      }
+    }
     if (annotationToReveal !== undefined) revealResponseAnnotation(annotationToReveal);
     completeViewRequest();
-  }, [initialized, viewRequest, annotationToReveal, revealResponseAnnotation, completeViewRequest]);
+  }, [
+    initialized,
+    viewRequest,
+    annotationToReveal,
+    entries,
+    revealResponseAnnotation,
+    revealTargetFlowKey,
+    completeViewRequest,
+    virtualization,
+  ]);
 
   return (
     <div className={css.frame}>
@@ -513,11 +647,15 @@ export function ChatView({
           items={railItems}
           activeTurn={scroll.activeTurn}
           busyTurn={scroll.busyTurn}
-          onNavigate={scroll.navigateToTurn}
+          onNavigate={navigateToTurn}
           t={t}
         />
       )}
-      <div className={css.root} data-chat-following-tail={scroll.followingTail ? "" : undefined}>
+      <div
+        className={css.root}
+        data-chat-following-tail={scroll.followingTail ? "" : undefined}
+        data-chat-virtualizing={virtualization.active ? "" : undefined}
+      >
         <div ref={scroll.listRef} className={css.scroll}>
           <div ref={scroll.columnRef} className={css.column} data-chat-flow="">
             {openState === "loading" && order.length === 0 && (
@@ -587,6 +725,7 @@ export function ChatView({
                 renderMessageImages={renderMessageImages}
                 fileMentions={fileMentions}
                 renderSlot={renderSlot}
+                virtualization={virtualization}
                 t={t}
               />
             </ChatMarkdown>
@@ -617,7 +756,7 @@ export function ChatView({
           </div>
         </div>
       </div>
-      {inputActions !== undefined && (
+      {canAnnotate && (
         <SelectionActions
           key={sessionId}
           labels={{
@@ -630,6 +769,7 @@ export function ChatView({
           }}
           onAdd={attachSelection}
           container={scroll.columnRef}
+          onComposingAnswerChange={setComposingAnswerKey}
         />
       )}
       {!scroll.followingTail && (
@@ -638,7 +778,7 @@ export function ChatView({
             type="button"
             className={css.toBottom}
             aria-label={t("chat.toBottom")}
-            onClick={scroll.returnToBottom}
+            onClick={returnToBottom}
           >
             <IconChevronDownOutlineRegular />
           </button>

@@ -277,7 +277,7 @@ export interface ChatNodeOwnerProps {
   openSkill: (name: string) => void;
   openFile: (path: string, options?: OpenFileOptions) => void;
   inspectCall: ((callId: ToolCallId) => void) | undefined;
-  forkAt: (seq: number) => Promise<void>;
+  forkAt?: ((seq: number) => Promise<void>) | undefined;
   handoffAt?: ((seq: number) => void) | undefined;
   loadTurnDiffs?: ((turn: number, path?: string) => Promise<readonly DiffHunk[]>) | undefined;
   messageEditing?: SentMessageEditing | undefined;
@@ -382,7 +382,7 @@ export interface ChatViewInjected {
     save: (position: ChatScrollPosition | null) => void;
     read: () => ChatScrollPosition | null;
   };
-  forkAt: (seq: number) => Promise<void>;
+  forkAt?: ((seq: number) => Promise<void>) | undefined;
   openSession: (sessionId: string) => void;
   handoff?: ((input: ChatHandoffInput) => Promise<void>) | undefined;
   clearHandoffRequest: (seq: number) => void;

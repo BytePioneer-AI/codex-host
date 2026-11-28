@@ -1,4 +1,4 @@
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
@@ -7,14 +7,36 @@ import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { REMOTE_PEERS_METHODS as methods } from "@codexhost/shared-contracts";
+import {
+  DELEGATION_HOST_HARNESSES_METHOD,
+  DELEGATION_REMOTE_HOSTS_METHOD,
+  REMOTE_PEERS_METHODS as methods,
+  remotePeerHostId,
+  remotePeerIntroduceResultSchema,
+  remotePeerPairingReportSchema,
+  remotePeerSummarySchema,
+  remotePeerTestResultSchema,
+  type RemotePeerAddParams,
+  type RemotePeerIntroduceParams,
+  type RemotePeerPairingReport,
+} from "@codexhost/shared-contracts";
+import { AccessTokenStore } from "../src/access-tokens.ts";
+import { AccessAuth, CredentialConnections } from "../src/auth.ts";
 import {
   loadOrCreatePeerNodeId,
   parseConnectionLink,
   PeerHostStore,
+  type PeerDnsLookup,
 } from "../src/peer-host-store.ts";
 import { PeerHostManager, createCompositeRemoteCall } from "../src/peer-host-manager.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "../src/peer-manifest.ts";
+import { peerPairingEnabled, servePeerPairing } from "../src/peer-pairing-http.ts";
+import { resolvePeerSelfOrigin } from "../src/peer-pairing.ts";
+import {
+  translateThreadLinksForPeer,
+  translateThreadLinksFromPeer,
+} from "../src/peer-thread-links.ts";
+import { RequestTrust } from "../src/request-trust.ts";
 import { deliverRemoteInput, readRemoteThreadStatus } from "../src/remote-session-delivery.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
@@ -51,6 +73,8 @@ it("normalizes credential links, enforces SSRF host policy, and classifies LAN/T
     "http://169.254.169.254/#token=x",
     "http://[::ffff:169.254.169.254]/#token=x",
     "http://metadata.google.internal/#token=x",
+    "http://metadata.google.internal./#token=x",
+    "http://localhost./#token=x",
     "http://0.0.0.0:4400/#token=x",
     "http://[::ffff:0.0.0.0]:4400/#token=x",
   ])
@@ -354,13 +378,13 @@ it("pairs authenticated mobile callers with independent peers and recovers event
       },
     };
   };
-  const [a, b] = await Promise.all([mock(), mock()]);
+  const [a, b, revoked] = await Promise.all([mock(), mock(), mock()]);
   const store = new PeerHostStore(new DataDir(root));
   store.save([
     {
       peerId: "bad",
       name: "Revoked",
-      origin: b.origin,
+      origin: revoked.origin,
       token: "revoked",
       enabled: true,
       createdAt: "now",
@@ -377,6 +401,7 @@ it("pairs authenticated mobile callers with independent peers and recovers event
     manager.close();
     a.close();
     b.close();
+    revoked.close();
     rmSync(root, { recursive: true, force: true });
   });
   const rpc = new RpcRegistry();
@@ -1699,7 +1724,7 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
 
   // 2. Helper stub peers: one with localNodeId (self via alias URL), one modern peer B, one legacy peer (no nodeId).
   const secretToken = "peer-identity-secret";
-  const makeStubPeer = async (manifestExtra: Record<string, unknown>, failManifest = false) => {
+  const makeStubPeer = async (manifestExtra: Record<string, unknown>) => {
     const epoch = randomUUID();
     const server = createServer((req, res) => {
       if (req.headers.authorization !== `Bearer ${secretToken}`) {
@@ -1708,10 +1733,6 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
       }
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (url.pathname === "/api/peer/v1/manifest") {
-        if (failManifest) {
-          res.writeHead(503).end();
-          return;
-        }
         res.writeHead(200, { "content-type": "application/json" }).end(
           JSON.stringify({
             version: "0.26.1",
@@ -1748,17 +1769,29 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
 
   const selfAlias = await makeStubPeer({ nodeId: localNodeId });
   const peerB = await makeStubPeer({ nodeId: "node-b-id" });
-  const peerBOffline = await makeStubPeer({ nodeId: "node-b-id" }, true);
   const legacyPeer = await makeStubPeer({});
   t.after(() => {
     selfAlias.close();
     peerB.close();
-    peerBOffline.close();
     legacyPeer.close();
   });
 
-  // Pre-seed an offline enabled peer sharing node-b-id via persisted record + offline state.
+  // Load duplicate bindings from disk to exercise routing for existing configurations.
+  const peerBId = "peer-b";
+  const peerB2HostId = remotePeerHostId("peer-b-duplicate");
+  const now = new Date().toISOString();
   const store = new PeerHostStore(data);
+  store.save(
+    [peerBId, "peer-b-duplicate"].map((peerId) => ({
+      peerId,
+      name: "Modern B",
+      origin: peerB.origin,
+      token: secretToken,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    })),
+  );
   const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
     allowLoopback: true,
     localNodeId,
@@ -1792,16 +1825,11 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
   assert.equal(addedSelf.ok, false);
   assert.match(addedSelf.error.message, /Cannot pair this server with itself/u);
 
-  // 4. Add modern Peer B and legacy Peer (no nodeId); verify summary, delegationHosts, and update self-pair block.
-  const addedB = await rpc.dispatch(
-    methods.add,
-    { args: { connectionUrl: `${peerB.origin}/#token=${secretToken}`, name: "Modern B" } },
-    localAuth,
-  );
-  assert.equal(addedB.ok, true);
-  const peerBInfo = (addedB.value as { peer: { peerId: string; hostId: string; nodeId?: string } })
-    .peer;
-  assert.equal(peerBInfo.nodeId, "node-b-id");
+  // 4. Add a legacy Peer (no nodeId) and verify the update self-pair block.
+  const peerBHostId = remotePeerHostId(peerBId);
+  await manager.waitForInitialConnection(peerBHostId);
+  await manager.waitForInitialConnection(peerB2HostId);
+  assert.equal(manager.nodeIdForHostId(peerBHostId), "node-b-id");
 
   const addedLegacy = await rpc.dispatch(
     methods.add,
@@ -1816,7 +1844,7 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
     methods.update,
     {
       args: {
-        peerId: peerBInfo.peerId,
+        peerId: peerBId,
         connectionUrl: `${selfAlias.origin}/#token=${secretToken}`,
       },
     },
@@ -1824,17 +1852,10 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
   );
   assert.equal(updatedToSelf.ok, false);
   assert.match(updatedToSelf.error.message, /Cannot pair this server with itself/u);
-  assert.equal(manager.client(peerBInfo.hostId)?.record.origin, peerB.origin);
+  assert.equal(manager.client(peerBHostId)?.record.origin, peerB.origin);
 
   // 5. Multiple peers with same nodeId: hostIdForNodeId prefers state === "connected".
-  const addedB2 = await rpc.dispatch(
-    methods.add,
-    { args: { connectionUrl: `${peerB.origin}/#token=${secretToken}`, name: "Modern B Dup" } },
-    localAuth,
-  );
-  assert.equal(addedB2.ok, true);
-  const peerB2HostId = (addedB2.value as { peer: { hostId: string } }).peer.hostId;
-  const firstClient = manager.client(peerBInfo.hostId);
+  const firstClient = manager.client(peerBHostId);
   assert.ok(firstClient);
   firstClient.state = "offline";
   assert.equal(manager.hostIdForNodeId("node-b-id"), peerB2HostId);
@@ -1869,4 +1890,963 @@ it("persists stable nodeId, exposes anonymous peerNodes, supports legacy peers, 
   const dHosts = manager.delegationHosts();
   assert.equal(dHosts.find((h) => h.hostId === peerB2HostId)?.nodeId, "node-b-id");
   assert.equal(dHosts.find((h) => h.hostId === legacyInfo.hostId)?.nodeId, undefined);
+});
+
+const pairingAuth = { local: true, credential: "local", release() {} };
+
+async function pairingNode(
+  t: TestContext,
+  name: string,
+  options: {
+    nodeId?: string;
+    allowLoopback?: boolean;
+    dnsLookup?: PeerDnsLookup;
+    extraTokens?: string[];
+    resolveSelfShare?: (
+      origin: string,
+      token: string,
+      preferredOrigin?: string,
+    ) => Promise<{ origin: string; token: string; name: string } | { error: string }>;
+    onIntroduceBody?: (body: string) => void;
+    introductionFailure?: () => string;
+  } = {},
+) {
+  const root = mkdtempSync(join(tmpdir(), "peer-pairing-"));
+  const data = new DataDir(root);
+  const store = new PeerHostStore(data);
+  const tokens = new AccessTokenStore(data);
+  const token = tokens.current().secret;
+  const trust = new RequestTrust(undefined);
+  const auth = new AccessAuth(tokens, trust, new CredentialConnections());
+  const rpc = new RpcRegistry();
+  const ws = new Workspaces(data, root, true);
+  const epoch = randomUUID();
+  const manager = new PeerHostManager(store, async () => [origin], new EventHub(root), {
+    allowLoopback: options.allowLoopback ?? true,
+    ...(options.dnsLookup === undefined ? {} : { dnsLookup: options.dnsLookup }),
+    ...(options.nodeId === undefined ? {} : { localNodeId: options.nodeId }),
+    resolveSelfShare: async (preferredOrigin) => {
+      if (options.resolveSelfShare) {
+        return options.resolveSelfShare(origin, token, preferredOrigin);
+      }
+      const share = resolvePeerSelfOrigin([], preferredOrigin, origin);
+      return "error" in share ? share : { ...share, token, name };
+    },
+  });
+  manager.register(rpc);
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", origin);
+    const extraAuthorized =
+      options.extraTokens?.some((extra) => req.headers.authorization === `Bearer ${extra}`) ??
+      false;
+    if (!extraAuthorized) {
+      const admission = await auth.gate(req, res, url.pathname);
+      if (admission.handled) return;
+      if (!admission.auth || !trust.sameOrigin(req)) {
+        res.writeHead(403).end();
+        return;
+      }
+    }
+    if (url.pathname === "/api/peer/v1/peers") {
+      if (options.introductionFailure) {
+        req.resume();
+        res.writeHead(400).end(JSON.stringify({ error: options.introductionFailure() }));
+        return;
+      }
+      if (options.onIntroduceBody) {
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        req.on("end", () => options.onIntroduceBody?.(Buffer.concat(chunks).toString("utf8")));
+      }
+      await servePeerPairing(req, res, manager);
+      return;
+    }
+    if (url.pathname === "/api/peer/v1/manifest") {
+      const manifest = await peerEndpoint("GET", url, {}, ws, rpc, epoch, "1", [], {
+        peerPairing: peerPairingEnabled(),
+        nodeId: manager.selfNodeId(),
+        peerNodes: manager.peerNodes(),
+      });
+      res.writeHead(200).end(JSON.stringify(manifest));
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      res.writeHead(200);
+      res.write(
+        `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false })}\n`,
+      );
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  t.after(() => {
+    manager.close();
+    server.closeAllConnections();
+    server.close();
+    tokens.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const connection = {
+    origin,
+    token,
+    name,
+    ...(options.nodeId === undefined ? {} : { expectedNodeId: options.nodeId }),
+  };
+  return {
+    connection,
+    manager,
+    store,
+    rpc,
+    introduce: (input: RemotePeerIntroduceParams, headers?: Record<string, string>) =>
+      fetch(`${origin}/api/peer/v1/peers`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, ...headers },
+        body: JSON.stringify(input),
+      }),
+    add: async (input: RemotePeerAddParams) => {
+      const added = await rpc.dispatch(methods.add, { args: input }, pairingAuth);
+      assert.ok(added.ok, JSON.stringify(added));
+      const value = added.value as { peer: unknown; pairing?: RemotePeerPairingReport };
+      return { peer: remotePeerSummarySchema.parse(value.peer), pairing: value.pairing };
+    },
+  };
+}
+
+it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates links with the refreshed manifests", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const b = await pairingNode(t, "B", { nodeId: "node-b" });
+  const c = await pairingNode(t, "C", { nodeId: "node-c" });
+  const tested = await a.rpc.dispatch(methods.test, { args: b.connection }, pairingAuth);
+  assert.ok(tested.ok);
+  assert.deepEqual(
+    remotePeerTestResultSchema
+      .pick({ nodeId: true, supportsPeerPairing: true, pairedBack: true })
+      .parse(tested.value),
+    { nodeId: "node-b", supportsPeerPairing: true, pairedBack: false },
+  );
+
+  const ab = await a.add({ ...b.connection, pairBack: true });
+  assert.deepEqual(
+    ab.pairing?.results.map(({ introducedHost, status }) => [introducedHost, status]),
+    [["local", "added"]],
+  );
+  assert.equal(ab.peer.pairedBack, true);
+  assert.ok(
+    b.store.load().some((p) => p.origin === a.connection.origin && p.token === a.connection.token),
+  );
+
+  const ac = await a.add({
+    ...c.connection,
+    pairBack: true,
+    meshPeerIds: [ab.peer.peerId, ab.peer.peerId, "missing"],
+  });
+  assert.equal(ac.peer.pairedBack, true);
+  assert.deepEqual(ac.peer.linkedPeerIds, [ab.peer.peerId]);
+  const listAfterMesh = await a.rpc.dispatch(methods.list, { args: {} }, pairingAuth);
+  assert.ok(listAfterMesh.ok);
+  const peersAfterMesh = (
+    listAfterMesh.value as { peers: Array<{ peerId: string; linkedPeerIds?: string[] }> }
+  ).peers;
+  assert.deepEqual(peersAfterMesh.find((p) => p.peerId === ab.peer.peerId)?.linkedPeerIds, [
+    ac.peer.peerId,
+  ]);
+  assert.deepEqual(peersAfterMesh.find((p) => p.peerId === ac.peer.peerId)?.linkedPeerIds, [
+    ab.peer.peerId,
+  ]);
+  assert.deepEqual(
+    ac.pairing?.results.map(({ targetPeerId, introducedHost, status }) => [
+      targetPeerId,
+      introducedHost,
+      status,
+    ]),
+    [
+      [ac.peer.peerId, "local", "added"],
+      [ab.peer.peerId, ac.peer.peerId, "added"],
+      [ac.peer.peerId, ab.peer.peerId, "added"],
+    ],
+  );
+  assert.deepEqual(
+    b.store
+      .load()
+      .map(({ origin }) => origin)
+      .sort(),
+    [a.connection.origin, c.connection.origin].sort(),
+  );
+  assert.deepEqual(
+    c.store
+      .load()
+      .map(({ origin }) => origin)
+      .sort(),
+    [a.connection.origin, b.connection.origin].sort(),
+  );
+
+  const link = (threadId: string, hostId: string) =>
+    `thread://${threadId}?hostId=${encodeURIComponent(hostId)}`;
+  for (const [target, own, other, otherNodeId] of [
+    [b, ab.peer, ac.peer, "node-c"],
+    [c, ac.peer, ab.peer, "node-b"],
+  ] as const) {
+    const targetClient = a.manager.client(own.hostId);
+    assert.ok(targetClient);
+    const peerNodes = targetClient.manifest?.peerNodes;
+    const inTarget = target.manager.hostIdForNodeId(otherNodeId);
+    const localInTarget = target.manager.hostIdForNodeId("node-a");
+    assert.ok(inTarget && localInTarget);
+    const links = `${link("self", "local")} ${link("other", other.hostId)}`;
+    const translated = translateThreadLinksForPeer(`${links} ${link("target", own.hostId)}`, {
+      targetHostId: own.hostId,
+      targetNodeId: targetClient.manifest?.nodeId,
+      targetPeerNodes: peerNodes,
+      nodeIdForHostId: (hostId) => a.manager.nodeIdForHostId(hostId),
+    });
+    assert.equal(
+      translated,
+      `${link("self", localInTarget)} ${link("other", inTarget)} ${link("target", "local")}`,
+    );
+    assert.equal(
+      translateThreadLinksFromPeer(`${link("self", localInTarget)} ${link("other", inTarget)}`, {
+        sourcePeerNodes: peerNodes,
+        hostIdForNodeId: (nodeId) => a.manager.hostIdForNodeId(nodeId),
+      }),
+      links,
+    );
+  }
+
+  const denied = await a.rpc.dispatch(
+    methods.syncMesh,
+    { args: {} },
+    { ...pairingAuth, local: false },
+  );
+  assert.ok(!denied.ok);
+  assert.equal(denied.error.code, "auth/local-required");
+  const cb = c.store.load().find(({ origin }) => origin === b.connection.origin);
+  assert.ok(cb);
+  const removed = await c.rpc.dispatch(
+    methods.remove,
+    { args: { peerId: cb.peerId } },
+    pairingAuth,
+  );
+  assert.ok(removed.ok);
+  await a.manager.client(ac.peer.hostId)?.probe();
+  const listOneWay = await a.rpc.dispatch(methods.list, { args: {} }, pairingAuth);
+  assert.ok(listOneWay.ok);
+  const peersOneWay = (
+    listOneWay.value as { peers: Array<{ peerId: string; linkedPeerIds?: string[] }> }
+  ).peers;
+  assert.deepEqual(peersOneWay.find((p) => p.peerId === ac.peer.peerId)?.linkedPeerIds, []);
+  assert.deepEqual(peersOneWay.find((p) => p.peerId === ab.peer.peerId)?.linkedPeerIds, [
+    ac.peer.peerId,
+  ]);
+  const synced = await a.rpc.dispatch(methods.syncMesh, { args: {} }, pairingAuth);
+  assert.ok(synced.ok);
+  const steps = remotePeerPairingReportSchema.parse(synced.value).results;
+  assert.deepEqual(
+    steps.map(({ status }) => status),
+    ["existing", "existing", "existing", "added"],
+  );
+  const restored = c.manager.hostIdForNodeId("node-b");
+  assert.ok(restored);
+  assert.notEqual(restored, `remote-peer:${cb.peerId}`);
+  assert.equal(a.manager.client(ac.peer.hostId)?.manifest?.peerNodes?.[restored], "node-b");
+  const listRestored = await a.rpc.dispatch(methods.list, { args: {} }, pairingAuth);
+  assert.ok(listRestored.ok);
+  const peersRestored = (
+    listRestored.value as { peers: Array<{ peerId: string; linkedPeerIds?: string[] }> }
+  ).peers;
+  assert.deepEqual(peersRestored.find((p) => p.peerId === ac.peer.peerId)?.linkedPeerIds, [
+    ab.peer.peerId,
+  ]);
+});
+
+it("rejects duplicate origins and nodeIds on local add and update without changing existing peers", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const b = await pairingNode(t, "B", { nodeId: "node-b" });
+  const alias = await pairingNode(t, "B alias", { nodeId: "node-b" });
+  const legacy = await pairingNode(t, "Legacy");
+  const { peer: modernPeer } = await a.add(b.connection);
+  assert.equal(modernPeer.nodeId, "node-b");
+  const { peer: legacyPeer } = await a.add(legacy.connection);
+  const stored = a.store.load();
+  const sameOrigin = {
+    connectionUrl: `${legacy.connection.origin}/different-path#token=${legacy.connection.token}`,
+  };
+
+  for (const [method, args, conflict] of [
+    [methods.add, sameOrigin, /origin/u],
+    [methods.add, alias.connection, /nodeId/u],
+    [methods.update, { ...sameOrigin, peerId: modernPeer.peerId }, /origin/u],
+    [methods.update, { ...alias.connection, peerId: legacyPeer.peerId }, /nodeId/u],
+  ] as const) {
+    const rejected = await a.rpc.dispatch(method, { args }, pairingAuth);
+    assert.equal(rejected.ok, false, `${method} must reject a duplicate ${conflict}`);
+    assert.equal(rejected.error.code, "remote/duplicate-peer");
+    assert.match(rejected.error.message, conflict);
+    assert.deepEqual(a.store.load(), stored);
+    assert.deepEqual(
+      a.manager.hosts().map((host) => host.hostId),
+      [modernPeer.hostId, legacyPeer.hostId],
+    );
+  }
+});
+
+it("keeps verified introductions idempotent and rejects silent origin or token replacement on existing peers", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const rotatedToken = "rotated-secret-token";
+  const b = await pairingNode(t, "B", { nodeId: "node-b", extraTokens: [rotatedToken] });
+  const moved = await pairingNode(t, "B moved", { nodeId: "node-b" });
+  const legacy = await pairingNode(t, "Legacy");
+  const ab = await a.add({ ...b.connection, name: "Custom B", color: "cyan" });
+  assert.equal(ab.pairing, undefined);
+  const same = await a.introduce({
+    ...b.connection,
+    origin: `${b.connection.origin}/different-path`,
+    color: "blue",
+  });
+  assert.equal(same.status, 200);
+  const existing = {
+    status: "existing",
+    peerId: ab.peer.peerId,
+    hostId: ab.peer.hostId,
+    nodeId: "node-b",
+  };
+  assert.deepEqual(await same.json(), existing);
+
+  // Changing origin for an existing nodeId must be rejected with 409 and leave the binding intact.
+  const hijackOrigin = await a.introduce({ ...moved.connection, color: "rose" });
+  assert.equal(hijackOrigin.status, 409);
+  assert.match(((await hijackOrigin.json()) as { error: string }).error, /update it locally/u);
+
+  // Changing token for an existing peer (same nodeId & origin) must also be rejected with 409.
+  const hijackToken = await a.introduce({ ...b.connection, token: rotatedToken });
+  assert.equal(hijackToken.status, 409);
+  assert.match(((await hijackToken.json()) as { error: string }).error, /update it locally/u);
+
+  // Even when the existing record is disabled, introducing a different origin/token is rejected.
+  const disabled = await a.rpc.dispatch(
+    methods.update,
+    { args: { peerId: ab.peer.peerId, enabled: false } },
+    pairingAuth,
+  );
+  assert.ok(disabled.ok);
+  const hijackDisabled = await a.introduce({ ...moved.connection, color: "rose" });
+  assert.equal(hijackDisabled.status, 409);
+  assert.equal(a.store.load()[0]?.origin, b.connection.origin);
+  assert.equal(a.store.load()[0]?.token, b.connection.token);
+  assert.equal(a.store.load()[0]?.enabled, false);
+
+  // Re-introducing the exact same origin and token re-enables without changing the binding or custom metadata.
+  const reenabled = await a.introduce({ ...b.connection, color: "rose" });
+  assert.equal(reenabled.status, 200);
+  assert.deepEqual(await reenabled.json(), { ...existing, status: "updated" });
+  const [stored] = a.store.load();
+  assert.deepEqual(stored, {
+    peerId: ab.peer.peerId,
+    nodeId: "node-b",
+    name: "Custom B",
+    color: "cyan",
+    origin: b.connection.origin,
+    token: b.connection.token,
+    enabled: true,
+    createdAt: ab.peer.createdAt,
+    updatedAt: stored?.updatedAt,
+  });
+  for (const input of [
+    { ...moved.connection, expectedNodeId: "different-node" },
+    { ...legacy.connection, expectedNodeId: "node-legacy" },
+  ]) {
+    const rejected = await a.introduce(input);
+    assert.equal(rejected.status, 409);
+    assert.deepEqual(await rejected.json(), {
+      error: "Introduced peer did not match the expected nodeId",
+    });
+  }
+  assert.deepEqual(a.store.load(), [stored]);
+  const oldClient = await a.introduce(legacy.connection);
+  assert.equal(oldClient.status, 200);
+  const oldResult = remotePeerIntroduceResultSchema.parse(await oldClient.json());
+  assert.equal(oldResult.nodeId, undefined);
+  const legacyAgain = await a.introduce({
+    ...legacy.connection,
+    origin: `${legacy.connection.origin}/#unused`,
+  });
+  assert.deepEqual(await legacyAgain.json(), { ...oldResult, status: "existing" });
+});
+
+it("blocks DNS-rebinding SSRF in peer probes, pins verified IPs with original Host, and forbids redirects", async (t) => {
+  const token = "dns-pin-secret";
+  let requestCount = 0;
+  const receivedHosts: string[] = [];
+  let redirectMode = false;
+  const targetServer = createServer((req, res) => {
+    requestCount += 1;
+    if (typeof req.headers.host === "string") receivedHosts.push(req.headers.host);
+    if (redirectMode) {
+      res.writeHead(302, { location: "/api/peer/v1/manifest" }).end();
+      return;
+    }
+    if (req.headers.authorization !== `Bearer ${token}`) {
+      res.writeHead(401).end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(
+      JSON.stringify({
+        version: "1",
+        epoch: "epoch-dns",
+        platform: process.platform,
+        hostname: "pinned-peer",
+        nodeId: "node-pinned",
+        projects: [],
+        capabilities: { peerPairing: 1 },
+      }),
+    );
+  });
+  targetServer.listen(0, "127.0.0.1");
+  await once(targetServer, "listening");
+  t.after(() => {
+    targetServer.closeAllConnections();
+    targetServer.close();
+  });
+  const port = (targetServer.address() as { port: number }).port;
+
+  let goodLookupCalls = 0;
+  const fakeDns: PeerDnsLookup = async (hostname) => {
+    switch (hostname) {
+      case "loop.attacker.example":
+        return [{ address: "127.0.0.1", family: 4 }];
+      case "meta.attacker.example":
+        return [{ address: "169.254.169.254", family: 4 }];
+      case "mixed.attacker.example":
+        return [
+          { address: "93.184.216.34", family: 4 },
+          { address: "169.254.169.254", family: 4 },
+        ];
+      case "v4mapped.attacker.example":
+        return [{ address: "::ffff:127.0.0.1", family: 6 }];
+      case "good.peer.example":
+        goodLookupCalls += 1;
+        // Rebind on any second lookup to prove the probe connects using the pinned first result.
+        return goodLookupCalls === 1
+          ? [{ address: "127.0.0.1", family: 4 }]
+          : [{ address: "169.254.169.254", family: 4 }];
+      default:
+        return [];
+    }
+  };
+
+  const strict = await pairingNode(t, "Strict", {
+    nodeId: "node-strict",
+    allowLoopback: false,
+    dnsLookup: fakeDns,
+  });
+  for (const host of [
+    "loop.attacker.example",
+    "meta.attacker.example",
+    "mixed.attacker.example",
+    "v4mapped.attacker.example",
+  ]) {
+    const res = await strict.introduce({ origin: `http://${host}:${port}`, token });
+    assert.equal(res.status, 400, `${host} should be rejected with 400`);
+    assert.match(((await res.json()) as { error: string }).error, /not allowed/u);
+  }
+  assert.equal(requestCount, 0, "no outbound HTTP request should be sent for blocked DNS targets");
+
+  const loopbackAllowed = await pairingNode(t, "LoopbackAllowed", {
+    nodeId: "node-loopback",
+    allowLoopback: true,
+    dnsLookup: fakeDns,
+  });
+  // Metadata / mixed metadata addresses stay blocked even when allowLoopback is true.
+  for (const host of ["meta.attacker.example", "mixed.attacker.example"]) {
+    const res = await loopbackAllowed.introduce({ origin: `http://${host}:${port}`, token });
+    assert.equal(res.status, 400);
+    assert.match(((await res.json()) as { error: string }).error, /not allowed/u);
+  }
+  assert.equal(requestCount, 0);
+
+  // Redirect responses must be rejected without following Location.
+  redirectMode = true;
+  goodLookupCalls = 0;
+  const redirected = await loopbackAllowed.introduce({
+    origin: `http://good.peer.example:${port}`,
+    token,
+  });
+  assert.equal(redirected.status, 422);
+  assert.equal(requestCount, 1);
+  assert.equal(goodLookupCalls, 1);
+
+  // Valid probe pins the verified IP, performs DNS lookup only once, and preserves original Host.
+  redirectMode = false;
+  goodLookupCalls = 0;
+  const added = await loopbackAllowed.introduce({
+    origin: `http://good.peer.example:${port}`,
+    token,
+  });
+  assert.equal(added.status, 200);
+  assert.equal(goodLookupCalls, 1);
+  assert.equal(receivedHosts.at(-1), `good.peer.example:${port}`);
+});
+
+it("does not send a peer's credentials in syncPeerMesh after the peer is removed mid-flight and caps linkedPeerIds", async (t) => {
+  const selfShareGate = Promise.withResolvers<undefined>();
+  const selfShareStarted = Promise.withResolvers<undefined>();
+  const cIntroducedBodies: string[] = [];
+
+  const a = await pairingNode(t, "A", {
+    nodeId: "node-a",
+    resolveSelfShare: async (origin, token, preferredOrigin) => {
+      selfShareStarted.resolve(undefined);
+      await selfShareGate.promise;
+      const share = resolvePeerSelfOrigin([], preferredOrigin, origin);
+      return "error" in share ? share : { ...share, token, name: "A" };
+    },
+  });
+  const b = await pairingNode(t, "B", { nodeId: "node-b" });
+  const c = await pairingNode(t, "C", {
+    nodeId: "node-c",
+    onIntroduceBody: (body) => cIntroducedBodies.push(body),
+  });
+
+  const ab = await a.add(b.connection);
+  const ac = await a.add(c.connection);
+  const clientB = a.manager.client(ab.peer.hostId);
+  assert.ok(clientB);
+
+  const syncPromise = a.rpc.dispatch(
+    methods.syncMesh,
+    { args: { includeSelf: true, includeMesh: true } },
+    pairingAuth,
+  );
+  await selfShareStarted.promise;
+
+  // Remove Peer B while syncPeerMesh is waiting on self-share resolution.
+  const removed = await a.rpc.dispatch(
+    methods.remove,
+    { args: { peerId: ab.peer.peerId } },
+    pairingAuth,
+  );
+  assert.ok(removed.ok);
+  assert.equal(clientB.closed, true);
+  assert.equal(clientB.record.token, "");
+
+  selfShareGate.resolve(undefined);
+  const synced = await syncPromise;
+  assert.ok(synced.ok);
+  const report = remotePeerPairingReportSchema.parse(synced.value);
+
+  // Peer C must never have received B's token or origin.
+  assert.equal(
+    cIntroducedBodies.some(
+      (body) => body.includes(b.connection.token) || body.includes(b.connection.origin),
+    ),
+    false,
+  );
+  const bToC = report.results.find(
+    (step) => step.targetPeerId === ac.peer.peerId && step.introducedHost === ab.peer.peerId,
+  );
+  assert.equal(bToC?.status, "skipped");
+  assert.equal(
+    c.store.load().some((p) => p.origin === b.connection.origin),
+    false,
+  );
+
+  // Verify linkedPeerIds is capped at 128 entries to stay within remotePeerSummarySchema.
+  const capRoot = mkdtempSync(join(tmpdir(), "peer-linked-cap-"));
+  t.after(() => rmSync(capRoot, { recursive: true, force: true }));
+  const capStore = new PeerHostStore(new DataDir(capRoot));
+  const now = new Date().toISOString();
+  capStore.save([
+    {
+      peerId: "target-peer",
+      nodeId: "node-target",
+      name: "Target",
+      origin: "https://target.example",
+      token: "t-target",
+      enabled: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+    ...Array.from({ length: 140 }, (_, idx) => ({
+      peerId: `peer-${idx}`,
+      nodeId: "node-shared",
+      name: `Peer ${idx}`,
+      origin: `https://peer-${idx}.example`,
+      token: `t-${idx}`,
+      enabled: false,
+      createdAt: now,
+      updatedAt: now,
+    })),
+  ]);
+  const capManager = new PeerHostManager(capStore, async () => [], new EventHub(capRoot));
+  t.after(() => capManager.close());
+  const targetClient = capManager.client("remote-peer:target-peer");
+  assert.ok(targetClient);
+  targetClient.manifest = {
+    version: "1",
+    platform: process.platform,
+    hostname: "target",
+    epoch: "ep-1",
+    nodeId: "node-target",
+    peerNodes: { "remote-peer:other": "node-shared" },
+    projects: [],
+  };
+  const capRpc = new RpcRegistry();
+  capManager.register(capRpc);
+  const listed = await capRpc.dispatch(methods.list, { args: {} }, pairingAuth);
+  assert.ok(listed.ok);
+  const targetSummary = remotePeerSummarySchema.parse(
+    (listed.value as { peers: Array<{ peerId: string }> }).peers.find(
+      (p) => p.peerId === "target-peer",
+    ),
+  );
+  assert.equal(targetSummary.linkedPeerIds?.length, 128);
+});
+
+it("isolates partial mesh failures, redacts credentials, and gates the introduction endpoint", async (t) => {
+  const a = await pairingNode(t, "A", { nodeId: "node-a" });
+  const c = await pairingNode(t, "C", { nodeId: "node-c" });
+  const strict = await pairingNode(t, "Strict", { allowLoopback: false });
+  const b = await pairingNode(t, "B", {
+    nodeId: "node-b",
+    introductionFailure: () =>
+      `Unexpected peer error: ${a.connection.token} ${b.connection.token} ${c.connection.token}`,
+  });
+  const leaky = await pairingNode(t, "Leaky", {
+    nodeId: "node-leaky",
+    introductionFailure: () =>
+      "Upstream failure: Bearer foreign-bearer-secret https://peer.example/#token=foreign-link-secret",
+  });
+  const ac = await a.add(c.connection);
+  const ab = await a.add({ ...b.connection, pairBack: true, meshPeerIds: [ac.peer.peerId] });
+  assert.equal(ab.peer.pairedBack, false);
+  const report = remotePeerPairingReportSchema.parse(ab.pairing);
+  assert.deepEqual(
+    report.results.map(({ status }) => status),
+    ["failed", "added", "failed"],
+  );
+  for (const { connection } of [a, b, c])
+    assert.ok(!JSON.stringify(report).includes(connection.token));
+  const aLeaky = await a.add({ ...leaky.connection, pairBack: true });
+  const leakyReport = remotePeerPairingReportSchema.parse(aLeaky.pairing);
+  assert.equal(leakyReport.results[0]?.error, "Peer pairing failed (details redacted)");
+  assert.ok(!JSON.stringify(leakyReport).includes("foreign-bearer-secret"));
+  assert.ok(!JSON.stringify(leakyReport).includes("foreign-link-secret"));
+  assert.ok(a.store.load().some(({ peerId }) => peerId === ab.peer.peerId));
+  assert.ok(c.store.load().some(({ origin }) => origin === b.connection.origin));
+  const forged = await a.rpc.dispatch(
+    methods.syncMesh,
+    {
+      args: {
+        peerIds: [ac.peer.peerId],
+        includeMesh: false,
+        selfOrigin: "https://unadvertised.invalid",
+      },
+    },
+    pairingAuth,
+  );
+  assert.ok(forged.ok);
+  assert.match(
+    remotePeerPairingReportSchema.parse(forged.value).results[0]?.error ?? "",
+    /not a shareable address/u,
+  );
+  assert.equal(c.store.load().length, 1);
+
+  for (const origin of [b.connection.origin, "http://169.254.169.254/", "http://0.0.0.0/"]) {
+    const forbidden = await strict.introduce({ origin, token: b.connection.token });
+    assert.equal(forbidden.status, 400);
+    assert.match(((await forbidden.json()) as { error: string }).error, /not allowed/u);
+  }
+  const selfAlias = await pairingNode(t, "A alias", { nodeId: "node-a" });
+  for (const connection of [a.connection, selfAlias.connection]) {
+    const self = await a.introduce(connection);
+    assert.equal(self.status, 400);
+    assert.deepEqual(await self.json(), { error: "Cannot pair this server with itself" });
+  }
+  assert.equal((await a.introduce(c.connection, { authorization: "" })).status, 401);
+  assert.equal(
+    (await a.introduce(c.connection, { origin: "https://untrusted.invalid" })).status,
+    403,
+  );
+  const oversized = await fetch(`${a.connection.origin}/api/peer/v1/peers`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${a.connection.token}` },
+    body: "a".repeat(33 * 1024),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal(strict.store.load().length, 0);
+
+  const previous = process.env.CODEXHOST_DISABLE_PEER_PAIRING;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CODEXHOST_DISABLE_PEER_PAIRING;
+    else process.env.CODEXHOST_DISABLE_PEER_PAIRING = previous;
+  });
+  process.env.CODEXHOST_DISABLE_PEER_PAIRING = "1";
+  const response = await a.introduce(c.connection);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "Peer pairing is disabled on this Host" });
+  await a.manager.client(ac.peer.hostId)?.probe();
+  assert.equal(a.manager.client(ac.peer.hostId)?.summary().supportsPeerPairing, false);
+  const skipped = await a.rpc.dispatch(
+    methods.syncMesh,
+    { args: { peerIds: [ac.peer.peerId] } },
+    pairingAuth,
+  );
+  assert.ok(skipped.ok);
+  assert.equal(remotePeerPairingReportSchema.parse(skipped.value).results[0]?.status, "skipped");
+});
+
+it("uses shareable local origins in priority order and restricts loopback to a configured fallback", () => {
+  const urls = [
+    { kind: "lan", url: "http://192.168.1.2:4400/" },
+    { kind: "tailscale-https", url: "https://server.ts.net/" },
+    { kind: "tailscale-funnel", url: "https://funnel.ts.net/" },
+    { kind: "relay", url: "https://server.r.chost.dev/" },
+    { kind: "public", url: "https://my-host.example/" },
+  ] as const;
+  const fallback = "http://127.0.0.1:4400";
+  assert.deepEqual(resolvePeerSelfOrigin(urls, undefined, fallback), {
+    origin: "https://my-host.example",
+  });
+  assert.deepEqual(resolvePeerSelfOrigin(urls.slice(0, -1), undefined), {
+    origin: "https://server.r.chost.dev",
+  });
+  assert.deepEqual(resolvePeerSelfOrigin(urls, "https://SERVER.ts.net:443/some/path"), {
+    origin: "https://server.ts.net",
+  });
+  assert.ok("error" in resolvePeerSelfOrigin(urls, fallback, fallback));
+  assert.ok("error" in resolvePeerSelfOrigin([], undefined));
+  assert.deepEqual(resolvePeerSelfOrigin([], fallback, fallback), { origin: fallback });
+});
+
+it("lists reachable remote delegation hosts per session perspective and resolves target host Harnesses", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-delegation-discovery-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const localNodeId = "node-hub-a";
+  const token = "delegation-discovery-token";
+
+  const makePeerServer = async (opts: {
+    nodeId: string;
+    hostname: string;
+    delegation: boolean;
+    peerNodes?: Record<string, string>;
+    harnesses?: Array<{ id: string; name: string }>;
+  }) => {
+    const server = createServer(async (req, res) => {
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res.writeHead(401).end();
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/api/peer/v1/manifest") {
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            version: "0.27.0",
+            platform: "darwin",
+            hostname: opts.hostname,
+            epoch: `epoch-${opts.nodeId}`,
+            nodeId: opts.nodeId,
+            ...(opts.peerNodes ? { peerNodes: opts.peerNodes } : {}),
+            projects: [],
+            capabilities: opts.delegation ? { delegation: 1 } : {},
+          }),
+        );
+        return;
+      }
+      if (url.pathname === "/api/ch/v1/events") {
+        res.writeHead(200);
+        res.write(
+          `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch: `epoch-${opts.nodeId}`, sequence: 1 }, reset: true })}\n`,
+        );
+        return;
+      }
+      if (url.pathname === "/api/ch/v1/rpc") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as {
+          method?: string;
+          params?: { harnessId?: string };
+        };
+        if (body.method === "codexhost/harness/plugins/list") {
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              result: {
+                plugins: (opts.harnesses ?? [])
+                  .filter((h) => h.id !== "codex")
+                  .map((h) => ({ id: h.id, name: h.name, version: "1.0.0" })),
+              },
+            }),
+          );
+          return;
+        }
+        if (body.method === "codexhost/harness/inspect") {
+          const harnessId = body.params?.harnessId ?? "";
+          const found = (opts.harnesses ?? []).find((h) => h.id === harnessId);
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              result: found
+                ? {
+                    status: "ready",
+                    catalog: {
+                      models: [
+                        {
+                          ref: { id: `${found.id}-model` },
+                          label: `${found.name} Model`,
+                          supportedThinkingOptionIds: ["medium"],
+                        },
+                      ],
+                      defaultModel: { id: `${found.id}-model` },
+                      thinkingOptions: [{ id: "medium", label: "Medium" }],
+                      defaultThinkingOptionId: "medium",
+                    },
+                    capabilities: {
+                      configuration: {
+                        selectModel: true,
+                        selectThinkingOption: true,
+                        selectPermissionMode: false,
+                        permissionModeScope: "live",
+                      },
+                      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+                    },
+                  }
+                : {
+                    status: "notInstalled",
+                    error: { code: "unavailable", message: "Not installed", retryable: false },
+                  },
+            }),
+          );
+          return;
+        }
+      }
+      res.writeHead(404).end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const addr = server.address() as { port: number };
+    t.after(() => server.close());
+    return `http://127.0.0.1:${addr.port}`;
+  };
+
+  // Peer B paired with Hub A (node-hub-a) and Peer C (node-peer-c), but NOT Peer D (node-peer-d).
+  const originB = await makePeerServer({
+    nodeId: "node-peer-b",
+    hostname: "mac-studio",
+    delegation: true,
+    peerNodes: {
+      "remote-peer:a-on-b": localNodeId,
+      "remote-peer:c-on-b": "node-peer-c",
+    },
+    harnesses: [
+      { id: "claude-code", name: "Claude Code" },
+      { id: "antigravity", name: "Antigravity" },
+    ],
+  });
+  const originC = await makePeerServer({
+    nodeId: "node-peer-c",
+    hostname: "home-mini",
+    delegation: true,
+    harnesses: [{ id: "pi", name: "Pi" }],
+  });
+  const originD = await makePeerServer({
+    nodeId: "node-peer-d",
+    hostname: "unpaired-box",
+    delegation: true,
+  });
+  const originLegacy = await makePeerServer({
+    nodeId: "node-legacy",
+    hostname: "legacy-box",
+    delegation: false,
+  });
+
+  const data = new DataDir(root);
+  const events = new EventHub(root);
+  const manager = new PeerHostManager(new PeerHostStore(data), async () => [], events, {
+    allowLoopback: true,
+    localNodeId,
+  });
+  t.after(() => manager.close());
+
+  const rpc = new RpcRegistry();
+  manager.register(rpc, {
+    localHostname: "work-mbp",
+    localDelegationAvailable: () => true,
+    localHarnesses: async () => [{ id: "codex", name: "Codex" }],
+  });
+  const localAuth = { local: true, credential: "local", release() {} };
+
+  const addPeer = async (origin: string, name: string, color: string) => {
+    const added = await rpc.dispatch(
+      methods.add,
+      { args: { connectionUrl: `${origin}/#token=${token}`, name, color } },
+      localAuth,
+    );
+    assert.equal(added.ok, true);
+    const hostId = (added.value as { peer: { hostId: string } }).peer.hostId;
+    await manager.waitForInitialConnection(hostId);
+    return hostId;
+  };
+
+  const hostB = await addPeer(originB, "Mac Studio", "blue");
+  const hostC = await addPeer(originC, "Home Mini", "green");
+  const hostD = await addPeer(originD, "Unpaired Box", "amber");
+  await addPeer(originLegacy, "Legacy Box", "slate");
+
+  // 1. From Hub A's local session: lists only connected delegation-capable peers (B, C, D; not Legacy).
+  const fromLocal = await rpc.dispatch(
+    DELEGATION_REMOTE_HOSTS_METHOD,
+    { args: { request: { sessionHostId: "local" } } },
+    localAuth,
+  );
+  assert.equal(fromLocal.ok, true);
+  assert.deepEqual(
+    (fromLocal.value as { hosts: Array<{ hostId: string }> }).hosts.map((h) => h.hostId).sort(),
+    [hostB, hostC, hostD].sort(),
+  );
+
+  // 2. From Peer B's session: lists Hub A (isLocal) and Peer C (in B's peerNodes), excluding B itself and unpaired D.
+  const fromPeerB = await rpc.dispatch(
+    DELEGATION_REMOTE_HOSTS_METHOD,
+    { args: { request: { sessionHostId: hostB } } },
+    localAuth,
+  );
+  assert.equal(fromPeerB.ok, true);
+  assert.deepEqual(
+    (fromPeerB.value as { hosts: Array<{ hostId: string; isLocal?: boolean }> }).hosts,
+    [
+      { hostId: "local", name: "work-mbp", isLocal: true, hostname: "work-mbp" },
+      { hostId: hostC, name: "Home Mini", color: "green", hostname: "home-mini" },
+    ],
+  );
+
+  // 3. SSH remote session returns empty list.
+  const fromSsh = await rpc.dispatch(
+    DELEGATION_REMOTE_HOSTS_METHOD,
+    { args: { request: { sessionHostId: "remote-ssh:box" } } },
+    localAuth,
+  );
+  assert.equal(fromSsh.ok, true);
+  assert.deepEqual((fromSsh.value as { hosts: unknown[] }).hosts, []);
+
+  // 4. Target host Harnesses: local returns localHarnesses, Peer B returns Peer B's ready Harnesses.
+  const localHarnesses = await rpc.dispatch(
+    DELEGATION_HOST_HARNESSES_METHOD,
+    { args: { request: { hostId: "local" } } },
+    localAuth,
+  );
+  assert.equal(localHarnesses.ok, true);
+  assert.deepEqual(localHarnesses.value, { harnesses: [{ id: "codex", name: "Codex" }] });
+
+  const peerBHarnesses = await rpc.dispatch(
+    DELEGATION_HOST_HARNESSES_METHOD,
+    { args: { request: { hostId: hostB } } },
+    localAuth,
+  );
+  assert.equal(peerBHarnesses.ok, true);
+  assert.deepEqual(peerBHarnesses.value, {
+    harnesses: [
+      { id: "claude-code", name: "Claude Code" },
+      { id: "antigravity", name: "Antigravity" },
+    ],
+  });
 });

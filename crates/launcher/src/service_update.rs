@@ -10,7 +10,12 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-fn bind_request(request: &mut Value, data: &Path, desktop_running: bool) -> io::Result<()> {
+fn bind_request(
+    request: &mut Value,
+    data: &Path,
+    desktop_running: bool,
+    desktop_shell_running: bool,
+) -> io::Result<()> {
     if request["service_managed"] != true {
         return Err(invalid(
             "The Host supervisor requires a service-managed update",
@@ -26,8 +31,18 @@ fn bind_request(request: &mut Value, data: &Path, desktop_running: bool) -> io::
             "The update belongs to a different Host data directory",
         ));
     }
-    request["restart_target"] =
-        Value::String(if desktop_running { "desktop" } else { "web" }.into());
+    let object = request
+        .as_object_mut()
+        .ok_or_else(|| invalid("The update request must be a JSON object"))?;
+    object.insert(
+        "restart_target".into(),
+        Value::String(if desktop_running { "desktop" } else { "web" }.into()),
+    );
+    if desktop_shell_running {
+        object.insert("restart_desktop_shell".into(), Value::Bool(true));
+    } else {
+        object.remove("restart_desktop_shell");
+    }
     Ok(())
 }
 
@@ -35,13 +50,21 @@ pub(super) fn prepare_request(path: &Path, data: &Path) -> io::Result<()> {
     let mut request: Value = serde_json::from_slice(&fs::read(path)?)?;
     let desktop_running = crate::desktop_attachment::running_for_update(data)
         .map_err(|error| invalid(error.to_string()))?;
-    bind_request(&mut request, data, desktop_running)?;
+    let desktop_shell_running = crate::desktop_shell::running(data)?;
+    bind_request(&mut request, data, desktop_running, desktop_shell_running)?;
     crate::host_service::publish_status(path, &format!("{}\n", serde_json::to_string(&request)?))
         .map_err(|error| invalid(error.to_string()))
 }
 
 pub(super) fn record_failure(path: &Path, error: &io::Error) -> io::Result<()> {
     let mut status: Value = serde_json::from_slice(&fs::read(path)?)?;
+    if status["phase"].as_str() == Some("failed")
+        && status["error"]
+            .as_str()
+            .is_some_and(|message| !message.trim().is_empty())
+    {
+        return Ok(());
+    }
     status["phase"] = Value::String("failed".into());
     status["error"] = Value::String(error.to_string().chars().take(500).collect());
     status["updatedAt"] = Value::from(
@@ -135,12 +158,28 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn service_request_keeps_its_operation_and_uses_the_actual_desktop_state() {
+    fn service_request_keeps_its_operation_and_uses_the_actual_desktop_and_shell_state() {
         let data = std::env::temp_dir().canonicalize().unwrap();
-        for (running, target) in [(true, "desktop"), (false, "web")] {
-            let mut request = json!({"service_managed":true,"data_directory":data,"restart_target":"desktop","status_path":"original-status"});
-            bind_request(&mut request, &data, running).unwrap();
+        for (desktop_running, shell_running, target) in [
+            (true, false, "desktop"),
+            (false, false, "web"),
+            (false, true, "web"),
+            (true, true, "desktop"),
+        ] {
+            let mut request = json!({
+                "service_managed": true,
+                "data_directory": data,
+                "restart_target": "desktop",
+                "restart_desktop_shell": true,
+                "status_path": "original-status",
+            });
+            bind_request(&mut request, &data, desktop_running, shell_running).unwrap();
             assert_eq!(request["restart_target"], target);
+            if shell_running {
+                assert_eq!(request["restart_desktop_shell"], true);
+            } else {
+                assert!(request.get("restart_desktop_shell").is_none());
+            }
             assert_eq!(request["status_path"], "original-status");
         }
     }
@@ -149,11 +188,51 @@ mod tests {
     fn service_request_rejects_a_different_owner_or_data_directory() {
         let data = std::env::temp_dir().canonicalize().unwrap();
         let mut request = json!({"data_directory":data});
-        assert!(bind_request(&mut request, &data, false).is_err());
+        assert!(bind_request(&mut request, &data, false, false).is_err());
         request["service_managed"] = Value::Bool(true);
         request["data_directory"] = Value::String("relative".into());
-        assert!(bind_request(&mut request, &data, false).is_err());
+        assert!(bind_request(&mut request, &data, false, false).is_err());
         request["data_directory"] = Value::String(data.to_string_lossy().into_owned());
-        assert!(bind_request(&mut request, data.parent().unwrap(), false).is_err());
+        assert!(bind_request(&mut request, data.parent().unwrap(), false, false).is_err());
+    }
+
+    #[test]
+    fn record_failure_preserves_existing_failed_error_and_writes_otherwise() {
+        let root =
+            std::env::temp_dir().join(format!("codexhost-record-failure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let status_path = root.join("status-v1.json");
+
+        fs::write(
+            &status_path,
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "version": "1.2.3",
+                "installation": "npm",
+                "phase": "failed",
+                "error": "npm prefix mismatch",
+                "updatedAt": 10,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        record_failure(&status_path, &invalid("generic handoff failure")).unwrap();
+        let preserved: Value = serde_json::from_slice(&fs::read(&status_path).unwrap()).unwrap();
+        assert_eq!(preserved["phase"], "failed");
+        assert_eq!(preserved["error"], "npm prefix mismatch");
+        assert_eq!(preserved["updatedAt"], 10);
+
+        for initial in [
+            json!({"schemaVersion": 1, "phase": "prepared", "updatedAt": 10}),
+            json!({"schemaVersion": 1, "phase": "failed", "error": "   ", "updatedAt": 10}),
+        ] {
+            fs::write(&status_path, serde_json::to_vec(&initial).unwrap()).unwrap();
+            record_failure(&status_path, &invalid("launcher handoff error")).unwrap();
+            let updated: Value = serde_json::from_slice(&fs::read(&status_path).unwrap()).unwrap();
+            assert_eq!(updated["phase"], "failed");
+            assert_eq!(updated["error"], "launcher handoff error");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

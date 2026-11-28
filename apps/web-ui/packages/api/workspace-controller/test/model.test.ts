@@ -168,3 +168,44 @@ describe("ClientWorkspaceModel mixed local+remote insertBefore", () => {
     expect(model.getSnapshot().items.map((w) => w.workspaceId)).toEqual(expectedOrder);
   });
 });
+
+describe("ClientWorkspaceModel pinnedWorkspaceIds", () => {
+  it("hydrates from baseline, updates via setWorkspacePinned and stream, and suppresses stale unary echoes", async () => {
+    const atlas = makeWorkspace({ id: "codex-project:atlas", title: "Atlas" });
+    const boreal = makeWorkspace({ id: "codex-project:boreal", title: "Boreal" });
+    let resolveRpc!: (value: { ok: true; value: { pinnedWorkspaceIds: WorkspaceId[] } }) => void;
+    const setWorkspacePinnedMock = vi.fn(
+      () =>
+        new Promise<{ ok: true; value: { pinnedWorkspaceIds: WorkspaceId[] } }>((resolve) => {
+          resolveRpc = resolve;
+        }),
+    );
+    const model = new ClientWorkspaceModel(
+      createRemoteStub({
+        setWorkspacePinned:
+          setWorkspacePinnedMock as unknown as WorkspaceRemote["setWorkspacePinned"],
+      }),
+    );
+    model.replaceBaseline({
+      items: [atlas, boreal],
+      archivedSessionIds: [],
+      pinnedSessionIds: [],
+      pinnedWorkspaceIds: [atlas.workspaceId],
+    });
+    expect(model.getSnapshot().pinnedWorkspaceIds).toEqual([atlas.workspaceId]);
+
+    const pending = model.setWorkspacePinned({ workspaceId: boreal.workspaceId, pinned: true });
+    // Stream push arrives before unary reply -> unary reply must not clobber newer stream state.
+    model.replacePinnedWorkspaces([boreal.workspaceId]);
+    resolveRpc({
+      ok: true,
+      value: { pinnedWorkspaceIds: [boreal.workspaceId, atlas.workspaceId] },
+    });
+    await pending;
+    expect(model.getSnapshot().pinnedWorkspaceIds).toEqual([boreal.workspaceId]);
+
+    // Removing a workspace strips it from pinnedWorkspaceIds immediately.
+    model.removeView(boreal.workspaceId);
+    expect(model.getSnapshot().pinnedWorkspaceIds).toEqual([]);
+  });
+});

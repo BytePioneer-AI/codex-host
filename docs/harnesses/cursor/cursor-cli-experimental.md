@@ -39,12 +39,13 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
   including new files and updates, in live output and native history replay.
 - Dynamic native parameterized model catalog and Thinking selection. Native
   `thought_level` parameters become complete selectable combinations (for example,
-  thinking on/off plus effort); unrelated context/fast parameters stay in Model refs.
-  For models that support Fast, selecting the normal entry explicitly writes
-  `fast=false` so the native Session stays in sync with the Fast toggle.
-  Selecting a Model, Thinking option, or execution mode that is already active still
-  publishes session state, so Desktop can confirm it. A locked Thread uses that
-  Session's catalog, which contains the live parameterized Model ref.
+  thinking on/off plus effort); Model refs encode the model identity and, when
+  supported, the `fast` toggle (`fast=false` / `fast=true`), keeping session-scoped
+  `model_config` parameters such as `context` out of the Ref so inspection and live
+  Session catalogs stay consistent. For models that support Fast, selecting the normal
+  entry explicitly writes `fast=false` so the native Session stays in sync with the Fast
+  toggle. Selecting a Model, Thinking option, or execution mode that is already active
+  still publishes session state, so Desktop can confirm it.
 - Native advertised slash commands and skills through ACP `available_commands_update`.
   Custom commands keep normal Turn identity; `/copy-request-id` can complete without
   creating a native user Turn.
@@ -244,13 +245,15 @@ leaves the already confirmed state visible. Model changes clear stale Thinking
 when the new model lacks it; selecting Thinking remains permitted during an active
 Turn, with native acceptance determining the result.
 
-Opaque Model refs retain non-Thinking parameters such as `context` and `fast`, so
-Host restart/reopen can restore them independently of Cursor's account-wide model
-preferences. Earlier full bracketed refs are accepted only when every supplied
-parameter/value remains selectable in native metadata. Unavailable/fixed parameters
-that the current native catalog no longer exposes fail explicitly instead of being
-discarded. Older CLI releases that ignore parameterized-picker negotiation keep
-native variant selection and advertise no unsupported Thinking options.
+Opaque Model refs encode the model identity and, when offered, its `fast` selection
+(`fast=false` or `fast=true`), leaving other `model_config` parameters such as `context`
+to Cursor's own per-model settings. Stored legacy bracketed refs carrying additional
+parameters are normalized to the matching catalog entry on read, and explicit bracketed
+selections are validated against native parameter metadata before modifying session
+configuration. Unavailable/fixed parameters that the current native catalog no longer
+exposes fail explicitly instead of being discarded. Older CLI releases that ignore
+parameterized-picker negotiation keep native variant selection and advertise no
+unsupported Thinking options.
 
 Commands are accepted only from the native Session's latest advertised catalog.
 The adapter forwards the original slash text and arguments to Cursor. It does not

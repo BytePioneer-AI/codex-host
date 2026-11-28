@@ -141,6 +141,56 @@ function* responseTextNodes(host: Element): Iterable<Text> {
   }
 }
 
+function lastSelectableText(
+  host: Element,
+  skipElement?: (element: Element, host: Element) => boolean,
+): Text | null {
+  const walker = host.ownerDocument.createTreeWalker(host, SHOW_TEXT);
+  let last: Text | null = null;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (
+      node.nodeValue &&
+      parent !== null &&
+      parent.closest(EXCLUDED_SELECTION) === null &&
+      !skipElement?.(parent, host)
+    ) {
+      last = node as Text;
+    }
+  }
+  return last;
+}
+
+/**
+ * Keep native double/triple-click selection inside `host` when the browser
+ * extends the range past its last block into following chrome or the composer.
+ */
+export function clampMultiClickSelection(
+  host: Element,
+  skipElement?: (element: Element, host: Element) => boolean,
+): void {
+  const selection = host.ownerDocument.defaultView?.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+  const range = selection.getRangeAt(0);
+  if (!host.contains(range.startContainer) || host.contains(range.endContainer)) return;
+  if (!(host.compareDocumentPosition(range.endContainer) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+    return;
+  }
+  const startElement =
+    range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+  if (startElement?.closest(EXCLUDED_SELECTION) != null) return;
+  const last = lastSelectableText(host, skipElement);
+  if (last === null) return;
+  const clamped = range.cloneRange();
+  clamped.setEnd(last, last.data.length);
+  selection.removeAllRanges();
+  if (!clamped.collapsed) {
+    selection.addRange(clamped);
+  }
+}
+
 function serialize(parent: Element, parentTag = parent.tagName): string {
   let text = "";
   for (const child of parent.childNodes) text += serializeNode(child, parentTag);

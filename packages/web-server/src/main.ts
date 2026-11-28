@@ -16,6 +16,8 @@ import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.
 import { loadOrCreatePeerNodeId, PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
 import { servePeerAttachments } from "./peer-attachments-http.ts";
+import { peerPairingEnabled, servePeerPairing } from "./peer-pairing-http.ts";
+import { resolvePeerSelfOrigin } from "./peer-pairing.ts";
 import { servePeerDelegation } from "./peer-delegation-http.ts";
 import { startPeerDelegationBridge } from "./peer-delegation-bridge.ts";
 import { servePeerWorkspaceFiles } from "./peer-workspace-files-http.ts";
@@ -25,11 +27,12 @@ import { WorkspaceFileSearchCache } from "./workspace-file-search.ts";
 import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import qrcode from "qrcode-terminal";
+import { serveWorkspaceVideo } from "./workspace-video.ts";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 import { createWebServer } from "./http-server.ts";
 import { compressResponse } from "./compression.ts";
@@ -71,14 +74,14 @@ import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browse
 import { SidebarBrowserDirect, sidebarDirectStunUrls } from "./sidebar-browser-direct.ts";
 import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
-import { PushNotifier } from "./push.ts";
+import { PushNotifier, type PushMessage } from "./push.ts";
 import { ChPushNotifications } from "./ch-push-notifications.ts";
 import { CLIENT_GLOBALS, CLIENT_PLUGINS, HMR_CLIENT_PLUGIN } from "./plugins.ts";
 import { ChSessions } from "./ch-sessions.ts";
 import { WebHarnessDisplaySettings } from "./harness-display-settings.ts";
 import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
-import { RemoteSessions } from "./remote-sessions.ts";
+import { RemoteSessions, remoteSessionId } from "./remote-sessions.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
 import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
 import { createOfficeEngine } from "./office-engine.ts";
@@ -330,8 +333,15 @@ if (accessTokens !== undefined) {
     downloadTickets.revokeOwner(id);
   });
 }
+const broadcastNotification = (message: PushMessage): void => {
+  events.emit("codexhost/notification", message);
+};
+const hasNotificationListeners = (): boolean => events.clientCount > 0;
 const pushNotifications = chHost.realtime
-  ? new ChPushNotifications(chHost.realtime, push)
+  ? new ChPushNotifications(chHost.realtime, push, {
+      onNotification: broadcastNotification,
+      hasListeners: hasNotificationListeners,
+    })
   : undefined;
 const devWebUi = values["dev-web-ui"] === undefined ? undefined : resolve(values["dev-web-ui"]);
 const assetOptions: WebAssetOptions =
@@ -453,6 +463,7 @@ async function resolvePeerEpoch(): Promise<string | undefined> {
 }
 const peerAttachments = new RemotePeerAttachments();
 const localPeerNodeId = loadOrCreatePeerNodeId(data);
+const allowLoopbackPeers = process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1";
 const peerManager = new PeerHostManager(
   new PeerHostStore(data),
   async () => [
@@ -461,12 +472,44 @@ const peerManager = new PeerHostManager(
   ],
   events,
   {
-    allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1",
+    allowLoopback: allowLoopbackPeers,
     localNodeId: localPeerNodeId,
     projector: (threadId) => peerAttachments.projector(threadId),
+    onPeerRealtime: (hostId, realtime) => {
+      const peerNotifications = new ChPushNotifications(realtime, push, {
+        onNotification: broadcastNotification,
+        hasListeners: hasNotificationListeners,
+        sessionId: (threadId) => remoteSessionId(hostId, threadId),
+      });
+      return () => peerNotifications.close();
+    },
+    resolveSelfShare: async (preferredOrigin) => {
+      if (!accessTokens) return { error: "Remote access tokens are disabled on this Host" };
+      const { networkUrls } = await readNetworkAccess();
+      const self = resolvePeerSelfOrigin(
+        networkUrls,
+        preferredOrigin,
+        allowLoopbackPeers ? `http://127.0.0.1:${listeningPort}` : undefined,
+      );
+      if ("error" in self) return self;
+      return {
+        origin: self.origin,
+        token: accessTokens.current().secret,
+        name: hostname().trim().slice(0, 120) || new URL(self.origin).hostname.slice(0, 120),
+      };
+    },
   },
 );
-peerManager.register(rpc);
+peerManager.register(rpc, {
+  localHostname: hostname(),
+  localDelegationAvailable: () =>
+    process.env.CODEXHOST_DISABLE_PEER_DELEGATION !== "1" &&
+    chHost.realtime?.peerDelegationSupported?.() === true,
+  localHarnesses: async () => {
+    const catalog = await sessions.catalog.models().catch(() => undefined);
+    return (catalog?.groups ?? []).map((group) => ({ id: group.id, name: group.name }));
+  },
+});
 const peerDelegationBridge = await startPeerDelegationBridge({
   peerManager,
   dataDirectory: displayDirectory,
@@ -651,6 +694,15 @@ const server = createWebServer((request, response) => {
       );
       return;
     }
+    if (
+      pathname === "/api/workspace-file/video" &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      await serveWorkspaceVideo(request, response, new URL(url, "http://localhost"), (id) =>
+        sessions.fileWorkspaceRoot(id),
+      );
+      return;
+    }
     if (pathname === "/api/file" && (request.method === "GET" || request.method === "HEAD")) {
       const path = new URL(url, "http://localhost").searchParams.get("path");
       response.setHeader("Cache-Control", "private, no-store");
@@ -686,6 +738,11 @@ const server = createWebServer((request, response) => {
         response.writeHead(403).end();
         return;
       }
+      const peerRoute = pathname.slice("/api/peer/v1/".length);
+      if (peerRoute === "peers") {
+        await servePeerPairing(request, response, peerManager);
+        return;
+      }
       const sendPeerJson = async (status: number, value: unknown): Promise<void> => {
         const contentType = "application/json; charset=utf-8";
         const compressed = await compressResponse(
@@ -702,7 +759,6 @@ const server = createWebServer((request, response) => {
           })
           .end(compressed.body);
       };
-      const peerRoute = pathname.slice("/api/peer/v1/".length);
       const peerAttachmentsAvailable = Boolean(files && images);
       const peerWorkspaceFilesAvailable = Boolean(dsh);
       const peerDelegationAvailable =
@@ -771,6 +827,7 @@ const server = createWebServer((request, response) => {
             workspaceFiles: peerWorkspaceFilesAvailable,
             officePreview: peerWorkspaceFilesAvailable,
             delegation: peerDelegationAvailable,
+            peerPairing: peerPairingEnabled(),
             nodeId: peerManager.selfNodeId(),
             peerNodes: peerManager.peerNodes(),
           },

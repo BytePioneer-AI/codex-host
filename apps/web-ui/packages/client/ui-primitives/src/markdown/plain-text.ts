@@ -21,6 +21,8 @@ interface MarkdownNode {
   type: string;
   value?: string;
   alt?: string;
+  /** Harness file citations carry the path they cite. */
+  path?: string;
   children?: MarkdownNode[];
 }
 
@@ -41,6 +43,10 @@ function inlineText(node: MarkdownNode): string {
     // projection has no annotation owner to name, so it contributes nothing.
     case "codexAnnotation":
       return "";
+    // A file citation contributes the path it cites: the projection keeps the
+    // referenced file name even where no opener exists.
+    case "codexFileCitation":
+      return node.path ?? "";
     default:
       return node.children?.map(inlineText).join("") ?? "";
   }

@@ -1,5 +1,6 @@
 .root {
   position: relative;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -86,14 +87,16 @@
 }
 
 /* Phone capacity includes this bounded name, independent of the composer's
-   compact variables. Effort stays in the existing menu and accessible label. */
+   compact variables, while allowing the label to shrink when narrow rows need
+   room for sibling controls. Effort stays in the existing menu and accessible label. */
 :global([data-phone]) .trigger {
-  max-width: none;
+  max-width: 100%;
 }
 
 :global([data-phone]) .triggerLabel {
   display: block;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100px;
 }
 
@@ -132,7 +135,9 @@
   position: absolute;
   top: 0;
   right: calc(100% + 8px);
-  width: min(264px, calc(100vw - 292px));
+  width: max-content;
+  min-width: 264px;
+  max-width: var(--ch-model-panel-max-width, calc(100vw - 24px));
 }
 
 .modelRight .modelPanel {
@@ -145,6 +150,7 @@
   top: auto;
   right: auto;
   width: 100%;
+  min-width: 0;
 }
 
 .modelReplace .thinkingPanel {
@@ -174,6 +180,11 @@
   font-size: 13px;
   line-height: 20px;
   font-weight: 500;
+}
+
+.modelCount {
+  margin-inline-start: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 .backButton,
@@ -450,6 +461,11 @@
   white-space: nowrap;
 }
 
+.modelPanel .modelName {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .check {
   display: grid;
   place-items: center;
@@ -529,6 +545,8 @@
     position: relative;
     top: auto;
     right: auto;
+    left: auto;
+    min-width: 0;
   }
 
   .modelOpen .thinkingPanel {

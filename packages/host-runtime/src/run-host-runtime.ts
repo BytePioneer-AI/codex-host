@@ -463,6 +463,10 @@ export async function runHostRuntime(input: {
               ...(consoleOpener ? { consoleOpener } : {}),
               ...(webOpener ? { webOpener } : {}),
             });
+            void host.hostExtensions?.seedDefaultDesktopExtensions(
+              undefined,
+              delegationEnvironment,
+            );
             return await runWithConsoleControl(
               host,
               consoleOpener !== undefined,
@@ -517,6 +521,7 @@ export async function runHostRuntime(input: {
           });
           await listener.listen();
           await publishRemoteControlAppServerDescriptor(remoteControlPlan);
+          void host.hostExtensions?.seedDefaultDesktopExtensions(undefined, delegationEnvironment);
           // Official failure/replacement must never close this listener or external Harnesses.
           return await runWithConsoleControl(
             host,

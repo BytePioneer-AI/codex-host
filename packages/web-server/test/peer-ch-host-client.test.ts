@@ -95,6 +95,7 @@ it("round-trips rpc, snapshot, respond, projects, and pins over /api/ch/v1/*", a
       updatedAt: "now",
     },
     () => {},
+    { allowLoopback: true },
   );
   const host = new PeerChHostClient(peer.chTransport());
   t.after(() => {
@@ -196,6 +197,7 @@ it("dispatches connection+hello, drops malformed NDJSON lines, replays to late s
       updatedAt: "now",
     },
     () => {},
+    { allowLoopback: true },
   );
   const host = new PeerChHostClient(peer.chTransport());
   t.after(() => {

@@ -1,9 +1,10 @@
 /**
  * Unified Plugins workspace backed by the shared Host (`codexhost/extensions/*`).
  *
- * Displays all installed plugins and the unified Marketplace (`catalog.v2.json`), capability
- * badges and filters, ZIP / GitHub / local-directory import, declarative settings, recovery
- * actions, and the cross-platform standalone `page` container.
+ * Designed with Kettu-inspired clarity: centered reading column, title row with direct Create and
+ * Import actions, single sticky navigation bar (All / Installed | business categories + compact
+ * search + Filter popover + More menu), Featured 3-column showcase cards, borderless 2-column
+ * community rows, cross-mount snapshot caching, SWR catalog hydration, and non-blank fading icons.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -12,7 +13,6 @@ import {
   IconChevronDownOutlineRegular,
   IconCloseOutlineRegular,
   IconEllipsisOutlineRegular,
-  IconGlobeOutlineRegular,
   IconInfoOutlineRegular,
   IconRefreshOutlineRegular,
   IconSearchOutlineRegular,
@@ -43,8 +43,6 @@ import {
   capabilityFilterLabel,
   catalogCapabilities,
   categoryLabelForLocale,
-  deriveHostCapabilityBadges,
-  derivePlatformBadge,
   formatManagementError,
   hasHostCatalogUpdate,
   hostDescription,
@@ -58,6 +56,7 @@ import {
   needsAttention,
   resolveHostIconUrl,
   resolveOptionalLocalizedText,
+  selectFeaturedCatalogEntries,
   type ExtensionCapabilityFilter,
   type ExtensionLocale,
   type HostExtensionValidItem,
@@ -76,7 +75,7 @@ import { CreateWebExtensionDialog } from "./CreateWebExtensionDialog.tsx";
 import { HostExtensionPageView } from "./HostExtensionPageView.tsx";
 import css from "./WebExtensionsSection.module.css";
 
-type ActiveTab = "installed" | "market";
+type NavView = "all" | "installed" | DesktopExtensionCategory;
 export type ContentLocalePreference = "system" | ExtensionLocale;
 
 type ListView =
@@ -99,6 +98,31 @@ type SelectedRef =
 
 type Feedback = { readonly tone: "success" | "warning" | "danger"; readonly text: string };
 
+interface WorkspaceCacheSnapshot {
+  listData: HostExtensionsListResult | null;
+  marketEntries: readonly HostExtensionCatalogEntry[] | null;
+}
+
+const workspaceSnapshots = new Map<string, WorkspaceCacheSnapshot>();
+
+function workspaceCacheKey(): string {
+  try {
+    return typeof document !== "undefined" ? document.baseURI : "default";
+  } catch {
+    return "default";
+  }
+}
+
+function readWorkspaceSnapshot(): WorkspaceCacheSnapshot | undefined {
+  return workspaceSnapshots.get(workspaceCacheKey());
+}
+
+function writeWorkspaceSnapshot(patch: Partial<WorkspaceCacheSnapshot>): void {
+  const key = workspaceCacheKey();
+  const prev = workspaceSnapshots.get(key) ?? { listData: null, marketEntries: null };
+  workspaceSnapshots.set(key, { ...prev, ...patch });
+}
+
 export interface WebExtensionsFace {
   locale: HostSettingsSource<string>;
   colorScheme: HostSettingsSource<"light" | "dark">;
@@ -107,15 +131,29 @@ export interface WebExtensionsFace {
   selectContentLocale: (next: ContentLocalePreference) => void;
   selectedPage: HostExtensionInstallation | null;
   selectPage: (page: HostExtensionInstallation) => void;
+  hasPageTabs?: boolean | undefined;
   onUpdatesChange?: (hasUpdates: boolean) => void;
 }
 
-const INITIAL_MARKET: MarketState = {
-  loading: false,
-  loaded: false,
-  entries: [],
-  error: null,
-};
+function SlidersIcon(): ReactNode {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <line x1="7" y1="12" x2="17" y2="12" />
+      <line x1="10" y1="18" x2="14" y2="18" />
+    </svg>
+  );
+}
 
 function UploadArrowIcon(): ReactNode {
   return (
@@ -137,6 +175,62 @@ function UploadArrowIcon(): ReactNode {
   );
 }
 
+function MarketSkeleton(): ReactNode {
+  return (
+    <div className={css.skeletonWrap} aria-hidden="true">
+      <div className={css.section}>
+        <div className={`${css.skeletonBar} ${css.skeletonHeading}`} />
+        <div className={css.featuredGrid}>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className={css.skeletonFeaturedCard}>
+              <div className={css.featuredTop}>
+                <div className={css.skeletonIcon} />
+                <div className={css.skeletonBtn} />
+              </div>
+              <div className={`${css.skeletonBar} ${css.skeletonTitle}`} />
+              <div className={`${css.skeletonBar} ${css.skeletonMeta}`} />
+              <div className={`${css.skeletonBar} ${css.skeletonDesc}`} />
+              <div className={`${css.skeletonBar} ${css.skeletonDescShort}`} />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className={css.section}>
+        <div className={`${css.skeletonBar} ${css.skeletonHeading}`} />
+        <div className={css.rowGrid}>
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className={css.skeletonRow}>
+              <div className={css.skeletonIcon} />
+              <div className={css.skeletonRowLines}>
+                <div className={`${css.skeletonBar} ${css.skeletonTitle}`} />
+                <div className={`${css.skeletonBar} ${css.skeletonMeta}`} />
+                <div className={`${css.skeletonBar} ${css.skeletonDesc}`} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InstalledSkeleton(): ReactNode {
+  return (
+    <div className={css.rowGrid} aria-hidden="true">
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className={css.skeletonRow}>
+          <div className={css.skeletonIcon} />
+          <div className={css.skeletonRowLines}>
+            <div className={`${css.skeletonBar} ${css.skeletonTitle}`} />
+            <div className={`${css.skeletonBar} ${css.skeletonMeta}`} />
+            <div className={`${css.skeletonBar} ${css.skeletonDesc}`} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function WebExtensionsSection({
   t,
   locale,
@@ -146,16 +240,25 @@ export function WebExtensionsSection({
   selectContentLocale,
   selectedPage,
   selectPage,
+  hasPageTabs = false,
   onUpdatesChange,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
-  const [listView, setListView] = useState<ListView>({ kind: "loading" });
-  const [market, setMarket] = useState<MarketState>(INITIAL_MARKET);
-  const [activeTab, setActiveTab] = useState<ActiveTab>("installed");
+  const initialSnapshot = useMemo(() => readWorkspaceSnapshot(), []);
+  const [listView, setListView] = useState<ListView>(() =>
+    initialSnapshot?.listData
+      ? { kind: "ready", data: initialSnapshot.listData }
+      : { kind: "loading" },
+  );
+  const [market, setMarket] = useState<MarketState>(() =>
+    initialSnapshot?.marketEntries
+      ? { loading: false, loaded: true, entries: initialSnapshot.marketEntries, error: null }
+      : { loading: true, loaded: false, entries: [], error: null },
+  );
+  const [activeView, setActiveView] = useState<NavView>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [capabilityFilter, setCapabilityFilter] = useState<ExtensionCapabilityFilter>("all");
-  const [selectedCategory, setSelectedCategory] = useState<DesktopExtensionCategory | null>(null);
 
-  const [localeMenuOpen, setLocaleMenuOpen] = useState(false);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [installOpen, setInstallOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -173,16 +276,17 @@ export function WebExtensionsSection({
     (Feedback & { readonly extensionId: string }) | null
   >(null);
 
-  const localeWrapRef = useRef<HTMLDivElement | null>(null);
+  const filterWrapRef = useRef<HTMLDivElement | null>(null);
   const moreWrapRef = useRef<HTMLDivElement | null>(null);
   const pendingByIdRef = useRef<Map<string, ExtensionPendingAction>>(new Map());
   const manualInstallingRef = useRef(false);
   const recoveringRef = useRef(false);
   const selectedRefCurrent = useRef<SelectedRef | null>(null);
   selectedRefCurrent.current = selectedRef;
-  const configRevisionRef = useRef(0);
+  const configRevisionRef = useRef(initialSnapshot?.listData?.configuration.revision ?? 0);
   const toggleQueueRef = useRef<Promise<void>>(Promise.resolve());
   const listRequestTokenRef = useRef(0);
+  const inFlightListRef = useRef<Promise<HostExtensionsListResult | null> | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -194,11 +298,11 @@ export function WebExtensionsSection({
 
   // Dismiss dropdown menus on outside pointerdown or Escape.
   useEffect(() => {
-    if (!localeMenuOpen && !moreMenuOpen) return;
+    if (!filterMenuOpen && !moreMenuOpen) return;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
-      if (localeMenuOpen && localeWrapRef.current && !localeWrapRef.current.contains(target)) {
-        setLocaleMenuOpen(false);
+      if (filterMenuOpen && filterWrapRef.current && !filterWrapRef.current.contains(target)) {
+        setFilterMenuOpen(false);
       }
       if (moreMenuOpen && moreWrapRef.current && !moreWrapRef.current.contains(target)) {
         setMoreMenuOpen(false);
@@ -206,7 +310,7 @@ export function WebExtensionsSection({
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setLocaleMenuOpen(false);
+        setFilterMenuOpen(false);
         setMoreMenuOpen(false);
       }
     };
@@ -216,30 +320,51 @@ export function WebExtensionsSection({
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [localeMenuOpen, moreMenuOpen]);
+  }, [filterMenuOpen, moreMenuOpen]);
 
   const refreshList = useCallback(
-    async (signal?: AbortSignal): Promise<HostExtensionsListResult | null> => {
-      const token = ++listRequestTokenRef.current;
-      try {
-        const data = await hostExtensionsApi.list(signal);
-        if (signal?.aborted || !mountedRef.current || token !== listRequestTokenRef.current)
-          return null;
-        configRevisionRef.current = data.configuration.revision;
-        setListView({ kind: "ready", data });
-        return data;
-      } catch (cause: unknown) {
-        if (signal?.aborted || !mountedRef.current || token !== listRequestTokenRef.current)
-          return null;
-        if (isHostExtensionAuthDisabledError(cause)) {
-          setListView({ kind: "disabled" });
-        } else if (isHostExtensionUnavailableError(cause)) {
-          setListView({ kind: "unavailable" });
-        } else {
-          setListView({ kind: "failed", message: formatManagementError(cause, t) });
-        }
-        return null;
+    async (
+      signal?: AbortSignal,
+      options?: { readonly force?: boolean },
+    ): Promise<HostExtensionsListResult | null> => {
+      if (!options?.force && inFlightListRef.current && !signal) {
+        return inFlightListRef.current;
       }
+      const token = ++listRequestTokenRef.current;
+      const task = (async (): Promise<HostExtensionsListResult | null> => {
+        try {
+          const data = await hostExtensionsApi.list(signal);
+          if (signal?.aborted || !mountedRef.current || token !== listRequestTokenRef.current)
+            return null;
+          configRevisionRef.current = data.configuration.revision;
+          writeWorkspaceSnapshot({ listData: data });
+          setListView({ kind: "ready", data });
+          return data;
+        } catch (cause: unknown) {
+          if (signal?.aborted || !mountedRef.current || token !== listRequestTokenRef.current)
+            return null;
+          if (isHostExtensionAuthDisabledError(cause)) {
+            setListView({ kind: "disabled" });
+          } else if (isHostExtensionUnavailableError(cause)) {
+            setListView({ kind: "unavailable" });
+          } else {
+            setListView((prev) =>
+              prev.kind === "ready"
+                ? prev
+                : { kind: "failed", message: formatManagementError(cause, t) },
+            );
+          }
+          return null;
+        } finally {
+          if (inFlightListRef.current === task) {
+            inFlightListRef.current = null;
+          }
+        }
+      })();
+      if (!signal) {
+        inFlightListRef.current = task;
+      }
+      return task;
     },
     [t],
   );
@@ -248,14 +373,37 @@ export function WebExtensionsSection({
     async (forceRefresh = false, signal?: AbortSignal): Promise<void> => {
       setMarket((prev) => ({ ...prev, loading: true }));
       try {
-        const result = await hostExtensionsApi.catalog({ forceRefresh }, signal);
+        const result = await hostExtensionsApi.catalog(
+          { forceRefresh, ...(forceRefresh ? {} : { staleWhileRevalidate: true }) },
+          signal,
+        );
         if (signal?.aborted || !mountedRef.current) return;
+        writeWorkspaceSnapshot({ marketEntries: result.extensions });
         setMarket({
-          loading: false,
+          loading: Boolean(result.stale),
           loaded: true,
           entries: result.extensions,
           error: null,
         });
+        if (result.stale && !forceRefresh) {
+          // Background refresh to pick up newly hydrated catalog once SWR finishes.
+          void hostExtensionsApi
+            .catalog({ forceRefresh: false, staleWhileRevalidate: false }, signal)
+            .then((fresh) => {
+              if (signal?.aborted || !mountedRef.current) return;
+              writeWorkspaceSnapshot({ marketEntries: fresh.extensions });
+              setMarket({
+                loading: false,
+                loaded: true,
+                entries: fresh.extensions,
+                error: null,
+              });
+            })
+            .catch(() => {
+              if (signal?.aborted || !mountedRef.current) return;
+              setMarket((prev) => ({ ...prev, loading: false }));
+            });
+        }
       } catch (cause: unknown) {
         if (signal?.aborted || !mountedRef.current) return;
         setMarket((prev) => ({ ...prev, loading: false, error: { cause } }));
@@ -269,11 +417,6 @@ export function WebExtensionsSection({
     void refreshMarket(false, controller.signal);
     return () => controller.abort();
   }, [refreshMarket]);
-
-  const openMarket = () => {
-    setActiveTab("market");
-    setSelectedCategory(null);
-  };
 
   // Initial load + live synchronization on `extensions-changed` client channel events.
   useEffect(() => {
@@ -304,6 +447,7 @@ export function WebExtensionsSection({
       options?: {
         readonly successText?: string;
         readonly onSuccess?: () => void;
+        readonly onFailure?: () => void;
       },
     ): Promise<boolean> => {
       if (recoveringRef.current || pendingByIdRef.current.has(extensionId)) return false;
@@ -326,7 +470,7 @@ export function WebExtensionsSection({
       try {
         const outcome = await operation();
         if (!mountedRef.current) return true;
-        await refreshList();
+        await refreshList(undefined, { force: true });
         if (!mountedRef.current) return true;
         if (outcome && outcome.conflict) {
           publishFeedback({ tone: "warning", text: t("extensions.error.stale") });
@@ -348,7 +492,9 @@ export function WebExtensionsSection({
         }
         const message = formatManagementError(cause, t);
         if (isHostExtensionRevisionConflictError(cause)) {
-          void refreshList();
+          void refreshList(undefined, { force: true });
+        } else {
+          options?.onFailure?.();
         }
         publishFeedback({ tone: "danger", text: t("extensions.actionFailed", { message }) });
         return false;
@@ -372,7 +518,7 @@ export function WebExtensionsSection({
       try {
         await operation();
         if (!mountedRef.current) return true;
-        await refreshList();
+        await refreshList(undefined, { force: true });
         if (!mountedRef.current) return true;
         setFeedback({ tone: "success", text: options.successText });
         options.onSuccess?.();
@@ -431,40 +577,36 @@ export function WebExtensionsSection({
 
   const availableCategories = useMemo(() => {
     const present = new Set<DesktopExtensionCategory>();
-    if (activeTab === "installed") {
-      for (const item of extensions) {
-        if (item.state === "valid") {
-          for (const cat of item.manifest.categories ?? []) present.add(cat);
-        }
-      }
-    } else {
-      for (const entry of market.entries) {
-        for (const cat of entry.categories ?? []) present.add(cat);
-      }
+    for (const entry of market.entries) {
+      for (const cat of entry.categories ?? []) present.add(cat);
     }
     return CATEGORY_ORDER.filter((cat) => present.has(cat));
-  }, [activeTab, extensions, market.entries]);
+  }, [market.entries]);
 
   useEffect(() => {
-    if (selectedCategory !== null && !availableCategories.includes(selectedCategory)) {
-      setSelectedCategory(null);
+    if (
+      activeView !== "all" &&
+      activeView !== "installed" &&
+      availableCategories.length > 0 &&
+      !availableCategories.includes(activeView)
+    ) {
+      setActiveView("all");
     }
-  }, [availableCategories, selectedCategory]);
+  }, [availableCategories, activeView]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
+  const isInstalledView = activeView === "installed";
+  const selectedCategory: DesktopExtensionCategory | null =
+    activeView !== "all" && activeView !== "installed" ? activeView : null;
 
   const filteredInstalled = useMemo(() => {
     return extensions.filter((item) => {
       if (!matchesCapabilityFilter(capabilityFilter, itemCapabilities(item), itemTargets(item))) {
         return false;
       }
-      if (selectedCategory !== null) {
-        if (item.state !== "valid") return false;
-        if (!item.manifest.categories?.includes(selectedCategory)) return false;
-      }
       return matchesInstalledSearch(item, normalizedQuery, t);
     });
-  }, [extensions, capabilityFilter, selectedCategory, normalizedQuery, t]);
+  }, [extensions, capabilityFilter, normalizedQuery, t]);
 
   const groupedInstalled = useMemo(() => {
     const attention: HostExtensionListItem[] = [];
@@ -497,6 +639,29 @@ export function WebExtensionsSection({
     });
   }, [market.entries, capabilityFilter, selectedCategory, normalizedQuery, t]);
 
+  const isDefaultMarketplaceHome =
+    activeView === "all" && normalizedQuery === "" && capabilityFilter === "all";
+
+  const { featuredEntries, communityEntries } = useMemo(() => {
+    if (!isDefaultMarketplaceHome) {
+      return {
+        featuredEntries: [] as readonly HostExtensionCatalogEntry[],
+        communityEntries: filteredMarket,
+      };
+    }
+    const hasExplicitFeatured = filteredMarket.some((entry) => entry.featured === true);
+    if (!hasExplicitFeatured && filteredMarket.length <= 3) {
+      return {
+        featuredEntries: [] as readonly HostExtensionCatalogEntry[],
+        communityEntries: filteredMarket,
+      };
+    }
+    const featured = selectFeaturedCatalogEntries(filteredMarket, 3);
+    const featuredIds = new Set(featured.map((entry) => entry.id));
+    const community = filteredMarket.filter((entry) => !featuredIds.has(entry.id));
+    return { featuredEntries: featured, communityEntries: community };
+  }, [isDefaultMarketplaceHome, filteredMarket]);
+
   const detailTarget: DetailModalTarget | null = useMemo(() => {
     if (selectedRef === null) return null;
     const item = installedById.get(selectedRef.id);
@@ -508,7 +673,22 @@ export function WebExtensionsSection({
   const hasPendingTasks = pendingById.size > 0 || manualInstalling || recovering;
 
   const handleToggle = (item: HostExtensionListItem, enabled: boolean) => {
+    if (recoveringRef.current || pendingByIdRef.current.has(item.id)) return;
+    const previousEnabled = item.enabled;
     const name = hostDisplayName(item, contentLocale, catalogById.get(item.id));
+    // Optimistically flip toggle state in UI for crisp responsiveness.
+    setListView((prev) => {
+      if (prev.kind !== "ready") return prev;
+      return {
+        kind: "ready",
+        data: {
+          ...prev.data,
+          extensions: prev.data.extensions.map((entry) =>
+            entry.id === item.id ? { ...entry, enabled } : entry,
+          ),
+        },
+      };
+    });
     void runExtensionMutation(
       item.id,
       "toggle",
@@ -534,6 +714,20 @@ export function WebExtensionsSection({
       },
       {
         successText: t(enabled ? "extensions.savedEnabled" : "extensions.savedDisabled", { name }),
+        onFailure: () => {
+          setListView((prev) => {
+            if (prev.kind !== "ready") return prev;
+            return {
+              kind: "ready",
+              data: {
+                ...prev.data,
+                extensions: prev.data.extensions.map((entry) =>
+                  entry.id === item.id ? { ...entry, enabled: previousEnabled } : entry,
+                ),
+              },
+            };
+          });
+        },
       },
     );
   };
@@ -619,7 +813,7 @@ export function WebExtensionsSection({
         listRequestTokenRef.current += 1;
         configRevisionRef.current =
           res.state === "saved" ? res.configuration.revision : res.revision;
-        await refreshList();
+        await refreshList(undefined, { force: true });
         if (!mountedRef.current) return;
         if (res.state === "revision-conflict") {
           setFeedback({ tone: "warning", text: t("extensions.error.stale") });
@@ -638,7 +832,7 @@ export function WebExtensionsSection({
         }
         const message = formatManagementError(cause, t);
         if (isHostExtensionRevisionConflictError(cause)) {
-          void refreshList();
+          void refreshList(undefined, { force: true });
         }
         setFeedback({ tone: "danger", text: t("extensions.actionFailed", { message }) });
       } finally {
@@ -658,7 +852,7 @@ export function WebExtensionsSection({
           successText: t("extensions.installedSuccess", { name: request.file.name }),
           onSuccess: () => {
             setInstallOpen(false);
-            setActiveTab("installed");
+            setActiveView("installed");
           },
         },
       );
@@ -672,7 +866,7 @@ export function WebExtensionsSection({
           successText: t("extensions.installedSuccess", { name: request.source.repository }),
           onSuccess: () => {
             setInstallOpen(false);
-            setActiveTab("installed");
+            setActiveView("installed");
           },
         },
       );
@@ -687,7 +881,7 @@ export function WebExtensionsSection({
         successText: t("extensions.installedSuccess", { name: request.localDir }),
         onSuccess: () => {
           setInstallOpen(false);
-          setActiveTab("installed");
+          setActiveView("installed");
         },
       },
     );
@@ -696,7 +890,7 @@ export function WebExtensionsSection({
   const handleRefreshAll = () => {
     if (recovering) return;
     setFeedback(null);
-    void refreshList();
+    void refreshList(undefined, { force: true });
     if (!market.loading) void refreshMarket(true);
   };
 
@@ -716,705 +910,714 @@ export function WebExtensionsSection({
     );
   }
 
-  const renderHeader = (options: { readonly canMutate: boolean }) => (
-    <header className={css.header}>
-      <div className={css.headerLeft}>
-        <h2 className={css.title}>{t("extensions.center")}</h2>
-      </div>
+  const canMutate = listView.kind === "ready";
+  const filterActive = capabilityFilter !== "all";
 
-      <div className={css.toolbar}>
-        {/* Content language switcher */}
-        <div ref={localeWrapRef} className={css.menuAnchor}>
-          <button
-            type="button"
-            className={css.toolbarButton}
-            data-action="content-locale-menu"
-            aria-label={t("extensions.contentLocaleLabel")}
-            title={t("extensions.contentLocaleLabel")}
-            aria-haspopup="menu"
-            aria-expanded={localeMenuOpen}
-            disabled={recovering}
-            onClick={() => {
-              setMoreMenuOpen(false);
-              setLocaleMenuOpen((open) => !open);
-            }}
-          >
-            <IconGlobeOutlineRegular size={13} />
-            <span className={css.localeLabel}>{contentLocale === "zh-CN" ? "中文" : "EN"}</span>
-            <IconChevronDownOutlineRegular size={12} />
-          </button>
+  const renderMarketCard = (entry: HostExtensionCatalogEntry, layout: "featured" | "row") => {
+    const displayName = resolveLocalizedExtensionText(entry.name, contentLocale);
+    const description = resolveOptionalLocalizedText(entry.description, contentLocale);
+    const installed = installedById.get(entry.id);
+    const validInstalled = installed?.state === "valid" ? installed : undefined;
+    const updateAvailable = hasHostCatalogUpdate(installed, entry);
+    const entryAction = pendingById.get(entry.id) ?? null;
+    const isEntryBusy = entryAction !== null;
+    const isInstalling = entryAction === "install";
+    const isUpdating = entryAction === "update";
+    const controlsDisabled = isEntryBusy || recovering || !canMutate;
+    const desktopOnly = entry.targets.includes("desktop") && !entry.targets.includes("web");
 
-          {localeMenuOpen && (
-            <div
-              className={`${css.menu} ${css.menuCompact}`}
-              role="menu"
-              aria-label={t("extensions.contentLocaleLabel")}
-            >
-              {(
-                [
-                  ["system", t("extensions.contentLocaleFollowSystem")],
-                  ["zh-CN", t("extensions.contentLocaleZh")],
-                  ["en", t("extensions.contentLocaleEn")],
-                ] as const
-              ).map(([value, label]) => {
-                const selected = contentLocalePref === value;
-                return (
+    const actionButton = !installed ? (
+      <button
+        type="button"
+        className={css.quietInstallButton}
+        disabled={controlsDisabled}
+        aria-busy={isInstalling}
+        onClick={() => handleInstallMarket(entry)}
+      >
+        {t(isInstalling ? "extensions.installing" : "extensions.install")}
+      </button>
+    ) : updateAvailable && validInstalled ? (
+      <button
+        type="button"
+        className={css.updateButton}
+        disabled={controlsDisabled}
+        aria-busy={isUpdating}
+        onClick={() => handleUpdate(validInstalled, entry)}
+      >
+        {t(isUpdating ? "extensions.updating" : "extensions.update")}
+      </button>
+    ) : (
+      <button
+        type="button"
+        className={css.installedButton}
+        disabled={isEntryBusy || recovering}
+        title={t("extensions.installedBadge")}
+        aria-label={t("extensions.installedBadge")}
+        onClick={() => {
+          setModalFeedback(null);
+          setSelectedRef({ kind: "market", id: entry.id });
+        }}
+      >
+        <InstalledCheckIcon />
+        <span>{t("extensions.installedBadge")}</span>
+      </button>
+    );
+
+    return (
+      <WebExtensionCard
+        key={entry.id}
+        cardKey={`market:${entry.id}`}
+        extensionId={entry.id}
+        cardKind="market"
+        layout={layout}
+        displayName={displayName}
+        description={description}
+        iconUrl={resolveHostIconUrl(installed, entry)}
+        author={entry.author}
+        version={entry.version}
+        downloads={entry.downloads}
+        trustTier={entry.trustTier}
+        categories={entry.categories}
+        incompatiblePlatformLabel={
+          desktopOnly ? t("extensions.platform.desktopOnlyShort") : undefined
+        }
+        busy={isEntryBusy}
+        contentLocale={contentLocale}
+        t={t}
+        actionControl={actionButton}
+        onOpenDetails={() => {
+          setModalFeedback(null);
+          setSelectedRef({ kind: "market", id: entry.id });
+        }}
+      />
+    );
+  };
+
+  const renderInstalledCard = (item: HostExtensionListItem) => {
+    const catalogEntry = catalogById.get(item.id);
+    const validItem = item.state === "valid" ? item : undefined;
+    const displayName = hostDisplayName(item, contentLocale, catalogEntry);
+    const description = hostDescription(item, contentLocale, catalogEntry);
+    const itemAction = pendingById.get(item.id) ?? null;
+    const isItemBusy = itemAction !== null;
+    const isUpdating = itemAction === "update";
+    const controlsDisabled = isItemBusy || recovering;
+    const blocked = isHostToggleBlocked(item);
+    const targets = itemTargets(item);
+    const desktopOnly = targets.includes("desktop") && !targets.includes("web");
+
+    const statusDot =
+      item.state !== "valid"
+        ? { tone: "danger" as const, label: t("extensions.state.error") }
+        : item.backendState === "failed"
+          ? { tone: "danger" as const, label: t("extensions.backend.failed") }
+          : item.desktopConflictWith
+            ? { tone: "warning" as const, label: t("extensions.state.conflict") }
+            : undefined;
+
+    const attention =
+      item.state !== "valid"
+        ? {
+            tone: item.state === "incompatible" ? ("warning" as const) : ("danger" as const),
+            text: item.error || t("extensions.manifestMissing"),
+          }
+        : item.backendState === "failed"
+          ? {
+              tone: "danger" as const,
+              text: item.backendError || t("extensions.backendFailedNotice"),
+            }
+          : item.desktopConflictWith
+            ? {
+                tone: "warning" as const,
+                text: t("extensions.desktopConflictNotice", {
+                  other: item.desktopConflictWith,
+                }),
+              }
+            : undefined;
+
+    const canOpenPage = Boolean(validItem && validItem.enabled && validItem.manifest.page);
+
+    return (
+      <WebExtensionCard
+        key={item.id}
+        cardKey={`host:${item.id}`}
+        extensionId={item.id}
+        cardKind="installed"
+        layout="row"
+        displayName={displayName}
+        description={description}
+        iconUrl={resolveHostIconUrl(item, catalogEntry)}
+        author={validItem?.manifest.author ?? catalogEntry?.author}
+        version={validItem?.manifest.version}
+        downloads={catalogEntry?.downloads}
+        trustTier={catalogEntry?.trustTier}
+        categories={validItem?.manifest.categories ?? catalogEntry?.categories}
+        incompatiblePlatformLabel={
+          desktopOnly ? t("extensions.platform.desktopOnlyShort") : undefined
+        }
+        statusDot={statusDot}
+        update={
+          validItem && catalogEntry && hasHostCatalogUpdate(validItem, catalogEntry)
+            ? {
+                label: t("extensions.updateVersionCue", {
+                  version: catalogEntry.version.replace(/^v/u, ""),
+                }),
+                action: (
                   <button
-                    key={value}
                     type="button"
-                    role="menuitemradio"
-                    aria-checked={selected}
-                    className={`${css.menuItem} ${css.menuItemRadio}`}
-                    onClick={() => {
-                      selectContentLocale(value);
-                      setLocaleMenuOpen(false);
-                    }}
+                    className={css.updateButton}
+                    disabled={controlsDisabled}
+                    aria-busy={isUpdating}
+                    onClick={() => handleUpdate(validItem, catalogEntry)}
                   >
-                    <span>{label}</span>
-                    {selected && (
-                      <span className={css.menuCheck} aria-hidden="true">
-                        <IconCheckOutlineRegular size={13} />
-                      </span>
-                    )}
+                    {t(isUpdating ? "extensions.updating" : "extensions.update")}
                   </button>
-                );
-              })}
-            </div>
-          )}
+                ),
+              }
+            : undefined
+        }
+        attention={attention}
+        busy={isItemBusy}
+        contentLocale={contentLocale}
+        t={t}
+        secondaryAction={
+          canOpenPage && validItem ? (
+            <button
+              type="button"
+              className={css.openPageButton}
+              data-action="open-page"
+              data-extension-id={validItem.id}
+              disabled={controlsDisabled}
+              onClick={() => selectPage(validItem)}
+            >
+              {t("extensions.page.open")}
+            </button>
+          ) : undefined
+        }
+        actionControl={
+          <Switch
+            label={displayName}
+            checked={item.enabled}
+            disabled={controlsDisabled || blocked}
+            title={blocked ? t("extensions.toggleBlockedInvalid") : undefined}
+            onChange={(next) => handleToggle(item, next)}
+          />
+        }
+        onOpenDetails={() => {
+          setModalFeedback(null);
+          setSelectedRef({ kind: "installed", id: item.id });
+        }}
+      />
+    );
+  };
+
+  return (
+    <div
+      className={css.page}
+      data-web-extensions
+      data-has-page-tabs={hasPageTabs ? "true" : undefined}
+    >
+      {/* Clean editorial header: title + 1-line subtitle on left; direct Create & Import actions on right */}
+      <header className={css.heroHeader}>
+        <div className={css.heroCopy}>
+          {!hasPageTabs && <h1 className={css.title}>{t("extensions.center")}</h1>}
+          <p className={css.subtitle}>{t("extensions.subtitle")}</p>
         </div>
+        {listView.kind !== "disabled" && (
+          <div className={css.heroActions}>
+            <button
+              type="button"
+              className={css.createHeaderButton}
+              data-action="open-create"
+              disabled={recovering}
+              onClick={() => setCreateOpen(true)}
+            >
+              <IconSparkleRegular size={13} />
+              <span>{t("extensions.create.button")}</span>
+            </button>
+            <button
+              type="button"
+              className={css.importHeaderButton}
+              data-action="open-import"
+              disabled={!canMutate || recovering || manualInstalling}
+              onClick={() => {
+                setInstallError(null);
+                setInstallOpen(true);
+              }}
+            >
+              <UploadArrowIcon />
+              <span>{t("extensions.add")}</span>
+            </button>
+          </div>
+        )}
+      </header>
 
-        {/* Create plugin button */}
-        <button
-          type="button"
-          className={css.toolbarButton}
-          data-action="open-create"
-          disabled={recovering}
-          onClick={() => {
-            setLocaleMenuOpen(false);
-            setMoreMenuOpen(false);
-            setCreateOpen(true);
-          }}
-        >
-          <IconSparkleRegular size={13} />
-          <span>{t("extensions.create.button")}</span>
-        </button>
+      {/* Single sticky bar: All + Installed | categories on left; Search + Filter + More on right */}
+      {listView.kind !== "disabled" && (
+        <div className={css.stickyBar}>
+          <nav className={css.navTabs} role="tablist" aria-label={t("extensions.tabListLabel")}>
+            <button
+              type="button"
+              role="tab"
+              className={css.navTab}
+              aria-selected={activeView === "all"}
+              onClick={() => setActiveView("all")}
+            >
+              {t("extensions.tabAll")}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`${css.navTab} ${css.navTabInstalled}`}
+              aria-selected={activeView === "installed"}
+              aria-description={
+                hasInstalledUpdates ? t("extensions.installedUpdatesAvailable") : undefined
+              }
+              onClick={() => setActiveView("installed")}
+            >
+              <span>
+                {listView.kind === "ready"
+                  ? t("extensions.tabInstalled", { count: String(extensions.length) })
+                  : t("extensions.installed")}
+              </span>
+              {hasInstalledUpdates && <span className={css.tabUpdateDot} aria-hidden="true" />}
+            </button>
+            {availableCategories.length > 0 && (
+              <span className={css.navDivider} aria-hidden="true" />
+            )}
+            {availableCategories.map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                role="tab"
+                className={css.navTab}
+                aria-selected={activeView === cat}
+                onClick={() => setActiveView(cat)}
+              >
+                {categoryLabelForLocale(cat, contentLocale)}
+              </button>
+            ))}
+          </nav>
 
-        {/* Import plugin button */}
-        <button
-          type="button"
-          className={css.toolbarButton}
-          data-action="open-import"
-          disabled={recovering || manualInstalling || !options.canMutate}
-          onClick={() => {
-            setLocaleMenuOpen(false);
-            setMoreMenuOpen(false);
-            setInstallError(null);
-            setInstallOpen(true);
-          }}
-        >
-          <UploadArrowIcon />
-          <span>{t("extensions.add")}</span>
-        </button>
-
-        {/* Refresh icon button */}
-        <button
-          type="button"
-          className={css.iconButton}
-          aria-label={t("extensions.refresh")}
-          title={t("extensions.refresh")}
-          disabled={recovering || market.loading}
-          aria-busy={market.loading}
-          onClick={handleRefreshAll}
-        >
-          <IconRefreshOutlineRegular size={15} />
-        </button>
-
-        {/* More ("...") menu: disable all plugins (recover) + legacy DSH recovery link */}
-        <div ref={moreWrapRef} className={`${css.menuAnchor} ${css.moreMenuAnchor}`}>
-          <button
-            type="button"
-            className={css.iconButton}
-            data-action="more-menu"
-            aria-label={t("extensions.moreActions")}
-            title={t("extensions.moreActions")}
-            aria-haspopup="menu"
-            aria-expanded={moreMenuOpen}
-            disabled={recovering}
-            onClick={() => {
-              setLocaleMenuOpen(false);
-              setMoreMenuOpen((open) => !open);
-            }}
-          >
-            <IconEllipsisOutlineRegular size={16} />
-          </button>
-
-          {moreMenuOpen && (
-            <div className={css.menu} role="menu" aria-label={t("extensions.moreActions")}>
-              {options.canMutate && (
+          <div className={css.barActions}>
+            <div className={css.searchBox}>
+              <span className={css.searchIcon} aria-hidden="true">
+                <IconSearchOutlineRegular size={13} />
+              </span>
+              <input
+                type="search"
+                className={css.searchInput}
+                value={searchQuery}
+                placeholder={t("extensions.searchPlaceholder")}
+                aria-label={t("extensions.searchLabel")}
+                onChange={(event) => setSearchQuery(event.currentTarget.value)}
+              />
+              {searchQuery !== "" && (
                 <button
                   type="button"
-                  role="menuitem"
-                  className={`${css.menuItem} ${css.menuItemDanger}`}
-                  disabled={hasPendingTasks}
-                  onClick={() => {
-                    setMoreMenuOpen(false);
-                    setRecoverOpen(true);
-                  }}
+                  className={css.searchClear}
+                  aria-label={t("extensions.clearSearch")}
+                  title={t("extensions.clearSearch")}
+                  onClick={() => setSearchQuery("")}
                 >
-                  {t("extensions.recover.action")}
+                  <IconCloseOutlineRegular size={12} />
                 </button>
               )}
-              {options.canMutate && <div className={css.menuDivider} role="separator" />}
-              <a
-                className={css.menuItem}
-                role="menuitem"
-                href="/extensions"
-                onClick={() => setMoreMenuOpen(false)}
-              >
-                {t("extensions.legacyDshRecovery")}
-              </a>
-              <a
-                className={css.menuItem}
-                role="menuitem"
-                href="/?extensions=off"
-                onClick={() => setMoreMenuOpen(false)}
-              >
-                {t("extensions.builtinsOnly")}
-              </a>
             </div>
-          )}
+
+            {/* Technical capability & platform filter popover */}
+            <div ref={filterWrapRef} className={css.menuAnchor}>
+              <button
+                type="button"
+                className={css.filterButton}
+                data-active={filterActive ? "true" : undefined}
+                aria-haspopup="menu"
+                aria-expanded={filterMenuOpen}
+                aria-label={t("extensions.filter.label")}
+                title={t("extensions.filter.label")}
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  setFilterMenuOpen((open) => !open);
+                }}
+              >
+                <SlidersIcon />
+                <span>
+                  {filterActive
+                    ? capabilityFilterLabel(capabilityFilter, t)
+                    : t("extensions.filterButton")}
+                </span>
+                {filterActive && <span className={css.filterActiveDot} aria-hidden="true" />}
+                <IconChevronDownOutlineRegular size={11} />
+              </button>
+
+              {filterMenuOpen && (
+                <div
+                  className={`${css.menu} ${css.menuCompact}`}
+                  role="menu"
+                  aria-label={t("extensions.filter.label")}
+                  data-capability-filters
+                >
+                  {CAPABILITY_FILTER_ORDER.map((filter) => {
+                    const selected = capabilityFilter === filter;
+                    return (
+                      <button
+                        key={filter}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={selected}
+                        data-capability-filter={filter}
+                        className={`${css.menuItem} ${css.menuItemRadio}`}
+                        onClick={() => {
+                          setCapabilityFilter(filter);
+                          setFilterMenuOpen(false);
+                        }}
+                      >
+                        <span>{capabilityFilterLabel(filter, t)}</span>
+                        {selected && (
+                          <span className={css.menuCheck} aria-hidden="true">
+                            <IconCheckOutlineRegular size={13} />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Quiet More ("...") menu: language, refresh, recover, legacy recovery */}
+            <div ref={moreWrapRef} className={`${css.menuAnchor} ${css.moreMenuAnchor}`}>
+              <button
+                type="button"
+                className={css.iconButton}
+                data-action="more-menu"
+                aria-label={t("extensions.moreActions")}
+                title={t("extensions.moreActions")}
+                aria-haspopup="menu"
+                aria-expanded={moreMenuOpen}
+                disabled={recovering}
+                onClick={() => {
+                  setFilterMenuOpen(false);
+                  setMoreMenuOpen((open) => !open);
+                }}
+              >
+                <IconEllipsisOutlineRegular size={16} />
+              </button>
+
+              {moreMenuOpen && (
+                <div className={css.menu} role="menu" aria-label={t("extensions.moreActions")}>
+                  <div className={css.menuHeading}>{t("extensions.languageMenuLabel")}</div>
+                  {(
+                    [
+                      ["system", t("extensions.contentLocaleFollowSystem")],
+                      ["zh-CN", t("extensions.contentLocaleZh")],
+                      ["en", t("extensions.contentLocaleEn")],
+                    ] as const
+                  ).map(([value, label]) => {
+                    const selected = contentLocalePref === value;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={selected}
+                        className={`${css.menuItem} ${css.menuItemRadio}`}
+                        onClick={() => {
+                          selectContentLocale(value);
+                          setMoreMenuOpen(false);
+                        }}
+                      >
+                        <span>{label}</span>
+                        {selected && (
+                          <span className={css.menuCheck} aria-hidden="true">
+                            <IconCheckOutlineRegular size={13} />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  <div className={css.menuDivider} role="separator" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={css.menuItem}
+                    disabled={recovering || market.loading}
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      handleRefreshAll();
+                    }}
+                  >
+                    <IconRefreshOutlineRegular size={13} />
+                    <span>{t("extensions.refreshMarket")}</span>
+                  </button>
+                  {canMutate && (
+                    <>
+                      <div className={css.menuDivider} role="separator" />
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={`${css.menuItem} ${css.menuItemDanger}`}
+                        disabled={hasPendingTasks}
+                        onClick={() => {
+                          setMoreMenuOpen(false);
+                          setRecoverOpen(true);
+                        }}
+                      >
+                        {t("extensions.recover.action")}
+                      </button>
+                    </>
+                  )}
+                  <div className={css.menuDivider} role="separator" />
+                  <a
+                    className={css.menuItem}
+                    role="menuitem"
+                    href="/extensions"
+                    onClick={() => setMoreMenuOpen(false)}
+                  >
+                    {t("extensions.legacyDshRecovery")}
+                  </a>
+                  <a
+                    className={css.menuItem}
+                    role="menuitem"
+                    href="/?extensions=off"
+                    onClick={() => setMoreMenuOpen(false)}
+                  >
+                    {t("extensions.builtinsOnly")}
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
-    </header>
-  );
+      )}
 
-  if (listView.kind === "loading") {
-    return (
-      <div className={css.page} data-web-extensions>
-        {renderHeader({ canMutate: false })}
-        <p className={css.hint}>{t("extensions.loading")}</p>
-      </div>
-    );
-  }
-
-  if (listView.kind === "disabled") {
-    return (
-      <div className={css.page} data-web-extensions>
-        {renderHeader({ canMutate: false })}
+      {/* Auth / Host unavailable states */}
+      {listView.kind === "disabled" ? (
         <div className={css.emptyCard} data-web-extensions-notice="disabled">
           <div className={css.emptyCopy}>
             <p className={css.emptyDesc}>{t("extensions.authDisabled")}</p>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  if (listView.kind === "unavailable") {
-    return (
-      <div className={css.page} data-web-extensions>
-        {renderHeader({ canMutate: false })}
+      ) : listView.kind === "unavailable" && isInstalledView ? (
         <div className={css.emptyCard} data-web-extensions-notice="unavailable">
           <div className={css.emptyCopy}>
             <p className={css.emptyDesc}>{t("extensions.unavailable")}</p>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void refreshList()}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void refreshList(undefined, { force: true })}
+          >
             {t("extensions.retry")}
           </Button>
         </div>
-      </div>
-    );
-  }
-
-  if (listView.kind === "failed") {
-    return (
-      <div className={css.page} data-web-extensions>
-        {renderHeader({ canMutate: false })}
+      ) : listView.kind === "failed" && isInstalledView ? (
         <div className={css.banner} data-tone="danger" role="alert">
           <span>{t("extensions.loadFailed", { message: listView.message })}</span>
-          <Button variant="outline" size="sm" onClick={() => void refreshList()}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void refreshList(undefined, { force: true })}
+          >
             {t("extensions.retry")}
           </Button>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className={css.page} data-web-extensions>
-      {renderHeader({ canMutate: true })}
-
-      {/* Tabs + Search bar */}
-      <div className={css.controlsBar}>
-        <div className={css.segmented} role="tablist" aria-label={t("extensions.tabListLabel")}>
-          <button
-            type="button"
-            role="tab"
-            className={css.segmentedTab}
-            aria-selected={activeTab === "installed"}
-            aria-description={
-              hasInstalledUpdates ? t("extensions.installedUpdatesAvailable") : undefined
-            }
-            onClick={() => {
-              setActiveTab("installed");
-              setSelectedCategory(null);
-            }}
-          >
-            {t("extensions.tabInstalled", { count: String(extensions.length) })}
-            {hasInstalledUpdates && <span className={css.tabUpdateDot} aria-hidden="true" />}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={css.segmentedTab}
-            aria-selected={activeTab === "market"}
-            onClick={openMarket}
-          >
-            {market.loaded
-              ? t("extensions.tabMarketCount", { count: String(market.entries.length) })
-              : t("extensions.tabMarket")}
-          </button>
-        </div>
-
-        <div className={css.searchBox}>
-          <span className={css.searchIcon} aria-hidden="true">
-            <IconSearchOutlineRegular size={13} />
-          </span>
-          <input
-            type="search"
-            className={css.searchInput}
-            value={searchQuery}
-            placeholder={t("extensions.searchPlaceholder")}
-            aria-label={t("extensions.searchLabel")}
-            onChange={(event) => setSearchQuery(event.currentTarget.value)}
-          />
-          {searchQuery !== "" && (
-            <button
-              type="button"
-              className={css.searchClear}
-              aria-label={t("extensions.clearSearch")}
-              title={t("extensions.clearSearch")}
-              onClick={() => setSearchQuery("")}
-            >
-              <IconCloseOutlineRegular size={12} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Capability filter + Category filter pills */}
-      <div className={css.filterRows}>
-        <div
-          className={css.capabilityBar}
-          role="group"
-          aria-label={t("extensions.filter.label")}
-          data-capability-filters
-        >
-          {CAPABILITY_FILTER_ORDER.map((filter) => (
-            <button
-              key={filter}
-              type="button"
-              className={css.filterPill}
-              aria-pressed={capabilityFilter === filter}
-              data-capability-filter={filter}
-              onClick={() => setCapabilityFilter(filter)}
-            >
-              {capabilityFilterLabel(filter, t)}
-            </button>
-          ))}
-        </div>
-
-        {availableCategories.length > 0 && (
-          <div
-            className={css.categoryBar}
-            role="group"
-            aria-label={t("extensions.categoryFilterLabel")}
-          >
-            <button
-              type="button"
-              className={css.filterPill}
-              aria-pressed={selectedCategory === null}
-              onClick={() => setSelectedCategory(null)}
-            >
-              {t("extensions.categoryAll")}
-            </button>
-            {availableCategories.map((cat) => (
-              <button
-                key={cat}
-                type="button"
-                className={css.filterPill}
-                aria-pressed={selectedCategory === cat}
-                onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
-              >
-                {categoryLabelForLocale(cat, contentLocale)}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Host diagnostics banner */}
-      {diagnostics.length > 0 && (
-        <div className={css.banner} data-tone="warning" role="status">
-          <span>{diagnostics.join(" · ")}</span>
-        </div>
-      )}
-
-      {/* Action feedback banner */}
-      {feedback !== null && (
-        <div
-          className={css.banner}
-          data-tone={feedback.tone}
-          role={feedback.tone === "success" ? "status" : "alert"}
-        >
-          <span>{feedback.text}</span>
-          <button
-            type="button"
-            className={css.bannerClose}
-            aria-label={t("extensions.close")}
-            onClick={() => setFeedback(null)}
-          >
-            <IconCloseOutlineRegular size={12} />
-          </button>
-        </div>
-      )}
-
-      {/* Active Tab Content */}
-      {activeTab === "installed" ? (
-        extensions.length === 0 ? (
-          <div className={css.emptyCard}>
-            <div className={css.emptyCopy}>
-              <h3 className={css.emptyTitle}>{t("extensions.empty")}</h3>
-              <p className={css.emptyDesc}>{t("extensions.emptyHint")}</p>
-            </div>
-            <div className={css.emptyActions}>
-              <Button variant="primary" size="sm" onClick={openMarket}>
-                {t("extensions.goToMarket")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setInstallError(null);
-                  setInstallOpen(true);
-                }}
-              >
-                {t("extensions.add")}
-              </Button>
-            </div>
-          </div>
-        ) : groupedInstalled.length === 0 ? (
-          <div className={css.emptyCard}>
-            <div className={css.emptyCopy}>
-              <h3 className={css.emptyTitle}>{t("extensions.noMatchesTitle")}</h3>
-              <p className={css.emptyDesc}>{t("extensions.noMatchesDescription")}</p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setSearchQuery("");
-                setCapabilityFilter("all");
-                setSelectedCategory(null);
-              }}
-            >
-              {t("extensions.clearFilters")}
-            </Button>
-          </div>
-        ) : (
-          <div className={css.groups}>
-            {groupedInstalled.map((group) => {
-              const grid = (
-                <div key={group.id} className={css.grid}>
-                  {group.items.map((item) => {
-                    const catalogEntry = catalogById.get(item.id);
-                    const validItem = item.state === "valid" ? item : undefined;
-                    const displayName = hostDisplayName(item, contentLocale, catalogEntry);
-                    const description = hostDescription(item, contentLocale, catalogEntry);
-                    const itemAction = pendingById.get(item.id) ?? null;
-                    const isItemBusy = itemAction !== null;
-                    const isUpdating = itemAction === "update";
-                    const controlsDisabled = isItemBusy || recovering;
-                    const blocked = isHostToggleBlocked(item);
-                    const capabilityBadges = deriveHostCapabilityBadges(itemCapabilities(item), t);
-
-                    const statusDot =
-                      item.state !== "valid"
-                        ? { tone: "danger" as const, label: t("extensions.state.error") }
-                        : item.backendState === "failed"
-                          ? { tone: "danger" as const, label: t("extensions.backend.failed") }
-                          : item.desktopConflictWith
-                            ? { tone: "warning" as const, label: t("extensions.state.conflict") }
-                            : undefined;
-
-                    const attention =
-                      item.state !== "valid"
-                        ? {
-                            tone:
-                              item.state === "incompatible"
-                                ? ("warning" as const)
-                                : ("danger" as const),
-                            text: item.error || t("extensions.manifestMissing"),
-                          }
-                        : item.backendState === "failed"
-                          ? {
-                              tone: "danger" as const,
-                              text: item.backendError || t("extensions.backendFailedNotice"),
-                            }
-                          : item.desktopConflictWith
-                            ? {
-                                tone: "warning" as const,
-                                text: t("extensions.desktopConflictNotice", {
-                                  other: item.desktopConflictWith,
-                                }),
-                              }
-                            : undefined;
-
-                    const canOpenPage = Boolean(
-                      validItem && validItem.enabled && validItem.manifest.page,
-                    );
-
-                    return (
-                      <WebExtensionCard
-                        key={item.id}
-                        cardKey={`host:${item.id}`}
-                        extensionId={item.id}
-                        cardKind="installed"
-                        displayName={displayName}
-                        description={description}
-                        iconUrl={resolveHostIconUrl(item, catalogEntry)}
-                        author={validItem?.manifest.author ?? catalogEntry?.author}
-                        version={validItem?.manifest.version}
-                        downloads={catalogEntry?.downloads}
-                        trustTier={catalogEntry?.trustTier}
-                        categories={validItem?.manifest.categories ?? catalogEntry?.categories}
-                        platformBadge={derivePlatformBadge(itemTargets(item), t)}
-                        capabilityBadges={capabilityBadges}
-                        statusDot={statusDot}
-                        update={
-                          validItem && catalogEntry && hasHostCatalogUpdate(validItem, catalogEntry)
-                            ? {
-                                label: t("extensions.updateVersionCue", {
-                                  version: catalogEntry.version.replace(/^v/u, ""),
-                                }),
-                                action: (
-                                  <Button
-                                    variant="primary"
-                                    size="sm"
-                                    disabled={controlsDisabled}
-                                    aria-busy={isUpdating}
-                                    onClick={() => handleUpdate(validItem, catalogEntry)}
-                                  >
-                                    {t(isUpdating ? "extensions.updating" : "extensions.update")}
-                                  </Button>
-                                ),
-                              }
-                            : undefined
-                        }
-                        attention={attention}
-                        busy={isItemBusy}
-                        contentLocale={contentLocale}
-                        t={t}
-                        secondaryAction={
-                          canOpenPage && validItem ? (
-                            <button
-                              type="button"
-                              className={css.openPageButton}
-                              data-action="open-page"
-                              data-extension-id={validItem.id}
-                              disabled={controlsDisabled}
-                              onClick={() => selectPage(validItem)}
-                            >
-                              {t("extensions.page.open")}
-                            </button>
-                          ) : undefined
-                        }
-                        actionControl={
-                          <Switch
-                            label={displayName}
-                            checked={item.enabled}
-                            disabled={controlsDisabled || blocked}
-                            title={blocked ? t("extensions.toggleBlockedInvalid") : undefined}
-                            onChange={(next) => handleToggle(item, next)}
-                          />
-                        }
-                        onOpenDetails={() => {
-                          setModalFeedback(null);
-                          setSelectedRef({ kind: "installed", id: item.id });
-                        }}
-                      />
-                    );
-                  })}
-                </div>
-              );
-              return group.id === "attention" ? (
-                <section key={group.id} className={css.group} data-extension-group="attention">
-                  <div className={css.groupHead}>
-                    <h3 className={css.groupTitle}>{t("extensions.group.attention")}</h3>
-                    <span className={css.groupCount}>{group.items.length}</span>
-                  </div>
-                  {grid}
-                </section>
-              ) : (
-                grid
-              );
-            })}
-          </div>
-        )
       ) : (
-        /* Unified Marketplace Tab (catalog.v2.json — all targets) */
-        <div className={css.marketBody}>
-          {market.error !== null && market.entries.length > 0 && (
-            <div className={css.marketNotice} role="status" data-market-stale="true">
-              <div className={css.marketNoticeCopy}>
-                <IconInfoOutlineRegular size={14} className={css.marketNoticeIcon} />
-                <span>{t("extensions.marketStaleNotice")}</span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={market.loading}
-                onClick={() => void refreshMarket(true)}
-              >
-                {t("extensions.retry")}
-              </Button>
+        <>
+          {/* Host diagnostics banner */}
+          {diagnostics.length > 0 && (
+            <div className={css.banner} data-tone="warning" role="status">
+              <span>{diagnostics.join(" · ")}</span>
             </div>
           )}
 
-          {!market.loaded && (market.loading || market.error === null) ? (
-            <p className={css.hint}>{t("extensions.marketLoading")}</p>
-          ) : market.error !== null && market.entries.length === 0 ? (
-            <div className={css.emptyCard} role="alert">
-              <div className={css.emptyCopy}>
-                <h3 className={css.emptyTitle}>
-                  {t("extensions.marketLoadFailed", {
-                    message: formatManagementError(market.error.cause, t),
-                  })}
-                </h3>
-                <p className={css.emptyDesc}>{t("extensions.marketEmptyDescription")}</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={market.loading}
-                onClick={() => void refreshMarket(true)}
+          {/* Action feedback banner */}
+          {feedback !== null && (
+            <div
+              className={css.banner}
+              data-tone={feedback.tone}
+              role={feedback.tone === "success" ? "status" : "alert"}
+            >
+              <span>{feedback.text}</span>
+              <button
+                type="button"
+                className={css.bannerClose}
+                aria-label={t("extensions.close")}
+                onClick={() => setFeedback(null)}
               >
-                {t("extensions.retry")}
-              </Button>
+                <IconCloseOutlineRegular size={12} />
+              </button>
             </div>
-          ) : market.entries.length === 0 ? (
-            <div className={css.emptyCard}>
-              <div className={css.emptyCopy}>
-                <h3 className={css.emptyTitle}>{t("extensions.marketEmptyTitle")}</h3>
-                <p className={css.emptyDesc}>{t("extensions.marketEmptyDescription")}</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={market.loading}
-                onClick={() => void refreshMarket(true)}
-              >
-                {t("extensions.refresh")}
-              </Button>
-            </div>
-          ) : filteredMarket.length === 0 ? (
-            <div className={css.emptyCard}>
-              <div className={css.emptyCopy}>
-                <h3 className={css.emptyTitle}>{t("extensions.noMatchesTitle")}</h3>
-                <p className={css.emptyDesc}>{t("extensions.noMatchesDescription")}</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setSearchQuery("");
-                  setCapabilityFilter("all");
-                  setSelectedCategory(null);
-                }}
-              >
-                {t("extensions.clearFilters")}
-              </Button>
-            </div>
-          ) : (
-            <div className={css.grid}>
-              {filteredMarket.map((entry) => {
-                const displayName = resolveLocalizedExtensionText(entry.name, contentLocale);
-                const description = resolveOptionalLocalizedText(entry.description, contentLocale);
-                const installed = installedById.get(entry.id);
-                const validInstalled = installed?.state === "valid" ? installed : undefined;
-                const updateAvailable = hasHostCatalogUpdate(installed, entry);
-                const entryAction = pendingById.get(entry.id) ?? null;
-                const isEntryBusy = entryAction !== null;
-                const isInstalling = entryAction === "install";
-                const isUpdating = entryAction === "update";
-                const controlsDisabled = isEntryBusy || recovering;
-                const capabilityBadges = deriveHostCapabilityBadges(catalogCapabilities(entry), t);
+          )}
 
-                const actionButton = !installed ? (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={controlsDisabled}
-                    aria-busy={isInstalling}
-                    onClick={() => handleInstallMarket(entry)}
-                  >
-                    {t(isInstalling ? "extensions.installing" : "extensions.install")}
+          {isInstalledView ? (
+            listView.kind === "loading" ? (
+              <InstalledSkeleton />
+            ) : extensions.length === 0 ? (
+              <div className={css.emptyCard}>
+                <div className={css.emptyCopy}>
+                  <h3 className={css.emptyTitle}>{t("extensions.empty")}</h3>
+                  <p className={css.emptyDesc}>{t("extensions.emptyHint")}</p>
+                </div>
+                <div className={css.emptyActions}>
+                  <Button variant="primary" size="sm" onClick={() => setActiveView("all")}>
+                    {t("extensions.goToMarket")}
                   </Button>
-                ) : updateAvailable && validInstalled ? (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={controlsDisabled}
-                    aria-busy={isUpdating}
-                    onClick={() => handleUpdate(validInstalled, entry)}
-                  >
-                    {t(isUpdating ? "extensions.updating" : "extensions.update")}
-                  </Button>
-                ) : (
                   <Button
                     variant="outline"
                     size="sm"
-                    icon={<InstalledCheckIcon />}
-                    disabled={controlsDisabled}
                     onClick={() => {
-                      setModalFeedback(null);
-                      setSelectedRef({ kind: "market", id: entry.id });
+                      setInstallError(null);
+                      setInstallOpen(true);
                     }}
                   >
-                    {t("extensions.installedBadge")}
+                    {t("extensions.add")}
                   </Button>
-                );
+                </div>
+              </div>
+            ) : groupedInstalled.length === 0 ? (
+              <div className={css.emptyCard}>
+                <div className={css.emptyCopy}>
+                  <h3 className={css.emptyTitle}>{t("extensions.noMatchesTitle")}</h3>
+                  <p className={css.emptyDesc}>{t("extensions.noMatchesDescription")}</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setCapabilityFilter("all");
+                  }}
+                >
+                  {t("extensions.clearFilters")}
+                </Button>
+              </div>
+            ) : (
+              <div className={css.sections}>
+                {groupedInstalled.map((group) => (
+                  <section key={group.id} className={css.section} data-extension-group={group.id}>
+                    <h2 className={css.sectionTitle}>
+                      <span>
+                        {group.id === "attention"
+                          ? t("extensions.group.attention")
+                          : t("extensions.section.installed")}
+                      </span>
+                      <span className={css.sectionCount}>{group.items.length}</span>
+                    </h2>
+                    <div className={css.rowGrid}>
+                      {group.items.map((item) => renderInstalledCard(item))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )
+          ) : (
+            <div className={css.marketBody}>
+              {market.error !== null && market.entries.length > 0 && (
+                <div className={css.marketNotice} role="status" data-market-stale="true">
+                  <div className={css.marketNoticeCopy}>
+                    <IconInfoOutlineRegular size={14} className={css.marketNoticeIcon} />
+                    <span>{t("extensions.marketStaleNotice")}</span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={market.loading}
+                    onClick={() => void refreshMarket(true)}
+                  >
+                    {t("extensions.retry")}
+                  </Button>
+                </div>
+              )}
 
-                return (
-                  <WebExtensionCard
-                    key={entry.id}
-                    cardKey={`market:${entry.id}`}
-                    extensionId={entry.id}
-                    cardKind="market"
-                    displayName={displayName}
-                    description={description}
-                    iconUrl={entry.icon}
-                    author={entry.author}
-                    version={entry.version}
-                    downloads={entry.downloads}
-                    trustTier={entry.trustTier}
-                    categories={entry.categories}
-                    platformBadge={derivePlatformBadge(entry.targets, t)}
-                    capabilityBadges={capabilityBadges}
-                    busy={isEntryBusy}
-                    contentLocale={contentLocale}
-                    t={t}
-                    actionControl={actionButton}
-                    onOpenDetails={() => {
-                      setModalFeedback(null);
-                      setSelectedRef({ kind: "market", id: entry.id });
+              {!market.loaded && (market.loading || market.error === null) ? (
+                <MarketSkeleton />
+              ) : market.error !== null && market.entries.length === 0 ? (
+                <div className={css.emptyCard} role="alert">
+                  <div className={css.emptyCopy}>
+                    <h3 className={css.emptyTitle}>
+                      {t("extensions.marketLoadFailed", {
+                        message: formatManagementError(market.error.cause, t),
+                      })}
+                    </h3>
+                    <p className={css.emptyDesc}>{t("extensions.marketEmptyDescription")}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={market.loading}
+                    onClick={() => void refreshMarket(true)}
+                  >
+                    {t("extensions.retry")}
+                  </Button>
+                </div>
+              ) : market.entries.length === 0 ? (
+                <div className={css.emptyCard}>
+                  <div className={css.emptyCopy}>
+                    <h3 className={css.emptyTitle}>{t("extensions.marketEmptyTitle")}</h3>
+                    <p className={css.emptyDesc}>{t("extensions.marketEmptyDescription")}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={market.loading}
+                    onClick={() => void refreshMarket(true)}
+                  >
+                    {t("extensions.refresh")}
+                  </Button>
+                </div>
+              ) : filteredMarket.length === 0 ? (
+                <div className={css.emptyCard}>
+                  <div className={css.emptyCopy}>
+                    <h3 className={css.emptyTitle}>{t("extensions.noMatchesTitle")}</h3>
+                    <p className={css.emptyDesc}>{t("extensions.noMatchesDescription")}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setCapabilityFilter("all");
+                      setActiveView("all");
                     }}
-                  />
-                );
-              })}
+                  >
+                    {t("extensions.clearFilters")}
+                  </Button>
+                </div>
+              ) : (
+                <div className={css.sections}>
+                  {featuredEntries.length > 0 && (
+                    <section className={css.section} data-market-section="featured">
+                      <h2 className={css.sectionTitle}>
+                        <span>{t("extensions.section.featured")}</span>
+                        <span className={css.sectionCount}>{featuredEntries.length}</span>
+                      </h2>
+                      <div className={css.featuredGrid}>
+                        {featuredEntries.map((entry) => renderMarketCard(entry, "featured"))}
+                      </div>
+                    </section>
+                  )}
+
+                  {communityEntries.length > 0 && (
+                    <section className={css.section} data-market-section="community">
+                      <h2 className={css.sectionTitle}>
+                        <span>
+                          {selectedCategory !== null
+                            ? categoryLabelForLocale(selectedCategory, contentLocale)
+                            : t("extensions.section.community")}
+                        </span>
+                        <span className={css.sectionCount}>{communityEntries.length}</span>
+                      </h2>
+                      <div className={css.rowGrid}>
+                        {communityEntries.map((entry) => renderMarketCard(entry, "row"))}
+                      </div>
+                    </section>
+                  )}
+                </div>
+              )}
             </div>
           )}
-        </div>
+        </>
       )}
 
       <InstallWebExtensionDialog

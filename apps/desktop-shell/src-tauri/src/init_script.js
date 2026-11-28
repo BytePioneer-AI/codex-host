@@ -51,7 +51,11 @@ function __codexhostDesktopShellInit(config) {
   let currentWinTitlebarHeight = 36;
   const zoomListeners = new Set();
 
+  let shellHidden = false;
+  let visibilityRevision = -1;
+
   let applyZoomCssVar = () => {};
+  let applyWindowHiddenAttr = () => {};
   let showZoomToast = () => {};
 
   const normalizeZoomState = (raw) => {
@@ -106,7 +110,8 @@ function __codexhostDesktopShellInit(config) {
 
   if (isEmbeddedPage) {
     window.__codexhostShell = Object.freeze({
-      chooseSurface: (surface) => invoke("choose_surface", { surface }),
+      chooseSurface: (surface, remember) =>
+        invoke("choose_surface", { surface, remember: Boolean(remember) }),
       retry: () => invoke("retry"),
       openConsole: () => invoke("open_console"),
       getState: () => invoke("get_state"),
@@ -129,6 +134,120 @@ function __codexhostDesktopShellInit(config) {
       };
     },
   });
+
+  const applyShellHidden = (hidden, revision) => {
+    const parsedRevision =
+      typeof revision === "number" && Number.isFinite(revision) ? revision : null;
+    if (parsedRevision !== null) {
+      if (parsedRevision < visibilityRevision) return;
+      visibilityRevision = parsedRevision;
+    }
+    const nextHidden = Boolean(hidden);
+    const changed = nextHidden !== shellHidden;
+    shellHidden = nextHidden;
+    window.__codexhostWindowHidden = shellHidden;
+    applyWindowHiddenAttr();
+    if (changed) {
+      try {
+        window.dispatchEvent(
+          new CustomEvent("codexhost:window-hidden-change", {
+            detail: { hidden: shellHidden },
+          }),
+        );
+      } catch {}
+    }
+  };
+
+  const syncVisibilityFromShell = async () => {
+    try {
+      const raw = await invoke("window_visibility_get");
+      if (!raw || typeof raw !== "object") return;
+      applyShellHidden(raw.hidden, raw.revision);
+    } catch {}
+  };
+
+  window.__codexhostWindowHidden = false;
+  window.__codexhostSetWindowHidden = (hidden, revision) => {
+    applyShellHidden(hidden, revision);
+  };
+
+  if (!isEmbeddedPage) {
+    const notificationClickListeners = new Set();
+    let pendingNotificationClick = null;
+
+    const normalizePermission = (value) =>
+      value === "granted" || value === "denied" || value === "prompt" || value === "unsupported"
+        ? value
+        : "unsupported";
+
+    const dispatchNotificationClick = (payload) => {
+      const normalized =
+        payload &&
+        typeof payload === "object" &&
+        typeof payload.sessionId === "string" &&
+        payload.sessionId.length > 0
+          ? { sessionId: payload.sessionId }
+          : {};
+      try {
+        window.dispatchEvent(
+          new CustomEvent("codexhost://notification-click", { detail: normalized }),
+        );
+      } catch {}
+      if (notificationClickListeners.size === 0) {
+        pendingNotificationClick = normalized;
+        return;
+      }
+      for (const listener of [...notificationClickListeners]) {
+        try {
+          listener(normalized);
+        } catch {}
+      }
+    };
+
+    window.__codexhostDispatchNotificationClick = dispatchNotificationClick;
+    window.__codexhostNotifications = Object.freeze({
+      getState: async () => {
+        const raw = await invoke("notification_get_state");
+        return {
+          enabled: Boolean(raw?.enabled),
+          permission: normalizePermission(raw?.permission),
+        };
+      },
+      requestPermission: async () =>
+        normalizePermission(await invoke("notification_request_permission")),
+      setEnabled: async (enabled) =>
+        Boolean(await invoke("notification_set_enabled", { enabled: Boolean(enabled) })),
+      send: async (payload) =>
+        Boolean(
+          await invoke("notification_send", {
+            payload: {
+              title: String(payload?.title ?? ""),
+              body: String(payload?.body ?? ""),
+              tag: typeof payload?.tag === "string" ? payload.tag : null,
+              sessionId: typeof payload?.sessionId === "string" ? payload.sessionId : null,
+              kind: typeof payload?.kind === "string" ? payload.kind : null,
+            },
+          }),
+        ),
+      onClick: (listener) => {
+        if (typeof listener !== "function") return () => {};
+        notificationClickListeners.add(listener);
+        if (pendingNotificationClick !== null) {
+          const queued = pendingNotificationClick;
+          pendingNotificationClick = null;
+          try {
+            listener(queued);
+          } catch {}
+        }
+        return () => {
+          notificationClickListeners.delete(listener);
+        };
+      },
+      openSystemSettings: async () => {
+        await invoke("notification_open_settings");
+      },
+    });
+  }
 
   if (isEmbeddedPage) {
     let deadKey = false;
@@ -314,6 +433,27 @@ function __codexhostDesktopShellInit(config) {
     }, 1350);
   };
 
+  applyWindowHiddenAttr = () => {
+    const root = document.documentElement;
+    if (!root) return;
+    if (shellHidden || Boolean(document.hidden)) {
+      root.setAttribute("data-codexhost-window-hidden", "");
+    } else {
+      root.removeAttribute("data-codexhost-window-hidden");
+    }
+  };
+
+  const ensureEmbeddedHiddenAnimationStyle = () => {
+    if (!isEmbeddedPage) return;
+    const container = document.head || document.documentElement;
+    if (!container || document.getElementById("codexhost-hidden-animation-gate")) return;
+    const style = document.createElement("style");
+    style.id = "codexhost-hidden-animation-gate";
+    style.textContent =
+      "html[data-codexhost-window-hidden],html[data-codexhost-window-hidden] *,html[data-codexhost-window-hidden] *::before,html[data-codexhost-window-hidden] *::after{animation-play-state:paused!important;}";
+    container.appendChild(style);
+  };
+
   const applyRootAttributes = () => {
     const root = document.documentElement;
     if (!root) return false;
@@ -325,10 +465,16 @@ function __codexhostDesktopShellInit(config) {
       root.setAttribute("data-platform", "darwin");
     }
     applyZoomCssVar(currentZoomState.percent);
+    applyWindowHiddenAttr();
+    ensureEmbeddedHiddenAnimationStyle();
     return true;
   };
 
   void syncZoomFromShell();
+  void syncVisibilityFromShell();
+  if (isEmbeddedPage) {
+    document.addEventListener("visibilitychange", applyWindowHiddenAttr);
+  }
 
   // Initialization scripts run at document_start before <html> is parsed in
   // both WKWebView and WebView2, so watch for documentElement creation.

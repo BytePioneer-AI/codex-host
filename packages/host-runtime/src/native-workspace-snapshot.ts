@@ -53,6 +53,18 @@ export async function readNativeWorkspaceSnapshot(
       projects.flatMap((id) => projectId(id) ?? []),
     ]),
   );
+  const rawPinnedProjects = state["pinned-project-ids"];
+  const pinnedProjects = Array.isArray(rawPinnedProjects)
+    ? [
+        ...new Set(
+          rawPinnedProjects.flatMap((id) => {
+            if (typeof id !== "string" || id === "") return [];
+            const resolved = projectId(id);
+            return resolved ? [resolved] : [];
+          }),
+        ),
+      ]
+    : undefined;
   return clientWorkspaceSnapshotSchema.parse({
     projects: nativeProjects ?? desktopProjectDefinitions(state, scope),
     ...(nativeProjects ? { nativeProjects: true } : {}),
@@ -67,6 +79,7 @@ export async function readNativeWorkspaceSnapshot(
     projectless: state["projectless-thread-ids"] ?? [],
     pinned: [],
     ...(Object.keys(sectionProjects).length > 0 ? { sectionProjects } : {}),
+    ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
   });
 }
 
@@ -79,7 +92,8 @@ const PROJECT_ITEM_PREFIX = "codex:project:";
  * project members in the signed-in owner's renderer atom `sidebar-custom-sections-v3`, one
  * entry per account, and links each logical section to its official section through
  * `hostSectionIds.local`. That atom is private and versioned, so a missing or reshaped atom
- * yields no project sections instead of failing the project snapshot.
+ * yields no project sections instead of failing the project snapshot. A known section with
+ * no local project members has an explicit empty list.
  */
 function desktopSectionProjects(state: Record<string, unknown>): Record<string, string[]> {
   const record = (value: unknown): value is Record<string, unknown> =>
@@ -87,7 +101,7 @@ function desktopSectionProjects(state: Record<string, unknown>): Record<string, 
   const owner = state["electron-renderer-content-owner"];
   const atoms = typeof owner === "string" ? state[`electron-owner-atoms:${owner}`] : undefined;
   const accounts = record(atoms) ? atoms["sidebar-custom-sections-v3"] : undefined;
-  const sections: Record<string, string[]> = {};
+  const sections: Record<string, string[]> = Object.create(null);
   if (!record(accounts)) return sections;
   for (const account of Object.values(accounts)) {
     if (!record(account) || !Array.isArray(account.sections)) continue;
@@ -95,7 +109,8 @@ function desktopSectionProjects(state: Record<string, unknown>): Record<string, 
       if (!record(section) || !record(section.hostSectionIds) || !Array.isArray(section.itemKeys))
         continue;
       const id = section.hostSectionIds.local;
-      if (typeof id !== "string" || id === "" || Object.hasOwn(sections, id)) continue;
+      // Prefer the first nonempty project list when accounts repeat an official section.
+      if (typeof id !== "string" || id === "" || sections[id]?.length) continue;
       const projects = section.itemKeys.flatMap((key) =>
         typeof key === "string" &&
         key.startsWith(PROJECT_ITEM_PREFIX) &&
@@ -103,7 +118,13 @@ function desktopSectionProjects(state: Record<string, unknown>): Record<string, 
           ? [key.slice(PROJECT_ITEM_PREFIX.length)]
           : [],
       );
-      if (projects.length > 0) sections[id] = projects;
+      if (
+        projects.length > 0 ||
+        section.itemKeys.every(
+          (key) => typeof key === "string" && key !== "" && key !== PROJECT_ITEM_PREFIX,
+        )
+      )
+        sections[id] = projects;
     }
   }
   return sections;

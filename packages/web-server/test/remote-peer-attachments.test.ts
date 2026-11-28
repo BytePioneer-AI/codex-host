@@ -448,6 +448,9 @@ it("projector never reads local filesystem even when a matching local file exist
 });
 
 it("serveFile enforces image-only proxying, security headers, 4xx passthrough, and 502 on upstream failure", async (t) => {
+  const largeImage = Buffer.alloc(192 * 1024);
+  PNG_BYTES.copy(largeImage);
+  const remaining = Promise.withResolvers<undefined>();
   const remotePeer = await startMockServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const targetPath = url.searchParams.get("path");
@@ -460,6 +463,16 @@ it("serveFile enforces image-only proxying, security headers, 4xx passthrough, a
       });
       res.end(req.method === "HEAD" ? undefined : PNG_BYTES);
       return;
+    }
+    if (targetPath === "/streamed.png") {
+      res.writeHead(200, {
+        "content-type": "image/png",
+        "content-length": String(largeImage.length),
+      });
+      res.write(largeImage.subarray(0, 128 * 1024));
+      return remaining.promise
+        .then(() => res.end(largeImage.subarray(128 * 1024)))
+        .then(() => undefined);
     }
     if (targetPath === "/html-200") {
       res.writeHead(200, { "content-type": "text/html" }).end("<script>alert(1)</script>");
@@ -512,12 +525,24 @@ it("serveFile enforces image-only proxying, security headers, 4xx passthrough, a
   );
   assert.equal(okGet.status, 200);
   assert.equal(okGet.headers.get("content-type"), "image/png");
-  assert.equal(okGet.headers.get("cache-control"), "private, no-store");
+  assert.equal(okGet.headers.get("cache-control"), "private, max-age=300, must-revalidate");
+  assert.equal(okGet.headers.get("etag"), null); // Older Peer does not send a validator.
   assert.equal(okGet.headers.get("x-content-type-options"), "nosniff");
   assert.equal(okGet.headers.get("content-security-policy"), "sandbox; default-src 'none'");
   assert.equal(okGet.headers.get("set-cookie"), null);
   assert.equal(okGet.headers.get("x-remote-secret"), null);
   assert.deepEqual(Buffer.from(await okGet.arrayBuffer()), PNG_BYTES);
+
+  // The Hub forwards checked bytes before it receives the entire image.
+  let streamed: Response;
+  try {
+    streamed = await fetch(`${proxyServer.origin}/?threadId=t1&path=/streamed.png`);
+    assert.equal(streamed.status, 200);
+    assert.equal(streamed.headers.get("content-length"), String(largeImage.length));
+  } finally {
+    remaining.resolve(undefined);
+  }
+  assert.deepEqual(Buffer.from(await streamed.arrayBuffer()), largeImage);
 
   // 200 HEAD
   const okHead = await fetch(
@@ -541,6 +566,7 @@ it("serveFile enforces image-only proxying, security headers, 4xx passthrough, a
       `${proxyServer.origin}/?${new URLSearchParams({ threadId: "t1", path })}`,
     );
     assert.equal(res.status, 502);
+    assert.equal(res.headers.get("cache-control"), "private, no-store");
     const body = await res.text();
     assert.equal(body.includes("<script>"), false);
   }
@@ -568,6 +594,18 @@ it("serveFile enforces image-only proxying, security headers, 4xx passthrough, a
     `${proxyServer.origin}/?${new URLSearchParams({ mode: "dead", threadId: "t1", path: "/ok.png" })}`,
   );
   assert.equal(offline.status, 502);
+});
+
+it("reports peerFetch request and stream handshake timeouts rather than an offline Peer", async (t) => {
+  const slowPeer = await startMockServer(() => {});
+  t.after(() => slowPeer.close());
+  const { record } = makePeer(slowPeer.origin);
+  for (const stream of [false, true]) {
+    await assert.rejects(peerFetch(record, "/api/ch/v1/events", { timeoutMs: 50, stream }), {
+      code: "remote/timeout",
+      details: { errorType: stream ? "AbortError" : "TimeoutError" },
+    });
+  }
 });
 
 it("overwrites uppercase Authorization header in peerFetch, maps JSON 404/401/403 via httpStatus, and rejects chunked oversized streams", async (t) => {

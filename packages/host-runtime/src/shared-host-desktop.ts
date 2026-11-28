@@ -20,10 +20,7 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import type { HostReleaseAnnouncement } from "./release-announcement.js";
-import {
-  isDesktopContextVariable,
-  withoutDesktopToolContext,
-} from "./desktop-context-environment.js";
+import { isDesktopContextVariable, withoutDesktopContext } from "./desktop-context-environment.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
  * cannot change the service's data root, native account home or execution owner. */
@@ -57,7 +54,7 @@ function desktopContext(
   return {
     arguments: envelope.arguments as string[],
     environment: {
-      ...withoutDesktopToolContext(base),
+      ...withoutDesktopContext(base),
       ...context,
       CODEXHOST_DATA_DIR: base.CODEXHOST_DATA_DIR,
       CODEX_HOME: base.CODEX_HOME,
@@ -149,6 +146,7 @@ export function sharedHostDesktop(
         if (attachment.signal.aborted) return 0;
         host = createHost();
         options.connected.add(host);
+        void options.hostExtensions?.seedDefaultDesktopExtensions(undefined, environment);
         running = host.run();
         options.running.add(running);
         return await running;

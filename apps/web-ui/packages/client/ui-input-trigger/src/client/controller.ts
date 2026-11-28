@@ -128,7 +128,14 @@ export class InputTriggerController {
   private dismissed: DismissedHit | null = null;
   /** Whether the open menu was reached by a drill pick; cleared with the menu. */
   private drilled = false;
-  private fetch: AbortController | null = null;
+  /** Source exclusively owning the open menu after a drillExclusive descent. */
+  private scopedSource: string | null = null;
+  /** True while settle() is executing a drill transition so close does not reset source drill state. */
+  private drilling = false;
+  private readonly sourceFetches = new Map<string, AbortController>();
+  private readonly pendingInvalidations = new Set<InputTriggerSource>();
+  private invalidationScheduled = false;
+  private invalidationToken = 0;
   private disposed = false;
   private menuEpoch: object = {};
   /** Per-source lexicon unsubscribers (sources without the hook never enter). */
@@ -202,7 +209,7 @@ export class InputTriggerController {
       prev.hit.span.end === hit.span.end;
     this.hit = hit;
     if (same) return;
-    const roster = this.deps.roster.sources(hit.trigger);
+    const roster = this.menuSources(hit);
     if (roster.length === 0) {
       this.stopFetch();
       this.reduce({ type: "close" });
@@ -317,6 +324,24 @@ export class InputTriggerController {
       }
       case "down": {
         this.reduce({ type: "move", dir: 1 });
+        return "consumed";
+      }
+      case "right": {
+        if (state.highlight === null) return "pass";
+        const group = state.groups.find((g) => g.source === state.highlight?.source);
+        if (group === undefined || group.status !== "ready") return "pass";
+        const item = group.items[state.highlight.index];
+        if (item?.drill !== true) return "pass";
+        this.pick(state.highlight.source, state.highlight.index, "drill");
+        return "consumed";
+      }
+      case "left": {
+        if (this.scopedSource === null || this.hit === null || this.hit.query !== "") return "pass";
+        const trail = this.headers.getSnapshot().get(this.scopedSource);
+        if (!trail || trail.length < 2) return "pass";
+        const parentIndex = trail.length - 2;
+        if (trail[parentIndex]?.current === true) return "pass";
+        this.pickCrumb(this.scopedSource, parentIndex);
         return "consumed";
       }
       case "escape":
@@ -467,6 +492,9 @@ export class InputTriggerController {
     ) {
       this.reduce({ type: "source-failed", generation: state.generation, source: source.name });
     }
+    this.sourceFetches.get(source.name)?.abort();
+    this.sourceFetches.delete(source.name);
+    this.pendingInvalidations.delete(source);
     this.lexiconOffs.get(source)?.();
     this.lexiconOffs.delete(source);
     if (source.lexicon !== undefined) this.refreshLexicon();
@@ -499,6 +527,7 @@ export class InputTriggerController {
     if (this.disposed || !this.menu.getSnapshot().open || this.hit === null) return;
     const roster = this.menuSources(this.hit);
     if (roster.length === 0) return;
+    this.refreshHeaders(this.hit, roster);
     this.fetchCandidates(this.hit, roster);
   }
 
@@ -517,12 +546,23 @@ export class InputTriggerController {
   /** Launcher membership is independent of a source's typed trigger aliases. */
   private menuSources(hit: TriggerHit): readonly InputTriggerSource[] {
     const launcher = this.launcher.getSnapshot();
-    if (launcher === null) return this.deps.roster.sources(hit.trigger);
-    const owner = this.deps.roster.sources(hit.trigger).find((source) => source.name === launcher);
-    return this.deps.roster
-      .all()
-      .filter((source) => source === owner || source.launcher === launcher)
-      .sort((a, b) => (a.launcherOrder ?? a.order ?? 0) - (b.launcherOrder ?? b.order ?? 0));
+    const base =
+      launcher === null
+        ? this.deps.roster.sources(hit.trigger)
+        : (() => {
+            const owner = this.deps.roster
+              .sources(hit.trigger)
+              .find((source) => source.name === launcher);
+            return this.deps.roster
+              .all()
+              .filter((source) => source === owner || source.launcher === launcher)
+              .sort(
+                (a, b) => (a.launcherOrder ?? a.order ?? 0) - (b.launcherOrder ?? b.order ?? 0),
+              );
+          })();
+    if (this.scopedSource === null) return base;
+    const scoped = base.find((source) => source.name === this.scopedSource);
+    return scoped ? [scoped] : base;
   }
 
   /** Scope teardown: close and abort (the service deletes the map entry). */
@@ -602,19 +642,31 @@ export class InputTriggerController {
           !this.menuSources(hit).includes(source)
         )
           return;
-        // Let every source process the same invalidation before rebuilding the
-        // open menu, so one source cannot contribute its previous catalog.
+        // Coalesce same-turn invalidations into a single microtask and refetch
+        // only the sources that actually invalidated.
+        this.pendingInvalidations.add(source);
+        if (this.invalidationScheduled) return;
+        this.invalidationScheduled = true;
+        const token = ++this.invalidationToken;
         const epoch = this.menuEpoch;
         void Promise.resolve().then(() => {
+          if (this.invalidationToken !== token) return;
+          this.invalidationScheduled = false;
+          const dirty = [...this.pendingInvalidations];
+          this.pendingInvalidations.clear();
           const current = this.hit;
           if (
             this.disposed ||
             current === null ||
             this.menuEpoch !== epoch ||
-            !this.menu.getSnapshot().open
+            !this.menu.getSnapshot().open ||
+            dirty.length === 0
           )
             return;
-          this.fetchCandidates(current, this.menuSources(current));
+          const activeRoster = this.menuSources(current);
+          const targets = activeRoster.filter((candidate) => dirty.includes(candidate));
+          if (targets.length === 0) return;
+          this.fetchSourceCandidates(current, targets);
         });
       }),
     );
@@ -623,11 +675,17 @@ export class InputTriggerController {
   /** Launch the candidate fetch for one hit generation, superseding the previous one. */
   private fetchCandidates(hit: TriggerHit, roster: readonly InputTriggerSource[]): void {
     this.stopFetch();
-    const controller = new AbortController();
-    this.fetch = controller;
+    this.fetchSourceCandidates(hit, roster);
+  }
+
+  /** Fetch candidates for the given sources, aborting only prior requests for those same sources. */
+  private fetchSourceCandidates(hit: TriggerHit, sources: readonly InputTriggerSource[]): void {
     const generation = this.menu.getSnapshot().generation;
     const projection = this.project();
-    for (const source of roster) {
+    for (const source of sources) {
+      this.sourceFetches.get(source.name)?.abort();
+      const controller = new AbortController();
+      this.sourceFetches.set(source.name, controller);
       void source
         .candidates(projection, {
           menuEpoch: this.menuEpoch,
@@ -640,10 +698,16 @@ export class InputTriggerController {
         })
         .then(
           (items) => {
+            if (this.sourceFetches.get(source.name) === controller) {
+              this.sourceFetches.delete(source.name);
+            }
             if (controller.signal.aborted) return;
             this.reduce({ type: "source-settled", generation, source: source.name, items });
           },
           (error: unknown) => {
+            if (this.sourceFetches.get(source.name) === controller) {
+              this.sourceFetches.delete(source.name);
+            }
             if (controller.signal.aborted) return;
             console.error(`[ui-input-trigger] source "${source.name}" candidates failed:`, error);
             this.reduce({ type: "source-failed", generation, source: source.name });
@@ -653,8 +717,11 @@ export class InputTriggerController {
   }
 
   private stopFetch(): void {
-    this.fetch?.abort();
-    this.fetch = null;
+    for (const controller of this.sourceFetches.values()) controller.abort();
+    this.sourceFetches.clear();
+    this.pendingInvalidations.clear();
+    this.invalidationScheduled = false;
+    this.invalidationToken += 1;
   }
 
   /**
@@ -685,6 +752,24 @@ export class InputTriggerController {
       span: hit.span,
     });
     if (outcome === "refresh") {
+      const prevScoped = this.scopedSource;
+      if (action === "drill") {
+        const activeHeader = src.header?.(this.project(), {
+          query: hit.query,
+          quoted: hit.quoted,
+          drilled: true,
+        });
+        const hasHeader = activeHeader !== undefined && activeHeader.length > 0;
+        this.drilled = hasHeader;
+        if (src.drillExclusive === true) {
+          this.scopedSource = hasHeader ? src.name : null;
+        }
+      }
+      if (this.scopedSource !== prevScoped) {
+        const roster = this.menuSources(hit);
+        this.menu.set(seedGroups(this.menu.getSnapshot(), roster));
+        this.reduce({ type: "hit", hit });
+      }
       this.refreshOpenMenu();
       return;
     }
@@ -694,17 +779,38 @@ export class InputTriggerController {
     // surface of its own does not bring the menu back when that surface closes
     // and the caret returns.
     if (action === "pick") this.rememberDismissed();
-    this.reduce({ type: "close" });
-    // Claimed before the edit, and after the close above so the reducer's own
-    // teardown cannot clear it: the input may apply the descent through a
-    // synchronous editor commit that re-enters track(), and the header and
-    // candidate requests raised there read this flag. A refused edit (stale
-    // draft revision, or an unmappable span) mutates nothing and so reaches
-    // no re-entry, which is why withdrawing the claim afterwards still keeps
-    // a header off a draft nobody descended into — one that would name a
-    // directory while hiding the locations its rows still need.
-    this.drilled = action === "drill";
-    if (!this.execute(outcome, hit.span)) this.drilled = false;
+    const nextScoped =
+      action === "drill" && src.drillExclusive === true
+        ? (() => {
+            const activeHeader = src.header?.(this.project(), {
+              query: "",
+              quoted: false,
+              drilled: true,
+            });
+            return activeHeader !== undefined && activeHeader.length > 0 ? src.name : null;
+          })()
+        : null;
+    this.drilling = action === "drill";
+    try {
+      this.reduce({ type: "close" });
+      // Claimed before the edit, and after the close above so the reducer's own
+      // teardown cannot clear it: the input may apply the descent through a
+      // synchronous editor commit that re-enters track(), and the header and
+      // candidate requests raised there read this flag. A refused edit (stale
+      // draft revision, or an unmappable span) mutates nothing and so reaches
+      // no re-entry, which is why withdrawing the claim afterwards still keeps
+      // a header off a draft nobody descended into — one that would name a
+      // directory while hiding the locations its rows still need.
+      this.drilled = action === "drill" && (src.drillExclusive !== true || nextScoped !== null);
+      this.scopedSource = nextScoped;
+      if (!this.execute(outcome, hit.span)) {
+        this.drilled = false;
+        this.scopedSource = null;
+        if (action === "drill") src.onClose?.(this.project());
+      }
+    } finally {
+      this.drilling = false;
+    }
   }
 
   /** Re-poll every header-bearing source in the hit roster and publish their crumbs. */
@@ -768,6 +874,11 @@ export class InputTriggerController {
     if (next.open) return;
     this.clearLauncher();
     this.drilled = false;
+    this.scopedSource = null;
     this.setHeaders(new Map());
+    if (cur.open && !this.drilling) {
+      const projection = this.project();
+      for (const src of this.deps.roster.all()) src.onClose?.(projection);
+    }
   }
 }

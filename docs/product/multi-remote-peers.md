@@ -6,7 +6,7 @@
 
 - **命名空间隔离**：Peer 聚合主机使用 `remote-peer:<peerId>` 作为 `hostId`，与 Codex Desktop 现有的 `remote-ssh*` / `remote-control:*` 远程主机完全隔离。两类远程主机通过 `createCompositeRemoteCall` 并存，Codex Desktop 未启动时不影响 Peer 聚合。
 - **单跳聚合、防环路**：被连接节点通过 `GET /api/peer/v1/manifest` 仅导出其本机非远端工作区（`!w.remote`），因此两台主机之间可以双向互连而不产生递归环路。
-- **分层复用读路径与事件驱动同步**：每个启用的 Peer 由 `PeerChHostClient`（实现 `ChHostClient` 接口，底层走版本化 `/api/ch/v1/*`）与 `PeerThreadSource` 组合直连同款的 `ChRealtime`、`ChThreadHistory`（`hostThreadId` 隔离原生与展示 ID、`knownTurns` 指纹增量、首屏 5 个 Turn 与按需翻页）、`ChInteractions`（统一承接同步/异步提问、外部 Harness 审批、原生审批动作与 `nativeInteractionError` 投影，断线或换代时及时清理）、`ChHarnessCatalog`（按节点与 epoch 隔离缓存，收到 `harness-inspection-changed` 或 `hello` 才失效）、`readSessionPage`（`codexhost/thread/catalog/read`，旧远端 `-32601` 时回退 `thread/list`）与 `ChThreadTree`（同节点委派树与归档级联，`tree/read` 失败时静默降级）；同时支持远端会话 `codexhost/turnDiffs`、`session/search` 全局搜索合流与 `thread://<id>?hostId=remote-peer:...` 引用跳转。
+- **分层复用读路径与事件驱动同步**：每个启用的 Peer 由 `PeerChHostClient`（实现 `ChHostClient` 接口，底层走版本化 `/api/ch/v1/*`）与 `PeerThreadSource` 组合直连同款的 `ChRealtime`、`ChThreadHistory`（`hostThreadId` 隔离原生与展示 ID、`knownTurns` 指纹增量、首屏 5 个 Turn 与按需翻页）、`ChInteractions`（统一承接同步/异步提问、外部 Harness 审批、原生审批动作与 `nativeInteractionError` 投影，断线或换代时及时清理）、`ChHarnessCatalog`（按节点与 epoch 隔离缓存，收到 `harness-inspection-changed` 或 `hello` 才失效）、`readSessionPage`（`codexhost/thread/catalog/read`，旧远端 `-32601` 时回退 `thread/list`）与 `ChThreadTree`（同节点委派树与归档级联，`tree/read` 失败时静默降级）；同时支持远端会话置顶双向同步（`workspace/pinSession` / `unpinSession` 透传到远端 `codexhost/thread/pins/set`，远端 `pins/list` 与 `codexhost/thread/pins/changed` 聚合进 Hub 置顶区，旧 Peer 读路径静默降级、离线返回 `remote/offline`；Codex Desktop 远程会话与所有远程会话的 Fork 入口在前端隐藏）、`codexhost/turnDiffs`、`session/search` 全局搜索合流与 `thread://<id>?hostId=remote-peer:...` 引用跳转。
   - 事件流直接驱动会话内容、用量与目录刷新，取消周期性全量轮询；流式文本与工具增量帧不触发目录刷新。
   - 为事件流读取设置 45 秒空闲读超时（服务端每 15 秒发送心跳换行），半开断连时自动中止并走指数退避重连。
 - **节点作用域 Harness 图标**：本机新增 `GET /harness-icons/peer/<peerId>/<harnessId>` 与 `GET /harness-icons/peer/<peerId>/presentation.json`（从对应 Peer 缓存目录提供并设置 `Content-Security-Policy: sandbox; default-src 'none'`），Codex 始终使用本机图标，远端离线或缺失时退回通用图标。
@@ -18,7 +18,8 @@
 
 所有端点受 `web-server` 既有认证（Bearer Token / Session Cookie）与同源校验保护；异常统一映射为安全的客户端错误信息，不透传宿主绝对路径或内部错误栈：
 
-- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机持久化稳定节点标识 `nodeId`（保存在数据目录 `node-identity-v1.json`，权限 `0600`）、本机已启用 Peer 的匿名节点映射 `peerNodes`（`remote-peer:<peerId> -> nodeId`，最多 128 项，不含名称、URL 或 Token；与旧版无此字段的 Peer 向后兼容）、本机工作区清单，以及按实际可用性声明的 `capabilities`（如 `attachments: 1`、`workspaceFiles: 1`、`officePreview: 1`、`delegation: 1`；其中 `delegation: 1` 仅在底层 Host Runtime 支持且未设置 `CODEXHOST_DISABLE_PEER_DELEGATION=1` 时声明）。探测到对方 `nodeId` 与本机相同时拒绝自我配对。
+- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机持久化稳定节点标识 `nodeId`（保存在数据目录 `node-identity-v1.json`，权限 `0600`）、本机已启用 Peer 的匿名节点映射 `peerNodes`（`remote-peer:<peerId> -> nodeId`，最多 128 项，不含名称、URL 或 Token；与旧版无此字段的 Peer 向后兼容）、本机工作区清单，以及按实际可用性声明的 `capabilities`（如 `attachments: 1`、`workspaceFiles: 1`、`officePreview: 1`、`delegation: 1`、`peerPairing: 1`；其中 `delegation: 1` 仅在底层 Host Runtime 支持且未设置 `CODEXHOST_DISABLE_PEER_DELEGATION=1` 时声明，`peerPairing: 1` 在未设置 `CODEXHOST_DISABLE_PEER_PAIRING=1` 时声明）。探测到对方 `nodeId` 与本机相同时拒绝自我配对。
+- `POST /api/peer/v1/peers`：远端互配引入端点，接收已认证 Hub 推送的对端连接信息（`origin`、`token`、`name` 及可选 `color`、`expectedNodeId`），执行含 DNS 解析地址校验与固定 IP 连接的 SSRF 防护、回连探测、防自配对与 `expectedNodeId` 一致性校验后，按稳定 `nodeId` 或规范化 `origin` 幂等写入或按同地址同凭据重新启用（返回 `added` / `updated` / `existing`；若已有记录存在但 `origin`、`token` 或 `nodeId` 冲突则返回 `409` 拒绝静默替换）；可通过 `CODEXHOST_DISABLE_PEER_PAIRING=1` 关闭（返回 `503`）。
 - `GET /api/peer/v1/dirs?path=...`：列出远端目录子文件夹（保留目录名中的空格；空参数回退到远端主目录）。
 - `POST /api/peer/v1/dirs`：在指定父目录下创建新子目录。
 - `POST | PATCH | DELETE /api/peer/v1/workspaces`：在远端节点新增、重命名或移除工作区注册，并返回最新 `manifest`。
@@ -42,20 +43,26 @@
   - 仅当 Peer 已连接且 `manifest.capabilities.attachments === 1` 时开启 Peer 会话与草稿的 `attachmentInput`、`imageLimits` 与 `remoteHost.filePreview`。
   - 仅当 Peer 已连接且 `manifest.capabilities.workspaceFiles === 1`（Office 转换另需 `officePreview === 1`）时放行远端工作区文件预览与下载，并在 `remoteHost` 上分别投影 `workspaceFiles` 与 `officePreview`（前端文件预览面板与文件侧栏在发请求前即按该能力门控，远端会话同时禁用 `@` 文件补全）；旧版 Peer、未提交草稿、离线/禁用 Peer 以及 Codex Desktop 远程会话均返回明确提示，绝不回落到 Hub 本机路径，也不会为读文件创建远端 Thread。
 - **远端路径与渲染隔离**：
-  - 浏览器图片预览走 `GET | HEAD /api/remote-peer/file?sessionId=...&path=...`（强制 `sandbox; default-src 'none'` 与 `nosniff`），上传流经 `/api/session/uploadFileBinary` 直接流式转发到远端，远端路径永不进入本机 `/api/file` 或本机文件系统读取。
+  - 浏览器图片预览走 `GET | HEAD /api/remote-peer/file?sessionId=...&path=...`，远端路径不进入本机 `/api/file` 或文件系统。Hub 和 Peer 均对通过校验的图片响应设置 `sandbox; default-src 'none'`、`nosniff` 和 `private, max-age=300, must-revalidate`，并通过 `ETag` / `If-None-Match` 支持 `304`；错误响应不缓存。Hub 对长度已知且头部通过校验的大图流式转发；无法提前安全校验时保留有大小上限的缓冲读取。
+  - `/api/session/uploadFileBinary` 直接向 Peer 流式转发上传，保留已知合法的 `Content-Length`。单次 Peer 请求超时返回 `remote/timeout`；历史读取失败可单独重试，Peer 在线状态由事件流维护。
   - Hub 拦截远程会话的 `workspaceFiles/*`、`officeToPdf/render`（独立 65s 长超时、JSON 8 MiB 响应上限、上游 `rpcId` 一致性校验、单 Peer / 全局并发限流、流空闲超时与 `AbortSignal` 取消透传）及 `/api/workspace-file/download`、`/api/workspace-file/download-ticket`（签发期 `HEAD` 校验同样绑定浏览器取消信号，ticket 仅绑定 `{ sessionId, path }`、不含 Peer Token，并在实际下载时重验 Peer 状态）；WebSocket `workspaceFiles/changes` 对远程会话返回 `workspace-file/watch-unsupported`，由前端自动降级为静态 `stat` / 手动刷新。
   - 前端 Office 预览对远程会话跳过 Hub 本机 `officeToPdf/generation` 与跨次打开持久化缓存（仅保留同路径并发去重并彻底隔离本机 `local` 缓存），避免 Peer 重启或字体变更后命中旧 PDF；远程会话隐藏「在主机默认应用中打开」「打开所在文件夹」等本机打开入口，且服务端 `session/openWorkspacePath` 强制要求并校验已注册的真实本机会话，拒绝缺失、未知或远程 `sessionId`。
 
 ### Hub 管理 RPC（`codexhost/remote-peers/*`）与安全边界
 
 - **本地配置持久化**：保存在当前 `web-server` 数据目录（`--data` / `CODEXHOST_WEB_DATA`）下的 `remote-peers-v1.json`（POSIX 权限 `0600`）；读取时做 Schema 校验，文件损坏时记录告警并回退为空列表，不阻塞服务启动。Access Token 永远不会通过任何 list/summary RPC 返回给前端。
+- **重复 Peer**：`add` 和 `update` 不会覆盖其他记录。规范化 `origin` 或已知 `nodeId` 与另一条 Peer 记录相同时，返回 `remote/duplicate-peer`，不修改已保存的配置。
 - **权限分级**：
-  - `add`、`update`、`remove`、`test` 涉及修改 Peer 拓扑和触发服务端出站探测，仅允许本机已认证会话（`ctx.auth.local === true`）调用。
+  - `add`、`update`、`remove`、`test`、`syncMesh` 涉及修改 Peer 拓扑、触发服务端出站探测或推送互配凭据，仅允许本机已认证会话（`ctx.auth.local === true`）调用。
   - `list`、`reconnect`、`listDirs`、`createDir`、`createWorkspace`、`renameWorkspace`、`deleteWorkspace` 对所有已认证会话（含移动端与远程 Web）开放。
+- **双向与多机网格互配**：
+  - `add` 支持可选 `pairBack`、`meshPeerIds` 与 `selfOrigin`，在主添加完成后由当前 Hub 作为介绍人并发向目标节点与所选已有节点调用 `POST /api/peer/v1/peers`（按 `public > relay > tailscale-funnel > tailscale-https > lan` 优先级解析本机可共享地址并校验自定义 `selfOrigin` 属于本机已公布地址），互配部分跳过或失败不回滚主添加，结果以凭据脱敏后的逐项 `pairing` 报告返回。
+  - `syncMesh` 支持对已有远端主机按需批量补做双向互配（`includeSelf`）或两两互通（`includeMesh`）；`list` 摘要包含可选 `supportsPeerPairing`、`pairedBack` 与 `linkedPeerIds`（基于对方 `manifest.peerNodes` 与本机已配置远端主机求交得到的跨机出边，不暴露第三方节点信息），`test` 摘要包含 `supportsPeerPairing` 与 `pairedBack`。
 - **SSRF 防护**：默认拒绝回连本机回环地址（`localhost`、`127.0.0.0/8`、`[::1]`）、未指定地址（`0.0.0.0/8`、`::`）以及常见链路本地 / 云元数据地址（`169.254.0.0/16`、`fe80::/10`、`metadata.google.internal`、`metadata.goog`、`fd00:ec2::254`）；仅在显式配置 `CODEXHOST_ALLOW_LOOPBACK_PEERS=1`（本地双节点开发/测试）时放行回环地址。
 
 ## Web 界面入口
 
-- **设置 → 远程访问**：提供「共享本机」与「远程主机」双标签，支持粘贴连接链接或手动填写地址/令牌、测试连接、编辑、重连与移除。
+- **设置 → 远程访问**：提供「共享本机」与「远程主机」双标签，支持粘贴连接链接或手动填写地址/令牌、测试连接、编辑、重连与移除。「添加远程主机」弹窗提供默认不勾选的「双向互通」区块，可按需开启双向互配（支持切换本机共享地址，未开启远程共享时引导前往「共享本机」）及勾选已有主机两两互通；列表页展示「⇄ 双向」标识、单主机快捷「开启双向互通」、头部「一键互通」弹窗、全部成功时自动淡出的单行结果提示（失败/跳过时常驻展开明细），以及列表下方的交互式「连接拓扑」有向图（直观展示本机与各远端主机之间的双向/单向及跨机连通关系，支持节点拖动排版与本地持久化、按需重置、悬停聚焦与流光连线动效）。
 - **新建会话凹陷顶轨**：在空白会话输入框上方提供「工作位置 → 项目」两级搜索选择器，切换远端主机后按该主机过滤项目，并支持直接通过远程目录选择器新建远端项目；若未选项目直接关闭弹窗，自动恢复为当前会话实际所属主机。
-- **侧栏主机筛选、跨主机工作区排序与会话标识**：工作区区头提供按主机与按工作区子集的持久化筛选器；从全局搜索打开位于筛选范围外的远端会话时自动放宽筛选使其可见。侧栏顶层工作区支持跨本机与多个远端主机自由拖拽混排，统一保存在当前 Hub 的 `workspaces.json`（`displayOrder`）而不修改远端节点配置；Peer 断线或禁用时保留原槽位，重连后自动归位，仅在永久移除 Peer 时清理。已开始的远端会话在输入框底栏显示只读主机与工作区标识，断连时展示内联重连条。
+- **侧栏主机筛选、跨主机工作区排序与会话标识**：工作区区头提供按主机与按工作区子集的持久化筛选器；从全局搜索打开位于筛选范围外的远端会话时自动放宽筛选使其可见。侧栏顶层工作区支持跨本机与多个远端主机自由拖拽混排，统一保存在当前 Hub 的 `workspaces.json`（`displayOrder`）而不修改远端节点配置；Peer 断线或禁用时保留原槽位，重连后自动归位，仅在永久移除 Peer 时清理。已开始的远端会话在输入框底栏显示只读主机与工作区标识，断连时展示内联重连条。在已连接的远端 Peer 会话及新建草稿输入框中键入 `@` 时，按该 Peer 自身的 `ChHarnessCatalog` 展示其已就绪的委派 Harness 列表与节点图标（不回落到 Hub 本机目录），选中后按既有 `subagent://codexhost.<harnessId>` 载体发往目标 Peer 并由对端 `host-runtime` 改写为对端本地委派指令。
+- **跨主机 `@` 两级委派菜单**：在支持委派的本机或远端 Peer 会话中输入 `@` / `#` 时，「远程主机」分组列出当前会话所在主机真正可达的其他已配对节点（本机视图列出所有在线且支持委派的 Peer；远端 Peer 会话视图按其 `manifest.peerNodes` 仅列出该 Peer 已互配的本机或其他 Peer）。直接点击或回车选中主机生成 `subagent://codexhost-remote/<hostId>`（仅锁定 `--host`，不限定 Harness）；按 `Tab` / `→` 或点击行尾展开按钮进入二级视图按需查看该主机已就绪的 Harness，选中后生成 `subagent://codexhost-remote/<hostId>/<harnessId>`（同时锁定 `--host` 与 `--harness`）。发往远端 Peer 的消息会在 Hub 出站前按目标 Peer 视角自动翻译 `hostId`，由目标节点的 `host-runtime` 改写为对应跨机委派指令。

@@ -29,7 +29,9 @@
       webErrorFallback: "请稍后重试，或从系统托盘打开诊断控制台。",
       hubLabel: "Host",
       hubSub: "三端会话实时同步",
+      rememberLabel: "记住本次选择",
       footnote: "系统托盘可随时切换窗口或完全退出",
+      footnoteRemembered: "下次将直接打开，随时可在系统托盘切换",
       chooseErrorPrefix: "无法打开所选方式：",
       chooseErrorFallback: "请稍后重试，或从系统托盘打开诊断控制台。",
       reportIssue: "提交 Issue",
@@ -67,7 +69,9 @@
       webErrorFallback: "Please try again or open diagnostics from the system tray.",
       hubLabel: "Host",
       hubSub: "Live 3-client session sync",
+      rememberLabel: "Remember this choice",
       footnote: "Switch windows or quit anytime from the system tray",
+      footnoteRemembered: "Opens directly next time; switch anytime from the system tray",
       chooseErrorPrefix: "Could not open selection: ",
       chooseErrorFallback: "Please try again or open the diagnostic console from the system tray.",
       reportIssue: "Report Issue",
@@ -109,6 +113,7 @@
     version: "",
     platform: "",
     codexDesktopInstalled: params.get("installed") !== "false",
+    rememberChoice: params.get("remember") === "1" || params.get("remember") === "true",
     submittingSurface: null,
     lastAttemptedSurface: "",
     webRunning: false,
@@ -162,6 +167,8 @@
     feedbackText: document.getElementById("feedback-text"),
     feedbackIssueLink: document.getElementById("feedback-issue-link"),
     feedbackIssueLabel: document.getElementById("feedback-issue-label"),
+    rememberToggle: document.getElementById("remember-choice-toggle"),
+    rememberLabel: document.getElementById("remember-choice-label"),
     footnoteText: document.getElementById("onboarding-footnote-text"),
     previewBar: document.getElementById("preview-bar"),
   };
@@ -481,7 +488,11 @@
 
     setText(els.hubLabel, t.hubLabel);
     setText(els.hubSub, t.hubSub);
-    setText(els.footnoteText, t.footnote);
+    setText(els.rememberLabel, t.rememberLabel);
+    if (els.rememberToggle) {
+      els.rememberToggle.setAttribute("aria-checked", state.rememberChoice ? "true" : "false");
+    }
+    setText(els.footnoteText, state.rememberChoice ? t.footnoteRemembered : t.footnote);
 
     var isBusy = state.submittingSurface !== null;
     var nativePending = state.submittingSurface === "native-shell";
@@ -523,6 +534,10 @@
     }
     ui.setHidden(els.webOpenSpinner, !opening);
     ui.setHidden(els.webOpenArrow, opening);
+
+    if (els.rememberToggle) {
+      els.rememberToggle.disabled = isBusy;
+    }
 
     if (els.webCopyBtn) {
       els.webCopyBtn.disabled = webDisabled;
@@ -583,7 +598,7 @@
     if (bridge && typeof bridge.chooseSurface === "function") {
       Promise.resolve()
         .then(function () {
-          return bridge.chooseSurface(surface);
+          return bridge.chooseSurface(surface, state.rememberChoice);
         })
         .catch(function (err) {
           var t = getCopy();
@@ -874,6 +889,15 @@
   }
   if (els.webCopyBtn) {
     els.webCopyBtn.addEventListener("click", handleCopyWebUrl);
+  }
+  if (els.rememberToggle) {
+    els.rememberToggle.addEventListener("click", function () {
+      if (state.submittingSurface !== null) {
+        return;
+      }
+      state.rememberChoice = !state.rememberChoice;
+      render();
+    });
   }
 
   window.addEventListener("resize", layoutBeams);

@@ -18,6 +18,57 @@ const HIGHLIGHT_NAME = "codexhost-response-annotation";
 const HOVER_HIGHLIGHT_NAME = "codexhost-response-annotation-hover";
 const HOVER_HIGHLIGHT_PRIORITY = 1;
 const MARK_HEIGHT = 24;
+const HIGHLIGHT_HIT_TOLERANCE_X = 1;
+const HIGHLIGHT_HIT_TOLERANCE_TOP = 1;
+const HIGHLIGHT_HIT_TOLERANCE_BOTTOM = 2;
+const INTERACTIVE_CLICK_TARGET = [
+  "a",
+  "button",
+  "input",
+  "textarea",
+  "select",
+  "summary",
+  "label",
+  "[contenteditable='true']",
+  "[data-selection-actions]",
+  "[data-code-block-controls]",
+].join(",");
+
+function hitTestAnnotatedRanges(
+  entries: readonly (IndexedAnnotation & { readonly range: Range })[],
+  clientX: number,
+  clientY: number,
+): DraftAttachmentId | null {
+  let bestId: DraftAttachmentId | null = null;
+  let bestSpan = Number.POSITIVE_INFINITY;
+  for (const { annotation, range } of entries) {
+    const rects = range.getClientRects();
+    let hit = false;
+    for (let i = 0; i < rects.length; i += 1) {
+      const rect = rects[i];
+      if (rect === undefined || (rect.width === 0 && rect.height === 0)) continue;
+      if (
+        clientX >= rect.left - HIGHLIGHT_HIT_TOLERANCE_X &&
+        clientX <= rect.right + HIGHLIGHT_HIT_TOLERANCE_X &&
+        clientY >= rect.top - HIGHLIGHT_HIT_TOLERANCE_TOP &&
+        clientY <= rect.bottom + HIGHLIGHT_HIT_TOLERANCE_BOTTOM
+      ) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) continue;
+    const span =
+      annotation.anchor === undefined
+        ? Number.POSITIVE_INFINITY
+        : annotation.anchor.end - annotation.anchor.start;
+    if (bestId === null || span < bestSpan) {
+      bestId = annotation.id;
+      bestSpan = span;
+    }
+  }
+  return bestId;
+}
 
 export function lastSelectionRect(range: Range): DOMRect | undefined {
   const rects = range.getClientRects();
@@ -73,6 +124,13 @@ export function ResponseAnnotationMarks({
   labels: ResponseAnnotationLabels;
 }) {
   const annotations = useInput((state) => state.responseAnnotations);
+  const editDisabled = useInput(
+    (state) => state.phase === "adjudicating" || state.phase === "submitting",
+  );
+  const [openId, setOpenId] = useState<DraftAttachmentId | null>(null);
+  const openIdRef = useRef<DraftAttachmentId | null>(null);
+  openIdRef.current = openId;
+  const openAtPointerDownRef = useRef<DraftAttachmentId | null>(null);
   // Narrow subscription so hovering an annotation only re-renders its owning answer.
   const hoveredId = useInput((state) => {
     const id = state.hoveredResponseAnnotationId;
@@ -192,6 +250,42 @@ export function ResponseAnnotationMarks({
     };
   }, [answer, attached]);
 
+  useEffect(() => {
+    if (openId !== null && !attached?.some(({ annotation }) => annotation.id === openId)) {
+      setOpenId(null);
+    }
+  }, [attached, openId]);
+
+  useEffect(() => {
+    const host = answer.current;
+    if (host === null || attached === undefined || attached.length === 0) return;
+    const onPointerDown = (): void => {
+      openAtPointerDownRef.current = openIdRef.current;
+    };
+    const onAnswerClick = (event: MouseEvent): void => {
+      const previouslyOpen = openAtPointerDownRef.current;
+      openAtPointerDownRef.current = null;
+      if (event.defaultPrevented || event.button !== 0 || event.detail > 1) return;
+      const selection = host.ownerDocument.defaultView?.getSelection();
+      if (selection !== null && selection !== undefined && !selection.isCollapsed) return;
+      const target =
+        event.target instanceof Element
+          ? event.target
+          : event.target instanceof Node
+            ? event.target.parentElement
+            : null;
+      if (target?.closest(INTERACTIVE_CLICK_TARGET) != null) return;
+      const hitId = hitTestAnnotatedRanges(rangesRef.current, event.clientX, event.clientY);
+      if (hitId !== null && hitId !== previouslyOpen) setOpenId(hitId);
+    };
+    host.addEventListener("pointerdown", onPointerDown, true);
+    host.addEventListener("click", onAnswerClick);
+    return () => {
+      host.removeEventListener("pointerdown", onPointerDown, true);
+      host.removeEventListener("click", onAnswerClick);
+    };
+  }, [answer, attached]);
+
   useLayoutEffect(() => {
     if (hoveredId === undefined) return;
     const hoveredRanges = rangesRef.current
@@ -236,8 +330,28 @@ export function ResponseAnnotationMarks({
       >
         <ResponseAnnotationPopover
           annotation={annotation}
+          index={index}
           labels={labels}
           title={labels.label(index)}
+          open={openId === annotation.id}
+          onOpenChange={(next) => {
+            setOpenId(next ? annotation.id : null);
+          }}
+          editDisabled={editDisabled}
+          onUpdate={
+            inputActions === undefined
+              ? undefined
+              : (comment) => {
+                  inputActions.updateResponseAnnotation(annotation.id, comment);
+                }
+          }
+          onRemove={
+            inputActions === undefined
+              ? undefined
+              : () => {
+                  inputActions.removeResponseAnnotation(annotation.id);
+                }
+          }
           anchor={
             <span
               className={clsx(css.annotationNumber, isHovered && css.annotationNumberHovered)}

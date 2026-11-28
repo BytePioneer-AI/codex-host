@@ -33,16 +33,30 @@ describe("User shell environment", () => {
     },
   );
 
-  it("loads zsh initialization and only fills variables missing from the Host", async () => {
+  it("merges only missing macOS PATH directories and fills other missing variables", async () => {
+    const shellPath = [
+      "",
+      "/shell/bin",
+      "/host/bin",
+      "relative/bin",
+      "/usr/bin/",
+      "/opt/homebrew/bin",
+      "/shell/bin",
+    ].join(path.posix.delimiter);
     const run = vi.fn(async () => ({
       status: 0,
       stdout: Buffer.from(
-        `${marker}ANTHROPIC_AUTH_TOKEN=from-shell\0ANTHROPIC_BASE_URL=https://api.example.com\0PATH=/shell/bin\0CLAUDE_CONFIG_DIR=/shell/config\0`,
+        `${marker}ANTHROPIC_AUTH_TOKEN=from-shell\0ANTHROPIC_BASE_URL=https://api.example.com\0PATH=${shellPath}\0CLAUDE_CONFIG_DIR=/shell/config\0`,
       ),
     }));
 
     const result = await withUserShellEnvironment(
-      { HOME: "/Users/example", PATH: "/host/bin", SHELL: "/bin/zsh" },
+      {
+        HOME: "/Users/example",
+        PATH: ["/host/bin", "/usr/bin"].join(path.posix.delimiter),
+        SHELL: "/bin/zsh",
+        ANTHROPIC_BASE_URL: "https://host.example.com",
+      },
       { platform: "darwin", run },
     );
 
@@ -53,10 +67,24 @@ describe("User shell environment", () => {
     );
     expect(result).toMatchObject({
       ANTHROPIC_AUTH_TOKEN: "from-shell",
-      ANTHROPIC_BASE_URL: "https://api.example.com",
+      ANTHROPIC_BASE_URL: "https://host.example.com",
       CLAUDE_CONFIG_DIR: "/shell/config",
-      PATH: "/host/bin",
+      PATH: ["/host/bin", "/usr/bin", "/shell/bin", "/opt/homebrew/bin"].join(path.posix.delimiter),
     });
+  });
+
+  it("keeps non-macOS PATH fill-missing behavior", async () => {
+    const run = vi.fn(async () => ({
+      status: 0,
+      stdout: Buffer.from(`${marker}PATH=/shell/bin\0FROM_SHELL=yes\0`),
+    }));
+
+    const result = await withUserShellEnvironment(
+      { HOME: "/home/example", PATH: "/host/bin", SHELL: "/bin/bash" },
+      { platform: "linux", run },
+    );
+
+    expect(result).toMatchObject({ PATH: "/host/bin", FROM_SHELL: "yes" });
   });
 
   it("falls back without changing the Host environment when shell loading fails", async () => {

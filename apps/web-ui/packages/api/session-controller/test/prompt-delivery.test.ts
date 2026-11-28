@@ -1,3 +1,4 @@
+import type { AttachmentId, ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import { WEB_ACTIVE_TURN_PROJECTION } from "@codexhost/shared-contracts";
 import { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
 import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
@@ -197,4 +198,127 @@ it("preserves the remote delivery fields in the strict prompt wire codecs", () =
     accepted: true,
     queueStartUnconfirmed: true,
   });
+});
+
+it("fires onObserved synchronously on durable user/message before the echo retirement frame", async () => {
+  const frames: FrameRequestCallback[] = [];
+  const originalRaf = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    frames.push(callback);
+    return frames.length;
+  }) as typeof globalThis.requestAnimationFrame;
+
+  const peerAttachment: ImageAttachmentRef = {
+    attachmentId: "peer-image:sha256-deadbeef" as AttachmentId,
+    name: "image-1.webp",
+    mediaType: "image/png",
+    bytes: 0,
+    width: 64,
+    height: 64,
+  };
+
+  let deliverLive!: (event: unknown) => void;
+  let releaseStream!: () => void;
+  const liveEvent = new Promise<unknown>((resolve) => {
+    deliverLive = resolve;
+  });
+  const keepOpen = new Promise<void>((resolve) => {
+    releaseStream = resolve;
+  });
+
+  const makeStream = <Frame>(open: (signal: AbortSignal) => AsyncIterable<Frame>) => {
+    const controller = new AbortController();
+    return {
+      async *[Symbol.asyncIterator]() {
+        for await (const value of open(controller.signal)) {
+          yield { value, generation: 1, accept: () => {} };
+        }
+      },
+      dispose: vi.fn(async () => {
+        controller.abort();
+      }),
+    };
+  };
+
+  const session = new Session(sessionId, {
+    $stream: ({ open }: { open: (signal: AbortSignal) => AsyncIterable<unknown> }) =>
+      makeStream(open),
+    session: {
+      prompt: vi.fn().mockResolvedValue({ ok: true, value: { accepted: true } }),
+      follow: async function* (_req: unknown, signal: AbortSignal) {
+        yield {
+          type: "snapshot",
+          epoch: "ep-1",
+          cursor: -1,
+          records: [],
+          hasMore: false,
+          assistantStream: { revision: 0, blocks: [] },
+        };
+        const event = await liveEvent;
+        yield {
+          type: "event",
+          event,
+        };
+        await Promise.race([
+          keepOpen,
+          new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          }),
+        ]);
+      },
+    },
+  } as unknown as SessionRemotes);
+
+  try {
+    await session.open();
+    const onObserved = vi.fn();
+    const onRetire = vi.fn();
+    const submission = session.beginSubmission({
+      mode: "queue",
+      text: "check remote image",
+      attachments: [],
+      onObserved,
+      onRetire,
+    });
+
+    deliverLive({
+      type: "user/message",
+      seq: SessionSeq(0),
+      time: 2,
+      surfaceOp: "append",
+      data: {
+        id: MessageId("msg-peer-1"),
+        role: "user",
+        content: [
+          { type: "image", attachment: peerAttachment },
+          { type: "text", text: "check remote image" },
+        ],
+        source: { kind: "user", rpcId: submission.requestId },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(session.eventSource.getSnapshot().entries).toHaveLength(1);
+    });
+
+    // Before the scheduled retirement animation frame runs, onObserved has already fired
+    // synchronously while the echo remains in pendingSubmissions until onRetire.
+    expect(onObserved).toHaveBeenCalledExactlyOnceWith([peerAttachment]);
+    expect(onRetire).not.toHaveBeenCalled();
+    expect(session.getSnapshot().pendingSubmissions).toHaveLength(1);
+    expect(frames.length).toBeGreaterThanOrEqual(1);
+
+    // Flushing animation frames retires the echo once without firing onObserved a second time.
+    while (frames.length > 0) frames.shift()!(16);
+    expect(onObserved).toHaveBeenCalledTimes(1);
+    expect(onRetire).toHaveBeenCalledExactlyOnceWith({
+      reason: "observed",
+      attachments: [peerAttachment],
+    });
+    expect(session.getSnapshot().pendingSubmissions).toEqual([]);
+  } finally {
+    releaseStream();
+    await session.dispose();
+    globalThis.requestAnimationFrame = originalRaf;
+  }
 });

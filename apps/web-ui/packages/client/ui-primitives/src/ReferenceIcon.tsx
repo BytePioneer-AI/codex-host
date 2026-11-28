@@ -4,8 +4,10 @@ import {
   ICON_MEDIUM_STROKE,
   ICON_REGULAR_STROKE,
   IconDataOutlineRegular,
+  IconGlobeOutlineRegular,
   IconSkillOutlineRegular,
 } from "./icons/index.tsx";
+import { harnessIconSources } from "./harness-icon-sources.ts";
 import { RemotePluginIcon } from "./RemotePluginIcon.tsx";
 import type { IconProps } from "./icons/props.ts";
 import {
@@ -44,16 +46,22 @@ function ReferenceIconArtwork({
     const { text, mentions } = stripDelegationMentions(reference);
     const mention = mentions[0];
     if (mention && mentions.length === 1 && text === `@${mention.label}`) {
-      return (
-        <RemotePluginIcon
-          id={mention.harnessId}
-          src={`/harness-icons/${encodeURIComponent(mention.harnessId)}`}
-          presentationUrl="/harness-icons/presentation.json"
-          size={size}
-          className={className}
-          fallback={<IconDataOutlineRegular size={size} className={className} />}
-        />
-      );
+      if (mention.harnessId !== undefined) {
+        const icon = harnessIconSources(mention.harnessId, mention.hostId);
+        return (
+          <RemotePluginIcon
+            id={mention.harnessId}
+            src={icon.src}
+            presentationUrl={icon.presentationUrl}
+            size={size}
+            className={className}
+            fallback={<IconDataOutlineRegular size={size} className={className} />}
+          />
+        );
+      }
+      if (mention.hostId !== undefined) {
+        return <IconGlobeOutlineRegular size={size} className={className} />;
+      }
     }
   }
   switch (kind) {

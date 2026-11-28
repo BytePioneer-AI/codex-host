@@ -44,6 +44,7 @@ export interface WebExtensionApi {
     onChange(listener: (values: JsonObject) => void): () => void;
   };
   backend: { invoke(method: string, params?: JsonValue): Promise<JsonValue> };
+  tabIcon?: { set(pngDataUrl: string | null): void };
   settings: { registerPage(page: WebExtensionContribution): () => void };
   panels: {
     register(panel: WebExtensionContribution & { placement: "main" | "sidebar" }): () => void;

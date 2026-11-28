@@ -4,11 +4,15 @@ import { it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { HostClientUpdate } from "@codexhost/desktop-control";
 import type { ClientInteraction } from "@codexhost/shared-contracts";
-import { ChPushNotifications } from "../src/ch-push-notifications.ts";
+import {
+  ChPushNotifications,
+  type ChPushNotificationOptions,
+} from "../src/ch-push-notifications.ts";
 import type { PushMessage } from "../src/push.ts";
+import { remoteSessionId } from "../src/remote-sessions.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
 
-function fixture() {
+function fixture(options?: ChPushNotificationOptions) {
   const host = new FakeChChannel();
   const row = host.add("thread/id", "/workspace", "My task");
   const messages: PushMessage[] = [];
@@ -19,7 +23,7 @@ function fixture() {
       return 1;
     },
   };
-  const notifications = new ChPushNotifications(host.realtime, push);
+  const notifications = new ChPushNotifications(host.realtime, push, options);
   const emit = (event: HostClientUpdate) => {
     for (const listener of host.listeners) listener(event);
   };
@@ -179,3 +183,77 @@ for (const action of ["disconnect", "epoch", "close"])
     assert.equal(f.messages.length, 0);
     if (action === "close") assert.equal(f.host.listeners.size, 0);
   });
+
+it("broadcasts deduplicated notifications to online listeners even with zero Web Push subscriptions", async (t) => {
+  const online: PushMessage[] = [];
+  let connectedClients = 0;
+  const f = fixture({
+    onNotification: (message) => online.push(message),
+    hasListeners: () => connectedClients > 0,
+  });
+  t.after(() => f.notifications.close());
+
+  f.push.subscriptionCount = 0;
+  f.host.changed(f.row.id, "turn/completed");
+  await delay(0);
+  assert.equal(
+    f.host.snapshots,
+    0,
+    "must skip snapshot when neither push nor online listeners exist",
+  );
+  assert.equal(online.length, 0);
+  assert.equal(f.messages.length, 0);
+
+  connectedClients = 1;
+  f.host.changed(f.row.id, "turn/completed");
+  f.host.changed(f.row.id, "turn/completed");
+  await delay(0);
+  assert.equal(f.messages.length, 0, "must not call push.notify when subscriptionCount is 0");
+  assert.deepEqual(online, [
+    {
+      kind: "turn",
+      title: "My task",
+      body: "已回复",
+      tag: f.row.id,
+      sessionId: f.row.id,
+      url: "./?session=thread%2Fid",
+    },
+  ]);
+
+  f.push.subscriptionCount = 1;
+  f.row.turns.push({ id: "turn-2", status: "failed", items: [] });
+  f.host.changed(f.row.id, "turn/completed");
+  await delay(0);
+  assert.equal(online.length, 2);
+  assert.equal(f.messages.length, 1);
+  assert.equal(online[1]?.kind, "error");
+  assert.equal(f.messages[0]?.kind, "error");
+});
+
+it("maps remote Peer notifications with remoteSessionId to avoid local threadId collisions", async (t) => {
+  const online: PushMessage[] = [];
+  const hostId = "remote-peer:peer-42";
+  const f = fixture({
+    onNotification: (message) => online.push(message),
+    hasListeners: () => true,
+    sessionId: (threadId) => remoteSessionId(hostId, threadId),
+  });
+  t.after(() => f.notifications.close());
+  f.push.subscriptionCount = 0;
+
+  f.host.changed(f.row.id, "turn/completed");
+  await delay(0);
+
+  const expectedId = remoteSessionId(hostId, f.row.id);
+  assert.notEqual(expectedId, f.row.id);
+  assert.deepEqual(online, [
+    {
+      kind: "turn",
+      title: "My task",
+      body: "已回复",
+      tag: expectedId,
+      sessionId: expectedId,
+      url: `./?session=${encodeURIComponent(expectedId)}`,
+    },
+  ]);
+});

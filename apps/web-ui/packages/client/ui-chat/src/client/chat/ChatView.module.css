@@ -4,8 +4,6 @@
   flex-direction: column;
   min-height: 0;
   flex: 1 1 auto;
-  /* Floating controls query this frame outside the clipped transcript. */
-  container-type: inline-size;
 }
 
 .root {
@@ -24,17 +22,19 @@
   min-height: 0;
   overflow-y: auto;
   /* Sides = composer clearance + 16px: on narrow viewports the transcript
-     stays exactly 32px narrower than the input card (the shared width rule). */
-  padding: 16px calc(var(--dsh-composer-side-clearance) + 16px);
-  /* Inline-size query container: wide markdown tables size their breakout
-     against this box's content width (100cqw in AssistantMarkdown's
-     md-table-wide rule) — the CSS stand-in for deepsuite chat's JS-measured
-     --dsl-virtual-list-width. */
-  container-type: inline-size;
+     stays exactly 32px narrower than the input card (the shared width rule).
+     Exposed as a custom property so wide markdown tables compute the exact
+     transcript content width from `--dsh-chat-viewport-width` published on
+     this element by `ChatViewport`, without placing `container-type: inline-size`
+     on any ancestor of the virtualized column. */
+  --dsh-chat-scroll-pad-x: calc(var(--dsh-composer-side-clearance, 0px) + 16px);
+  padding: 16px var(--dsh-chat-scroll-pad-x);
 }
 
-.root[data-chat-following-tail] .scroll,
-:global([data-conversation-scroll]):has(.root[data-chat-following-tail]) {
+.root:is([data-chat-following-tail], [data-chat-virtualizing]) .scroll,
+:global([data-conversation-scroll]):has(
+  .root:is([data-chat-following-tail], [data-chat-virtualizing])
+) {
   overflow-anchor: none;
 }
 
@@ -64,10 +64,15 @@
 
 /* `hidden="until-found"` retains a zero-height box so browser find can reveal
    its subtree. Direct Chat Node Seats and auxiliary rows share one flow;
-   hidden and empty Seats do not contribute spacing. */
+   hidden and genuinely empty Seats do not contribute spacing, while virtualized
+   row shells (`[data-chat-virtualized]`) keep their placeholder height and gap.
+   Empty slot wrappers are tracked via `[data-chat-empty]` rather than `:has()`
+   because sibling `:has()` invalidation inside `container-type: inline-size`
+   causes WebKit to collapse placeholder min-heights on the first layout pass
+   and clamp `scrollTop` away from the tail when virtualization unmounts rows. */
 .column
-  > :not([hidden]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)))
-  ~ :not([hidden]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))) {
+  > :not([hidden]):not(.flowItem:not([data-chat-virtualized]):is(:empty, [data-chat-empty]))
+  ~ :not([hidden]):not(.flowItem:not([data-chat-virtualized]):is(:empty, [data-chat-empty])) {
   margin-top: var(--dsh-chat-flow-gap, 6px);
 }
 
@@ -78,10 +83,12 @@
 }
 
 .column
-  > [data-chat-group-part="response"]:not([hidden]):not(:empty)
-  + :not([hidden]):not(
-    .flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))
-  ):not(.running) {
+  > [data-chat-group-part="response"]:not([hidden]):not(
+    :is(:empty, [data-chat-empty]):not([data-chat-virtualized])
+  )
+  + :not([hidden]):not(.flowItem:not([data-chat-virtualized]):is(:empty, [data-chat-empty])):not(
+    .running
+  ) {
   --dsh-chat-flow-gap: 12px;
 }
 
@@ -96,15 +103,15 @@
 .flowItem[data-turn-process-answer],
 .column
   > [data-chat-flow-kind="turn-process"]
-  + :not([hidden]):not(
-    .flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty))
-  ):not(.running) {
+  + :not([hidden]):not(.flowItem:not([data-chat-virtualized]):is(:empty, [data-chat-empty])):not(
+    .running
+  ) {
   --dsh-chat-flow-gap: 16px;
 }
 
 /* Empty Seats, including retained empty slot anchors, preserve Turn lookup
    without contributing height or the sibling gap. */
-.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)) {
+.flowItem:not([data-chat-virtualized]):is(:empty, [data-chat-empty]) {
   height: 0;
 }
 
@@ -123,6 +130,8 @@
   color: var(--dsw-alias-label-secondary);
   font-size: var(--dsh-content-font-size-secondary, 13px);
   line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -135,6 +144,8 @@
   color: var(--dsw-alias-label-tertiary);
   font-size: var(--dsh-content-font-size-secondary, 13px);
   line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .running {
@@ -146,15 +157,15 @@
   color: var(--dsw-alias-label-deep-diving);
   font-size: calc(var(--dsh-content-font-size, 14px) - 2px);
   line-height: calc(22px + var(--dsh-content-font-delta, 0px));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* The last visible row before the status must contain output, not an input.
    Hidden and empty seats do not separate a user message from the status. */
 .column
   > :nth-last-child(
-    2
-      of
-      :not([hidden]):not(.flowItem:is(:empty, :has(> [data-slot="conversation.chat.node"]:empty)))
+    2 of :not([hidden]):not(.flowItem:not([data-chat-virtualized]):is(:empty, [data-chat-empty]))
   ):is(
     .flowItem:not([data-chat-flow-kind="user"]):not([data-chat-flow-kind="steering"]):not(
         [data-chat-flow-kind="turn-trigger"]
@@ -236,6 +247,8 @@
   min-height: 28px;
   font-size: 12px;
   color: var(--dsw-alias-label-secondary);
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .older button {
@@ -273,6 +286,8 @@
     calc((100% - var(--dsh-chat-content-width)) / 2)
   );
   pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 :global([data-conversation-scroll]) .toBottomSlot {

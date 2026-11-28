@@ -198,6 +198,7 @@ export class HarnessDelegationCoordinator {
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata | null>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
+  readonly #externalQueueWaiting: (thread: ExternalThread) => boolean;
   readonly #pendingQuestions: (threadId: string) => DelegationPendingQuestion[];
 
   constructor(input: {
@@ -235,6 +236,8 @@ export class HarnessDelegationCoordinator {
     officialThreadMetadata(threadId: string): Promise<ParentMetadata | null>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
+    /** Desktop or Web follow-ups are queued (running or paused) and own the next Turn. */
+    externalQueueWaiting(thread: ExternalThread): boolean;
     pendingQuestions(threadId: string): DelegationPendingQuestion[];
   }) {
     this.#adapters = input.adapters;
@@ -258,6 +261,7 @@ export class HarnessDelegationCoordinator {
     this.#officialThreadMetadata = input.officialThreadMetadata;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
+    this.#externalQueueWaiting = input.externalQueueWaiting;
     this.#pendingQuestions = input.pendingQuestions;
   }
 
@@ -548,6 +552,13 @@ export class HarnessDelegationCoordinator {
       }
       const turnId = await this.#steerExternalTurn(thread, input.message);
       return this.#turnResult(thread.id, turnId, thread.harnessId);
+    }
+    // Queued follow-ups go first; only an explicit steer or interrupt goes ahead of them.
+    if (!input.steer && !input.interrupt && this.#externalQueueWaiting(thread)) {
+      throw new DelegationControlError(
+        "THREAD_BUSY",
+        "Thread has queued follow-up messages, which start first",
+      );
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
     try {

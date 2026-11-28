@@ -1,0 +1,8 @@
+{
+  "identifier": "extension-window",
+  "description": "Native drag and transparent hit regions for the managed extension window only.",
+  "webviews": ["extension"],
+  "local": false,
+  "remote": { "urls": ["http://127.0.0.1:*/*"] },
+  "permissions": ["allow-extension-window-drag", "allow-extension-window-hit-regions"]
+}

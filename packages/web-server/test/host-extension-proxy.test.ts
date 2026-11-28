@@ -8,6 +8,7 @@ import { finished } from "node:stream/promises";
 import { test, type TestContext } from "node:test";
 import {
   HOST_EXTENSION_ASSETS_PREFIX,
+  HOST_EXTENSION_CATALOG_ICON_PATH,
   HOST_EXTENSION_MANAGEMENT_METHODS,
   HOST_EXTENSION_UPLOAD_PATH,
   HOST_EXTENSION_ZIP_MAX_BYTES,
@@ -330,4 +331,24 @@ test("forwards extensions-changed events as NDJSON without special handling", as
   assert.equal(reply.status, 200);
   assert.equal(reply.headers.get("content-type"), "application/x-ndjson");
   assert.deepEqual(JSON.parse(await reply.text()), event);
+});
+
+test("catalog icon route validates extension id and proxies cached image bytes", async (t) => {
+  const pngBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+  const { origin, auth, calls } = await fixture(t, {
+    result: { mimeType: "image/png", base64: pngBytes.toString("base64") },
+  });
+  const reply = await fetch(`${origin}${HOST_EXTENSION_CATALOG_ICON_PATH}?id=${id}&v=1.0.0`, {
+    headers: auth,
+  });
+  assert.equal(reply.status, 200);
+  assert.equal(reply.headers.get("content-type"), "image/png");
+  assert.equal(reply.headers.get("cache-control"), "private, max-age=86400");
+  assert.deepEqual(Buffer.from(await reply.arrayBuffer()), pngBytes);
+  assert.deepEqual(calls().at(-1), [HOST_EXTENSIONS_RPC.catalogIcon, { id }]);
+
+  const bad = await fetch(`${origin}${HOST_EXTENSION_CATALOG_ICON_PATH}?id=../evil`, {
+    headers: auth,
+  });
+  assert.equal(bad.status, 400);
 });

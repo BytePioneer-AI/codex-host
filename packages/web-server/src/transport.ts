@@ -377,6 +377,10 @@ export class EventHub {
 
   constructor(private readonly home: string) {}
 
+  get clientCount(): number {
+    return this.sinks.size;
+  }
+
   handler: StreamHandler = (_args, sink) => {
     const clientId = randomUUID();
     this.sinks.set(clientId, sink);

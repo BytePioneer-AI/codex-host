@@ -26,6 +26,18 @@
   border: 0;
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
   box-shadow: var(--dsw-elevation-prominent);
+  /* High-frequency typing menu: opaque crisp surface avoids per-frame 40px
+     backdrop blur recomposition and keeps text legible over busy transcripts. */
+  --dsw-menu-backdrop-filter: none;
+  --dsw-menu-surface-fill: rgb(248, 249, 250);
+  --dsw-specific-menu: var(--dsw-menu-surface-fill);
+  --dsw-alias-menu-group-header-fill: var(--dsw-menu-surface-fill);
+}
+
+:global(body[data-ds-dark-theme]) .menu {
+  --dsw-menu-surface-fill: rgb(48, 49, 54);
+  --dsw-specific-menu: var(--dsw-menu-surface-fill);
+  --dsw-alias-menu-group-header-fill: var(--dsw-menu-surface-fill);
 }
 
 /* The hint covers content, not the scrollbar rail, and disappears once the

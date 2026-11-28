@@ -44,6 +44,7 @@ type Lexicon = ReadonlyMap<"/" | "@" | "#", readonly string[]>;
 /** Model callbacks read at the same editor registration and update points. */
 interface DraftEditorRuntimeDeps {
   readonly onUpdate: () => void;
+  readonly onCompositionEnd?: () => void;
   readonly openReference: (
     source: string | undefined,
     reference: Pick<ReferenceInsert, "ref" | "appearance">,
@@ -81,6 +82,7 @@ export class DraftEditorRuntime {
   /** Live lexicon subscription disposer; undefined until the controller resolves. */
   private lexiconOff: (() => void) | undefined;
   private lexiconSource: ObservableSnapshot<Lexicon> | undefined;
+  private domComposing = false;
 
   /** @param deps - model callbacks used by editor listeners and transforms. */
   constructor(private readonly deps: DraftEditorRuntimeDeps) {
@@ -115,8 +117,22 @@ export class DraftEditorRuntime {
       }
       return false;
     };
+    const onCompositionStart = (): void => {
+      this.domComposing = true;
+    };
+    const onCompositionEnd = (): void => {
+      this.domComposing = false;
+      this.deps.onCompositionEnd?.();
+    };
     const unregister = mergeRegister(
       registerPlainText(this.editor),
+      this.editor.registerRootListener((root, prevRoot) => {
+        prevRoot?.removeEventListener("compositionstart", onCompositionStart);
+        prevRoot?.removeEventListener("compositionend", onCompositionEnd);
+        this.domComposing = false;
+        root?.addEventListener("compositionstart", onCompositionStart);
+        root?.addEventListener("compositionend", onCompositionEnd);
+      }),
       this.editor.registerCommand(
         DRAGOVER_COMMAND,
         (event) => {
@@ -197,6 +213,11 @@ export class DraftEditorRuntime {
   /** The latest committed editor projection. */
   get projection(): EditorProjection {
     return this.projected;
+  }
+
+  /** Whether an IME composition session is currently active in the editor. */
+  isComposing(): boolean {
+    return this.domComposing || this.editor.isComposing();
   }
 
   /**

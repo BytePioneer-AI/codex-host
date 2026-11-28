@@ -3140,6 +3140,7 @@ describe("Renderer Updates page", () => {
           serviceStopOutput,
         ),
       );
+      expect(elementWithClass(content, "settings-update-panel").dataset.inline).toBeUndefined();
       cleanup?.();
       scope.dispose();
     },
@@ -3352,6 +3353,7 @@ describe("Renderer Updates page", () => {
 
     const panel = elementWithClass(content, "settings-update-panel");
     await vi.waitFor(() => expect(visibleText(panel)).toContain("npm 源还没有同步"));
+    expect(panel.dataset.inline).toBeUndefined();
     expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
 
     cleanup?.();

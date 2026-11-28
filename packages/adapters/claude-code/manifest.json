@@ -8,7 +8,7 @@
   "icon": "./assets/icon.svg",
   "iconStyle": {
     "vector": {
-      "viewBox": "0 0 24 24",
+      "viewBox": "-0.75 -0.75 25.5 25.5",
       "color": "#d97757",
       "paths": [
         {
@@ -27,7 +27,10 @@
         "terminal": "macOS / Linux · Terminal (sh/bash)",
         "command": "curl -fsSL https://claude.ai/install.sh | bash"
       },
-      { "terminal": "Windows · PowerShell", "command": "irm https://claude.ai/install.ps1 | iex" }
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://claude.ai/install.ps1 | iex"
+      }
     ],
     "after": {
       "en": "After installation, run claude to complete login or setup.",

@@ -30,6 +30,9 @@ export type RenderPdfText = (
   cancel(): void;
 };
 
+/** Maximum rasterized pixel count per PDF page (~32 MiB RGBA backing store). */
+export const MAX_PDF_PAGE_RASTER_PIXELS = 8_388_608;
+
 /**
  * Render one page into an exclusively owned canvas. Cancellation cannot write
  * dimensions after a delayed getPage; active render tasks are cancelled and
@@ -56,7 +59,10 @@ export async function renderPdfPage(
     signal.throwIfAborted();
     const viewport = page.getViewport({ scale: 96 / 72 });
     // Limit raster allocation without changing the document's display dimensions.
-    const ratio = Math.min(pixelRatio, Math.sqrt(16_777_216 / (viewport.width * viewport.height)));
+    const ratio = Math.min(
+      pixelRatio,
+      Math.sqrt(MAX_PDF_PAGE_RASTER_PIXELS / (viewport.width * viewport.height)),
+    );
     canvas.width = Math.max(1, Math.floor(viewport.width * ratio));
     canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
     canvas.style.setProperty("--pdf-page-width", `${viewport.width}px`);

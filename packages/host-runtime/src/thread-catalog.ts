@@ -26,6 +26,10 @@ import {
   type ThreadListEntry,
 } from "./external-thread-list.js";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
+import {
+  isShadowedOfficialThread,
+  type OfficialImportTimes,
+} from "./official-import-duplicates.js";
 import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 
 const OFFICIAL_PAGE_SIZE = 20;
@@ -83,7 +87,9 @@ export interface ThreadCatalogInput {
   readLocal(): Promise<{
     records: readonly StoredThreadSummaryV1[];
     placements: readonly StoredSectionPlacementV1[];
+    officialImportTimes?: OfficialImportTimes;
   }>;
+  readContinuationImportTimes?(): Promise<OfficialImportTimes>;
   sharedThreads?: Pick<SharedThreadBridge, "list" | "ownership">;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   /** Lazy admission to the existing managed scope; only unavailable here permits external-only. */
@@ -99,7 +105,7 @@ function listQuery(archived: boolean): DecodedThreadListRequest {
     params: {
       archived,
       limit: OFFICIAL_PAGE_SIZE,
-      sortKey: "updated_at",
+      sortKey: "recency_at",
       sortDirection: "desc",
     },
   });
@@ -159,7 +165,10 @@ export async function readThreadCatalog(
       }
     }));
 
-  const readOfficial = (query: DecodedThreadListRequest): Promise<CatalogEntry[]> =>
+  const readOfficial = (
+    query: DecodedThreadListRequest,
+    importTimes: Promise<OfficialImportTimes | undefined>,
+  ): Promise<CatalogEntry[]> =>
     measure(query.archived ? "officialArchived" : "official", async (count) => {
       const branch = query.archived ? "archived" : "live";
       const cursor = input.officialCursor?.[branch];
@@ -178,24 +187,25 @@ export async function readThreadCatalog(
         });
         if (page.nextCursor !== null && page.nextCursor === next)
           throw new Error("Official Thread catalog pagination did not advance");
-        data.push(...page.data);
+        const times = await importTimes;
+        const visible = page.data.filter((thread) => !isShadowedOfficialThread(times, thread));
+        data.push(...visible);
         next = page.nextCursor;
-        if (next === null || !inScope || page.data.some(inScope)) break;
+        if (next === null || !inScope || visible.some(inScope)) break;
       }
       officialCursor[branch] = next;
       return data.map((thread) => ({
-        entry: officialThreadListEntry(thread, "updated_at"),
+        entry: officialThreadListEntry(thread, "recency_at"),
         ownership: { threadId: rowId(thread), owner: "codex" as const },
         archived: query.archived,
       }));
     });
 
-  const readExternal = async (): Promise<ExternalCatalog> => {
+  const readExternal = async (
+    localRead: ReturnType<ThreadCatalogInput["readLocal"]>,
+  ): Promise<ExternalCatalog> => {
     const [local, sharedPages] = await Promise.all([
-      measure("local", async (count) => {
-        count();
-        return input.readLocal();
-      }),
+      localRead,
       Promise.all(
         queries.map((query) =>
           measure(query.archived ? "sharedArchived" : "shared", async (count) => {
@@ -267,15 +277,22 @@ export async function readThreadCatalog(
   };
 
   try {
-    const [external, ...official] = await Promise.all([
+    const local =
       input.officialCursor === undefined
-        ? readExternal()
-        : Promise.resolve<ExternalCatalog>({
-            rows: [],
-            archivedThreadIds: [],
-            reservedIds: new Set<string>(),
-          }),
-      ...queries.map(readOfficial),
+        ? measure("local", (count) => {
+            count();
+            return input.readLocal();
+          })
+        : undefined;
+    const times = local
+      ? local.then((snapshot) => snapshot.officialImportTimes)
+      : Promise.resolve(input.readContinuationImportTimes?.());
+    const [external, official] = await Promise.all([
+      local
+        ? readExternal(local)
+        : { rows: [], archivedThreadIds: [], reservedIds: new Set<string>() },
+      Promise.all(queries.map((query) => readOfficial(query, times))),
+      times,
     ]);
     const byId = new Map<string, CatalogEntry>();
     // Live rows win over archived duplicates; confirmed external ownership wins over native echoes.
@@ -284,7 +301,8 @@ export async function readThreadCatalog(
     }
     for (const row of official.flat()) {
       const id = row.ownership.threadId;
-      if (!external.reservedIds.has(id) && !byId.has(id)) byId.set(id, row);
+      if (external.reservedIds.has(id) || byId.has(id)) continue;
+      byId.set(id, row);
     }
     const rows = [...byId.values()]
       .filter(({ entry }) => entry.thread.ephemeral !== true)

@@ -109,8 +109,10 @@ export async function peerFetch(
       throw new RpcError("remote/auth-error", "Remote peer rejected the access token", {
         httpStatus: res.status,
       });
+    const isUnsupportedPaginatedHistory =
+      failure?.code === -32601 && /list_turns is not supported yet/iu.test(failure.message);
     throw new RpcError(
-      "remote/request-failed",
+      isUnsupportedPaginatedHistory ? "remote/unsupported" : "remote/request-failed",
       failure?.message ?? `Remote peer returned HTTP ${res.status}`,
       {
         httpStatus: res.status,
@@ -316,13 +318,14 @@ const SELF_PAIR_ERROR = "Cannot pair this server with itself";
 
 export class PeerHostClient {
   private life = new AbortController();
-  private readonly initialProbe = Promise.withResolvers<undefined>();
+  private readonly initialConnection = Promise.withResolvers<undefined>();
   manifest?: c.RemotePeerManifest;
   latencyMs?: number;
   lastError?: string;
   state: c.RemotePeerState;
   private cursor?: c.ClientChannelCursor;
   private streamOnline = false;
+  private manifestVerified = false;
   private readonly listeners = new Set<(update: HostClientUpdate) => void>();
   private readonly streamIdleTimeoutMs: number;
   private readonly rejectNodeId: string | undefined;
@@ -336,6 +339,16 @@ export class PeerHostClient {
   }
   get closed(): boolean {
     return this.life.signal.aborted;
+  }
+  get isStreamOnline(): boolean {
+    return this.streamOnline;
+  }
+  get isHttpReady(): boolean {
+    return (
+      this.record.enabled &&
+      !this.closed &&
+      (this.state === "connected" || (this.state === "connecting" && this.manifestVerified))
+    );
   }
 
   constructor(
@@ -472,7 +485,7 @@ export class PeerHostClient {
   }
 
   async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
-    if (this.state !== "connected") {
+    if (!this.isHttpReady) {
       throw new RpcError("remote/offline", "Remote peer is not connected");
     }
     const res = await this.fetch(`/api/ch/v1/${route}`, "POST", body);
@@ -514,7 +527,7 @@ export class PeerHostClient {
     const timeout = new AbortController();
     try {
       await Promise.race([
-        this.initialProbe.promise,
+        this.initialConnection.promise,
         sleep(INITIAL_CONNECTION_WAIT_MS, undefined, { signal: timeout.signal }),
       ]);
     } finally {
@@ -536,10 +549,12 @@ export class PeerHostClient {
         throw Error(SELF_PAIR_ERROR);
       }
       this.manifest = manifest;
+      this.manifestVerified = true;
       this.latencyMs = Date.now() - start;
       delete this.lastError;
-      this.state = "connected";
+      this.state = this.streamOnline ? "connected" : "connecting";
     } catch (e) {
+      this.manifestVerified = false;
       if (
         e instanceof PeerHostPolicyError ||
         (e instanceof Error && e.message === SELF_PAIR_ERROR)
@@ -548,6 +563,7 @@ export class PeerHostClient {
         this.state = "offline";
         this.lastError = e.message;
         this.setStreamOffline();
+        this.initialConnection.resolve(undefined);
         throw e;
       }
       this.state =
@@ -558,9 +574,8 @@ export class PeerHostClient {
           : "Remote peer manifest unavailable";
       this.lastError = message;
       this.setStreamOffline();
+      this.initialConnection.resolve(undefined);
       throw Error(message);
-    } finally {
-      this.initialProbe.resolve(undefined);
     }
   }
 
@@ -578,7 +593,7 @@ export class PeerHostClient {
         idleTimer.unref();
       };
       try {
-        if (this.state !== "connected") {
+        if (!this.manifestVerified) {
           await this.probe();
           if (this.life.signal.aborted) return;
           this.changed(this.hostId);
@@ -598,14 +613,17 @@ export class PeerHostClient {
         let checked = Date.now();
         let pending = "";
         const decoder = new TextDecoder();
+        let receivedHello = false;
         resetIdleTimer();
         for await (const chunk of response.body) {
-          resetIdleTimer();
-          if (Date.now() - checked >= 30000) {
-            const before = JSON.stringify(this.manifest);
-            await this.probe();
-            checked = Date.now();
-            if (before !== JSON.stringify(this.manifest)) this.changed(this.hostId);
+          if (receivedHello) {
+            resetIdleTimer();
+            if (Date.now() - checked >= 30000) {
+              const before = JSON.stringify(this.manifest);
+              await this.probe();
+              checked = Date.now();
+              if (before !== JSON.stringify(this.manifest)) this.changed(this.hostId);
+            }
           }
           pending += decoder.decode(chunk, { stream: true });
           let i;
@@ -622,19 +640,31 @@ export class PeerHostClient {
             const parsed = c.clientChannelEventSchema.safeParse(raw);
             if (!parsed.success) continue;
             const event = parsed.data;
-            this.cursor = event.cursor;
             if (event.type === "hello") {
+              resetIdleTimer();
               if (this.manifest?.epoch !== event.cursor.epoch) {
                 await this.probe();
+                if (this.life.signal.aborted) return;
                 this.changed(this.hostId);
               }
+              receivedHello = true;
+              resetIdleTimer();
+              this.cursor = event.cursor;
               delay = 1000;
+              const becameConnected = this.state !== "connected" || !this.streamOnline;
+              this.state = "connected";
+              delete this.lastError;
               if (!this.streamOnline) {
                 this.streamOnline = true;
                 this.publish({ type: "connection", online: true });
               }
+              if (becameConnected) {
+                this.changed(this.hostId);
+              }
+              this.initialConnection.resolve(undefined);
               this.publish(event);
-            } else {
+            } else if (receivedHello) {
+              this.cursor = event.cursor;
               delay = 1000;
               this.publish(event);
             }
@@ -647,10 +677,14 @@ export class PeerHostClient {
       } finally {
         if (idleTimer) clearTimeout(idleTimer);
         streamAbort.abort();
+        this.manifestVerified = false;
+        if (!this.life.signal.aborted && this.state !== "auth-error") {
+          this.state = "offline";
+        }
         this.setStreamOffline();
       }
       if (this.life.signal.aborted) return;
-      if (this.state !== "auth-error") this.state = "offline";
+      this.initialConnection.resolve(undefined);
       this.changed(this.hostId);
       await sleep(delay, undefined, { signal: this.life.signal }).catch(() => {});
       delay = Math.min(delay * 2, 30000);
@@ -659,8 +693,9 @@ export class PeerHostClient {
 
   close() {
     this.life.abort();
+    this.manifestVerified = false;
     this.record = { ...this.record, token: "" };
-    this.initialProbe.resolve(undefined);
+    this.initialConnection.resolve(undefined);
     this.setStreamOffline();
     this.listeners.clear();
     this.fullKnownTurns.clear();
@@ -669,7 +704,7 @@ export class PeerHostClient {
   }
 
   async introduce(params: c.RemotePeerIntroduceParams): Promise<c.RemotePeerIntroduceResult> {
-    if (!this.record.enabled || this.state !== "connected") {
+    if (!this.isHttpReady) {
       throw new RpcError("remote/offline", "Remote peer is not connected");
     }
     if (this.manifest?.capabilities?.peerPairing !== 1) {
@@ -737,7 +772,7 @@ export class PeerHostClient {
     if (!this.record.enabled) {
       throw new RpcError("remote/offline", "Remote peer is disabled");
     }
-    if (this.state !== "connected") {
+    if (!this.isHttpReady) {
       throw new RpcError("remote/offline", "Remote peer is not connected");
     }
     if (this.manifest?.capabilities?.delegation !== 1) {
@@ -779,8 +814,7 @@ export class PeerHostClient {
 
   async call(op: c.RemoteSessionOperation): Promise<unknown> {
     const epoch = this.manifest?.epoch;
-    if (this.state !== "connected")
-      throw new RpcError("remote/offline", "Remote peer is not connected");
+    if (!this.isHttpReady) throw new RpcError("remote/offline", "Remote peer is not connected");
     if ("epoch" in op && op.epoch !== epoch)
       throw new RpcError("remote/connection-changed", "Remote peer restarted");
     const post = <T = unknown>(route: "rpc" | "snapshot" | "respond", input: object) =>

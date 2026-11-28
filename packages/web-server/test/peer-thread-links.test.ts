@@ -463,6 +463,7 @@ it("translates RemoteSessions outbound paths for remote-peer:* while preserving 
   );
   assert.equal(added.ok, true);
   const hostIdB = (added.value as { peer: { hostId: string } }).peer.hostId;
+  await managerA.waitForInitialConnection(hostIdB);
 
   const desktopOps: RemoteSessionOperation[] = [];
   const compositeCall = async (op: RemoteSessionOperation) => {

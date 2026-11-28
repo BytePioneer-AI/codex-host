@@ -29,6 +29,8 @@ import {
   type PeerDnsLookup,
 } from "../src/peer-host-store.ts";
 import { PeerHostManager, createCompositeRemoteCall } from "../src/peer-host-manager.ts";
+import { peerFetch } from "../src/peer-host-client.ts";
+import { remoteWorkspaceGroups } from "../src/remote-workspaces.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "../src/peer-manifest.ts";
 import { peerPairingEnabled, servePeerPairing } from "../src/peer-pairing-http.ts";
 import { resolvePeerSelfOrigin } from "../src/peer-pairing.ts";
@@ -2633,6 +2635,7 @@ it("lists reachable remote delegation hosts per session perspective and resolves
     peerNodes?: Record<string, string>;
     harnesses?: Array<{ id: string; name: string }>;
   }) => {
+    const epoch = randomUUID();
     const server = createServer(async (req, res) => {
       if (req.headers.authorization !== `Bearer ${token}`) {
         res.writeHead(401).end();
@@ -2645,7 +2648,7 @@ it("lists reachable remote delegation hosts per session perspective and resolves
             version: "0.27.0",
             platform: "darwin",
             hostname: opts.hostname,
-            epoch: `epoch-${opts.nodeId}`,
+            epoch,
             nodeId: opts.nodeId,
             ...(opts.peerNodes ? { peerNodes: opts.peerNodes } : {}),
             projects: [],
@@ -2657,7 +2660,7 @@ it("lists reachable remote delegation hosts per session perspective and resolves
       if (url.pathname === "/api/ch/v1/events") {
         res.writeHead(200);
         res.write(
-          `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch: `epoch-${opts.nodeId}`, sequence: 1 }, reset: true })}\n`,
+          `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true })}\n`,
         );
         return;
       }
@@ -2849,4 +2852,311 @@ it("lists reachable remote delegation hosts per session perspective and resolves
       { id: "antigravity", name: "Antigravity" },
     ],
   });
+});
+
+it("keeps peer in connecting/offline state until event stream hello arrives", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-hello-gate-"));
+  const token = "hello-gate-secret";
+  const epoch = randomUUID();
+  let streamRes: ServerResponse | undefined;
+  const streamConnected = Promise.withResolvers<undefined>();
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${token}`) {
+      res.writeHead(401).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/api/peer/v1/manifest") {
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          version: "0.29.0",
+          epoch,
+          platform: process.platform,
+          hostname: "gate-peer",
+          projects: [{ id: "p1", name: "Demo", path: root, threadIds: [] }],
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      streamRes = res;
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      res.flushHeaders();
+      streamConnected.resolve(undefined);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const store = new PeerHostStore(new DataDir(root));
+  const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
+    allowLoopback: true,
+  });
+  t.after(() => {
+    manager.close();
+    streamRes?.destroy();
+    server.closeAllConnections();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const added = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${origin}/#token=${token}`, name: "Gate Peer" } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(added.ok, true);
+  const hostId = (added.value as { peer: { hostId: string } }).peer.hostId;
+
+  // Manifest probe succeeded and /api/ch/v1/events is open, but hello has not arrived yet.
+  await streamConnected.promise;
+  const beforeHello = manager.hosts().find((host) => host.hostId === hostId);
+  assert.equal(beforeHello?.state, "connecting");
+  assert.equal(beforeHello?.online, false);
+  assert.equal(manager.client(hostId)?.state, "connecting");
+  assert.equal(manager.client(hostId)?.isStreamOnline, false);
+  assert.equal(remoteWorkspaceGroups(manager.hosts(), [])[0]?.remote?.state, "connecting");
+
+  const connected = Promise.withResolvers<undefined>();
+  manager.onChange = (changedHostId) => {
+    if (changedHostId === hostId && manager.hosts().find((h) => h.hostId === hostId)?.online) {
+      connected.resolve(undefined);
+    }
+  };
+
+  streamRes?.write(
+    `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true })}\n`,
+  );
+  await Promise.race([
+    connected.promise,
+    sleep(2000).then(() => {
+      throw new Error("Timed out waiting for peer connected state after hello");
+    }),
+  ]);
+
+  const afterHello = manager.hosts().find((host) => host.hostId === hostId);
+  assert.equal(afterHello?.state, "connected");
+  assert.equal(afterHello?.online, true);
+  assert.equal(manager.client(hostId)?.isStreamOnline, true);
+  assert.equal(remoteWorkspaceGroups(manager.hosts(), [])[0]?.remote?.state, "connected");
+
+  // Disconnecting after hello must update state to offline before notifying stream listeners.
+  let stateDuringOfflineEvent: string | undefined;
+  let httpReadyDuringOfflineEvent: boolean | undefined;
+  manager.onConnection = (changedHostId, online) => {
+    if (changedHostId === hostId && !online) {
+      stateDuringOfflineEvent = manager.client(hostId)?.state;
+      httpReadyDuringOfflineEvent = manager.client(hostId)?.isHttpReady;
+    }
+  };
+  const wentOffline = Promise.withResolvers<undefined>();
+  manager.onChange = (changedHostId) => {
+    if (changedHostId === hostId && manager.client(hostId)?.state === "offline") {
+      wentOffline.resolve(undefined);
+    }
+  };
+  streamRes?.destroy();
+  await Promise.race([
+    wentOffline.promise,
+    sleep(2000).then(() => {
+      throw new Error("Timed out waiting for peer offline state after stream close");
+    }),
+  ]);
+  assert.equal(stateDuringOfflineEvent, "offline");
+  assert.equal(httpReadyDuringOfflineEvent, false);
+
+  // Closed client must never report isHttpReady even if previously connected.
+  const client = manager.client(hostId);
+  assert.ok(client);
+  client.state = "connected";
+  assert.equal(client.isHttpReady, true);
+  client.close();
+  assert.equal(client.isHttpReady, false);
+});
+
+it("times out pre-hello heartbeat-only streams, suppresses pre-hello events, and marks pre-hello disconnects offline", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-hello-timeout-"));
+  const token = "hello-timeout-secret";
+  const epoch = randomUUID();
+  let mode: "heartbeat-only" | "immediate-close" = "heartbeat-only";
+  const timers: NodeJS.Timeout[] = [];
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${token}`) {
+      res.writeHead(401).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/api/peer/v1/manifest") {
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          version: "0.29.0",
+          epoch,
+          platform: process.platform,
+          hostname: "stalled-peer",
+          projects: [],
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      res.flushHeaders();
+      if (mode === "immediate-close") {
+        res.end();
+        return;
+      }
+      // Send a non-hello event and periodic newline heartbeats without ever sending hello.
+      res.write(
+        `${JSON.stringify({
+          type: "catalog_changed",
+          version: 1,
+          cursor: { epoch, sequence: 1 },
+        })}\n`,
+      );
+      const timer = setInterval(() => {
+        if (!res.destroyed && !res.writableEnded) res.write("\n");
+      }, 25);
+      timer.unref();
+      timers.push(timer);
+      res.on("close", () => clearInterval(timer));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const store = new PeerHostStore(new DataDir(root));
+  const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
+    allowLoopback: true,
+    streamIdleTimeoutMs: 120,
+  });
+  t.after(() => {
+    for (const timer of timers) clearInterval(timer);
+    manager.close();
+    server.closeAllConnections();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const publishedEvents: string[] = [];
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const added = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${origin}/#token=${token}`, name: "Stalled Peer" } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(added.ok, true);
+  const hostId = (added.value as { peer: { hostId: string } }).peer.hostId;
+  const client = manager.client(hostId);
+  assert.ok(client);
+  client.subscribe((update) => {
+    if (update.type !== "connection") publishedEvents.push(update.type);
+  });
+
+  const wentOffline = Promise.withResolvers<undefined>();
+  manager.onChange = (changedHostId) => {
+    if (changedHostId === hostId && manager.client(hostId)?.state === "offline") {
+      wentOffline.resolve(undefined);
+    }
+  };
+  await Promise.race([
+    wentOffline.promise,
+    sleep(2000).then(() => {
+      throw new Error("Heartbeat-only stream without hello never timed out to offline");
+    }),
+  ]);
+  await manager.waitForInitialConnection(hostId);
+  assert.equal(manager.client(hostId)?.state, "offline");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.online, false);
+  assert.deepEqual(publishedEvents, []);
+
+  // Pre-hello EOF disconnect must also transition connecting -> offline cleanly.
+  const peerId = (added.value as { peer: { peerId: string } }).peer.peerId;
+  const removed = await rpc.dispatch(
+    methods.remove,
+    { args: { peerId } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(removed.ok, true);
+  mode = "immediate-close";
+  const added2 = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${origin}/#token=${token}`, name: "EOF Peer" } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(added2.ok, true);
+  const hostId2 = (added2.value as { peer: { hostId: string } }).peer.hostId;
+  await manager.waitForInitialConnection(hostId2);
+  assert.equal(manager.client(hostId2)?.state, "offline");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId2)?.online, false);
+});
+
+it("maps -32601 list_turns is not supported yet to remote/unsupported while preserving message", async (t) => {
+  const token = "unsupported-secret";
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${token}`) {
+      res.writeHead(401).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/api/ch/v1/snapshot") {
+      res.writeHead(502, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          error: {
+            code: -32601,
+            message: "list_turns is not supported yet",
+          },
+        }),
+      );
+      return;
+    }
+    res.writeHead(502, { "content-type": "application/json" }).end(
+      JSON.stringify({
+        error: {
+          code: -32601,
+          message: "method not found",
+        },
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const record = {
+    peerId: "peer-legacy",
+    name: "Legacy Peer",
+    origin,
+    token,
+    enabled: true,
+    createdAt: "now",
+    updatedAt: "now",
+  };
+
+  await assert.rejects(
+    peerFetch(record, "/api/ch/v1/snapshot", { method: "POST", body: { threadId: "t-1" } }),
+    (err: unknown) =>
+      err instanceof RpcError &&
+      err.code === "remote/unsupported" &&
+      err.message === "list_turns is not supported yet" &&
+      (err.details as { hostCode?: unknown }).hostCode === -32601,
+  );
+
+  await assert.rejects(
+    peerFetch(record, "/api/ch/v1/rpc", { method: "POST", body: { method: "other/method" } }),
+    (err: unknown) =>
+      err instanceof RpcError &&
+      err.code === "remote/request-failed" &&
+      err.message === "method not found" &&
+      (err.details as { hostCode?: unknown }).hostCode === -32601,
+  );
 });

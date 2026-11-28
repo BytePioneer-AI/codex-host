@@ -409,7 +409,7 @@ export class PeerHostManager {
       .filter((p) => p.record.enabled)
       .map((p) => ({
         hostId: c.remotePeerHostId(p.record.peerId),
-        online: p.state === "connected",
+        online: p.state === "connected" && p.isStreamOnline,
         displayName: p.record.name,
         ...(p.record.color !== undefined ? { color: p.record.color } : {}),
         state: p.state,
@@ -422,18 +422,21 @@ export class PeerHostManager {
   delegationHosts(): c.PeerDelegationHostSummary[] {
     return [...this.clients.values()]
       .filter((p) => p.record.enabled)
-      .map((p) => ({
-        hostId: c.remotePeerHostId(p.record.peerId),
-        ...(p.manifest?.nodeId !== undefined ? { nodeId: p.manifest.nodeId } : {}),
-        displayName: p.record.name,
-        online: p.state === "connected",
-        state: p.state,
-        delegation: p.state === "connected" && p.manifest?.capabilities?.delegation === 1,
-        projects: (p.manifest?.projects ?? []).map(({ id, name, path }) => ({ id, name, path })),
-        ...(p.manifest?.platform !== undefined ? { platform: p.manifest.platform } : {}),
-        ...(p.manifest?.hostname !== undefined ? { hostname: p.manifest.hostname } : {}),
-        ...(p.manifest?.homeDir !== undefined ? { homeDir: p.manifest.homeDir } : {}),
-      }));
+      .map((p) => {
+        const online = p.state === "connected" && p.isStreamOnline;
+        return {
+          hostId: c.remotePeerHostId(p.record.peerId),
+          ...(p.manifest?.nodeId !== undefined ? { nodeId: p.manifest.nodeId } : {}),
+          displayName: p.record.name,
+          online,
+          state: p.state,
+          delegation: online && p.manifest?.capabilities?.delegation === 1,
+          projects: (p.manifest?.projects ?? []).map(({ id, name, path }) => ({ id, name, path })),
+          ...(p.manifest?.platform !== undefined ? { platform: p.manifest.platform } : {}),
+          ...(p.manifest?.hostname !== undefined ? { hostname: p.manifest.hostname } : {}),
+          ...(p.manifest?.homeDir !== undefined ? { homeDir: p.manifest.homeDir } : {}),
+        };
+      });
   }
 
   /** Browser-safe reachable delegation hosts from the perspective of `sessionHostId` (Hub A hostId space). */

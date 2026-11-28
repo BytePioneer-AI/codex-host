@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -15,6 +15,7 @@ import {
   verifyStagedArtifact,
   type CommonUpdateOptions,
 } from "../src/index.js";
+import { isPathInsideRoot } from "../src/staging.js";
 
 const roots: string[] = [];
 
@@ -293,5 +294,118 @@ describe("update staging storage and reuse", () => {
     await expect(readFile(inFlightFile, "utf8")).resolves.toBe("partial-download");
     await expect(readStagedUpdate(stateDirectory)).resolves.toMatchObject({ version: "1.2.3" });
     await expect(readFile(lockPath, "utf8")).resolves.toContain(String(process.pid));
+  });
+
+  it("recovers an expired staging-v1.lock even if its ownerPid is still alive (PID reuse protection)", async () => {
+    const root = await temporaryDirectory();
+    const stateDirectory = path.join(root, "state");
+    const stagedDirectory = path.join(stateDirectory, "staged");
+    const lockPath = path.join(stateDirectory, "staging-v1.lock");
+    await mkdir(stagedDirectory, { recursive: true });
+    await writeFile(
+      path.join(stagedDirectory, "staged-v1.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.3",
+        distribution: "npm",
+        target: "macos-arm64",
+        stagedAt: 1_700_000_000,
+      }),
+    );
+    const lockStartedSeconds = 1_700_000_000;
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        ownerPid: process.pid,
+        startedAt: lockStartedSeconds,
+        token: "stale-lock-token",
+      }),
+    );
+
+    // Within the 30-minute TTL window: active lock still blocks cleanup.
+    await cleanupStagedUpdates(stateDirectory, {
+      currentVersion: "1.2.3",
+      now: () => (lockStartedSeconds + 29 * 60) * 1000,
+    });
+    await expect(readStagedUpdate(stateDirectory)).resolves.toMatchObject({ version: "1.2.3" });
+
+    // Past the 30-minute TTL window: stale lock is recovered even with a live PID.
+    await cleanupStagedUpdates(stateDirectory, {
+      currentVersion: "1.2.3",
+      now: () => (lockStartedSeconds + 30 * 60 + 1) * 1000,
+    });
+    await expect(readStagedUpdate(stateDirectory)).resolves.toBeNull();
+    await expect(readFile(lockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects staged artifacts escaping staged/ through a parent symlink or junction", async () => {
+    const root = await temporaryDirectory();
+    const stateDirectory = path.join(root, "state");
+    const stagedRoot = path.join(stateDirectory, "staged");
+    const outsideDir = path.join(root, "outside");
+    const bytes = Buffer.from("escaped-artifact-payload");
+    const outsideFile = path.join(outsideDir, "codexhost-1.2.3-macos-arm64.dmg");
+    const symlinkedVersionDir = path.join(stagedRoot, "update-1.2.3");
+    const escapedPathViaLink = path.join(symlinkedVersionDir, "codexhost-1.2.3-macos-arm64.dmg");
+
+    await mkdir(stagedRoot, { recursive: true });
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(outsideFile, bytes, { mode: 0o600 });
+    await symlink(
+      outsideDir,
+      symlinkedVersionDir,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const source = {
+      url: "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-macos-arm64.dmg",
+      sha256: sha256(bytes),
+      size: bytes.length,
+    };
+    const staged = {
+      schemaVersion: 1 as const,
+      version: "1.2.3",
+      distribution: "installer" as const,
+      target: "macos-arm64" as const,
+      stagedAt: 1_700_000_000,
+      assetName: "codexhost-1.2.3-macos-arm64.dmg",
+      artifactPath: escapedPathViaLink,
+      sha256: source.sha256,
+      size: bytes.length,
+    };
+
+    // Even with matching size and SHA-256, realpath resolves outside staged/ and must be rejected.
+    await expect(verifyStagedArtifact(stateDirectory, staged, source)).resolves.toBeNull();
+  });
+
+  it("normalizes Windows extended-length paths and drive letter casing for containment checks", () => {
+    expect(
+      isPathInsideRoot(
+        "C:\\Users\\Alice\\AppData\\Local\\codexhost\\updates\\staged",
+        "\\\\?\\c:\\Users\\Alice\\AppData\\Local\\codexhost\\updates\\staged\\update-1.2.3\\codexhost.exe",
+        "win32",
+      ),
+    ).toBe(true);
+    expect(
+      isPathInsideRoot(
+        "\\\\server\\share\\codexhost\\staged",
+        "\\\\?\\UNC\\SERVER\\share\\codexhost\\staged\\update-1.2.3\\codexhost.exe",
+        "win32",
+      ),
+    ).toBe(true);
+    expect(
+      isPathInsideRoot(
+        "C:\\Users\\Alice\\staged",
+        "\\\\?\\C:\\Users\\Alice\\staged-evil\\codexhost.exe",
+        "win32",
+      ),
+    ).toBe(false);
+    expect(
+      isPathInsideRoot(
+        "C:\\Users\\Alice\\staged",
+        "D:\\Users\\Alice\\staged\\update-1.2.3\\codexhost.exe",
+        "win32",
+      ),
+    ).toBe(false);
   });
 });

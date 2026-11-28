@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
+  link,
   lstat,
   mkdir,
   open,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   writeFile,
@@ -31,6 +33,7 @@ import { requireSemanticVersion } from "./status.js";
 
 const STAGING_SCHEMA_VERSION = 1;
 const STAGING_LOCK_FILE = "staging-v1.lock";
+const STAGING_LOCK_TTL_SECONDS = 30 * 60;
 const STAGED_DIRECTORY_NAME = "staged";
 const STAGED_METADATA_FILE = "staged-v1.json";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
@@ -42,7 +45,8 @@ const RELEASE_TARGETS = new Set<ReleaseTarget>([
   "linux-x64",
   "linux-arm64",
 ]);
-const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 30, 70, 150, 300] as const;
+// Windows antivirus/indexer scans can hold newly downloaded files for ~1.5s.
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [20, 50, 100, 200, 350, 500, 800] as const;
 
 export interface StagedUpdateRecord {
   schemaVersion: 1;
@@ -83,6 +87,7 @@ export interface StageNpmOptions {
 export interface CleanupStagedUpdatesOptions {
   currentVersion?: string;
   keepVersion?: string;
+  now?: () => number;
 }
 
 export interface VerifiedStagedArtifact {
@@ -154,9 +159,32 @@ function stagingLockPath(stateDirectory: string): string {
   return path.join(requireAbsoluteDirectory(stateDirectory), STAGING_LOCK_FILE);
 }
 
-function isPathInside(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+export function normalizePathForContainment(
+  filePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    let stripped = filePath;
+    if (/^\\\\\?\\UNC\\/iu.test(stripped)) {
+      stripped = `\\\\${stripped.slice(8)}`;
+    } else if (stripped.startsWith("\\\\?\\")) {
+      stripped = stripped.slice(4);
+    }
+    return path.win32.normalize(stripped).toLowerCase();
+  }
+  return path.posix.normalize(filePath);
+}
+
+export function isPathInsideRoot(
+  rootPath: string,
+  candidatePath: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const normalizedRoot = normalizePathForContainment(rootPath, platform);
+  const normalizedCandidate = normalizePathForContainment(candidatePath, platform);
+  const pathImpl = platform === "win32" ? path.win32 : path.posix;
+  const relative = pathImpl.relative(normalizedRoot, normalizedCandidate);
+  return relative.length > 0 && !relative.startsWith("..") && !pathImpl.isAbsolute(relative);
 }
 
 function processIsAlive(processId: number): boolean {
@@ -179,13 +207,24 @@ async function regularFile(filePath: string): Promise<boolean> {
   }
 }
 
-async function recoverStagingLock(stateDirectory: string): Promise<void> {
+async function recoverStagingLock(
+  stateDirectory: string,
+  now: () => number = Date.now,
+): Promise<void> {
   const lockPath = stagingLockPath(stateDirectory);
   if (!(await regularFile(lockPath))) return;
+  const nowSeconds = Math.floor(now() / 1000);
   try {
     const parsed = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
     const ownerPid = parsed.ownerPid;
-    if (typeof ownerPid !== "number" || !processIsAlive(ownerPid)) {
+    const startedAt = parsed.startedAt;
+    const pidAlive = typeof ownerPid === "number" && processIsAlive(ownerPid);
+    const expired =
+      typeof startedAt !== "number" ||
+      !Number.isSafeInteger(startedAt) ||
+      startedAt < 0 ||
+      nowSeconds - startedAt >= STAGING_LOCK_TTL_SECONDS;
+    if (!pidAlive || expired) {
       await rm(lockPath, { force: true });
     }
   } catch {
@@ -200,26 +239,62 @@ async function acquireStagingLock(
 ): Promise<{ release(): Promise<void> } | null> {
   const root = requireAbsoluteDirectory(stateDirectory);
   await mkdir(root, { recursive: true, mode: 0o700 });
-  await recoverStagingLock(root);
+  await recoverStagingLock(root, now);
   const lockPath = stagingLockPath(root);
-  let handle: FileHandle;
+  const token = randomUUID();
+  const payload = `${JSON.stringify({
+    ownerPid: process.pid,
+    startedAt: Math.floor(now() / 1000),
+    token,
+  })}\n`;
+  const temporaryLockPath = path.join(root, `.staging-v1-${token}.tmp`);
+
   try {
-    handle = await open(lockPath, "wx", 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
-    throw error;
+    const handle = await open(temporaryLockPath, "wx", 0o600);
+    try {
+      await handle.writeFile(payload, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await link(temporaryLockPath, lockPath);
+    } catch (error) {
+      const code = systemErrorCode(error);
+      if (code === "EEXIST") return null;
+      if (code === "EXDEV" || code === "ENOTSUP" || code === "ENOSYS") {
+        let fallbackHandle: FileHandle;
+        try {
+          fallbackHandle = await open(lockPath, "wx", 0o600);
+        } catch (fallbackError) {
+          if (systemErrorCode(fallbackError) === "EEXIST") return null;
+          throw fallbackError;
+        }
+        try {
+          await fallbackHandle.writeFile(payload, "utf8");
+          await fallbackHandle.sync();
+        } finally {
+          await fallbackHandle.close();
+        }
+      } else {
+        throw error;
+      }
+    }
+  } finally {
+    await rm(temporaryLockPath, { force: true });
   }
-  await handle.writeFile(
-    `${JSON.stringify({ ownerPid: process.pid, startedAt: Math.floor(now() / 1000) })}\n`,
-    "utf8",
-  );
-  await handle.sync();
-  await handle.close();
+
   let released = false;
   return {
     async release() {
       if (released) return;
       released = true;
+      try {
+        const current = JSON.parse(await readFile(lockPath, "utf8")) as Record<string, unknown>;
+        if (current.token !== token) return;
+      } catch (error) {
+        if (systemErrorCode(error) === "ENOENT") return;
+      }
       await rm(lockPath, { force: true });
     },
   };
@@ -358,15 +433,21 @@ export async function verifyStagedArtifact(
   if (staged.distribution !== "installer" || !staged.artifactPath || !staged.sha256) {
     return null;
   }
-  const stagedRoot = stagedDirectoryPath(stateDirectory);
-  const normalizedArtifactPath = path.normalize(staged.artifactPath);
-  if (!isPathInside(stagedRoot, normalizedArtifactPath)) return null;
   if (staged.sha256 !== expectedSource.sha256) return null;
   if (expectedSource.size !== undefined && staged.size !== expectedSource.size) return null;
+  const stagedRoot = stagedDirectoryPath(stateDirectory);
   try {
-    const size = await verifyArtifactFile(expectedSource, normalizedArtifactPath);
+    // Reject direct symlinks and parent symlink/junction escapes outside stagedRoot.
+    const entryMeta = await lstat(staged.artifactPath);
+    if (!entryMeta.isFile() || entryMeta.isSymbolicLink()) return null;
+    const [realStagedRoot, realArtifactPath] = await Promise.all([
+      realpath(stagedRoot),
+      realpath(staged.artifactPath),
+    ]);
+    if (!isPathInsideRoot(realStagedRoot, realArtifactPath)) return null;
+    const size = await verifyArtifactFile(expectedSource, realArtifactPath);
     if (staged.size !== undefined && size !== staged.size) return null;
-    return { artifactPath: normalizedArtifactPath, size };
+    return { artifactPath: realArtifactPath, size };
   } catch {
     return null;
   }
@@ -377,7 +458,8 @@ export async function cleanupStagedUpdates(
   options: CleanupStagedUpdatesOptions = {},
 ): Promise<void> {
   const root = requireAbsoluteDirectory(stateDirectory);
-  await recoverStagingLock(root);
+  const now = options.now ?? Date.now;
+  await recoverStagingLock(root, now);
   const stagedRoot = stagedDirectoryPath(root);
   try {
     await lstat(stagedRoot);
@@ -385,7 +467,7 @@ export async function cleanupStagedUpdates(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  const lock = await acquireStagingLock(root, Date.now);
+  const lock = await acquireStagingLock(root, now);
   if (!lock) return;
   try {
     if (options.currentVersion !== undefined) {

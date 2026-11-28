@@ -16,8 +16,10 @@ import {
   Switch,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
+  compareExtensionVersions,
   resolveLocalizedExtensionText,
   type HostExtensionCatalogEntry,
+  type HostExtensionChangelogEntry,
   type HostExtensionListItem,
 } from "@codexhost/shared-contracts";
 import {
@@ -189,6 +191,27 @@ function ScreenshotLightbox({
   );
 }
 
+type DetailViewTab = "overview" | "changelog";
+
+function formatReleaseDate(publishedAt: string | undefined): string | null {
+  if (!publishedAt) return null;
+  const time = Date.parse(publishedAt);
+  if (!Number.isFinite(time)) return null;
+  return new Date(time).toISOString().slice(0, 10);
+}
+
+function resolveReleaseState(
+  entry: HostExtensionChangelogEntry,
+  installedVersion: string | undefined,
+): "new" | "current" | "older" {
+  if (!installedVersion) return "older";
+  const cmp = compareExtensionVersions(entry.version, installedVersion);
+  if (cmp > 0) return "new";
+  if (cmp < 0) return "older";
+  const normalize = (value: string) => value.trim().replace(/^v/iu, "").toLowerCase();
+  return normalize(entry.version) === normalize(installedVersion) ? "current" : "older";
+}
+
 export function WebExtensionDetailModal({
   open,
   target,
@@ -206,6 +229,7 @@ export function WebExtensionDetailModal({
 }: WebExtensionDetailModalProps): ReactNode {
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [activeScreenshot, setActiveScreenshot] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<DetailViewTab>("overview");
 
   const targetSignature =
     target === null ? "" : `host:${target.item?.id ?? target.catalog?.id ?? ""}`;
@@ -217,6 +241,7 @@ export function WebExtensionDetailModal({
 
   useEffect(() => {
     setActiveScreenshot(null);
+    setActiveTab("overview");
   }, [targetSignature, open]);
 
   if (!open || target === null) return null;
@@ -238,6 +263,9 @@ export function WebExtensionDetailModal({
   const installedVersion = validItem?.manifest.version;
   const catalogVersion = catalogEntry?.version;
   const updateAvailable = hasHostCatalogUpdate(item, catalogEntry);
+  const changelog = catalogEntry?.changelog ?? [];
+  const hasChangelog = changelog.length > 0;
+  const currentTab: DetailViewTab = hasChangelog ? activeTab : "overview";
 
   const repositoryUrl = parseSafeHttpUrl(
     validItem?.manifest.repository ?? catalogEntry?.repository,
@@ -343,9 +371,19 @@ export function WebExtensionDetailModal({
                       {statusBadge.label}
                     </span>
                   )}
-                  {updateAvailable && (
-                    <span className={css.updateChip}>{t("extensions.updateAvailable")}</span>
-                  )}
+                  {updateAvailable &&
+                    (hasChangelog ? (
+                      <button
+                        type="button"
+                        className={`${css.updateChip} ${css.updateChipButton}`}
+                        title={t("extensions.detailTabChangelog")}
+                        onClick={() => setActiveTab("changelog")}
+                      >
+                        {t("extensions.updateAvailable")}
+                      </button>
+                    ) : (
+                      <span className={css.updateChip}>{t("extensions.updateAvailable")}</span>
+                    ))}
                 </div>
 
                 {platformBadge && (
@@ -440,105 +478,141 @@ export function WebExtensionDetailModal({
           </div>
 
           <div className={css.actionBar}>
-            {!isInstalled && catalogEntry && (
-              <>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={controlsDisabled}
-                  aria-busy={pendingAction === "install"}
-                  onClick={() => onInstallMarket(catalogEntry)}
-                >
-                  {t(pendingAction === "install" ? "extensions.installing" : "extensions.install")}
-                </Button>
-                {catalogEntry.trustTier === "community" && (
-                  <span className={css.communityNote}>{t("extensions.communityNotice")}</span>
-                )}
-              </>
-            )}
-
-            {item && (
-              <>
-                {updateAvailable && catalogEntry && validItem && (
+            <div className={css.actionGroup}>
+              {!isInstalled && catalogEntry && (
+                <>
                   <Button
                     variant="primary"
                     size="sm"
                     disabled={controlsDisabled}
-                    aria-busy={pendingAction === "update"}
-                    onClick={() => onUpdate(validItem, catalogEntry)}
+                    aria-busy={pendingAction === "install"}
+                    onClick={() => onInstallMarket(catalogEntry)}
                   >
-                    {pendingAction === "update"
-                      ? t("extensions.updating")
-                      : t("extensions.updateToVersion", {
-                          version: catalogEntry.version.replace(/^v/u, ""),
-                        })}
+                    {t(
+                      pendingAction === "install" ? "extensions.installing" : "extensions.install",
+                    )}
                   </Button>
-                )}
+                  {catalogEntry.trustTier === "community" && (
+                    <span className={css.communityNote}>{t("extensions.communityNotice")}</span>
+                  )}
+                </>
+              )}
 
-                {canOpenPage && validItem && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={controlsDisabled}
-                    onClick={() => {
-                      onClose();
-                      onOpenPage(validItem);
-                    }}
-                  >
-                    {t("extensions.page.open")}
-                  </Button>
-                )}
+              {item && (
+                <>
+                  {updateAvailable && catalogEntry && validItem && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={controlsDisabled}
+                      aria-busy={pendingAction === "update"}
+                      onClick={() => onUpdate(validItem, catalogEntry)}
+                    >
+                      {pendingAction === "update"
+                        ? t("extensions.updating")
+                        : t("extensions.updateToVersion", {
+                            version: catalogEntry.version.replace(/^v/u, ""),
+                          })}
+                    </Button>
+                  )}
 
-                <Switch
-                  label={displayName}
-                  checked={item.enabled}
-                  disabled={controlsDisabled || toggleBlocked}
-                  title={toggleBlocked ? t("extensions.toggleBlockedInvalid") : undefined}
-                  onChange={(next) => onToggle(item, next)}
-                />
-              </>
-            )}
+                  {canOpenPage && validItem && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={controlsDisabled}
+                      onClick={() => {
+                        onClose();
+                        onOpenPage(validItem);
+                      }}
+                    >
+                      {t("extensions.page.open")}
+                    </Button>
+                  )}
 
-            {isInstalled &&
-              item &&
-              (confirmingUninstall ? (
-                <div className={css.confirmBox}>
-                  <span className={css.confirmText}>{t("extensions.uninstallConfirmPrompt")}</span>
+                  <Switch
+                    label={displayName}
+                    checked={item.enabled}
+                    disabled={controlsDisabled || toggleBlocked}
+                    title={toggleBlocked ? t("extensions.toggleBlockedInvalid") : undefined}
+                    onChange={(next) => onToggle(item, next)}
+                  />
+                </>
+              )}
+
+              {isInstalled &&
+                item &&
+                (confirmingUninstall ? (
+                  <div className={css.confirmBox}>
+                    <span className={css.confirmText}>
+                      {t("extensions.uninstallConfirmPrompt")}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={css.dangerButton}
+                      disabled={controlsDisabled}
+                      aria-busy={pendingAction === "uninstall"}
+                      onClick={() => onUninstall(item)}
+                    >
+                      {t(
+                        pendingAction === "uninstall"
+                          ? "extensions.uninstalling"
+                          : "extensions.uninstallConfirm",
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={controlsDisabled}
+                      onClick={() => setConfirmingUninstall(false)}
+                    >
+                      {t("extensions.cancel")}
+                    </Button>
+                  </div>
+                ) : (
                   <Button
                     variant="outline"
                     size="sm"
                     className={css.dangerButton}
+                    icon={<IconTrashOutlineRegular size={13} />}
                     disabled={controlsDisabled}
-                    aria-busy={pendingAction === "uninstall"}
-                    onClick={() => onUninstall(item)}
+                    onClick={() => setConfirmingUninstall(true)}
                   >
-                    {t(
-                      pendingAction === "uninstall"
-                        ? "extensions.uninstalling"
-                        : "extensions.uninstallConfirm",
-                    )}
+                    {t("extensions.remove")}
                   </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={controlsDisabled}
-                    onClick={() => setConfirmingUninstall(false)}
-                  >
-                    {t("extensions.cancel")}
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={css.dangerButton}
-                  icon={<IconTrashOutlineRegular size={13} />}
-                  disabled={controlsDisabled}
-                  onClick={() => setConfirmingUninstall(true)}
+                ))}
+            </div>
+
+            {hasChangelog && (
+              <div
+                className={css.viewTabs}
+                role="tablist"
+                aria-label={t("extensions.detailTabsLabel")}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={currentTab === "overview"}
+                  className={css.viewTab}
+                  data-detail-tab="overview"
+                  onClick={() => setActiveTab("overview")}
                 >
-                  {t("extensions.remove")}
-                </Button>
-              ))}
+                  {t("extensions.detailTabOverview")}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={currentTab === "changelog"}
+                  className={css.viewTab}
+                  data-detail-tab="changelog"
+                  onClick={() => setActiveTab("changelog")}
+                >
+                  <span>{t("extensions.detailTabChangelog")}</span>
+                  {updateAvailable && <span className={css.viewTabDot} aria-hidden="true" />}
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
@@ -560,92 +634,149 @@ export function WebExtensionDetailModal({
             </div>
           ))}
 
-          {/* Declarative settings form for installed Host extensions */}
-          {validItem && settingsSchema && settingsSchema.length > 0 && (
-            <WebExtensionSettingsForm
-              extensionId={validItem.id}
-              enabled={validItem.enabled}
-              schema={settingsSchema}
-              locale={locale}
-              t={t}
-            />
-          )}
-
-          {/* Safe-subset Markdown details or fallback description */}
-          {rawDetails && (
-            <section className={css.detailsSection}>
-              <WebExtensionMarkdown content={rawDetails} classes={MARKDOWN_CLASSES} />
-            </section>
-          )}
-
-          {/* Screenshots gallery; clicking a thumbnail opens the floating viewport lightbox */}
-          {screenshots.length > 0 && (
-            <section className={css.screenshotsSection}>
-              <h3 className={css.sectionTitle}>{t("extensions.screenshotsTitle")}</h3>
-              <div className={css.galleryGrid}>
-                {screenshots.map((url, idx) => (
-                  <button
-                    key={url}
-                    type="button"
-                    className={css.thumb}
-                    aria-pressed={clampedScreenshotIndex === idx}
-                    aria-label={t("extensions.screenshotPreviewLabel", {
-                      index: String(idx + 1),
-                      total: String(screenshots.length),
-                    })}
-                    onClick={() => setActiveScreenshot(idx)}
+          {currentTab === "changelog" ? (
+            <section
+              className={css.changelogList}
+              role="tabpanel"
+              aria-label={t("extensions.detailTabChangelog")}
+            >
+              {changelog.map((entry) => {
+                const state = resolveReleaseState(entry, installedVersion);
+                const dateLabel = formatReleaseDate(entry.publishedAt);
+                const releaseUrl = parseSafeHttpUrl(entry.url);
+                return (
+                  <article
+                    key={`${entry.version}-${entry.publishedAt ?? ""}`}
+                    className={css.changelogItem}
+                    data-release-state={state}
                   >
-                    <img
-                      src={url}
-                      alt={t("extensions.screenshotAlt", {
-                        name: displayName,
-                        index: String(idx + 1),
-                      })}
-                      loading="lazy"
-                    />
-                  </button>
-                ))}
-              </div>
+                    <header className={css.changelogItemHeader}>
+                      <div className={css.changelogItemMeta}>
+                        <span className={css.changelogVersion}>
+                          v{entry.version.replace(/^v/u, "")}
+                        </span>
+                        {state === "new" && (
+                          <span className={css.changelogBadge} data-tone="update">
+                            {t("extensions.changelogNewBadge")}
+                          </span>
+                        )}
+                        {state === "current" && (
+                          <span className={css.changelogBadge} data-tone="current">
+                            {t("extensions.changelogCurrentBadge")}
+                          </span>
+                        )}
+                        {dateLabel && <time className={css.changelogDate}>{dateLabel}</time>}
+                      </div>
+                      {releaseUrl && (
+                        <a
+                          href={releaseUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={css.changelogLink}
+                          title={t("extensions.changelogViewRelease")}
+                        >
+                          <span>GitHub</span>
+                          <IconRightUpOutlineRegular size={11} />
+                        </a>
+                      )}
+                    </header>
+                    <WebExtensionMarkdown content={entry.notes} classes={MARKDOWN_CLASSES} />
+                  </article>
+                );
+              })}
             </section>
-          )}
+          ) : (
+            <>
+              {/* Declarative settings form for installed Host extensions */}
+              {validItem && settingsSchema && settingsSchema.length > 0 && (
+                <WebExtensionSettingsForm
+                  extensionId={validItem.id}
+                  enabled={validItem.enabled}
+                  schema={settingsSchema}
+                  locale={locale}
+                  t={t}
+                />
+              )}
 
-          {/* Permissions, runtime capabilities, and trust notice */}
-          <section className={css.trustCard}>
-            <div className={css.trustHeader}>
-              <IconShieldOutlineRegular size={14} />
-              <h3 className={css.sectionTitle}>{t("extensions.trust.title")}</h3>
-            </div>
-            <p className={css.trustDescription}>{t("extensions.trust.nativeSummary")}</p>
-            <div className={css.capabilityChips}>
-              {capabilities?.hasPage && (
-                <span className={css.capabilityChip}>{t("extensions.badge.page")}</span>
+              {/* Safe-subset Markdown details or fallback description */}
+              {rawDetails && (
+                <section className={css.detailsSection}>
+                  <WebExtensionMarkdown content={rawDetails} classes={MARKDOWN_CLASSES} />
+                </section>
               )}
-              {capabilities?.hasWidget && (
-                <span className={css.capabilityChip}>{t("extensions.badge.widget")}</span>
+
+              {/* Screenshots gallery; clicking a thumbnail opens the floating viewport lightbox */}
+              {screenshots.length > 0 && (
+                <section className={css.screenshotsSection}>
+                  <h3 className={css.sectionTitle}>{t("extensions.screenshotsTitle")}</h3>
+                  <div className={css.galleryGrid}>
+                    {screenshots.map((url, idx) => (
+                      <button
+                        key={url}
+                        type="button"
+                        className={css.thumb}
+                        aria-pressed={clampedScreenshotIndex === idx}
+                        aria-label={t("extensions.screenshotPreviewLabel", {
+                          index: String(idx + 1),
+                          total: String(screenshots.length),
+                        })}
+                        onClick={() => setActiveScreenshot(idx)}
+                      >
+                        <img
+                          src={url}
+                          alt={t("extensions.screenshotAlt", {
+                            name: displayName,
+                            index: String(idx + 1),
+                          })}
+                          loading="lazy"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </section>
               )}
-              {capabilities?.hasWeb && (
-                <span className={css.capabilityChip}>{t("extensions.capability.webUi")}</span>
-              )}
-              {capabilities?.hasDesktop && (
-                <span className={css.capabilityChip}>{t("extensions.capability.desktopUi")}</span>
-              )}
-              {capabilities?.hasBackend && (
-                <span className={css.capabilityChip}>
-                  {validItem
-                    ? t("extensions.capability.backendWithState", {
-                        state: backendStateLabel(validItem.backendState, t),
-                      })
-                    : t("extensions.capability.backend")}
-                </span>
-              )}
-            </div>
-            {validItem && (
-              <p className={css.sourceLine}>
-                ID: <code>{validItem.id}</code>
-                {" · "}SHA-256: <code>{validItem.digest.slice(0, 12)}…</code>
-              </p>
-            )}
-          </section>
+
+              {/* Permissions, runtime capabilities, and trust notice */}
+              <section className={css.trustCard}>
+                <div className={css.trustHeader}>
+                  <IconShieldOutlineRegular size={14} />
+                  <h3 className={css.sectionTitle}>{t("extensions.trust.title")}</h3>
+                </div>
+                <p className={css.trustDescription}>{t("extensions.trust.nativeSummary")}</p>
+                <div className={css.capabilityChips}>
+                  {capabilities?.hasPage && (
+                    <span className={css.capabilityChip}>{t("extensions.badge.page")}</span>
+                  )}
+                  {capabilities?.hasWidget && (
+                    <span className={css.capabilityChip}>{t("extensions.badge.widget")}</span>
+                  )}
+                  {capabilities?.hasWeb && (
+                    <span className={css.capabilityChip}>{t("extensions.capability.webUi")}</span>
+                  )}
+                  {capabilities?.hasDesktop && (
+                    <span className={css.capabilityChip}>
+                      {t("extensions.capability.desktopUi")}
+                    </span>
+                  )}
+                  {capabilities?.hasBackend && (
+                    <span className={css.capabilityChip}>
+                      {validItem
+                        ? t("extensions.capability.backendWithState", {
+                            state: backendStateLabel(validItem.backendState, t),
+                          })
+                        : t("extensions.capability.backend")}
+                    </span>
+                  )}
+                </div>
+                {validItem && (
+                  <p className={css.sourceLine}>
+                    ID: <code>{validItem.id}</code>
+                    {" · "}SHA-256: <code>{validItem.digest.slice(0, 12)}…</code>
+                  </p>
+                )}
+              </section>
+            </>
+          )}
         </div>
       </div>
 

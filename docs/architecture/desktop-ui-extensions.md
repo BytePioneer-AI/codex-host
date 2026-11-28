@@ -193,7 +193,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 | RPC 方法 | 用途 |
 | --- | --- |
 | `list` / `snapshot` | 返回含修订号与诊断的管理列表（默认省略大图截图以减小轮询载荷；详情弹窗按需经 `asset` 懒加载）/ 仅供已启用扩展使用的运行态快照 |
-| `catalog` | 并发竞速拉取市场索引 `catalog.v2.json`（GitHub Raw 与 jsDelivr 镜像，支持磁盘持久化 SWR 缓存与后台下载量合并；可选 `featured` / `featuredOrder` 精选字段） |
+| `catalog` | 并发竞速拉取市场索引 `catalog.v2.json`（GitHub Raw 与 jsDelivr 镜像，支持磁盘持久化 SWR 缓存与后台下载量合并；可选 `featured` / `featuredOrder` 精选字段与 `changelog` 最近版本变更记录） |
 | `catalogIcon` | 按目录扩展 ID 拉取并磁盘缓存远程光栅图标（仅允许 HTTPS 与 PNG/JPEG/WEBP 魔数校验，防止 SSRF 与外链直连超时） |
 | `install` / `update` / `uninstall` | 支持 `catalog`、`github`、`zip`（base64；拒绝 `localZipPath`）与 `localDir`；代次原子替换 |
 | `enable` / `disable` / `recover` | 带 `expectedRevision` 乐观锁更新 `enabled.json`；`recover` 一键清空启用列表 |

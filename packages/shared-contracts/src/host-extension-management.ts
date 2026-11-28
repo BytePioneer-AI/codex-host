@@ -49,6 +49,14 @@ export const hostExtensionDefaultSeedsSchema = z.strictObject({
 });
 export type HostExtensionDefaultSeeds = z.infer<typeof hostExtensionDefaultSeedsSchema>;
 
+export const hostExtensionChangelogEntrySchema = z.object({
+  version: z.string().trim().min(1).max(128),
+  publishedAt: z.string().trim().min(1).max(64).optional(),
+  notes: z.string().trim().min(1).max(8192),
+  url: desktopExtensionHttpUrlSchema.optional(),
+});
+export type HostExtensionChangelogEntry = z.infer<typeof hostExtensionChangelogEntrySchema>;
+
 const { downloadUrl, ...catalogMetadata } = desktopExtensionCatalogEntrySchema.shape;
 export const hostExtensionCatalogEntrySchema = z
   .object({
@@ -70,6 +78,7 @@ export const hostExtensionCatalogEntrySchema = z
     downloadUrl: downloadUrl.refine((url) => url.startsWith("https://"), "Expected HTTPS"),
     featured: z.boolean().optional(),
     featuredOrder: z.int().nonnegative().optional(),
+    changelog: z.array(hostExtensionChangelogEntrySchema).max(20).optional(),
   })
   .refine(({ targets, apis }) => {
     const derived = targetsForCapabilities({

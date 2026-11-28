@@ -65,11 +65,11 @@
 
 <td width="25%" valign="top">
 
-### 경량 멀티클라이언트 · 실시간 동기화
+### 경량 멀티 클라이언트 동기화
 
-공식 앱 없이 바로 쓰는 경량 **CodexHost 독립 클라이언트**를 제공하며, 공식 Codex 클라이언트 확장도 지원합니다.
+가벼운 독립 앱을 기본 제공하며 공식 Codex Desktop 확장도 지원합니다.
 
-경량 CH 클라이언트, 공식 Codex 클라이언트, Web, 모바일이 하나의 로컬 Host로 세션을 실시간 동기화합니다.
+독립 앱·공식 앱·Web·모바일 4개 환경이 실시간 동기화됩니다.
 
 </td>
 
@@ -85,21 +85,21 @@
 
 <td width="25%" valign="top">
 
-### 다중 머신 연동 · 노드 협업
+### 다중 머신 연동 협업
 
-Mac, Linux, Windows 여러 머신을 한 사이드바에 연결해 머신 간 세션이 서로 호출하고 여러 노드가 하나의 작업을 함께 완수합니다.
+Mac·Linux·Windows를 한 사이드바에 묶어 머신 간 작업을 위임하고 함께 처리합니다.
 
-자리를 비워도 휴대폰에서 바로 승인하고 이어서 지시하세요.
+자리를 비워도 휴대폰으로 승인하고 이어갑니다.
 
 </td>
 
 <td width="25%" valign="top">
 
-### 네이티브 능력 일급 시민
+### 네이티브 최우선
 
-각 Agent의 공식 **SDK / RPC** 직결을 우선하며, **ACP**로 연동할 때도 네이티브 API와 CLI로 기능을 빈틈없이 보완합니다.
+각 Agent의 네이티브 **SDK / RPC**로 연동하며, **ACP** 사용 시에도 네이티브 API와 CLI로 기능을 보완합니다.
 
-로컬 구독과 인증을 재사용하며 계정 장벽·제3자 프록시가 없습니다.
+로컬 구독과 인증을 그대로 사용하며 별도 계정이나 프록시가 없습니다.
 
 </td>
 
@@ -114,9 +114,9 @@ Mac, Linux, Windows 여러 머신을 한 사이드바에 연결해 머신 간 �
 
 CodexHost는 **macOS / Windows / Linux / Android / iOS (PWA)**를 지원하는 무료 오픈소스입니다. 로컬 및 LAN 환경의 모든 기능은 **계정 등록 없이**, **공식 Codex Desktop 미설치 상태에서도** 바로 사용할 수 있습니다.
 
-- **설치 파일 다운로드 (권장, 앱 아이콘으로 바로 실행)**: [**공식 사이트 다운로드**](https://chost.dev/en/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest) _(데스크톱 앱, Android APK, 모바일 안내 포함 · [Linux 안내](../platforms/linux/linux.md))_
-  - Windows에서는 WinGet으로도 동일한 데스크톱 설치 파일을 설치할 수 있습니다: `winget install --id BytePioneer-AI.CodexHost --exact`
-  - 설치 파일은 기본적으로 터미널 `PATH`에 전역 `codexhost` 명령어를 등록하지 않습니다. CLI 관리가 필요하면 아래 npm 설치를 사용하세요.
+- **설치 파일 다운로드 (권장)**: [**공식 사이트 다운로드**](https://chost.dev/en/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest) _(데스크톱 앱, Android APK, 모바일 안내 포함 · [Linux 안내](../platforms/linux/linux.md))_
+  - Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
+  - 설치 파일은 앱 아이콘으로 바로 실행되며 `PATH`에 `codexhost`를 등록하지 않습니다. CLI가 필요하면 아래 npm으로 설치하세요.
 
 > [!IMPORTANT]
 > **macOS 최초 실행 시 「확인할 수 없는 앱」 경고가 표시될 때** 터미널에서 아래 명령어를 실행하세요:
@@ -124,7 +124,7 @@ CodexHost는 **macOS / Windows / Linux / Android / iOS (PWA)**를 지원하는 �
 > xattr -dr com.apple.quarantine /Applications/codexhost.app
 > ```
 
-### CLI 설치 및 주요 명령어 (npm)
+### npm 설치
 
 ```bash
 npm install -g @codexhost/cli   # 전역 codexhost CLI 설치 및 등록 (Node.js 22.19+ 또는 24 필요)
@@ -136,8 +136,6 @@ codexhost status   # 백그라운드 Host 및 서비스 상태 확인
 codexhost update   # 최신 버전으로 업그레이드
 codexhost stop     # 모든 백그라운드 서비스 종료 (npm 재설치 전 실행)
 ```
-
-> **보안 주의**: 원격 접속용 Access Token, 로그인 링크, 페어링 QR 코드는 컴퓨터 전체 제어 권한과 동일하므로 절대 외부에 공유하지 마세요.
 
 <details>
 <summary><b>추가 문제 해결 (로컬 콘솔 / Windows 포터블 Codex Desktop)</b></summary>

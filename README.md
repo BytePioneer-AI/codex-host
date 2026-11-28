@@ -65,11 +65,11 @@
 
 <td width="25%" valign="top">
 
-### Lightweight App, Live Sync
+### Lightweight & Synced
 
-Ships with the lightweight **CodexHost standalone app** — no official Codex Desktop required, while also enhancing it if installed.
+Ships with a lightweight standalone app and also enhances official Codex Desktop.
 
-The standalone CH client, official Codex client, Web, and Mobile share one local Host with real-time session sync.
+Standalone, official Desktop, Web, and mobile stay live-synced in real time.
 
 </td>
 
@@ -85,11 +85,11 @@ Hand off full context across agents mid-task.
 
 <td width="25%" valign="top">
 
-### Multi-Machine Mesh & Mobile
+### Multi-Machine Mesh
 
-Connect Mac, Linux, and Windows machines into one sidebar — sessions across machines call each other so multiple nodes finish one task together.
+Bring Mac, Linux, and Windows into one sidebar—delegate across machines and collaborate across nodes.
 
-Step away and keep approving or steering from your phone.
+Approve and reply from your phone anywhere.
 
 </td>
 
@@ -97,9 +97,9 @@ Step away and keep approving or steering from your phone.
 
 ### Native First-Class
 
-Connects over each agent's native **SDK / RPC** whenever possible; even over **ACP**, native APIs and CLIs fill every capability gap.
+Built on each agent's native **SDK / RPC**; even over **ACP**, native APIs and CLIs fill in full capabilities.
 
-Reuses your local logins and subscriptions — no account wall, zero third-party proxy.
+Reuses your local logins—no extra account or third-party proxy.
 
 </td>
 
@@ -115,8 +115,8 @@ Reuses your local logins and subscriptions — no account wall, zero third-party
 CodexHost is free and open source for **macOS / Windows / Linux / Android / iOS (PWA)**. Local and LAN features work **without an account** and **do not require official Codex Desktop**.
 
 - **Installers & Apps (Recommended)**: [**Download from Website**](https://chost.dev/en/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest) _(Desktop installers, Android APK, and mobile setup; see also [Linux Guide](docs/platforms/linux/linux.md))_
-  - On Windows, you can also install the same desktop installer via WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
-  - Graphical installers launch from the app icon and do not add `codexhost` to your shell `PATH` by default. For global CLI commands, install via npm below (or link the bundled binary).
+  - Windows WinGet: `winget install --id BytePioneer-AI.CodexHost --exact`
+  - Installers launch from the app icon without adding `codexhost` to `PATH`; use npm below for global CLI commands.
 
 > [!IMPORTANT]
 > **macOS: "App can't be verified" on first launch** — run this in Terminal to clear quarantine:
@@ -124,7 +124,7 @@ CodexHost is free and open source for **macOS / Windows / Linux / Android / iOS 
 > xattr -dr com.apple.quarantine /Applications/codexhost.app
 > ```
 
-### CLI Install & Common Commands (npm)
+### npm
 
 ```bash
 npm install -g @codexhost/cli   # Installs and registers the global codexhost CLI (Node.js 22.19+ or 24)
@@ -136,8 +136,6 @@ codexhost status   # Inspect background Host and service status
 codexhost update   # Upgrade to the latest release
 codexhost stop     # Stop all background services (run before npm reinstall)
 ```
-
-> **Keep Web access private:** access tokens, login links, and pairing QR codes grant full control of your machine. Never share them publicly.
 
 <details>
 <summary><b>More troubleshooting (Local Console / Windows portable Codex Desktop)</b></summary>

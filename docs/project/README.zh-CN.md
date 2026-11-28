@@ -67,9 +67,9 @@
 
 ### 轻量多端，实时同步
 
-自带轻量 **CodexHost 客户端**，无需依赖官方桌面端，也兼容增强官方 Codex 客户端。
+自带轻量独立客户端，也兼容增强官方 Codex Desktop。
 
-轻量 CH 客户端、官方 Codex 客户端、Web 端与手机端共用同一本地 Host，会话实时同步。
+独立端、官方端、Web 与手机四端实时同步，不丢会话。
 
 </td>
 
@@ -85,11 +85,11 @@
 
 <td width="25%" valign="top">
 
-### 多机互联，节点协作
+### 多机互联，协同干活
 
-Mac、Linux、Windows 多机互联进同一侧栏，多机会话可互相调用、多个节点联手完成同一任务。
+Mac、Linux、Windows 收进同一侧栏，跨机互相派活、多节点一起完成任务。
 
-离开电脑，用手机同样随时审批与接力。
+离开电脑，用手机随时审批与接力。
 
 </td>
 
@@ -97,7 +97,7 @@ Mac、Linux、Windows 多机互联进同一侧栏，多机会话可互相调用�
 
 ### 原生能力是一等公民
 
-优先直连各家原生 **SDK / RPC**；即便走 **ACP**，也通过原生接口与 CLI 补全完整能力。
+基于各家原生 **SDK / RPC** 接入；走 **ACP** 时也结合原生接口与 CLI 补全能力。
 
 复用本机订阅与凭据，无账号门槛、无第三方代理。
 
@@ -114,9 +114,9 @@ Mac、Linux、Windows 多机互联进同一侧栏，多机会话可互相调用�
 
 CodexHost 开源免费，支持 **macOS / Windows / Linux / Android / iOS (PWA)**。本机与局域网内的全部功能**无需注册账号**，也**不要求预先安装官方 Codex Desktop**。
 
-- **客户端安装包（推荐，点图标即用）**：[**官网下载**](https://chost.dev/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest)（含桌面端、Android APK 与手机端指引；另见 [Linux 说明](../platforms/linux/linux.zh-CN.md)）
-  - Windows 也可通过 WinGet 安装同款桌面客户端：`winget install --id BytePioneer-AI.CodexHost --exact`
-  - 安装包默认不向终端 `PATH` 注册全局 `codexhost` 命令；如需命令行管理，请使用下方 npm 安装（或手动链接包内可执行文件）。
+- **客户端安装包（推荐）**：[**官网下载**](https://chost.dev/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest)（含桌面端、Android APK 与手机端指引；另见 [Linux 说明](../platforms/linux/linux.zh-CN.md)）
+  - Windows 也可用 WinGet 安装：`winget install --id BytePioneer-AI.CodexHost --exact`
+  - 安装包点图标即用，不自动注册终端 `codexhost` 命令；需要 CLI 请用下方 npm 安装。
 
 > [!IMPORTANT]
 > **macOS 首次打开提示「应用无法验证」**，在终端执行以下命令放行即可：
@@ -124,10 +124,10 @@ CodexHost 开源免费，支持 **macOS / Windows / Linux / Android / iOS (PWA)*
 > xattr -dr com.apple.quarantine /Applications/codexhost.app
 > ```
 
-### 命令行安装与常用 CLI（npm）
+### npm 安装
 
 ```bash
-npm install -g @codexhost/cli   # 安装并自动注册全局 codexhost 命令（需 Node.js 22.19+ 或 24）
+npm install -g @codexhost/cli   # 安装并注册全局 codexhost 命令（需 Node.js 22.19+ 或 24）
 
 codexhost          # 自动启动轻量独立客户端或官方 Codex Desktop 增强模式
 codexhost app      # 直接打开轻量 CodexHost 独立客户端
@@ -136,8 +136,6 @@ codexhost status   # 查看后台 Host 与服务状态
 codexhost update   # 升级到最新版本
 codexhost stop     # 停止全部后台服务（npm 覆盖安装前请先执行）
 ```
-
-> **安全提醒**：远程访问的 Access Token、登录链接和配对二维码等同于本机操作权限，请勿公开分享。
 
 <details>
 <summary><b>更多排查（本地控制台 / Windows 绿色版 Codex Desktop）</b></summary>

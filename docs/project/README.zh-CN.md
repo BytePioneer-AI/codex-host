@@ -122,13 +122,9 @@ Mac、Linux、Windows 多机互联进同一侧栏，多机会话可互相调用�
 
 CodexHost 开源免费，支持 **macOS / Windows / Linux / Android / iOS (PWA)**。本机与局域网内的全部功能**无需注册账号**，也**不要求预先安装官方 Codex Desktop**。
 
-- **客户端下载**：[**官网下载（推荐）**](https://chost.dev/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest)（含桌面端、Android APK 与手机端指引；另见 [Linux 说明](../platforms/linux/linux.zh-CN.md)）
-- **npm / WinGet 安装**：
-
-```bash
-npm install -g @codexhost/cli
-# Windows WinGet: winget install --id BytePioneer-AI.CodexHost --exact
-```
+- **客户端安装包（推荐，点图标即用）**：[**官网下载**](https://chost.dev/download) · [**GitHub Releases**](https://github.com/BytePioneer-AI/codex-host/releases/latest)（含桌面端、Android APK 与手机端指引；另见 [Linux 说明](../platforms/linux/linux.zh-CN.md)）
+  - Windows 也可通过 WinGet 安装同款桌面客户端：`winget install --id BytePioneer-AI.CodexHost --exact`
+  - 安装包默认不向终端 `PATH` 注册全局 `codexhost` 命令；如需命令行管理，请使用下方 npm 安装（或手动链接包内可执行文件）。
 
 > [!IMPORTANT]
 > **macOS 首次打开提示「应用无法验证」**，在终端执行以下命令放行即可：
@@ -136,9 +132,11 @@ npm install -g @codexhost/cli
 > xattr -dr com.apple.quarantine /Applications/codexhost.app
 > ```
 
-### 常用 CLI 命令
+### 命令行安装与常用 CLI（npm）
 
 ```bash
+npm install -g @codexhost/cli   # 安装并自动注册全局 codexhost 命令（需 Node.js 22.19+ 或 24）
+
 codexhost          # 自动启动轻量独立客户端或官方 Codex Desktop 增强模式
 codexhost app      # 直接打开轻量 CodexHost 独立客户端
 codexhost web      # 启动本地 Web 端并在浏览器打开

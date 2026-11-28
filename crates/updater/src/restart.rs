@@ -138,19 +138,19 @@ fn web_listening(address: &str) -> bool {
         .is_some_and(|addresses| addresses.into_iter().any(connects))
 }
 
-fn services_ready(
+fn services_pending(
     request: &UpdateRequest,
     expected_version: Option<&str>,
     require_web: bool,
     snapshot: impl Fn(u32) -> Option<ProcessIdentity>,
     listening: impl Fn(&str) -> bool,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<Option<&'static str>, Box<dyn Error>> {
     let Some(data) = &request.data_directory else {
-        return Ok(true);
+        return Ok(None);
     };
     let app = request.installation.resources_root().join("app");
     let Some(host) = read_descriptor::<ServiceOwner>(&data.join("shared-host-ready.json"))? else {
-        return Ok(false);
+        return Ok(Some("Shared Host ready record missing"));
     };
     if !matches_owner(
         &host,
@@ -158,23 +158,37 @@ fn services_ready(
         expected_version,
         snapshot(host.pid).as_ref(),
     ) {
-        return Ok(false);
+        return Ok(Some("Shared Host owner or version did not match"));
     }
     if !require_web {
-        return Ok(true);
+        return Ok(None);
     }
     let Some(web) = read_descriptor::<WebOwner>(&data.join("web-service-ready.json"))? else {
-        return Ok(false);
+        return Ok(Some("Web ready record missing"));
     };
-    Ok(matches_owner(
+    if !(matches_owner(
         &web.owner,
         &app.join("web-server.mjs"),
         expected_version,
         snapshot(web.owner.pid).as_ref(),
     ) && same_path(&web.owner.executable, &request.installation.launcher_path())
         && web.owner.version == host.version
-        && snapshot(web.web_pid).is_some_and(|child| child.parent_id == web.owner.pid)
-        && listening(&web.address))
+        && snapshot(web.web_pid).is_some_and(|child| child.parent_id == web.owner.pid))
+    {
+        return Ok(Some("Web owner, child or version did not match"));
+    }
+    Ok((!listening(&web.address)).then_some("Web port is not listening"))
+}
+
+#[cfg(test)]
+fn services_ready(
+    request: &UpdateRequest,
+    expected_version: Option<&str>,
+    require_web: bool,
+    snapshot: impl Fn(u32) -> Option<ProcessIdentity>,
+    listening: impl Fn(&str) -> bool,
+) -> Result<bool, Box<dyn Error>> {
+    Ok(services_pending(request, expected_version, require_web, snapshot, listening)?.is_none())
 }
 
 fn desktop_ready(request: &UpdateRequest) -> Result<bool, Box<dyn Error>> {
@@ -222,10 +236,22 @@ fn apply_restart_environment(command: &mut Command, request: &UpdateRequest) {
     }
     if let Installation::Npm(npm) = &request.installation {
         command
-            .env("CODEXHOST_NPM_NODE_PATH", &npm.node_path)
-            .env("CODEXHOST_NPM_CLI_PATH", &npm.npm_cli_path)
-            .env("CODEXHOST_NPM_LAUNCHER_PATH", &npm.npm_launcher_path)
-            .env("CODEXHOST_NPM_PACKAGE_ROOT", &npm.npm_package_root);
+            .env(
+                "CODEXHOST_NPM_NODE_PATH",
+                crate::npm::ordinary_npm_path(&npm.node_path).as_os_str(),
+            )
+            .env(
+                "CODEXHOST_NPM_CLI_PATH",
+                crate::npm::ordinary_npm_path(&npm.npm_cli_path).as_os_str(),
+            )
+            .env(
+                "CODEXHOST_NPM_LAUNCHER_PATH",
+                crate::npm::ordinary_npm_path(&npm.npm_launcher_path).as_os_str(),
+            )
+            .env(
+                "CODEXHOST_NPM_PACKAGE_ROOT",
+                crate::npm::ordinary_npm_path(&npm.npm_package_root).as_os_str(),
+            );
     }
     command
         .stdin(Stdio::null())
@@ -280,11 +306,123 @@ fn desktop_shell_command(request: &UpdateRequest) -> Command {
     command
 }
 
-pub(crate) fn relaunch_desktop_shell(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
+const SHELL_READY: &str = "desktop-shell-ready.json";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ShellInstance {
+    pid: u32,
+    started_at_micros: u64,
+}
+
+#[derive(Deserialize)]
+struct ShellOwner {
+    pid: u32,
+    started_at_micros: u64,
+    executable: PathBuf,
+    version: String,
+}
+
+impl ShellOwner {
+    fn instance(&self) -> ShellInstance {
+        ShellInstance {
+            pid: self.pid,
+            started_at_micros: self.started_at_micros,
+        }
+    }
+}
+
+fn is_new_shell_ready(
+    owner: &ShellOwner,
+    previous_shell: Option<ShellInstance>,
+    expected_version: Option<&str>,
+    recovery_exited: bool,
+) -> bool {
+    (Some(owner.instance()) != previous_shell || recovery_exited)
+        && expected_version.is_none_or(|version| owner.version == version)
+}
+
+fn shell_owner(request: &UpdateRequest) -> Result<Option<ShellOwner>, Box<dyn Error>> {
+    let Some(data) = &request.data_directory else {
+        return Ok(None);
+    };
+    let Some(owner) = read_descriptor::<ShellOwner>(&data.join(SHELL_READY))? else {
+        return Ok(None);
+    };
+    let root = request.installation.resources_root();
+    let shell_name = format!("codexhost-shell{}", std::env::consts::EXE_SUFFIX);
+    let candidates = [
+        root.join("libexec").join(&shell_name),
+        root.join("bin").join(&shell_name),
+        root.join("libexec/CodexHost.app/Contents/MacOS/CodexHost"),
+        root.join("../Helpers/CodexHost.app/Contents/MacOS/CodexHost"),
+    ];
+    Ok(process_snapshot(owner.pid).ok().and_then(|live| {
+        (live.started_at_micros == owner.started_at_micros
+            && same_path(&live.executable, &owner.executable)
+            && candidates
+                .iter()
+                .any(|path| same_path(path, &owner.executable)))
+        .then_some(owner)
+    }))
+}
+
+pub(crate) fn current_desktop_shell(
+    request: &UpdateRequest,
+) -> Result<Option<ShellInstance>, Box<dyn Error>> {
+    Ok(shell_owner(request)?.map(|owner| owner.instance()))
+}
+
+pub(crate) fn relaunch_desktop_shell(
+    request: &UpdateRequest,
+    expected_version: Option<&str>,
+    previous_shell: Option<ShellInstance>,
+    recovery: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut command = desktop_shell_command(request);
+    // A rollback may restore a Launcher that predates the supervised app entrypoint.
+    if !recovery {
+        command.arg("--update-recovery");
+    }
     configure_detached_service_command(&mut command)?;
-    command.spawn()?;
-    Ok(())
+    let log = crate::diagnostics::capture(
+        &mut command,
+        &request.status_path,
+        "desktop-shell-restart.log",
+        recovery,
+    )?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Could not start Desktop Shell launcher {}: {error}{}",
+            request.installation.launcher_path().display(),
+            crate::diagnostics::log_details(&log, false)
+        )
+    })?;
+    let deadline = Instant::now() + Duration::from_secs(46);
+    loop {
+        if let Some(status) = child.try_wait()?
+            && !status.success()
+        {
+            return Err(format!(
+                "Desktop Shell restart exited with {status}{}",
+                crate::diagnostics::log_details(&log, false)
+            )
+            .into());
+        }
+        if let Some(owner) = shell_owner(request)?
+            && is_new_shell_ready(
+                &owner,
+                previous_shell,
+                expected_version,
+                recovery && child.try_wait()?.is_some(),
+            )
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("Desktop Shell did not publish a new ready record for the expected installation and version{}", crate::diagnostics::log_details(&log, false)).into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 pub(crate) fn restore(
@@ -292,7 +430,21 @@ pub(crate) fn restore(
     expected_version: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     verify_available_services(request)?;
-    let mut child = command(request).spawn()?;
+    let mut command = command(request);
+    let executable = PathBuf::from(command.get_program());
+    let log = crate::diagnostics::capture(
+        &mut command,
+        &request.status_path,
+        "restart-service.log",
+        true,
+    )?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Could not start service executable {}: {error}{}",
+            executable.display(),
+            crate::diagnostics::log_details(&log, false)
+        )
+    })?;
     let require_web = request.restart_target == RestartTarget::Web
         || std::env::var_os("CODEXHOST_WEB_SERVICE").as_deref() != Some(std::ffi::OsStr::new("0"));
     let started = Instant::now();
@@ -300,22 +452,39 @@ pub(crate) fn restore(
         if let Some(status) = child.try_wait()?
             && !status.success()
         {
-            return Err(format!("codexhost restart exited with {status}").into());
+            return Err(format!(
+                "codexhost restart exited with {status}{}",
+                crate::diagnostics::log_details(&log, false)
+            )
+            .into());
         }
         if (request.restart_target == RestartTarget::Web || desktop_ready(request)?)
-            && services_ready(
+            && services_pending(
                 request,
                 expected_version,
                 require_web,
                 |pid| process_identity(pid).ok(),
                 web_listening,
             )?
+            .is_none()
         {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(100));
     }
-    Err("codexhost services did not become ready after restart".into())
+    let pending = services_pending(
+        request,
+        expected_version,
+        require_web,
+        |pid| process_identity(pid).ok(),
+        web_listening,
+    )?;
+    let waiting = pending.unwrap_or("Codex Desktop launcher or control port not ready");
+    Err(format!(
+        "codexhost services did not become ready after restart ({waiting}){}",
+        crate::diagnostics::log_details(&log, false)
+    )
+    .into())
 }
 
 #[cfg(test)]
@@ -422,6 +591,44 @@ mod tests {
             legacy.get_args().collect::<Vec<_>>(),
             [root.join("wrapper.js").as_os_str()]
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn npm_restart_environment_uses_ordinary_windows_paths() {
+        let request: UpdateRequest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "version": "1.2.3", "wait_pid": 1,
+            "wait_executable": r"C:\test\node.exe",
+            "runtime_descriptor_path": r"C:\test\desktop.json",
+            "status_path": r"C:\test\status.json",
+            "installation": {
+                "kind": "npm",
+                "node_path": r"\\?\C:\test\node.exe",
+                "npm_cli_path": r"\\?\C:\test\npm-cli.js",
+                "npm_launcher_path": r"\\?\UNC\server\share\bin\codexhost.js",
+                "npm_package_root": r"\\?\UNC\server\share\cli-win32-x64",
+            },
+        }))
+        .unwrap();
+        let command = desktop_shell_command(&request);
+        let env: std::collections::HashMap<_, _> = command.get_envs().collect();
+        for (name, expected) in [
+            ("CODEXHOST_NPM_NODE_PATH", r"C:\test\node.exe"),
+            ("CODEXHOST_NPM_CLI_PATH", r"C:\test\npm-cli.js"),
+            (
+                "CODEXHOST_NPM_LAUNCHER_PATH",
+                r"\\server\share\bin\codexhost.js",
+            ),
+            (
+                "CODEXHOST_NPM_PACKAGE_ROOT",
+                r"\\server\share\cli-win32-x64",
+            ),
+        ] {
+            assert_eq!(
+                env.get(std::ffi::OsStr::new(name)),
+                Some(&Some(std::ffi::OsStr::new(expected)))
+            );
+        }
     }
 
     #[test]
@@ -582,5 +789,49 @@ mod tests {
         .unwrap();
         verify_available_services(&request).unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_shell_readiness_distinguishes_reused_pids_by_start_time() {
+        let previous = Some(ShellInstance {
+            pid: 4200,
+            started_at_micros: 1_000,
+        });
+        let same_instance = ShellOwner {
+            pid: 4200,
+            started_at_micros: 1_000,
+            executable: PathBuf::from("/fixture/bin/codexhost-shell"),
+            version: "1.2.3".into(),
+        };
+        let reused_pid = ShellOwner {
+            pid: 4200,
+            started_at_micros: 2_000,
+            executable: PathBuf::from("/fixture/bin/codexhost-shell"),
+            version: "1.2.3".into(),
+        };
+        assert!(!is_new_shell_ready(
+            &same_instance,
+            previous,
+            Some("1.2.3"),
+            false
+        ));
+        assert!(is_new_shell_ready(
+            &reused_pid,
+            previous,
+            Some("1.2.3"),
+            false
+        ));
+        assert!(!is_new_shell_ready(
+            &reused_pid,
+            previous,
+            Some("1.2.4"),
+            false
+        ));
+        assert!(is_new_shell_ready(
+            &same_instance,
+            previous,
+            Some("1.2.3"),
+            true
+        ));
     }
 }

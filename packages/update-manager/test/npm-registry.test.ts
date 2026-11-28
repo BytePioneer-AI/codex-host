@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,6 +9,7 @@ import {
   fetchLatestNpmRelease,
   npmReleasePackages,
   prefetchNpmRelease,
+  runNpmCommand,
   type NpmCommandResult,
   type NpmDownloadProgress,
 } from "../src/npm-registry.js";
@@ -158,4 +163,36 @@ describe("fetchLatestNpmRelease", () => {
       })),
     ).resolves.toBeNull();
   });
+});
+
+it("runs npm from its own directory with global config mode", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-npm-global-"));
+  const original = process.cwd();
+  try {
+    const project = path.join(root, "project");
+    const bin = path.join(root, "npm", "bin");
+    await Promise.all([mkdir(project), mkdir(bin, { recursive: true })]);
+    await writeFile(path.join(project, ".npmrc"), "registry=http://127.0.0.1:1/project\n");
+    const npm = path.join(bin, "npm-cli.js");
+    await writeFile(npm, "console.log(JSON.stringify([process.cwd(), ...process.argv.slice(2)]))");
+    process.chdir(project);
+    for (const args of [
+      ["view", "@codexhost/cli"],
+      ["cache", "add", "@codexhost/cli"],
+    ]) {
+      const result = await runNpmCommand(
+        { ...target, nodePath: process.execPath, npmCliPath: npm },
+        args,
+        5_000,
+      );
+      expect(result.code).toBe(0);
+      const [cwd, ...npmArgs] = JSON.parse(result.stdout) as string[];
+      expect(cwd).toBeDefined();
+      expect(await realpath(cwd ?? "")).toBe(await realpath(bin));
+      expect(npmArgs).toEqual(["--global", ...args]);
+    }
+  } finally {
+    process.chdir(original);
+    await rm(root, { recursive: true, force: true });
+  }
 });

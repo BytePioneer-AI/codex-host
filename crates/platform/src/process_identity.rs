@@ -25,12 +25,15 @@ pub fn observe_process_identity(process_id: u32) -> Result<Option<ProcessIdentit
     }
 }
 
-/// Windows process_identity maps a PID that exited after enumeration (or was
-/// never valid) to NotFound, which establishes absence; any other inspection
-/// failure stays an error.
 #[cfg(target_os = "windows")]
 pub fn observe_process_identity(process_id: u32) -> Result<Option<ProcessIdentity>, PlatformError> {
-    match process_identity(process_id) {
+    let result = process_identity(process_id);
+    // Enumeration and GetProcessTimes can still succeed while another process
+    // holds an open handle to the exited instance.
+    if super::windows_process::process_has_exited(process_id) {
+        return Ok(None);
+    }
+    match result {
         Ok(identity) => Ok(Some(identity)),
         Err(PlatformError::NotFound(_)) => Ok(None),
         Err(error) => Err(error),
@@ -78,12 +81,12 @@ pub fn observe_process_identity(process_id: u32) -> Result<Option<ProcessIdentit
         .ok_or_else(|| PlatformError::Invalid(format!("PID {process_id} is invalid")))?;
     match macos_identity(native_id) {
         Ok((identity, zombie)) => Ok((!zombie).then_some(identity)),
-        Err(error) => match kill(Pid::from_raw(native_id), None) {
-            Err(Errno::ESRCH) => Ok(None),
-            _ => Err(PlatformError::Invalid(format!(
-                "process presence is unconfirmed for PID {process_id}: {error}"
-            ))),
-        },
+        // proc_pidinfo can report ESRCH for an unreaped child while kill(pid, 0) still succeeds.
+        Err(error) if error.contains(&format!(", errno = {},", Errno::ESRCH as i32)) => Ok(None),
+        Err(_) if kill(Pid::from_raw(native_id), None) == Err(Errno::ESRCH) => Ok(None),
+        Err(error) => Err(PlatformError::Invalid(format!(
+            "process presence is unconfirmed for PID {process_id}: {error}"
+        ))),
     }
 }
 

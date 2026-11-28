@@ -62,10 +62,28 @@ printf 'Host stopped; interrupted tasks: 7\n<opaque output>\n'
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if let Some(shell) = fixture_shell(&self.root) {
+            let _ = codexhost_platform::terminate_process_identity(&(&shell).into(), true);
+        }
         let _ = self.owner.kill();
         let _ = self.owner.wait();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+fn fixture_shell(root: &std::path::Path) -> Option<codexhost_platform::ProcessSnapshot> {
+    let pid = fs::read_to_string(root.join("shell.pid"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let shell = codexhost_platform::process_snapshot(pid).ok()?;
+    let executable = root
+        .join(PACKAGE)
+        .join("bin/codexhost-shell")
+        .canonicalize()
+        .ok()?;
+    (shell.executable.canonicalize().ok()? == executable).then_some(shell)
 }
 
 #[test]
@@ -305,6 +323,11 @@ fn run_service_update_relaunch_scenario(fail_install: bool, restart_desktop_shel
     let status_path = fixture.root.join("update-fixture/status-v1.json");
     fs::create_dir_all(status_path.parent().unwrap()).unwrap();
     let launcher = package_root.join("bin/codexhost");
+    if restart_desktop_shell {
+        fs::copy("/bin/sleep", package_root.join("bin/codexhost-shell")).unwrap();
+    }
+    let shell_ready = data.join("desktop-shell-ready.json");
+    let version = if fail_install { "1.2.2" } else { "1.2.3" };
 
     let host_ready = |version: &str| {
         serde_json::to_string(&serde_json::json!({
@@ -380,6 +403,17 @@ case "$1" in
     cp "{status}" "$HOME/app-observed-status.json"
     printf '%s|%s|%s|%s|%s\n' "$CODEXHOST_DATA_DIR" "$CODEXHOST_NPM_NODE_PATH" "$CODEXHOST_NPM_CLI_PATH" "$CODEXHOST_NPM_LAUNCHER_PATH" "$CODEXHOST_NPM_PACKAGE_ROOT" > "$HOME/app-env.tmp"
     mv "$HOME/app-env.tmp" "$HOME/app-env.txt"
+    if grep -q '"1.2.3"' "{dist}"; then
+      [ "$#" -eq 2 ]
+      [ "$2" = --update-recovery ]
+    else
+      [ "$#" -eq 1 ]
+    fi
+    "$CODEXHOST_NPM_PACKAGE_ROOT/bin/codexhost-shell" 30 &
+    shell_pid=$!
+    printf '%s\n' "$shell_pid" > "$HOME/shell.pid.tmp"
+    mv "$HOME/shell.pid.tmp" "$HOME/shell.pid"
+    wait "$shell_pid"
     ;;
   *)
     exit 1
@@ -445,6 +479,25 @@ esac
     fs::rename(transferred, lock_path).unwrap();
 
     let exit_status = loop {
+        if restart_desktop_shell
+            && !shell_ready.exists()
+            && let Some(shell) = fixture_shell(&fixture.root)
+        {
+            // Publish the real process identity once the launched image has exec'd.
+            let temporary = shell_ready.with_extension("tmp");
+            fs::write(
+                &temporary,
+                serde_json::to_vec(&serde_json::json!({
+                    "pid": shell.id,
+                    "started_at_micros": shell.started_at_micros,
+                    "executable": shell.executable,
+                    "version": version,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::rename(temporary, &shell_ready).unwrap();
+        }
         if let Some(status) = updater.try_wait().unwrap() {
             break status;
         }
@@ -471,25 +524,27 @@ esac
                 .unwrap()
                 .contains("service recovery succeeded")
         );
+        assert!(
+            !final_status["error"]
+                .as_str()
+                .unwrap()
+                .contains("desktop shell recovery failed")
+        );
     } else {
         assert_eq!(final_status["phase"], "succeeded");
     }
 
     if restart_desktop_shell {
         let app_env_path = fixture.root.join("app-env.txt");
-        let until = Instant::now() + Duration::from_secs(5);
-        while !app_env_path.exists() {
-            assert!(Instant::now() < until, "desktop shell relaunch did not run");
-            thread::sleep(Duration::from_millis(20));
-        }
+        assert!(shell_ready.exists());
+        assert!(fixture_shell(&fixture.root).is_some());
         let observed_status: serde_json::Value = serde_json::from_slice(
             &fs::read(fixture.root.join("app-observed-status.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(
-            observed_status["phase"],
-            if fail_install { "failed" } else { "succeeded" },
-            "app relaunch must observe the terminal update status"
+            observed_status["phase"], "restarting",
+            "app must start before the terminal update status"
         );
         let env_line = fs::read_to_string(&app_env_path).unwrap();
         let parts = env_line.trim_end().split('|').collect::<Vec<_>>();
@@ -520,4 +575,161 @@ fn desktop_shell_update_relaunches_app_after_success_and_rollback_without_affect
     run_service_update_relaunch_scenario(false, true);
     run_service_update_relaunch_scenario(true, true);
     run_service_update_relaunch_scenario(false, false);
+}
+
+#[test]
+fn npm_post_install_restart_recovery_accepts_the_installed_version_without_waiting() {
+    let fixture = Fixture::new(false);
+    let live = LiveWebFixture::start();
+    let package_root = fixture.root.join(PACKAGE);
+    let app_dir = package_root.join("app");
+    fs::create_dir_all(&app_dir).unwrap();
+    fs::write(app_dir.join("host-runtime.mjs"), "fixture").unwrap();
+    fs::write(app_dir.join("web-server.mjs"), "fixture").unwrap();
+    fs::write(package_root.join("package.json"), r#"{"version":"1.2.2"}"#).unwrap();
+    fs::write(
+        app_dir.join("codexhost-distribution.json"),
+        r#"{"schemaVersion":1,"version":"1.2.2","distribution":"npm","target":"fixture"}"#,
+    )
+    .unwrap();
+    let data = fixture.root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    let status_path = fixture.root.join("update-fixture/status-v1.json");
+    fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+    let launcher = package_root.join("bin/codexhost");
+
+    let host_ready = serde_json::to_string(&serde_json::json!({
+        "pid": live.supervisor.id(),
+        "started_at_micros": live.supervisor_started_at_micros,
+        "executable": "/bin/sh",
+        "runtime": app_dir.join("host-runtime.mjs"),
+        "version": "1.2.3",
+    }))
+    .unwrap();
+    let web_ready = serde_json::to_string(&serde_json::json!({
+        "pid": live.supervisor.id(),
+        "started_at_micros": live.supervisor_started_at_micros,
+        "executable": launcher,
+        "runtime": app_dir.join("web-server.mjs"),
+        "version": "1.2.3",
+        "web_pid": live.web_pid,
+        "address": live.address,
+    }))
+    .unwrap();
+    let templates = fixture.root.join("templates");
+    fs::create_dir_all(&templates).unwrap();
+    fs::write(templates.join("host-1.2.3.json"), host_ready).unwrap();
+    fs::write(templates.join("web-1.2.3.json"), web_ready).unwrap();
+
+    fs::write(
+        fixture.root.join("install.sh"),
+        format!(
+            r#"set -eu
+if [ "$1" = root ]; then echo "$HOME/node_modules"; exit 0; fi
+printf '{{"schemaVersion":1,"version":"1.2.3","distribution":"npm","target":"fixture"}}' > "{dist}"
+"#,
+            dist = app_dir.join("codexhost-distribution.json").display(),
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &launcher,
+        format!(
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  stop-for-update)
+    rm -f "$HOME/web-running" "$HOME/host-running"
+    ;;
+  web)
+    if [ ! -f "$HOME/web-failed-once" ]; then
+      touch "$HOME/web-failed-once"
+      echo "transient restart failure" >&2
+      exit 1
+    fi
+    cp "{templates}/host-1.2.3.json" "$CODEXHOST_DATA_DIR/shared-host-ready.json"
+    cp "{templates}/web-1.2.3.json" "$CODEXHOST_DATA_DIR/web-service-ready.json"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+            templates = templates.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let path = fixture.root.join("request.json");
+    let mut request: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    request["service_managed"] = true.into();
+    request["restart_target"] = "web".into();
+    request["data_directory"] = serde_json::to_value(&data).unwrap();
+    request["status_path"] = serde_json::to_value(&status_path).unwrap();
+    let lock_path = fixture.root.join("active-update-v1.lock");
+    fs::write(
+        &lock_path,
+        serde_json::to_vec(&serde_json::json!({
+            "ownerPid": fixture.owner.id(), "statusPath": status_path,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+
+    let mut updater = Command::new(env!("CARGO_BIN_EXE_codexhost-updater"))
+        .args(["apply", "--request"])
+        .arg(&path)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &fixture.root)
+        .env("USERPROFILE", &fixture.root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !status_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "updater did not acknowledge handoff"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let transferred = fixture.root.join("transferred.lock");
+    fs::write(
+        &transferred,
+        serde_json::to_vec(&serde_json::json!({
+            "ownerPid": updater.id(), "statusPath": status_path,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::rename(transferred, lock_path).unwrap();
+
+    let exit_status = loop {
+        if let Some(status) = updater.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = updater.kill();
+            let _ = updater.wait();
+            panic!("npm post-install restart recovery hung instead of accepting 1.2.3");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(!exit_status.success());
+    let final_status: serde_json::Value =
+        serde_json::from_slice(&fs::read(&status_path).unwrap()).unwrap();
+    assert_eq!(final_status["phase"], "failed");
+    let error = final_status["error"].as_str().unwrap();
+    assert!(
+        error.contains("transient restart failure"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("service recovery succeeded"),
+        "unexpected error: {error}"
+    );
 }

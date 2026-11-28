@@ -53,6 +53,31 @@ pub fn spawn(shell: &Path, data: &Path, onboarding: bool) -> Result<(), Box<dyn 
     Ok(())
 }
 
+pub fn spawn_for_update(shell: &Path, data: &Path) -> Result<(), Box<dyn Error>> {
+    // Keep the detached long-lived GUI shell on null stdio so it never retains
+    // the Updater's desktop-shell-restart.log handle across its lifetime.
+    let mut child = spawn_command(shell, data, false)?.spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("Desktop shell exited before it was ready with {status}").into());
+        }
+        if read_record(&data.join(READY))?
+            .as_deref()
+            .and_then(live_owner)
+            .is_some_and(|owner| owner.id == child.id())
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Desktop shell did not publish its ready record".into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn wait_for_exit(owner: ProcessIdentity, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while process_instance(owner.id, owner.started_at_micros).is_some() {

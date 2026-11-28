@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import type { CodexhostLatestRelease } from "./github-release.js";
@@ -17,6 +18,7 @@ export interface NpmReleaseTarget {
   /** The platform package this installation runs. */
   packageRoot: string;
   version: string;
+  configuration?: NodeJS.ProcessEnv;
 }
 
 export interface NpmCommandResult {
@@ -46,14 +48,23 @@ export function npmReleasePackages(packageRoot: string, version: string): string
 
 export const runNpmCommand: NpmCommandRunner = (target, arguments_, timeoutMs) =>
   new Promise((resolve) => {
+    const overrides = {
+      ...target.configuration,
+      npm_config_update_notifier: "false",
+      npm_config_fund: "false",
+    };
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !Object.hasOwn(overrides, key.toLowerCase())),
+    );
     execFile(
       target.nodePath,
-      [target.npmCliPath, ...arguments_],
+      [target.npmCliPath, "--global", ...arguments_],
       {
+        cwd: path.dirname(target.npmCliPath),
         timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         windowsHide: true,
-        env: { ...process.env, npm_config_update_notifier: "false", npm_config_fund: "false" },
+        env: { ...inherited, ...overrides },
       },
       (error, stdout, stderr) => {
         const code = error ? (typeof error.code === "number" ? error.code : null) : 0;
@@ -61,6 +72,38 @@ export const runNpmCommand: NpmCommandRunner = (target, arguments_, timeoutMs) =
       },
     );
   });
+
+const npmConfigurationKeys = ["registry", "cache", "prefix", "@codexhost:registry"] as const;
+
+export async function resolveNpmConfiguration(target: NpmReleaseTarget): Promise<{
+  digest: string;
+  environment: NodeJS.ProcessEnv;
+}> {
+  const result = await runNpmCommand(
+    target,
+    ["config", "get", ...npmConfigurationKeys],
+    VIEW_TIMEOUT_MS,
+  );
+  const configuration = result.stdout.trim().replaceAll("\r\n", "\n");
+  const lines = configuration.split("\n");
+  const values = npmConfigurationKeys.map((key) => {
+    const line = lines.find((item) => item.startsWith(key + "="));
+    return line?.slice(key.length + 1);
+  });
+  const [registry, cache, prefix, scopedRegistry] = values;
+  if (result.code !== 0 || !registry || !cache || !prefix || !scopedRegistry) {
+    throw new Error("Could not resolve the global npm registry, cache and prefix");
+  }
+  return {
+    digest: createHash("sha256").update(configuration).digest("hex"),
+    environment: {
+      npm_config_registry: registry,
+      npm_config_cache: cache,
+      npm_config_prefix: prefix,
+      "npm_config_@codexhost:registry": scopedRegistry === "undefined" ? registry : scopedRegistry,
+    },
+  };
+}
 
 function firstErrorLine(result: NpmCommandResult): string {
   const line = result.stderr

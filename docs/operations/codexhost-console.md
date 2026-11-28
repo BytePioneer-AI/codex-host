@@ -177,7 +177,9 @@ npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node
 
 - Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时保留手动更新入口。
 - npm 安装保留 Node、npm CLI、wrapper 和平台包根目录的绝对路径。Updater 在交接并停止服务之前执行 `npm root --global`，确认平台包位于该全局目录下的 CLI 子目录，或作为独立全局包安装。使用其他 npm 全局目录的安装会在交接前被拒绝。更新时在同一条 npm 命令中显式安装同版本的 CLI 和本机平台包，让平台包下载或解包失败时 npm 返回错误并恢复旧安装。平台包可能移到全局目录。Updater 校验新位置的 `codexhost-distribution.json` 后，用实际加载的平台包路径重启服务。远程 SSH Host 的更新仍使用更新前的平台包路径。
-- npm 安装的更新以 GitHub Release 决定提供哪个版本，再用这份安装自己的 npm（含镜像与代理配置）执行 `npm view`，确认 CLI 和本机平台包的该版本都已可装，才显示更新按钮和“有新版本”提示；镜像尚未同步时设置页说明需等待同步，查询失败时报告错误。确认可装的结果在 Host 内保留，未同步的结果 5 分钟后重新查询。点击更新后，更新管理器在交接前用 `npm cache add` 把两个包下载并校验到 npm 缓存，失败则不停止任何服务；Updater 停止服务后以 `--prefer-offline` 从缓存安装。
+- npm 安装的更新以 GitHub Release 决定提供哪个版本，再从 npm CLI 所在目录以全局模式执行 `npm view`、`npm cache add`、prefix 校验与安装，统一使用用户和全局 npm 配置（含镜像、代理和缓存）。更新固定预热使用的 registry、cache 和 prefix，并在停服前验证配置未变化；更新请求（`request-v1.json`）只保存配置摘要的哈希。`npm view` 用于确认 CLI 和本机平台包的该版本都已可装，才显示更新按钮和“有新版本”提示；镜像尚未同步时设置页说明需等待同步，查询失败时报告错误。确认可装的结果在 Host 内保留，未同步的结果 5 分钟后重新查询。点击更新后，更新管理器在交接前用 `npm cache add` 把两个包下载并校验到 npm 缓存，失败则不停止任何服务；Updater 停止服务后以 `--prefer-offline` 从缓存安装。
+- Windows 安装包自动更新在同卷的相邻目录保留完整旧安装。安装命令或新版元数据校验失败时，Updater 恢复备份并验证旧版本，再按旧版本检查服务就绪。回滚校验失败时停止自动启动，并在更新状态中列出备份位置。安装和所需服务全部就绪后清理备份。
+- 如果更新前运行了 Desktop Shell，Updater 等待目标安装的新 Shell 发布就绪记录，再写入成功状态。服务和 Shell 重启诊断分别写入 `restart-service.log`、`desktop-shell-restart.log`。
 - 检查、准备或交接失败时 CLI 返回非零退出码；安装后的最终结果保留在本地状态文件中。
 
 ### Windows 安装包覆盖安装

@@ -51,6 +51,8 @@ pub(crate) struct NpmInstallation {
     pub(crate) npm_launcher_path: PathBuf,
     /// The platform package whose executables Windows must close before npm replaces them.
     pub(crate) npm_package_root: PathBuf,
+    #[serde(default)]
+    pub(crate) npm_config_sha256: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,7 +236,7 @@ fn resolve_path(path: &Path, depth: u8) -> PathBuf {
     resolved
 }
 
-fn path_is_within(candidate: &Path, root: &Path) -> bool {
+pub(crate) fn path_is_within(candidate: &Path, root: &Path) -> bool {
     if normalize_lexical(candidate).starts_with(normalize_lexical(root)) {
         return true;
     }
@@ -295,6 +297,13 @@ impl UpdateRequest {
                 require_absolute_file(&npm.npm_cli_path, "npm CLI")?;
                 require_absolute_file(&npm.npm_launcher_path, "npm codexhost launcher")?;
                 require_absolute_path(&npm.npm_package_root, "npm platform package root")?;
+                if npm
+                    .npm_config_sha256
+                    .as_deref()
+                    .is_some_and(|value| !valid_sha256(value))
+                {
+                    return Err("npm configuration digest must be lowercase SHA-256".into());
+                }
             }
             Installation::WindowsInstaller(windows) => {
                 if !cfg!(target_os = "windows") {

@@ -17,7 +17,7 @@
 <h2>在 Codex 里，调度所有编程 Agent。</h2>
 
 <p>
-  把 <b>Codex</b>、<b>Claude Code</b>、<b>Pi</b>、<b>Grok</b> 等 19+ 款编程 Agent 聚进同一工作台；<br />
+  把 <b>Codex</b>、<b>Claude Code</b>、<b>Antigravity</b>、<b>Pi</b>、<b>Grok</b> 等 19+ 款编程 Agent 聚进同一工作台；<br />
   自带独立桌面端（无需安装官方 Codex Desktop），也支持增强官方客户端，并与 Web、手机实时多机同步。
 </p>
 

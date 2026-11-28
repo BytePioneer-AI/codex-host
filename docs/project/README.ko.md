@@ -17,7 +17,7 @@
 <h2>Codex 안에서 모든 코딩 Agent를 조율하세요.</h2>
 
 <p>
-  <b>Codex</b>, <b>Claude Code</b>, <b>Pi</b>, <b>Grok</b> 등 19개 이상의 코딩 Agent를 하나의 워크스페이스에 모았습니다.<br />
+  <b>Codex</b>, <b>Claude Code</b>, <b>Antigravity</b>, <b>Pi</b>, <b>Grok</b> 등 19개 이상의 코딩 Agent를 하나의 워크스페이스에 모았습니다.<br />
   독립 데스크톱 앱을 기본 제공해 공식 Codex Desktop 없이 바로 실행되며(공식 클라이언트 확장도 지원), Web·모바일 및 여러 머신과 실시간 동기화됩니다.
 </p>
 

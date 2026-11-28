@@ -447,6 +447,7 @@ export function WebExtensionsSection({
       options?: {
         readonly successText?: string;
         readonly onSuccess?: () => void;
+        readonly onFailure?: () => void;
       },
     ): Promise<boolean> => {
       if (recoveringRef.current || pendingByIdRef.current.has(extensionId)) return false;
@@ -492,6 +493,8 @@ export function WebExtensionsSection({
         const message = formatManagementError(cause, t);
         if (isHostExtensionRevisionConflictError(cause)) {
           void refreshList(undefined, { force: true });
+        } else {
+          options?.onFailure?.();
         }
         publishFeedback({ tone: "danger", text: t("extensions.actionFailed", { message }) });
         return false;
@@ -670,6 +673,8 @@ export function WebExtensionsSection({
   const hasPendingTasks = pendingById.size > 0 || manualInstalling || recovering;
 
   const handleToggle = (item: HostExtensionListItem, enabled: boolean) => {
+    if (recoveringRef.current || pendingByIdRef.current.has(item.id)) return;
+    const previousEnabled = item.enabled;
     const name = hostDisplayName(item, contentLocale, catalogById.get(item.id));
     // Optimistically flip toggle state in UI for crisp responsiveness.
     setListView((prev) => {
@@ -709,6 +714,20 @@ export function WebExtensionsSection({
       },
       {
         successText: t(enabled ? "extensions.savedEnabled" : "extensions.savedDisabled", { name }),
+        onFailure: () => {
+          setListView((prev) => {
+            if (prev.kind !== "ready") return prev;
+            return {
+              kind: "ready",
+              data: {
+                ...prev.data,
+                extensions: prev.data.extensions.map((entry) =>
+                  entry.id === item.id ? { ...entry, enabled: previousEnabled } : entry,
+                ),
+              },
+            };
+          });
+        },
       },
     );
   };

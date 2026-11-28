@@ -709,7 +709,7 @@ export class AntigravitySessionUsageTracker {
           result.steps,
           needed,
         );
-        if (dbFingerprint !== null) {
+        if (dbFingerprint !== null && result.metadata !== null) {
           this.#metadataFingerprint = dbFingerprint;
           this.#metadataNeededKey = neededKey;
           this.#cachedMetadata = result.metadata;

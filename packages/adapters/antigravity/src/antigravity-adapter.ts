@@ -261,6 +261,11 @@ function runQuotaCli(
       if (stdout.includes("\n") && stdout.includes('"command_result"')) {
         for (const line of stdout.split(/\r?\n/u).slice(0, -1)) {
           if (line.includes('"command_result"')) {
+            const exitTimer = setTimeout(() => {
+              child.kill("SIGKILL");
+            }, 2_000);
+            exitTimer.unref?.();
+            child.once("close", () => clearTimeout(exitTimer));
             child.unref();
             finish(() => resolve(stdout));
             return;

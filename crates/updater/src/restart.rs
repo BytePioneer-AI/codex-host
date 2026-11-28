@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{
-    ProcessIdentity, configure_background_command, process_identity, process_snapshot,
+    ProcessIdentity, configure_background_command, configure_detached_service_command,
+    process_identity, process_snapshot,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 
@@ -215,6 +216,23 @@ fn pass_npm_node(command: &mut Command, request: &UpdateRequest) {
     }
 }
 
+fn apply_restart_environment(command: &mut Command, request: &UpdateRequest) {
+    if let Some(data) = &request.data_directory {
+        command.env("CODEXHOST_DATA_DIR", data);
+    }
+    if let Installation::Npm(npm) = &request.installation {
+        command
+            .env("CODEXHOST_NPM_NODE_PATH", &npm.node_path)
+            .env("CODEXHOST_NPM_CLI_PATH", &npm.npm_cli_path)
+            .env("CODEXHOST_NPM_LAUNCHER_PATH", &npm.npm_launcher_path)
+            .env("CODEXHOST_NPM_PACKAGE_ROOT", &npm.npm_package_root);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+}
+
 fn command(request: &UpdateRequest) -> Command {
     let mut command = if request.restart_target == RestartTarget::Web {
         let mut command = Command::new(request.installation.launcher_path());
@@ -250,22 +268,23 @@ fn command(request: &UpdateRequest) -> Command {
             Installation::LinuxArchive(_) => Command::new(request.installation.launcher_path()),
         }
     };
-    if let Some(data) = &request.data_directory {
-        command.env("CODEXHOST_DATA_DIR", data);
-    }
-    if let Installation::Npm(npm) = &request.installation {
-        command
-            .env("CODEXHOST_NPM_NODE_PATH", &npm.node_path)
-            .env("CODEXHOST_NPM_CLI_PATH", &npm.npm_cli_path)
-            .env("CODEXHOST_NPM_LAUNCHER_PATH", &npm.npm_launcher_path)
-            .env("CODEXHOST_NPM_PACKAGE_ROOT", &npm.npm_package_root);
-    }
+    apply_restart_environment(&mut command, request);
     configure_background_command(&mut command);
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+}
+
+fn desktop_shell_command(request: &UpdateRequest) -> Command {
+    let mut command = Command::new(request.installation.launcher_path());
+    command.arg("app");
+    apply_restart_environment(&mut command, request);
     command
+}
+
+pub(crate) fn relaunch_desktop_shell(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
+    let mut command = desktop_shell_command(request);
+    configure_detached_service_command(&mut command)?;
+    command.spawn()?;
+    Ok(())
 }
 
 pub(crate) fn restore(
@@ -402,6 +421,65 @@ mod tests {
         assert_eq!(
             legacy.get_args().collect::<Vec<_>>(),
             [root.join("wrapper.js").as_os_str()]
+        );
+    }
+
+    #[test]
+    fn desktop_shell_command_launches_app_with_data_and_npm_environment() {
+        let root = std::env::temp_dir().join("codexhost-shell-relaunch-command");
+        let npm_request: UpdateRequest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "version": "1.2.3", "wait_pid": 1,
+            "wait_executable": root.join("node"), "runtime_descriptor_path": root.join("desktop.json"),
+            "status_path": root.join("status.json"), "restart_target": "web",
+            "restart_desktop_shell": true, "data_directory": root.join("data"),
+            "installation": {"kind":"npm", "node_path":root.join("node"), "npm_cli_path":root.join("npm.js"), "npm_launcher_path":root.join("wrapper.js"), "npm_package_root":root.join("package")}
+        })).unwrap();
+        let command = desktop_shell_command(&npm_request);
+        assert_eq!(
+            command.get_program(),
+            npm_request.installation.launcher_path()
+        );
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["app"]);
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "CODEXHOST_DATA_DIR"
+                    && value == Some(root.join("data").as_os_str()))
+        );
+        for key in [
+            "CODEXHOST_NPM_NODE_PATH",
+            "CODEXHOST_NPM_CLI_PATH",
+            "CODEXHOST_NPM_LAUNCHER_PATH",
+            "CODEXHOST_NPM_PACKAGE_ROOT",
+        ] {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(name, value)| name == key && value.is_some()),
+                "missing {key}"
+            );
+        }
+
+        let packaged: UpdateRequest = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "version": "1.2.3", "wait_pid": 1,
+            "wait_executable": root.join("node"), "runtime_descriptor_path": root.join("desktop.json"),
+            "status_path": root.join("status.json"), "restart_target": "web",
+            "restart_desktop_shell": true, "data_directory": root.join("data"),
+            "installation": {"kind":"macos-dmg", "dmg_path":root.join("a.dmg"), "artifact_sha256":"0".repeat(64), "app_path":root.join("codexhost.app")}
+        })).unwrap();
+        let command = desktop_shell_command(&packaged);
+        assert_eq!(command.get_program(), packaged.installation.launcher_path());
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["app"]);
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "CODEXHOST_DATA_DIR"
+                    && value == Some(root.join("data").as_os_str()))
+        );
+        assert!(
+            command
+                .get_envs()
+                .all(|(key, _)| key != "CODEXHOST_NPM_NODE_PATH")
         );
     }
 

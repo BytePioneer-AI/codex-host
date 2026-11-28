@@ -9,6 +9,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
 use codexhost_platform::configure_background_command;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

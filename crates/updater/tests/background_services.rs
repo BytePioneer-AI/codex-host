@@ -62,10 +62,28 @@ printf 'Host stopped; interrupted tasks: 7\n<opaque output>\n'
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if let Some(shell) = fixture_shell(&self.root) {
+            let _ = codexhost_platform::terminate_process_identity(&(&shell).into(), true);
+        }
         let _ = self.owner.kill();
         let _ = self.owner.wait();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+fn fixture_shell(root: &std::path::Path) -> Option<codexhost_platform::ProcessSnapshot> {
+    let pid = fs::read_to_string(root.join("shell.pid"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let shell = codexhost_platform::process_snapshot(pid).ok()?;
+    let executable = root
+        .join(PACKAGE)
+        .join("bin/codexhost-shell")
+        .canonicalize()
+        .ok()?;
+    (shell.executable.canonicalize().ok()? == executable).then_some(shell)
 }
 
 #[test]
@@ -305,6 +323,11 @@ fn run_service_update_relaunch_scenario(fail_install: bool, restart_desktop_shel
     let status_path = fixture.root.join("update-fixture/status-v1.json");
     fs::create_dir_all(status_path.parent().unwrap()).unwrap();
     let launcher = package_root.join("bin/codexhost");
+    if restart_desktop_shell {
+        fs::copy("/bin/sleep", package_root.join("bin/codexhost-shell")).unwrap();
+    }
+    let shell_ready = data.join("desktop-shell-ready.json");
+    let version = if fail_install { "1.2.2" } else { "1.2.3" };
 
     let host_ready = |version: &str| {
         serde_json::to_string(&serde_json::json!({
@@ -380,6 +403,17 @@ case "$1" in
     cp "{status}" "$HOME/app-observed-status.json"
     printf '%s|%s|%s|%s|%s\n' "$CODEXHOST_DATA_DIR" "$CODEXHOST_NPM_NODE_PATH" "$CODEXHOST_NPM_CLI_PATH" "$CODEXHOST_NPM_LAUNCHER_PATH" "$CODEXHOST_NPM_PACKAGE_ROOT" > "$HOME/app-env.tmp"
     mv "$HOME/app-env.tmp" "$HOME/app-env.txt"
+    if grep -q '"1.2.3"' "{dist}"; then
+      [ "$#" -eq 2 ]
+      [ "$2" = --update-recovery ]
+    else
+      [ "$#" -eq 1 ]
+    fi
+    "$CODEXHOST_NPM_PACKAGE_ROOT/bin/codexhost-shell" 30 &
+    shell_pid=$!
+    printf '%s\n' "$shell_pid" > "$HOME/shell.pid.tmp"
+    mv "$HOME/shell.pid.tmp" "$HOME/shell.pid"
+    wait "$shell_pid"
     ;;
   *)
     exit 1
@@ -445,6 +479,25 @@ esac
     fs::rename(transferred, lock_path).unwrap();
 
     let exit_status = loop {
+        if restart_desktop_shell
+            && !shell_ready.exists()
+            && let Some(shell) = fixture_shell(&fixture.root)
+        {
+            // Publish the real process identity once the launched image has exec'd.
+            let temporary = shell_ready.with_extension("tmp");
+            fs::write(
+                &temporary,
+                serde_json::to_vec(&serde_json::json!({
+                    "pid": shell.id,
+                    "started_at_micros": shell.started_at_micros,
+                    "executable": shell.executable,
+                    "version": version,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::rename(temporary, &shell_ready).unwrap();
+        }
         if let Some(status) = updater.try_wait().unwrap() {
             break status;
         }
@@ -471,25 +524,27 @@ esac
                 .unwrap()
                 .contains("service recovery succeeded")
         );
+        assert!(
+            !final_status["error"]
+                .as_str()
+                .unwrap()
+                .contains("desktop shell recovery failed")
+        );
     } else {
         assert_eq!(final_status["phase"], "succeeded");
     }
 
     if restart_desktop_shell {
         let app_env_path = fixture.root.join("app-env.txt");
-        let until = Instant::now() + Duration::from_secs(5);
-        while !app_env_path.exists() {
-            assert!(Instant::now() < until, "desktop shell relaunch did not run");
-            thread::sleep(Duration::from_millis(20));
-        }
+        assert!(shell_ready.exists());
+        assert!(fixture_shell(&fixture.root).is_some());
         let observed_status: serde_json::Value = serde_json::from_slice(
             &fs::read(fixture.root.join("app-observed-status.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(
-            observed_status["phase"],
-            if fail_install { "failed" } else { "succeeded" },
-            "app relaunch must observe the terminal update status"
+            observed_status["phase"], "restarting",
+            "app must start before the terminal update status"
         );
         let env_line = fs::read_to_string(&app_env_path).unwrap();
         let parts = env_line.trim_end().split('|').collect::<Vec<_>>();

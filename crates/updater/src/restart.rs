@@ -450,10 +450,7 @@ pub(crate) fn restore(
         |pid| process_identity(pid).ok(),
         web_listening,
     )?;
-    let waiting = match pending {
-        Some(waiting) => waiting,
-        None => "Codex Desktop launcher or control port not ready",
-    };
+    let waiting = pending.unwrap_or("Codex Desktop launcher or control port not ready");
     Err(format!(
         "codexhost services did not become ready after restart ({waiting}){}",
         crate::diagnostics::log_details(&log, false)

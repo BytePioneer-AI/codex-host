@@ -170,15 +170,21 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
             match restart::restore(&request, previous_version.as_deref()) {
                 Ok(()) => {
                     message.push_str("; service recovery succeeded");
-                    if request.restart_desktop_shell
-                        && let Err(error) = restart::relaunch_desktop_shell(
+                    if request.restart_desktop_shell {
+                        let _ = write_status(
+                            &request,
+                            "restarting",
+                            None,
+                            service_stop_output.as_deref(),
+                        );
+                        if let Err(error) = restart::relaunch_desktop_shell(
                             &request,
                             previous_version.as_deref(),
                             old_shell_pid,
                             true,
-                        )
-                    {
-                        message.push_str(&format!("; desktop shell recovery failed: {error}"));
+                        ) {
+                            message.push_str(&format!("; desktop shell recovery failed: {error}"));
+                        }
                     }
                 }
                 Err(recovery) => {
